@@ -93,7 +93,7 @@ Respond ONLY in this exact JSON format (no markdown, no extra text):
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
