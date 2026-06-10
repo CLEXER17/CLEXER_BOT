@@ -97,8 +97,9 @@ Respond ONLY in this exact JSON format (no markdown, no extra text):
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw = message.content[0].text.strip()
-        return json.loads(raw)
+       raw = message.content[0].text.strip()
+raw = raw.replace("```json", "").replace("```", "").strip()
+return json.loads(raw)
     except json.JSONDecodeError:
         print(f"[ERROR] Claude returned non-JSON: {raw}")
         return None
