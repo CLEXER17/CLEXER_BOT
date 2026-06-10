@@ -1,5 +1,6 @@
 anthropic
 requests
-mplfinance
 pandas
+numpy
+matplotlib
 Pillow
