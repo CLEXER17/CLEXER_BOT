@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "your_claude_api_key_here")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_telegram_bot_token_here")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@your_channel_username")  # e.g. @mycryptosignals
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@your_channel_username")
 
 SYMBOL = "BTCUSDT"
 TIMEFRAMES = ["15m", "1h", "4h"]   # Multi-TF analysis
@@ -97,9 +97,9 @@ Respond ONLY in this exact JSON format (no markdown, no extra text):
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
-       raw = message.content[0].text.strip()
-raw = raw.replace("```json", "").replace("```", "").strip()
-return json.loads(raw)
+        raw = message.content[0].text.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw)
     except json.JSONDecodeError:
         print(f"[ERROR] Claude returned non-JSON: {raw}")
         return None
