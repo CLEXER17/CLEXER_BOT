@@ -6,7 +6,7 @@ CLEXER Signal Bot V3 — Full SMC Vision + Commands
 import os, time, json, base64, requests, anthropic, threading
 import pandas as pd
 import numpy as np
-import matplotliba
+import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
