@@ -19,8 +19,8 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@your_channel_username")
 
 SYMBOL = "BTCUSDT"
 TIMEFRAMES = ["15m", "1h", "4h"]   # Multi-TF analysis
-SCAN_INTERVAL_SECONDS = 300         # Run every 5 minutes
-BINANCE_BASE = "https://api.binance.com/api/v3"
+SCAN_INTERVAL_SECONDS = 14400       # Run every 4 hours
+BINANCE_BASE = "https://api1.binance.com/api/v3"
 
 # ─── BINANCE CANDLE FETCH ─────────────────────────────────────────────────────
 def get_candles(symbol: str, interval: str, limit: int = 50) -> list[dict]:
