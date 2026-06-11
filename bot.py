@@ -1,4 +1,3 @@
-
 """
 CLEXER Signal Bot V3 — Full SMC Vision + Commands
 """
@@ -765,14 +764,19 @@ def main():
                 time.sleep(60)
                 continue
 
-            print(f"\n[{now_ist().strftime('%H:%M IST')}] Session: {get_session()}")
+            forced = force_scan.is_set()   # admin sent /signal
+            if forced:
+                force_scan.clear()
+                print("  [CMD] Force scan triggered — bypassing session filter")
 
-            if is_ist_sleep():
+            print(f"\n[{now_ist().strftime('%H:%M IST')}] Session: {get_session()}{' (FORCED)' if forced else ''}")
+
+            if not forced and is_ist_sleep():
                 print("  [SLEEP] 01:00–07:29 IST — waiting")
                 time.sleep(SCAN_INTERVAL_SECONDS)
                 continue
 
-            if not is_trading_hours():
+            if not forced and not is_trading_hours():
                 print(f"  [WAIT] {get_session()} — not London/NY")
                 time.sleep(SCAN_INTERVAL_SECONDS)
                 continue
@@ -846,9 +850,8 @@ def main():
         waited = 0
         while waited < SCAN_INTERVAL_SECONDS:
             if force_scan.is_set():
-                force_scan.clear()
-                print("  [CMD] Force scan triggered")
-                break
+                print("  [CMD] /signal received — waking up now")
+                break   # don't clear here, main loop reads it at top
             time.sleep(30)
             waited += 30
 
