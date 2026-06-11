@@ -1,5 +1,9 @@
 """
 CLEXER Signal Bot V4 — Adaptive SMC + All Market Scenarios
+API Cost Optimized:
+  - Active trade (price between SL/TP): NO images, NO Claude — just price check + text advice
+  - TP hit / SL hit / No trade: FULL image analysis with Claude
+  - /signal: single scan, sends charts to channel, no double API call
 """
 
 import os, time, json, base64, requests, anthropic, threading
@@ -42,25 +46,25 @@ active_trade = {
     "tp1": None, "tp2": None, "tp1_hit": False,
     "entry_type": "MARKET", "entry_note": "",
     "entry_hit": False,
-    "sl_wicked": False,     # SL briefly touched but not closed through (stop hunt)
-    "scan_count": 0,        # how many scans this trade has been active
+    "sl_wicked": False,
+    "scan_count": 0,
 }
 signal_history = []
 force_scan     = threading.Event()
 bot_paused     = threading.Event()
 last_update_id = 0
+last_force_scan_time = 0   # cooldown tracker for /signal
 
 # ─── ADAPTIVE TRADE STATS ─────────────────────────────────────────────────────
-# Tracks losses + cooldown to avoid overtrading after bad conditions
 trade_stats = {
-    "consecutive_sl":  0,     # SL hits in a row (resets on TP hit)
-    "cooldown_scans":  0,     # scans to skip before next signal
+    "consecutive_sl":  0,
+    "cooldown_scans":  0,
     "total_sl":        0,
     "total_tp1":       0,
     "total_tp2":       0,
     "total_signals":   0,
-    "missed_entries":  0,     # PULLBACK entries price never reached
-    "stop_hunts":      0,     # times SL wicked but trade continued
+    "missed_entries":  0,
+    "stop_hunts":      0,
 }
 
 def reset_trade():
@@ -234,6 +238,25 @@ def draw_smc_chart(df, tf, obs, fvgs, bos_events, s_highs, s_lows, price=None) -
     plt.close(fig); buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
+def send_chart_images(data, price, caption="📊 SMC Charts"):
+    """Generate charts and send them directly to Telegram channel"""
+    try:
+        for tf_key,(df,lb) in data.items():
+            obs=detect_order_blocks(df,6); fvgs=detect_fvgs(df,6)
+            bos=detect_bos_choch(df); sh,sl=find_swing_points(df,lb)
+            b64=draw_smc_chart(df,tf_key.upper(),obs,fvgs,bos,sh[-8:],sl[-8:],price)
+            img_bytes=base64.b64decode(b64)
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                data={"chat_id": TELEGRAM_CHANNEL_ID, "caption": f"{caption} — {tf_key.upper()}"},
+                files={"photo": (f"chart_{tf_key}.png", img_bytes, "image/png")},
+                timeout=20
+            )
+            time.sleep(0.5)
+        print("  Charts sent to channel")
+    except Exception as e:
+        print(f"  [ERROR] Sending charts: {e}")
+
 def generate_all_charts(data, price) -> dict:
     charts = {}
     for tf_key,(df,lb) in data.items():
@@ -264,42 +287,117 @@ def build_smc_summary(data, ticker) -> str:
         lines.append("")
     return "\n".join(lines)
 
-# ─── ADAPTIVE SCENARIO DETECTION ─────────────────────────────────────────────
+# ─── PRICE STATUS CHECK ───────────────────────────────────────────────────────
+def check_price_status(price: float, df_5m=None) -> str:
+    t = active_trade
+    if not t["signal"]: return "NONE"
+    sig,sl,tp1,tp2,entry = t["signal"],t["sl"],t["tp1"],t["tp2"],t["entry"]
 
-def detect_stop_hunt(df_5m) -> bool:
+    if not t["entry_hit"]:
+        if (sig=="BUY" and price<=sl) or (sig=="SELL" and price>=sl): return "SETUP_INVALID"
+        tol = abs(entry - sl) * 0.3
+        if (sig=="BUY" and price<=entry+tol) or (sig=="SELL" and price>=entry-tol):
+            active_trade["entry_hit"] = True
+            print(f"  [ENTRY HIT] {sig} entry {entry:,.0f} reached (price={price:,.2f})")
+        else:
+            return "WAITING_ENTRY"
+
+    sl_breach = (sig=="SELL" and price>=sl) or (sig=="BUY" and price<=sl)
+    if sl_breach and df_5m is not None and not t["sl_wicked"]:
+        if detect_stop_hunt(df_5m):
+            active_trade["sl_wicked"] = True
+            trade_stats["stop_hunts"] += 1
+            return "STOP_HUNT"
+
+    if (sig=="SELL" and price>=sl) or (sig=="BUY" and price<=sl): return "SL_HIT"
+    if (sig=="SELL" and price<=tp2) or (sig=="BUY" and price>=tp2): return "TP2_HIT"
+    if not t["tp1_hit"]:
+        if (sig=="SELL" and price<=tp1) or (sig=="BUY" and price>=tp1): return "TP1_HIT"
+    return "RUNNING"
+
+# ─── SMART PRICE-ONLY TRADE ADVICE (no API, no images) ───────────────────────
+def price_only_advice(price: float) -> str:
     """
-    STOP HUNT: SL was wicked by a wick but 5M candle CLOSED back inside trade range.
-    Returns True if latest candle looks like a stop hunt.
+    When trade is RUNNING (price between SL and TP) — give advice
+    purely from price math. Zero API cost, zero image cost.
     """
     t = active_trade
-    if not t["signal"] or not t["entry_hit"]: return False
-    sig = t["signal"]; sl = t["sl"]; entry = t["entry"]
+    sig   = t["signal"]
+    entry = t["entry"]
+    sl    = t["sl"]
+    tp1   = t["tp1"]
+    tp2   = t["tp2"]
+    sl_dist  = abs(entry - sl)
+    tp2_dist = abs(entry - tp2)
 
-    # Check last 3 candles for wick past SL but close back inside
+    if sig == "BUY":
+        dist_from_entry = price - entry
+        dist_to_sl      = price - sl
+        dist_to_tp1     = tp1 - price
+        dist_to_tp2     = tp2 - price
+        pct_to_tp2      = (price - entry) / tp2_dist * 100 if tp2_dist else 0
+    else:
+        dist_from_entry = entry - price
+        dist_to_sl      = sl - price
+        dist_to_tp1     = price - tp1
+        dist_to_tp2     = price - tp2
+        pct_to_tp2      = (entry - price) / tp2_dist * 100 if tp2_dist else 0
+
+    # Risk remaining
+    risk_pct = dist_to_sl / sl_dist * 100 if sl_dist else 0
+
+    if dist_from_entry < 0:
+        # Price moved against us but not at SL
+        advice = "WAIT"
+        note   = f"Price {abs(dist_from_entry):.0f} pts against entry. SL {dist_to_sl:.0f} pts away ({risk_pct:.0f}% risk remaining). Hold."
+    elif pct_to_tp2 >= 75:
+        advice = "HOLD"
+        note   = f"Trade {pct_to_tp2:.0f}% to TP2. Trailing SL advised. TP2 {dist_to_tp2:.0f} pts away."
+    elif pct_to_tp2 >= 40:
+        advice = "HOLD"
+        note   = f"Trade {pct_to_tp2:.0f}% to TP2. Strong momentum. TP2 {dist_to_tp2:.0f} pts away."
+    elif pct_to_tp2 >= 10:
+        advice = "HOLD"
+        note   = f"Trade {pct_to_tp2:.0f}% to TP2. In profit. TP2 {dist_to_tp2:.0f} pts away."
+    else:
+        advice = "WAIT"
+        note   = f"Near entry. Progress {pct_to_tp2:.0f}% to TP2. Watch for momentum."
+
+    tp1_status = "✅ HIT" if t["tp1_hit"] else f"⏳ {dist_to_tp1:.0f} pts away"
+    return (
+        f"📊 <b>{SYMBOL} TRADE UPDATE</b>  {ist_str()}\n\n"
+        f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig}</b> — Price Only Check (no API)\n\n"
+        f"💵 Price:  <b>{price:,.2f}</b>\n"
+        f"🎯 Entry:  <b>{entry:,.0f}</b>\n"
+        f"🛑 SL:     <b>{sl:,.0f}</b>  ({dist_to_sl:.0f} pts away)\n"
+        f"✅ TP1:    <b>{tp1:,.0f}</b>  {tp1_status}\n"
+        f"✅ TP2:    <b>{tp2:,.0f}</b>  ({dist_to_tp2:.0f} pts away)\n"
+        f"📈 Progress: <b>{max(0,pct_to_tp2):.1f}%</b> to TP2\n\n"
+        f"🤖 Advice: <b>{advice}</b>\n"
+        f"💬 {note}\n\n"
+        f"<i>— CLEXER V4 (price-only scan) —</i>"
+    )
+
+# ─── STOP HUNT DETECTION ─────────────────────────────────────────────────────
+def detect_stop_hunt(df_5m) -> bool:
+    t = active_trade
+    if not t["signal"] or not t["entry_hit"]: return False
+    sig = t["signal"]; sl = t["sl"]
     for i in range(-3, 0):
         row = df_5m.iloc[i]
         if sig == "BUY":
-            # Wick below SL but closed ABOVE SL
             if row["low"] < sl and row["close"] > sl:
-                reversal = row["close"] - row["low"]
-                if reversal > 100:  # closed back up 100+ pts
-                    print(f"  [STOP HUNT] Wick to {row['low']:,.0f} below SL {sl:,.0f} but closed at {row['close']:,.0f}")
+                if row["close"] - row["low"] > 100:
+                    print(f"  [STOP HUNT] Wick to {row['low']:,.0f} below SL {sl:,.0f} but closed {row['close']:,.0f}")
                     return True
-        else:  # SELL
-            # Wick above SL but closed BELOW SL
+        else:
             if row["high"] > sl and row["close"] < sl:
-                reversal = row["high"] - row["close"]
-                if reversal > 100:
-                    print(f"  [STOP HUNT] Wick to {row['high']:,.0f} above SL {sl:,.0f} but closed at {row['close']:,.0f}")
+                if row["high"] - row["close"] > 100:
+                    print(f"  [STOP HUNT] Wick to {row['high']:,.0f} above SL {sl:,.0f} but closed {row['close']:,.0f}")
                     return True
     return False
 
 def detect_entry_missed(price: float) -> bool:
-    """
-    MISSED ENTRY: PULLBACK signal where price never came to entry
-    and has now moved 1000+ pts PAST TP1 in the trade direction.
-    Trade is over without us — cancel and find new setup.
-    """
     t = active_trade
     if t["entry_hit"] or t["entry_type"] != "PULLBACK": return False
     sig = t["signal"]; tp1 = t["tp1"]
@@ -308,39 +406,54 @@ def detect_entry_missed(price: float) -> bool:
     return False
 
 def detect_entry_invalidated(price: float, df_4h) -> bool:
-    """
-    ENTRY ZONE INVALIDATED: For PULLBACK signal, price moved so far
-    from entry in the WRONG direction that the setup is no longer valid.
-    """
     t = active_trade
     if t["entry_hit"]: return False
     sig = t["signal"]; sl = t["sl"]
-    # If price closed THROUGH the SL before even reaching entry — invalidated
     last_close = df_4h["close"].iloc[-1]
     if sig == "BUY"  and last_close < sl: return True
     if sig == "SELL" and last_close > sl: return True
     return False
 
 def required_confidence_after_losses() -> str:
-    """Returns minimum confidence level required based on consecutive SL hits"""
     n = trade_stats["consecutive_sl"]
-    if n >= 3: return "HIGH"    # 3+ losses: only HIGH confidence
-    if n >= 2: return "HIGH"    # 2 losses: HIGH only
-    if n >= 1: return "MEDIUM"  # 1 loss: MEDIUM or HIGH
-    return "LOW"                # No recent loss: take any signal
+    if n >= 2: return "HIGH"
+    if n >= 1: return "MEDIUM"
+    return "LOW"
 
 def should_wait_for_pattern() -> bool:
-    """True if bot should skip this scan and wait for cleaner pattern"""
     return trade_stats["cooldown_scans"] > 0
 
-# ─── CLAUDE: NEW SIGNAL ───────────────────────────────────────────────────────
+# ─── CLAUDE: FULL IMAGE ANALYSIS (only for new signals / SL / TP events) ─────
 def analyze_with_claude(ticker, data, force_confidence=None) -> dict | None:
+    """
+    EXPENSIVE call — only use when:
+    - No active trade (need new signal)
+    - SL was hit (find new entry)
+    - TP2 hit (find next trade)
+    - CLOSE/NO_VOLUME (structure broken)
+    """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     price  = ticker["price"]
     min_conf = force_confidence or required_confidence_after_losses()
-    print(f"  Min confidence required: {min_conf}")
+    print(f"  [CLAUDE FULL] Min confidence: {min_conf}")
     print("  Generating SMC charts...")
     charts  = generate_all_charts(data, price)
+
+    # Send charts to channel immediately
+    print("  Sending charts to channel...")
+    for tf_key, b64 in charts.items():
+        try:
+            img_bytes = base64.b64decode(b64)
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                data={"chat_id": TELEGRAM_CHANNEL_ID, "caption": f"📊 {SYMBOL} {tf_key.upper()} — SMC Analysis"},
+                files={"photo": (f"chart_{tf_key}.png", img_bytes, "image/png")},
+                timeout=20
+            )
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  [ERROR] Chart send {tf_key}: {e}")
+
     summary = build_smc_summary(data, ticker)
 
     conf_instruction = ""
@@ -365,12 +478,12 @@ ENTRY TYPE:
   - MARKET: price is INSIDE zone right now -- enter immediately
   - PULLBACK: price must travel to zone first
 
-CRITICAL PULLBACK RULES (read carefully):
+CRITICAL PULLBACK RULES:
   If PULLBACK: TP1 and TP2 MUST be BEYOND current price in the final move direction.
-  BUY pullback example: current=62000, entry=61150, TP1 must be ABOVE 62000 not below it.
-  SELL pullback example: current=60000, entry=60850, TP1 must be BELOW 60000 not above it.
-  NEVER set TP1 between entry and current price -- it will trigger instantly before trade starts.
-  entry_note must describe the ENTRY ZONE only, not a different price level.
+  BUY pullback: current=62000, entry=61150, TP1 must be ABOVE 62000.
+  SELL pullback: current=60000, entry=60850, TP1 must be BELOW 60000.
+  NEVER set TP1 between entry and current price.
+  entry_note must describe the ENTRY ZONE only.
 
 You MUST give BUY or SELL. No excuses.
 
@@ -410,33 +523,27 @@ JSON only, no markdown:
         sl      = float(signal["sl"])
         sl_dist = abs(entry - sl)
 
-        # Reject if SL too wide (wrong zone picked)
         if sl_dist > 500:
             print(f"  [REJECT] SL dist={sl_dist:.0f} pts — bad zone, skip")
             return None
 
-        # Reject PULLBACK if TP1 is between entry and current price (will trigger instantly)
         etype = signal.get("entry_type", "MARKET")
         tp1   = float(signal["tp1"])
         if etype == "PULLBACK":
             sig = signal["signal"]
             if sig == "BUY" and tp1 <= price:
-                print(f"  [REJECT] PULLBACK BUY TP1={tp1:,.0f} is below current price {price:,.0f} — would trigger instantly")
-                # Auto-fix: shift TP1 and TP2 above current price
+                print(f"  [FIX] PULLBACK BUY TP1 below price — adjusting")
                 signal["tp1"] = round(price + sl_dist * 2, -1)
                 signal["tp2"] = round(price + sl_dist * 4, -1)
-                print(f"  [FIX] TP1 -> {signal['tp1']:,.0f}  TP2 -> {signal['tp2']:,.0f}")
             elif sig == "SELL" and tp1 >= price:
-                print(f"  [REJECT] PULLBACK SELL TP1={tp1:,.0f} is above current price {price:,.0f} — would trigger instantly")
+                print(f"  [FIX] PULLBACK SELL TP1 above price — adjusting")
                 signal["tp1"] = round(price - sl_dist * 2, -1)
                 signal["tp2"] = round(price - sl_dist * 4, -1)
-                print(f"  [FIX] TP1 -> {signal['tp1']:,.0f}  TP2 -> {signal['tp2']:,.0f}")
 
-        # Reject if min confidence not met
         conf = signal.get("confidence","LOW")
         conf_rank = {"HIGH":3,"MEDIUM":2,"LOW":1}
         if conf_rank.get(conf,1) < conf_rank.get(min_conf,1):
-            print(f"  [SKIP] Confidence {conf} < required {min_conf} after {trade_stats['consecutive_sl']} losses")
+            print(f"  [SKIP] Confidence {conf} < required {min_conf}")
             return None
 
         tp2_dist = abs(entry - float(signal["tp2"]))
@@ -449,115 +556,42 @@ JSON only, no markdown:
         print(f"  [ERROR] Claude signal: {e}")
         return None
 
-# ─── CLAUDE: TRADE UPDATE ─────────────────────────────────────────────────────
-def claude_trade_update(ticker, data) -> str:
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    price  = ticker["price"]
-    df4=data["4h"][0]; df1=data["1h"][0]
-    sh4,sl4=find_swing_points(df4,5); sh1,sl1=find_swing_points(df1,5)
-    c4=draw_smc_chart(df4,"4H",detect_order_blocks(df4,4),detect_fvgs(df4,4),detect_bos_choch(df4),sh4[-6:],sl4[-6:],price)
-    c1=draw_smc_chart(df1,"1H",detect_order_blocks(df1,4),detect_fvgs(df1,4),detect_bos_choch(df1),sh1[-6:],sl1[-6:],price)
-    t = active_trade
-    prompt = f"""Active {t['signal']} BTCUSDT trade.
-Entry:{t['entry']:,.0f} | SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}
-TP1 hit:{t['tp1_hit']} | Price:{price:,.2f} | Session:{get_session()}
-Scans active: {t['scan_count']}
-
-Reply ONE word:
-HOLD — structure intact, trade valid
-WAIT — minor pullback, no action
-CLOSE — structure broken against trade, exit now
-NO_VOLUME — low volume/flat market, exit"""
-    try:
-        msg = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=15,
-            messages=[{"role":"user","content":[
-                {"type":"image","source":{"type":"base64","media_type":"image/png","data":c4}},
-                {"type":"image","source":{"type":"base64","media_type":"image/png","data":c1}},
-                {"type":"text","text":prompt},
-            ]}]
-        )
-        return msg.content[0].text.strip().upper().split()[0]
-    except Exception as e:
-        print(f"  [ERROR] Claude update: {e}"); return "WAIT"
-
-# ─── PRICE STATUS CHECK ───────────────────────────────────────────────────────
-def check_price_status(price: float, df_5m=None) -> str:
-    t = active_trade
-    if not t["signal"]: return "NONE"
-    sig,sl,tp1,tp2,entry = t["signal"],t["sl"],t["tp1"],t["tp2"],t["entry"]
-
-    # ── PULLBACK: not yet entered ─────────────────────────────────────────────
-    if not t["entry_hit"]:
-        # SL hit before entry = setup invalidated
-        if (sig=="BUY" and price<=sl) or (sig=="SELL" and price>=sl): return "SETUP_INVALID"
-        # Price reached entry zone
-        tol = abs(entry - sl) * 0.3  # 30% of SL distance as tolerance
-        if (sig=="BUY" and price<=entry+tol) or (sig=="SELL" and price>=entry-tol):
-            active_trade["entry_hit"] = True
-            print(f"  [ENTRY HIT] {sig} entry {entry:,.0f} reached (price={price:,.2f})")
-        else:
-            return "WAITING_ENTRY"
-
-    # ── Entry hit — check stop hunt first ─────────────────────────────────────
-    sl_breach = (sig=="SELL" and price>=sl) or (sig=="BUY" and price<=sl)
-    if sl_breach and df_5m is not None and not t["sl_wicked"]:
-        if detect_stop_hunt(df_5m):
-            active_trade["sl_wicked"] = True
-            trade_stats["stop_hunts"] += 1
-            return "STOP_HUNT"   # SL wicked, likely stop hunt — hold for now
-
-    # ── Normal SL / TP checks ─────────────────────────────────────────────────
-    if (sig=="SELL" and price>=sl) or (sig=="BUY" and price<=sl): return "SL_HIT"
-    if (sig=="SELL" and price<=tp2) or (sig=="BUY" and price>=tp2): return "TP2_HIT"
-    if not t["tp1_hit"]:
-        if (sig=="SELL" and price<=tp1) or (sig=="BUY" and price>=tp1): return "TP1_HIT"
-    return "RUNNING"
-
 # ─── AFTER-SL LOGIC ──────────────────────────────────────────────────────────
 def handle_sl_hit(ticker, data):
-    """Adaptive logic after SL hit — decides whether to re-enter or wait"""
     trade_stats["total_sl"] += 1
     trade_stats["consecutive_sl"] += 1
     n = trade_stats["consecutive_sl"]
-
     print(f"  [SL HIT] Consecutive SLs: {n}")
 
     if n >= 3:
-        # 3+ consecutive losses — pause 2 scans, notify, wait for STRONG pattern
         trade_stats["cooldown_scans"] = 2
-        msg = (
+        send_telegram(
             f"🛑 <b>SL HIT</b>\n\n"
             f"⚠️ <b>3 consecutive losses — pausing</b>\n"
-            f"Waiting 2 scans for clean pattern to form\n"
-            f"Will only enter HIGH confidence setups\n\n"
+            f"Waiting 2 scans for clean pattern\n"
+            f"Only HIGH confidence setups next\n\n"
             f"<i>— CLEXER V4 —</i>"
         )
-        send_telegram(msg)
-        print("  [COOLDOWN] 2 scans — too many losses")
         return
 
     if n == 2:
-        # 2 consecutive losses — pause 1 scan, require HIGH confidence
         trade_stats["cooldown_scans"] = 1
-        msg = (
+        send_telegram(
             f"🛑 <b>SL HIT</b>  ({n} in a row)\n\n"
-            f"⏸ Waiting 1 scan for structure to reset\n"
-            f"Next signal must be HIGH confidence only\n\n"
+            f"⏸ Waiting 1 scan for structure reset\n"
+            f"Next signal must be HIGH confidence\n\n"
             f"<i>— CLEXER V4 —</i>"
         )
-        send_telegram(msg)
-        print("  [COOLDOWN] 1 scan — 2 losses in a row")
         return
 
-    # 1st loss — look for new signal but with raised bar
+    # 1st loss — find new signal with full image analysis
     send_telegram(fmt_update("SL_HIT"))
     signal = analyze_with_claude(ticker, data)
     if signal:
         send_telegram(fmt_signal(signal))
         set_trade(signal)
     else:
-        print("  No high-quality signal found after SL — waiting next scan")
+        print("  No high-quality signal after SL — waiting next scan")
 
 # ─── TELEGRAM ─────────────────────────────────────────────────────────────────
 def send_telegram(text: str) -> bool:
@@ -601,21 +635,25 @@ def fmt_signal(s: dict) -> str:
           f"⚠️ <i>Not financial advice</i>"
     )
 
-def fmt_update(status: str) -> str:
+def fmt_update(status: str, price: float = None) -> str:
     t = active_trade
     msgs = {
-        "SL_HIT":          "🛑 <b>SL HIT</b>\nSearching for next trade...",
-        "TP1_HIT":         f"✅ <b>TP1 HIT</b>\nSL → Breakeven ({t['entry']:,.0f})\nWaiting TP2 → <b>{t['tp2']:,.0f}</b>",
-        "TP2_HIT":         "🏆 <b>TP2 HIT — Trade Complete!</b>",
-        "STOP_HUNT":       f"⚡ <b>STOP HUNT DETECTED</b>\nSL wicked but no close through\nHolding trade — watching next candle\nSL: {t['sl']:,.0f}",
-        "SETUP_INVALID":   f"❌ <b>Setup Invalidated</b>\nPrice hit SL before reaching entry\nCancelling signal — finding new setup",
-        "ENTRY_MISSED":    f"🚀 <b>Entry Zone Missed</b>\nPrice blasted past entry {t['entry']:,.0f} without pullback\nCancelling — will find new entry from current level",
-        "WAITING_ENTRY":   f"⏳ <b>Waiting for Pullback</b>\nEntry zone: <b>{t['entry']:,.0f}</b>\nPrice hasn't reached zone yet",
-        "HOLD":            "📊 <b>HOLD</b> — Structure intact",
-        "WAIT":            "⏳ <b>WAIT</b> — Trade running",
-        "CLOSE":           "⚠️ <b>CLOSE NOW</b> — Structure broken",
-        "NO_VOLUME":       "📉 <b>CLOSE</b> — No volume / flat market",
-        "COOLDOWN":        f"⏸ <b>Cooling Down</b>\nWaiting for clean pattern\nNext: {trade_stats['cooldown_scans']} scan(s) remaining",
+        "SL_HIT":        "🛑 <b>SL HIT</b>\nSearching for next trade...",
+        "TP1_HIT":       f"✅ <b>TP1 HIT</b>\nSL → Breakeven ({t['entry']:,.0f})\nWaiting TP2 → <b>{t['tp2']:,.0f}</b>",
+        "TP2_HIT":       "🏆 <b>TP2 HIT — Trade Complete!</b>",
+        "STOP_HUNT":     f"⚡ <b>STOP HUNT DETECTED</b>\nSL wicked but no close through\nHolding trade\nSL: {t['sl']:,.0f}",
+        "SETUP_INVALID": f"❌ <b>Setup Invalidated</b>\nPrice hit SL before reaching entry\nCancelling — finding new setup",
+        "ENTRY_MISSED":  f"🚀 <b>Entry Zone Missed</b>\nPrice blasted past entry {t['entry']:,.0f}\nCancelling — finding new entry",
+        "WAITING_ENTRY": (
+            f"⏳ <b>Waiting for Pullback</b>\n"
+            f"Entry zone: <b>{t['entry']:,.0f}</b>\n"
+            + (f"Current price: <b>{price:,.0f}</b>\nDistance: <b>{abs((price or 0) - t['entry']):,.0f} pts</b>" if price else "")
+        ),
+        "HOLD":          "📊 <b>HOLD</b> — Structure intact",
+        "WAIT":          "⏳ <b>WAIT</b> — Trade running",
+        "CLOSE":         "⚠️ <b>CLOSE NOW</b> — Structure broken",
+        "NO_VOLUME":     "📉 <b>CLOSE</b> — No volume / flat market",
+        "COOLDOWN":      f"⏸ <b>Cooling Down</b>\nWaiting for clean pattern\nNext: {trade_stats['cooldown_scans']} scan(s) remaining",
     }
     body = msgs.get(status, "⏳ Trade running — WAIT")
     return f"📡 <b>{SYMBOL} UPDATE</b>  {ist_str()}\n\n{body}\n\n<i>— CLEXER V4 —</i>"
@@ -640,7 +678,7 @@ COMMANDS_HELP = """🤖 <b>CLEXER V4 Commands</b>
 /settp2 58000 — Set TP2 price
 
 🤖 <b>BOT CONTROL</b>
-/signal — Force scan NOW
+/signal — Force scan (charts + analysis)
 /pause — Pause signals
 /resume — Resume signals
 /resetsl — Reset SL hit counter
@@ -649,7 +687,7 @@ COMMANDS_HELP = """🤖 <b>CLEXER V4 Commands</b>
 /help — This menu"""
 
 def handle_command(text: str, chat_id):
-    global SCAN_INTERVAL_SECONDS
+    global SCAN_INTERVAL_SECONDS, last_force_scan_time
     parts = text.strip().split()
     cmd   = parts[0].lower().split("@")[0]
 
@@ -690,9 +728,15 @@ def handle_command(text: str, chat_id):
         t=active_trade
         if not t["signal"]: send_reply(chat_id, "📭 No active trade.")
         else:
+            try:
+                tk=get_ticker(); price=tk["price"]
+                price_line=f"💵 Current: <b>{price:,.2f}</b>\n"
+            except:
+                price_line=""
             send_reply(chat_id,
                 f"📈 <b>Active Trade</b>\n\n"
                 f"{t['signal']} — {SYMBOL}\n"
+                f"{price_line}"
                 f"Entry: <b>{t['entry']:,.0f}</b> {'✅' if t['entry_hit'] else '⏳ waiting'}\n"
                 f"SL:    <b>{t['sl']:,.0f}</b>\n"
                 f"TP1:   <b>{t['tp1']:,.0f}</b> {'✅ HIT' if t['tp1_hit'] else '⏳'}\n"
@@ -769,7 +813,8 @@ def handle_command(text: str, chat_id):
         else:
             try:
                 v=float(parts[1].replace(",","")); active_trade["tp1"]=v
-                send_telegram(f"🔄 <b>TP1→{v:,.0f}</b>\n\n<i>— CLEXER V4 —</i>"); send_reply(chat_id, f"✅ TP1={v:,.0f}")
+                send_telegram(f"🔄 <b>TP1→{v:,.0f}</b>\n\n<i>— CLEXER V4 —</i>")
+                send_reply(chat_id, f"✅ TP1={v:,.0f}")
             except: send_reply(chat_id, "❌ /settp1 60000")
 
     elif cmd == "/settp2":
@@ -778,12 +823,23 @@ def handle_command(text: str, chat_id):
         else:
             try:
                 v=float(parts[1].replace(",","")); active_trade["tp2"]=v
-                send_telegram(f"🔄 <b>TP2→{v:,.0f}</b>\n\n<i>— CLEXER V4 —</i>"); send_reply(chat_id, f"✅ TP2={v:,.0f}")
+                send_telegram(f"🔄 <b>TP2→{v:,.0f}</b>\n\n<i>— CLEXER V4 —</i>")
+                send_reply(chat_id, f"✅ TP2={v:,.0f}")
             except: send_reply(chat_id, "❌ /settp2 58000")
 
     elif cmd == "/signal":
-        if bot_paused.is_set(): send_reply(chat_id, "⏸ Paused. Use /resume first.")
-        else: send_reply(chat_id, "🔍 Forcing scan... ~30 seconds."); force_scan.set()
+        if bot_paused.is_set():
+            send_reply(chat_id, "⏸ Bot is paused. Use /resume first.")
+        else:
+            now = time.time()
+            elapsed = now - last_force_scan_time
+            if elapsed < 900 and last_force_scan_time > 0:  # 15 min cooldown
+                mins_left = int((900 - elapsed) / 60)
+                send_reply(chat_id, f"⏳ Cooldown: {mins_left} min before next /signal\n(prevents API waste)")
+            else:
+                last_force_scan_time = now
+                send_reply(chat_id, "🔍 Forcing scan... charts + analysis incoming (~30s)")
+                force_scan.set()
 
     elif cmd == "/pause":
         bot_paused.set()
@@ -798,7 +854,7 @@ def handle_command(text: str, chat_id):
     elif cmd == "/resetsl":
         trade_stats["consecutive_sl"] = 0
         trade_stats["cooldown_scans"] = 0
-        send_reply(chat_id, "✅ SL counter reset. Bot will accept any confidence level.")
+        send_reply(chat_id, "✅ SL counter reset. Any confidence accepted.")
 
     elif cmd == "/setinterval":
         if len(parts)<2: send_reply(chat_id, f"Current: {SCAN_INTERVAL_SECONDS//3600}h\nUsage: /setinterval 2")
@@ -847,6 +903,7 @@ def main():
         f"━━━━━━━━━━━━━━━\n"
         f"📊 Weekly + 4H + 1H + 5M Vision\n"
         f"🛡 Adaptive: Stop Hunt / Missed Entry / Cooldown\n"
+        f"💡 Smart API: price-only checks when trade is running\n"
         f"⏰ London + NY sessions (IST)\n"
         f"💬 /help for commands\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -868,103 +925,124 @@ def main():
             if not forced and not is_trading_hours():
                 print(f"  [WAIT] {get_session()} — not London/NY"); time.sleep(SCAN_INTERVAL_SECONDS); continue
 
-            # Cooldown check
             if trade_stats["cooldown_scans"] > 0 and not forced:
                 trade_stats["cooldown_scans"] -= 1
                 remaining = trade_stats["cooldown_scans"]
-                print(f"  [COOLDOWN] {remaining} scans remaining — waiting for clean pattern")
+                print(f"  [COOLDOWN] {remaining} scans remaining")
                 if remaining == 0:
                     send_telegram("🔍 <b>Cooldown over — scanning for new setup</b>\n\n<i>— CLEXER V4 —</i>")
                 time.sleep(SCAN_INTERVAL_SECONDS); continue
 
-            # Fetch data
-            print("  Fetching candles...")
-            data = {}
-            for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
-                data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
-                print(f"    {key}: {len(data[key][0])} candles")
-
-            ticker=get_ticker(); price=ticker["price"]
+            # ── Always get price first (cheap) ───────────────────────────────
+            ticker = get_ticker()
+            price  = ticker["price"]
             print(f"  Price: {price:,.2f} | {ticker['change']:+.2f}%")
-            df_5m=data["5m"][0]
 
-            # ── Active trade ─────────────────────────────────────────────────
+            # ── Active trade: price-only check first ──────────────────────────
             if active_trade["signal"]:
                 active_trade["scan_count"] += 1
+                t = active_trade
 
-                # Check if PULLBACK entry was missed (price blasted past TP1)
+                # ── Fetch minimal candles for stop hunt + invalidation checks ─
+                print("  Fetching 5m + 4h (lightweight)...")
+                df_5m = get_candles("5m", 50)
+                df_4h = get_candles("4h", 10)   # only 10 candles needed
+
+                # Check PULLBACK missed
                 if detect_entry_missed(price):
                     trade_stats["missed_entries"] += 1
-                    print(f"  [ENTRY MISSED] Signal cancelled — finding new entry")
+                    print(f"  [ENTRY MISSED] Cancelling — finding new entry via full scan")
                     send_telegram(fmt_update("ENTRY_MISSED"))
                     reset_trade()
+                    # Full scan needed for new signal
+                    print("  Fetching all candles for new signal...")
+                    data = {}
+                    for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
+                        data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
                     signal=analyze_with_claude(ticker,data)
                     if signal: send_telegram(fmt_signal(signal)); set_trade(signal)
                     time.sleep(SCAN_INTERVAL_SECONDS); continue
 
-                # Check if setup was invalidated before entry
-                if not active_trade["entry_hit"] and detect_entry_invalidated(price, data["4h"][0]):
+                # Check setup invalidated before entry
+                if not t["entry_hit"] and detect_entry_invalidated(price, df_4h):
                     print(f"  [SETUP INVALID] Price moved against signal before entry")
                     send_telegram(fmt_update("SETUP_INVALID"))
                     reset_trade()
+                    data = {}
+                    for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
+                        data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
                     signal=analyze_with_claude(ticker,data)
                     if signal: send_telegram(fmt_signal(signal)); set_trade(signal)
                     time.sleep(SCAN_INTERVAL_SECONDS); continue
 
-                status=check_price_status(price, df_5m)
-                print(f"  Trade: {active_trade['signal']} | Status: {status}")
+                status = check_price_status(price, df_5m)
+                print(f"  Trade: {t['signal']} | Status: {status}")
 
-                if status == "STOP_HUNT":
-                    send_telegram(fmt_update("STOP_HUNT"))
-                    # Don't exit — it's a stop hunt. SL_WICKED flag is now set.
-                    # Next scan if price truly closes through SL = real SL hit
-
-                elif status == "TP1_HIT":
-                    active_trade["tp1_hit"]=True
-                    active_trade["sl"]=active_trade["entry"]   # breakeven
-                    trade_stats["total_tp1"] += 1
-                    trade_stats["consecutive_sl"] = 0   # reset on any TP hit
-                    send_telegram(fmt_update("TP1_HIT"))
-
-                elif status == "TP2_HIT":
+                # ── EVENTS that need full Claude analysis ─────────────────────
+                if status == "TP2_HIT":
                     trade_stats["total_tp2"] += 1
                     trade_stats["consecutive_sl"] = 0
                     send_telegram(fmt_update("TP2_HIT"))
                     reset_trade()
+                    print("  TP2 hit — full scan for next trade")
+                    data = {}
+                    for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
+                        data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
                     signal=analyze_with_claude(ticker,data)
                     if signal: send_telegram(fmt_signal(signal)); set_trade(signal)
 
                 elif status == "SL_HIT":
                     reset_trade()
-                    handle_sl_hit(ticker,data)
+                    data = {}
+                    for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
+                        data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
+                    handle_sl_hit(ticker, data)
+
+                # ── EVENTS that are just price notifications (no API) ─────────
+                elif status == "STOP_HUNT":
+                    send_telegram(fmt_update("STOP_HUNT"))
+
+                elif status == "TP1_HIT":
+                    active_trade["tp1_hit"] = True
+                    active_trade["sl"] = active_trade["entry"]   # breakeven
+                    trade_stats["total_tp1"] += 1
+                    trade_stats["consecutive_sl"] = 0
+                    send_telegram(fmt_update("TP1_HIT"))
 
                 elif status == "WAITING_ENTRY":
-                    t=active_trade
-                    dist=abs(price-t["entry"])
+                    dist = abs(price - t["entry"])
                     print(f"  Pullback pending — {dist:.0f} pts from entry {t['entry']:,.0f}")
-                    # Only notify channel every 2 scans to avoid spam
-                    if t["scan_count"] % 2 == 0:
-                        send_telegram(fmt_update("WAITING_ENTRY"))
+                    # Always notify on forced scan, else every 2 scans
+                    if forced or t["scan_count"] % 2 == 0:
+                        send_telegram(fmt_update("WAITING_ENTRY", price))
 
-                else:   # RUNNING
-                    print("  Getting Claude update...")
-                    cs=claude_trade_update(ticker,data)
-                    print(f"  Claude: {cs}")
-                    send_telegram(fmt_update(cs))
-                    if cs in ("CLOSE","NO_VOLUME"):
-                        reset_trade()
-                        signal=analyze_with_claude(ticker,data)
-                        if signal: send_telegram(fmt_signal(signal)); set_trade(signal)
+                elif status == "RUNNING":
+                    # ── PRICE ONLY — no images, no Claude API cost ────────────
+                    print("  [PRICE ONLY] Trade running — no API call")
+                    advice_msg = price_only_advice(price)
+                    send_telegram(advice_msg)
 
-            # ── No active trade ───────────────────────────────────────────────
+            # ── No active trade — full image analysis needed ──────────────────
             else:
-                print("  No active trade. Analyzing...")
+                print("  No active trade. Full scan...")
+                data = {}
+                for key,iv,lim,lb in [("weekly","1w",52,5),("4h","4h",200,5),("1h","1h",100,5),("5m","5m",50,3)]:
+                    data[key]=(get_candles(iv,lim),lb); time.sleep(0.3)
+                    print(f"    {key}: {len(data[key][0])} candles")
                 signal=analyze_with_claude(ticker,data)
                 if signal:
                     send_telegram(fmt_signal(signal)); set_trade(signal)
                     print(f"  [SENT] {signal['signal']} R:R:{signal.get('rr','?')} {signal.get('confidence','?')}")
                 else:
                     print("  No signal found — waiting next scan")
+                    send_telegram(
+                        f"🔍 <b>Scan Complete — No Signal</b>\n\n"
+                        f"💵 Price: <b>{price:,.2f}</b> ({ticker['change']:+.2f}%)\n"
+                        f"📍 Session: {get_session()}\n"
+                        f"🕐 {ist_str()}\n\n"
+                        f"No clean SMC setup found. Waiting next scan.\n\n"
+                        f"<i>— CLEXER V4 —</i>"
+                    )
 
         except KeyboardInterrupt:
             print("\n[BOT] Stopped.")
