@@ -1,10 +1,11 @@
 """
-CLEXER Signal Bot V6.0 — TradingView MCP Primary + Binance Fallback
+CLEXER Signal Bot V6.0 — TradingView Bridge Primary + Binance Fallback
 ─────────────────────────────────────────────────────────────────────
 DATA SOURCES (priority order):
-  PRIMARY   → TradingView Desktop (your laptop) via Chrome DevTools Protocol
-              Connects to: ws://localhost:9222  (--remote-debugging-port=9222)
-              Pulled into Railway via MCP bridge (TV_BRIDGE_URL env var)
+  PRIMARY   → TradingView Desktop (your laptop) via tv_bridge.py
+              Your laptop runs TradingView.exe --remote-debugging-port=9222
+              tv_bridge.py reads that data and serves it to Railway via HTTP
+              Set TV_BRIDGE_URL env var on Railway to your ngrok URL
   FALLBACK  → Binance REST API (free, no key needed)
 
 SCAN TIERS:
@@ -13,35 +14,32 @@ SCAN TIERS:
   Every 4 hours → Claude: claude-opus-4-6 SMC analysis + trade validation
   Every 30 min  → News: 8 RSS sources + Claude haiku + article images
 
-NEW IN V6.0:
-  ✅ TradingView MCP as primary data source (OHLCV from your actual TV charts)
-  ✅ Binance as automatic fallback when TV offline
-  ✅ /tvstatus — check if laptop + TradingView is connected and alive
-  ✅ Data source shown in every signal/update message
-  ✅ TV bridge health tracked — auto-switches source seamlessly
-  ✅ All V5.0 fixes retained
-
-ARCHITECTURE:
-  Your Laptop:  TradingView.exe --remote-debugging-port=9222
-                  └── tv_bridge.py (lightweight FastAPI server)
-                         sends OHLCV JSON to Railway on request
-  Railway Bot:  clexer_v6.py
-                  └── tries TV_BRIDGE_URL first
-                  └── falls back to Binance if bridge unreachable
-
 SETUP:
-  1. On your laptop: pip install fastapi uvicorn websockets requests
-     Run: python tv_bridge.py  (keep it running)
+  YOUR LAPTOP:
+    1. Open TradingView with debug port:
+       "C:\...\TradingView.exe" --remote-debugging-port=9222
+    2. Run bridge:
+       pip install fastapi uvicorn websockets requests
+       python tv_bridge.py
+    3. Expose via ngrok:
+       ngrok http 8765
+       Copy the https://xxxx.ngrok-free.app URL
 
-  2. On Railway:
-     pip install anthropic requests pandas numpy matplotlib feedparser beautifulsoup4 lxml
-     env vars:
-       ANTHROPIC_API_KEY=...
-       TELEGRAM_BOT_TOKEN=...
-       TELEGRAM_CHANNEL_ID=...
-       ADMIN_CHAT_ID=...
-       TV_BRIDGE_URL=http://<your-laptop-ip-or-ngrok>:8765
-       (leave TV_BRIDGE_URL empty to use Binance-only mode)
+  RAILWAY:
+    pip install anthropic requests pandas numpy matplotlib feedparser beautifulsoup4 lxml
+    ENV VARS:
+      ANTHROPIC_API_KEY=...
+      TELEGRAM_BOT_TOKEN=...
+      TELEGRAM_CHANNEL_ID=...
+      ADMIN_CHAT_ID=...
+      TV_BRIDGE_URL=https://xxxx.ngrok-free.app   ← your ngrok URL
+      (leave TV_BRIDGE_URL empty to use Binance-only mode)
+
+COMMANDS:
+  /tvstatus   — Check if your laptop + TradingView is connected and alive
+  /status     — Full bot status
+  /signal     — Force scan now
+  /help       — All commands
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
@@ -73,9 +71,9 @@ TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 
-# TradingView Bridge — your laptop's FastAPI server
+# TradingView Bridge — your laptop's FastAPI server (tv_bridge.py)
 # Set to empty string "" to run in Binance-only mode
-TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "")   # e.g. http://192.168.1.5:8765
+TV_BRIDGE_URL = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 60       # 1 min  — entry/SL/TP touch
@@ -105,14 +103,16 @@ NEWS_SOURCES = [
 
 # ─── TV BRIDGE STATE ──────────────────────────────────────────────────────────
 tv_bridge_state = {
-    "online":        False,
-    "last_seen":     0,        # epoch seconds
-    "last_check":    0,
-    "fail_count":    0,
-    "source":        "BINANCE",  # "TRADINGVIEW" or "BINANCE"
-    "tv_version":    "",
-    "tv_symbol":     "",
-    "check_interval": 60,      # seconds between health pings
+    "online":          False,
+    "cdp_ok":          False,      # TradingView actually reachable inside bridge
+    "last_seen":       0,
+    "last_check":      0,
+    "fail_count":      0,
+    "source":          "BINANCE",
+    "tv_version":      "",
+    "tv_symbol":       "",
+    "cached_intervals": [],
+    "check_interval":  60,
 }
 
 # ─── TIME HELPERS ─────────────────────────────────────────────────────────────
@@ -222,10 +222,7 @@ def set_trade(s: dict):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def tv_ping() -> dict | None:
-    """
-    Ping the TV bridge health endpoint.
-    Returns status dict or None if unreachable.
-    """
+    """Ping the TV bridge /health endpoint. Returns status dict or None."""
     if not TV_BRIDGE_URL:
         return None
     try:
@@ -243,31 +240,26 @@ def tv_update_state():
     tv_bridge_state["last_check"] = now
 
     if result:
-        tv_bridge_state["online"]     = True
-        tv_bridge_state["last_seen"]  = now
-        tv_bridge_state["fail_count"] = 0
-        tv_bridge_state["source"]     = "TRADINGVIEW"
-        tv_bridge_state["tv_version"] = result.get("tv_version", "")
-        tv_bridge_state["tv_symbol"]  = result.get("symbol", "")
+        tv_bridge_state["online"]           = True
+        tv_bridge_state["last_seen"]        = now
+        tv_bridge_state["fail_count"]       = 0
+        tv_bridge_state["source"]           = "TRADINGVIEW"
+        tv_bridge_state["tv_version"]       = result.get("tv_version", "")
+        tv_bridge_state["tv_symbol"]        = result.get("symbol", "")
+        tv_bridge_state["cdp_ok"]           = result.get("cdp_connected", False)
+        tv_bridge_state["cached_intervals"] = result.get("cached_intervals", [])
         return True
     else:
         tv_bridge_state["fail_count"] += 1
-        # Mark offline after 2 consecutive failures
         if tv_bridge_state["fail_count"] >= 2:
-            tv_bridge_state["online"]  = False
-            tv_bridge_state["source"]  = "BINANCE"
+            tv_bridge_state["online"] = False
+            tv_bridge_state["source"] = "BINANCE"
         return False
 
 def tv_get_candles(interval: str, limit: int) -> pd.DataFrame | None:
-    """
-    Fetch OHLCV from TV bridge.
-    The bridge reads TradingView's chart data via CDP (Chrome DevTools Protocol).
-    interval: 'W', '4h', '1h', '5m'
-    Returns DataFrame or None on failure.
-    """
+    """Fetch OHLCV from TV bridge."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
         return None
-    # Map our internal keys to TV bridge interval format
     tv_map = {"weekly": "W", "4h": "4H", "1h": "1H", "5m": "5"}
     tv_interval = tv_map.get(interval, interval)
     try:
@@ -283,12 +275,12 @@ def tv_get_candles(interval: str, limit: int) -> pd.DataFrame | None:
             return None
         rows = [
             {
-                "time":  datetime.fromtimestamp(c["t"], tz=timezone.utc),
+                "time":  datetime.fromtimestamp(c["t"] / 1000 if c["t"] > 1e10 else c["t"], tz=timezone.utc),
                 "open":  float(c["o"]),
                 "high":  float(c["h"]),
                 "low":   float(c["l"]),
                 "close": float(c["c"]),
-                "vol":   float(c["v"]),
+                "vol":   float(c.get("v", 0)),
             }
             for c in data["candles"]
         ]
@@ -300,21 +292,23 @@ def tv_get_candles(interval: str, limit: int) -> pd.DataFrame | None:
         return None
 
 def tv_get_ticker() -> dict | None:
-    """Fetch current price/volume from TV bridge."""
+    """Fetch current price from TV bridge."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
         return None
     try:
         r = requests.get(f"{TV_BRIDGE_URL}/ticker", params={"symbol": SYMBOL}, timeout=8)
         if r.status_code == 200:
             d = r.json()
-            return {
-                "price":  float(d["price"]),
-                "change": float(d.get("change_pct", 0)),
-                "volume": float(d.get("volume", 0)),
-                "high24": float(d.get("high24", d["price"])),
-                "low24":  float(d.get("low24",  d["price"])),
-                "source": "TRADINGVIEW",
-            }
+            price = float(d.get("price", 0))
+            if price > 0:
+                return {
+                    "price":  price,
+                    "change": float(d.get("change_pct", 0)),
+                    "volume": float(d.get("volume", 0)),
+                    "high24": float(d.get("high24", price)),
+                    "low24":  float(d.get("low24",  price)),
+                    "source": "TRADINGVIEW",
+                }
     except Exception as e:
         print(f"      [TV ticker] {e}")
     return None
@@ -324,7 +318,6 @@ def tv_get_ticker() -> dict | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def binance_get_candles(interval: str, limit: int) -> pd.DataFrame:
-    """Map our internal TF keys to Binance interval strings."""
     iv_map = {"weekly": "1w", "4h": "4h", "1h": "1h", "5m": "5m"}
     iv = iv_map.get(interval, interval)
     r = requests.get(
@@ -366,17 +359,13 @@ def binance_get_ticker() -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_candles(interval: str, limit: int) -> pd.DataFrame:
-    """
-    Try TradingView bridge first, fall back to Binance.
-    interval: 'weekly' | '4h' | '1h' | '5m'
-    """
+    """Try TradingView bridge first, fall back to Binance."""
     if TV_BRIDGE_URL:
         tv_update_state()
         if tv_bridge_state["online"]:
             df = tv_get_candles(interval, limit)
             if df is not None and len(df) >= 2:
                 return df
-            # TV returned bad data — mark as failed this call
             print(f"      [TV→BINANCE] Falling back for {interval}")
     return binance_get_candles(interval, limit)
 
@@ -391,7 +380,7 @@ def get_ticker() -> dict:
     return binance_get_ticker()
 
 def get_price_range_since(minutes: int) -> dict:
-    """Tick-perfect high/low via Binance aggTrades (5-min chunks)."""
+    """Tick-perfect high/low via Binance aggTrades."""
     since_ms    = int((time.time() - minutes * 60) * 1000)
     now_ms      = int(time.time() * 1000)
     all_highs, all_lows = [], []
@@ -422,7 +411,6 @@ def get_price_range_since(minutes: int) -> dict:
     return {"high": max(all_highs), "low": min(all_lows)}
 
 def get_current_source() -> str:
-    """Return current data source label."""
     if TV_BRIDGE_URL and tv_bridge_state["online"]:
         return "📺 TradingView"
     return "🅱️ Binance"
@@ -646,7 +634,7 @@ def build_smc_summary(data: dict, ticker: dict) -> str:
         lines.append("")
     return "\n".join(lines)
 
-# ─── PRICE ADVICE (zero API cost) ─────────────────────────────────────────────
+# ─── PRICE ADVICE ─────────────────────────────────────────────────────────────
 def price_only_advice(price: float) -> str:
     t = active_trade
     sig = t["signal"]; entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
@@ -711,10 +699,7 @@ def required_confidence() -> str:
 
 # ─── FETCH ALL DATA ───────────────────────────────────────────────────────────
 def fetch_all_data() -> dict:
-    """
-    Fetch all 4 timeframes using unified layer (TV → Binance fallback).
-    Returns dict: tf_key → (DataFrame, lookback)
-    """
+    """Fetch all 4 timeframes using unified layer (TV → Binance fallback)."""
     data = {}
     specs = [
         ("weekly", 52, 5),
@@ -828,18 +813,14 @@ SHORT requires:
 Return WAIT ONLY IF one of these hard blocks applies:
 
   HARD BLOCK A: ALL THREE timeframes conflict simultaneously
-    → 4H says one direction AND 1H actively contradicts AND weekly is also unclear/opposite
-
   HARD BLOCK B: No OB or FVG exists anywhere on 4H or 1H within 1000 pts of current price
-
   HARD BLOCK C: 4H structure is completely flat/neutral
-    → Impossible to determine HH/HL or LH/LL — genuinely no swing structure
 
   DO NOT return WAIT for:
-    ❌ Minor 1H lag while 4H is clear → issue signal
-    ❌ 5M noise while 4H+1H agree → issue signal
-    ❌ Weekly is neutral but 4H is clear → issue signal
-    ❌ Low volume alone → issue signal if structure is there{conf_note}{session_note}
+    ❌ Minor 1H lag while 4H is clear
+    ❌ 5M noise while 4H+1H agree
+    ❌ Weekly neutral but 4H is clear
+    ❌ Low volume alone{conf_note}{session_note}
 
 ════════════════════════════════════════
  ENTRY TYPE
@@ -901,7 +882,6 @@ Trade: {{"signal":"BUY" or "SELL","entry":<price>,"sl":<price>,"tp1":<price>,"tp
         if sig_type == "WAIT":
             reason = signal.get("reasoning", "no reason given")
             bias   = signal.get("bias", "?")
-            zone   = signal.get("entry_zone", "?")
             print(f"  [WAIT] {reason[:120]}")
             send_telegram(
                 f"🔍 <b>Scan Complete — No Signal</b>\n\n"
@@ -954,7 +934,6 @@ Trade: {{"signal":"BUY" or "SELL","entry":<price>,"sl":<price>,"tp1":<price>,"tp
                 f"⚠️ <b>Signal filtered — low confidence</b>\n\n"
                 f"{'🟢' if sig_type=='BUY' else '🔴'} Claude found: <b>{sig_type}</b> @ {entry:,.0f}\n"
                 f"Confidence: <b>{conf}</b> (required: {min_conf})\n"
-                f"Bias: {signal.get('bias','?')} | Zone: {signal.get('entry_zone','?')[:80]}\n"
                 f"📡 Source: {src}\n\n"
                 f"💭 <i>{signal.get('reasoning','')[:160]}</i>\n\n"
                 f"<i>Use /resetsl to lower the bar.\n— CLEXER V6.0 —</i>"
@@ -1411,112 +1390,175 @@ def check_news(force: bool = False):
     print(f"  [NEWS] Posted {posted} articles")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  /tvstatus COMMAND — Check laptop + TradingView connection
+#  /tvstatus — Full laptop + TradingView connection check
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def cmd_tvstatus(chat_id):
     """
-    Full diagnostic of the TV bridge connection.
-    Shows: bridge reachable, TV running, last data time, current source.
+    Checks every layer of the connection:
+      1. Is TV_BRIDGE_URL set?
+      2. Is tv_bridge.py reachable (laptop online)?
+      3. Is TradingView running with CDP port 9222?
+      4. Is price data flowing?
+      5. Are candles cached?
     """
+
+    # ── Layer 0: Is TV_BRIDGE_URL configured? ─────────────────────────────────
     if not TV_BRIDGE_URL:
         send_reply(chat_id,
             "📺 <b>TradingView Status</b>\n\n"
-            "❌ <b>TV_BRIDGE_URL not configured</b>\n\n"
-            "The bot is running in <b>Binance-only mode</b>.\n\n"
-            "To enable TradingView:\n"
-            "1. Run <code>tv_bridge.py</code> on your laptop\n"
-            "2. Set <code>TV_BRIDGE_URL=http://your-laptop-ip:8765</code>\n"
-            "3. Restart the bot on Railway\n\n"
-            "<i>— CLEXER V6.0 —</i>"
+            "❌ <b>TV_BRIDGE_URL not set in Railway</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "To connect your laptop:\n\n"
+            "1️⃣ Run TradingView with debug port:\n"
+            "<code>\"C:\\...\\TradingView.exe\" --remote-debugging-port=9222</code>\n\n"
+            "2️⃣ Run the bridge on your laptop:\n"
+            "<code>python tv_bridge.py</code>\n\n"
+            "3️⃣ Expose via ngrok:\n"
+            "<code>ngrok http 8765</code>\n\n"
+            "4️⃣ Add to Railway env vars:\n"
+            "<code>TV_BRIDGE_URL=https://xxxx.ngrok-free.app</code>\n\n"
+            "5️⃣ Redeploy Railway\n\n"
+            "✅ Bot is running fine on <b>Binance</b> in the meantime.\n\n"
+            f"🕐 {ist_str()}\n<i>— CLEXER V6.0 —</i>"
         )
         return
 
-    send_reply(chat_id, "🔍 Checking TradingView connection... (~5s)")
+    # ── Checking message ───────────────────────────────────────────────────────
+    send_reply(chat_id, f"🔍 Checking connection...\n<code>{TV_BRIDGE_URL}</code>")
 
-    result = tv_ping()
-    now    = time.time()
+    now = time.time()
 
-    if result:
-        tv_bridge_state["online"]    = True
-        tv_bridge_state["last_seen"] = now
-        tv_bridge_state["source"]    = "TRADINGVIEW"
+    # ── Layer 1: Ping the bridge /health ──────────────────────────────────────
+    health = tv_ping()
 
-        # Try getting a live price to confirm data flows
-        price_ok = False
-        price_val = 0.0
-        try:
-            tk = tv_get_ticker()
-            if tk:
-                price_ok  = True
-                price_val = tk["price"]
-        except:
-            pass
-
-        # Try getting candles
-        candles_ok = False
-        candles_count = 0
-        try:
-            df = tv_get_candles("1h", 10)
-            if df is not None and len(df) > 0:
-                candles_ok    = True
-                candles_count = len(df)
-        except:
-            pass
-
-        uptime   = result.get("uptime_seconds", 0)
-        tv_sym   = result.get("symbol", "unknown")
-        tv_build = result.get("tv_version", "unknown")
-
-        send_reply(chat_id,
-            f"📺 <b>TradingView Status</b>\n\n"
-            f"🟢 <b>Bridge: ONLINE</b>\n"
-            f"🟢 <b>TradingView: CONNECTED</b>\n"
-            f"{'🟢' if price_ok else '🟡'} <b>Price feed: {'LIVE' if price_ok else 'NO DATA'}</b>"
-            + (f" ({price_val:,.2f})" if price_ok else "") + "\n"
-            f"{'🟢' if candles_ok else '🟡'} <b>Candles: {'OK' if candles_ok else 'NO DATA'}</b>"
-            + (f" ({candles_count} bars on 1H)" if candles_ok else "") + "\n\n"
-            f"📊 Symbol on TV: <code>{tv_sym}</code>\n"
-            f"🖥 TV Build: <code>{tv_build}</code>\n"
-            f"⏱ Bridge uptime: <b>{uptime//60:.0f}m {uptime%60:.0f}s</b>\n"
-            f"🌐 Bridge URL: <code>{TV_BRIDGE_URL}</code>\n\n"
-            f"📡 <b>Current data source: TradingView ✅</b>\n\n"
-            f"🕐 {ist_str()}\n\n"
-            f"<i>— CLEXER V6.0 —</i>"
-        )
-    else:
-        # Bridge unreachable — show detailed troubleshooting
+    if not health:
         last_seen = tv_bridge_state.get("last_seen", 0)
-        since     = int(now - last_seen) if last_seen else None
-        fail_n    = tv_bridge_state["fail_count"]
-
-        last_seen_str = (
-            f"Last seen: <b>{since//60}m {since%60}s ago</b>"
-            if last_seen else "Never connected"
+        since_str = (
+            f"{int((now - last_seen)//60)}m {int((now - last_seen)%60)}s ago"
+            if last_seen else "never"
         )
-
         send_reply(chat_id,
             f"📺 <b>TradingView Status</b>\n\n"
-            f"🔴 <b>Bridge: OFFLINE</b>\n"
-            f"🔴 <b>TradingView: UNREACHABLE</b>\n\n"
-            f"🌐 Bridge URL: <code>{TV_BRIDGE_URL}</code>\n"
-            f"❌ Consecutive failures: <b>{fail_n}</b>\n"
-            f"⏱ {last_seen_str}\n\n"
-            f"📡 <b>Current data source: Binance (fallback) 🅱️</b>\n\n"
+            f"🔴 <b>Step 1: Bridge OFFLINE</b>\n"
+            f"   Can't reach <code>{TV_BRIDGE_URL}</code>\n"
+            f"   Last seen: {since_str}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔧 <b>Troubleshooting:</b>\n\n"
-            f"1️⃣ Is <code>tv_bridge.py</code> running on your laptop?\n"
-            f"   <code>python tv_bridge.py</code>\n\n"
-            f"2️⃣ Is TradingView open with debug port?\n"
-            f"   <code>TradingView.exe --remote-debugging-port=9222</code>\n\n"
-            f"3️⃣ Is your laptop reachable from Railway?\n"
-            f"   • Use ngrok: <code>ngrok http 8765</code>\n"
-            f"   • Then set: <code>TV_BRIDGE_URL=https://xxxx.ngrok.io</code>\n\n"
-            f"4️⃣ Check laptop firewall — allow port 8765\n\n"
-            f"✅ Bot is running fine on <b>Binance data</b> in the meantime.\n\n"
-            f"🕐 {ist_str()}\n\n"
-            f"<i>— CLEXER V6.0 —</i>"
+            f"🔧 Fix checklist:\n\n"
+            f"☐ Is <code>tv_bridge.py</code> running on your laptop?\n"
+            f"   → Open CMD and run: <code>python tv_bridge.py</code>\n\n"
+            f"☐ Is ngrok running and URL correct?\n"
+            f"   → Run: <code>ngrok http 8765</code>\n"
+            f"   → Copy the <code>https://xxxx.ngrok-free.app</code> URL\n"
+            f"   → Update <code>TV_BRIDGE_URL</code> in Railway\n\n"
+            f"☐ Did ngrok URL change? (free tier changes on restart)\n"
+            f"   → Get ngrok paid plan or use static domain\n\n"
+            f"☐ Laptop firewall blocking port 8765?\n"
+            f"   → Allow it in Windows Firewall\n\n"
+            f"📡 Currently using: <b>Binance (fallback) ✅</b>\n\n"
+            f"🕐 {ist_str()}\n<i>— CLEXER V6.0 —</i>"
         )
+        return
+
+    # ── Bridge is reachable — update state ────────────────────────────────────
+    tv_bridge_state["online"]           = True
+    tv_bridge_state["last_seen"]        = now
+    tv_bridge_state["cdp_ok"]           = health.get("cdp_connected", False)
+    tv_bridge_state["tv_version"]       = health.get("tv_version", "")
+    tv_bridge_state["cached_intervals"] = health.get("cached_intervals", [])
+
+    bridge_ok  = True
+    cdp_ok     = health.get("cdp_connected", False)
+    tv_version = health.get("tv_version", "unknown")
+    tv_symbol  = health.get("symbol", SYMBOL)
+    uptime     = health.get("uptime_seconds", 0)
+    cached_ivs = health.get("cached_intervals", [])
+
+    # ── Layer 2: Get detailed status ──────────────────────────────────────────
+    try:
+        r2 = requests.get(f"{TV_BRIDGE_URL}/status", timeout=8)
+        detail = r2.json() if r2.status_code == 200 else {}
+    except:
+        detail = {}
+
+    cdp_reachable = detail.get("cdp_reachable", cdp_ok)
+    tv_targets    = detail.get("tv_targets", 0)
+
+    # ── Layer 3: Try live price ────────────────────────────────────────────────
+    price_ok  = False
+    price_val = 0.0
+    tk = tv_get_ticker()
+    if tk and tk.get("price", 0) > 0:
+        price_ok  = True
+        price_val = tk["price"]
+
+    # ── Layer 4: Try candles ───────────────────────────────────────────────────
+    candles_ok    = False
+    candles_count = 0
+    df = tv_get_candles("1h", 10)
+    if df is not None and len(df) > 0:
+        candles_ok    = True
+        candles_count = len(df)
+
+    # ── Build status message ───────────────────────────────────────────────────
+    def tick(ok): return "🟢" if ok else "🔴"
+
+    # Determine overall status
+    if cdp_ok and price_ok and candles_ok:
+        overall = "🟢 <b>ALL SYSTEMS GO</b> — TradingView data flowing"
+        data_src = "📺 TradingView ✅"
+    elif bridge_ok and not cdp_ok:
+        overall = "🟡 <b>PARTIAL</b> — Bridge OK but TradingView not connected"
+        data_src = "🅱️ Binance (fallback)"
+    elif bridge_ok and cdp_ok and not price_ok:
+        overall = "🟡 <b>PARTIAL</b> — Connected but price not readable"
+        data_src = "🅱️ Binance (fallback)"
+    else:
+        overall = "🟡 <b>PARTIAL</b> — Some issues detected"
+        data_src = "🅱️ Binance (fallback)"
+
+    uptime_str = f"{uptime//3600:.0f}h {(uptime%3600)//60:.0f}m" if uptime >= 3600 else f"{uptime//60:.0f}m {uptime%60:.0f}s"
+
+    msg = (
+        f"📺 <b>TradingView Status</b>\n\n"
+        f"{overall}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{tick(bridge_ok)} Step 1: Bridge reachable\n"
+        f"{tick(cdp_reachable)} Step 2: CDP port 9222 reachable\n"
+        f"{tick(cdp_ok)} Step 3: TradingView connected\n"
+        f"{tick(price_ok)} Step 4: Price feed live"
+        + (f" ({price_val:,.2f})" if price_ok else "") + "\n"
+        f"{tick(candles_ok)} Step 5: Candles cached"
+        + (f" ({candles_count} bars on 1H)" if candles_ok else "") + "\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Cached intervals: {', '.join(cached_ivs) if cached_ivs else 'none'}\n"
+        f"🖥 TV Version:  <code>{tv_version}</code>\n"
+        f"📌 Symbol:      <code>{tv_symbol}</code>\n"
+        f"⏱ Bridge uptime: <b>{uptime_str}</b>\n"
+        f"🌐 Bridge URL:  <code>{TV_BRIDGE_URL}</code>\n\n"
+        f"📡 <b>Data source: {data_src}</b>\n"
+    )
+
+    # Add fix hints if something is wrong
+    if not cdp_reachable:
+        msg += (
+            f"\n⚠️ <b>TradingView not found on port 9222</b>\n"
+            f"Run it with:\n"
+            f"<code>\"C:\\...\\TradingView.exe\" --remote-debugging-port=9222</code>\n"
+        )
+    elif not cdp_ok:
+        msg += (
+            f"\n⚠️ <b>CDP connected but TradingView page not found</b>\n"
+            f"Make sure TradingView is open to a <b>BTC chart</b>.\n"
+        )
+    elif not price_ok:
+        msg += (
+            f"\n⚠️ <b>Price not readable from TradingView DOM</b>\n"
+            f"Try: open BTCUSDT chart in full screen on TradingView.\n"
+        )
+
+    msg += f"\n🕐 {ist_str()}\n<i>— CLEXER V6.0 —</i>"
+    send_reply(chat_id, msg)
 
 # ─── COMMANDS ─────────────────────────────────────────────────────────────────
 COMMANDS_HELP = """🤖 <b>CLEXER V6.0 Commands</b>
@@ -1529,7 +1571,7 @@ COMMANDS_HELP = """🤖 <b>CLEXER V6.0 Commands</b>
 /history — Last 5 signals
 /stats — Win/loss statistics
 /session — Current session
-/tvstatus — Check TradingView connection
+/tvstatus — Check laptop + TradingView connection
 
 🎯 <b>TRADE CONTROL</b>
 /close — Close active trade
@@ -1592,9 +1634,17 @@ def handle_command(text: str, chat_id, message: dict = None):
         ) if t["signal"] else "No active trade"
         fp  = "✅" if HAS_FEEDPARSER else "❌ not installed"
         src = get_current_source()
-        tv_status = "🟢 ONLINE" if (TV_BRIDGE_URL and tv_bridge_state["online"]) else (
-            "🔴 OFFLINE (Binance fallback)" if TV_BRIDGE_URL else "N/A (Binance mode)"
-        )
+
+        if TV_BRIDGE_URL:
+            if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:
+                tv_status = "🟢 ONLINE — TradingView connected"
+            elif tv_bridge_state["online"]:
+                tv_status = "🟡 Bridge OK — TradingView not connected"
+            else:
+                tv_status = "🔴 OFFLINE — using Binance"
+        else:
+            tv_status = "⚫ Not configured — Binance mode"
+
         send_reply(chat_id,
             f"📊 <b>CLEXER V6.0</b>\n\n"
             f"Bot: {st}\n{cd}"
@@ -1605,7 +1655,7 @@ def handle_command(text: str, chat_id, message: dict = None):
             f"Consecutive SL: {trade_stats['consecutive_sl']}\n"
             f"Users: {len(registered_users)}\n\n"
             f"📡 Data source: <b>{src}</b>\n"
-            f"📺 TradingView: {tv_status}\n\n"
+            f"📺 TV Bridge:   {tv_status}\n\n"
             f"📊 Charts: {'✅ ON' if SEND_CHARTS else '❌ OFF'} | TFs: {','.join(CHART_TFS)}\n"
             f"📰 News:   {'✅ ON' if SEND_NEWS else '❌ OFF'} | feedparser: {fp}\n\n"
             f"<b>Active Trade:</b>\n{ti}"
@@ -1883,17 +1933,23 @@ def main():
     if TV_BRIDGE_URL:
         print("  Checking TV bridge at startup...")
         if tv_update_state():
-            print(f"  ✅ TradingView bridge ONLINE — {tv_bridge_state['tv_symbol']}")
+            cdp = "✅ TradingView connected" if tv_bridge_state["cdp_ok"] else "⚠️ TradingView not connected yet"
+            print(f"  ✅ Bridge ONLINE — {cdp}")
         else:
-            print("  ⚠️  TradingView bridge OFFLINE — using Binance fallback")
+            print("  ⚠️ TV bridge OFFLINE — using Binance fallback")
 
     threading.Thread(target=command_listener, daemon=True).start()
 
-    tv_src_line = (
-        f"📺 TradingView: {'✅ ONLINE' if tv_bridge_state['online'] else '⚠️ OFFLINE (Binance fallback)'}\n"
-        if TV_BRIDGE_URL else
-        "📺 TradingView: Not configured — Binance-only mode\n"
-    )
+    # Build startup message
+    if TV_BRIDGE_URL:
+        if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:
+            tv_line = "📺 TradingView: ✅ ONLINE\n"
+        elif tv_bridge_state["online"]:
+            tv_line = "📺 TradingView: 🟡 Bridge OK — TV not connected\n"
+        else:
+            tv_line = "📺 TradingView: ⚠️ OFFLINE — Binance fallback active\n"
+    else:
+        tv_line = "📺 TradingView: ⚫ Not configured — Binance-only\n"
 
     send_telegram(
         f"🤖 <b>CLEXER V6.0 Online</b>\n"
@@ -1901,11 +1957,10 @@ def main():
         f"⚡ 1-min tick:   entry/TP/SL instant alerts\n"
         f"🕐 1-hour:      aggTrades tick-perfect check\n"
         f"🧠 4-hour:      claude-opus-4-6 full analysis\n"
-        f"🔄 4-hour:      trade validation (auto-close if flip)\n"
         f"📰 30-min:      8 RSS sources + Claude news\n\n"
         f"📡 Primary:     TradingView (your laptop)\n"
         f"🅱️ Fallback:    Binance REST API\n"
-        f"{tv_src_line}"
+        f"{tv_line}"
         f"📊 Charts: {', '.join(CHART_TFS).upper()} | {'✅ ON' if SEND_CHARTS else '❌ OFF'}\n"
         f"📰 News: {'✅ ON' if SEND_NEWS else '❌ OFF'}\n"
         f"💬 /help for commands | /tvstatus to check TV\n"
@@ -1934,7 +1989,7 @@ def main():
                     print("  ⚠️ TV bridge went OFFLINE — switching to Binance")
                     send_telegram(
                         f"⚠️ <b>TradingView Offline</b>\n\n"
-                        f"Bridge unreachable. Switched to <b>Binance</b> data.\n"
+                        f"Can't reach laptop bridge. Switched to <b>Binance</b> data.\n"
                         f"Use /tvstatus for details.\n\n<i>— CLEXER V6.0 —</i>"
                     )
                 elif not was_online and is_online:
