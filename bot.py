@@ -7,7 +7,11 @@ SCAN TIERS:
   Every 4 hours → Claude: claude-opus-4-6 SMC analysis + trade validation
   Every 30 min → News: 8 RSS sources + Claude haiku + article images (free)
 
-V5.0 NEW FEATURES:
+V5.0 FIXES APPLIED:
+  ✅ Confidence filter now sends Telegram alert with exact reason for skip
+  ✅ WAIT condition loosened — requires ALL of 4H+1H+weekly conflict, not just one
+  ✅ NY session nudge — 4H bias is primary, minor TF conflicts acceptable
+  ✅ WAIT reason logged with full bias/zone detail before returning None
   ✅ 1-min tick: instant channel alert when entry/TP/SL is touched
   ✅ 4H scan validates current trade — auto-closes if structure flips
   ✅ /images on|off — toggle chart images to channel
@@ -68,7 +72,7 @@ IST                  = timedelta(hours=5, minutes=30)
 
 # ─── IMAGE & NEWS SETTINGS ────────────────────────────────────────────────────
 SEND_CHARTS       = True
-CHART_TFS         = ["weekly", "4h", "1h", "5m"]   # which TF charts to post
+CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = True
 MAX_NEWS_AGE      = 4      # hours — ignore older articles
 MAX_NEWS_PER_RUN  = 3      # max articles posted per 30-min check
@@ -114,7 +118,7 @@ last_price_check_time = 0
 last_tick_time        = 0
 last_news_check_time  = 0
 posted_news_guids: set = set()
-latest_news_context: list = []    # recent headlines fed into trade Claude call
+latest_news_context: list = []
 trade_lock = threading.Lock()
 
 # ─── USER REGISTRY ────────────────────────────────────────────────────────────
@@ -378,7 +382,7 @@ def generate_charts_for_channel(data: dict, price: float) -> dict:
     return charts
 
 def generate_all_charts_for_claude(data: dict, price: float) -> dict:
-    """Always generate all 4 TF charts for Claude's analysis (regardless of CHART_TFS)."""
+    """Always generate all 4 TF charts for Claude's analysis."""
     charts = {}
     for tf_key, (df, lb) in data.items():
         charts[tf_key] = _build_chart(df, lb, tf_key, price)
@@ -510,11 +514,17 @@ def analyze_with_claude(ticker: dict, data: dict, validate_trade: bool = False) 
     validate_trade=True: check if active trade is still valid before searching new.
     Returns signal dict, or None (WAIT / HOLD / error).
     Charts sent to channel automatically (respects SEND_CHARTS / CHART_TFS).
+
+    KEY CHANGES from original:
+      - WAIT condition now requires ALL THREE timeframes to conflict (not just one)
+      - NY session nudge: 4H is primary bias, minor 1H noise acceptable
+      - Confidence filter now sends Telegram alert before dropping signal
+      - WAIT reason logged with full detail
     """
     price    = ticker["price"]
     session  = get_session()
     min_conf = required_confidence()
-    print(f"  [CLAUDE] claude-opus-4-6 | MinConf:{min_conf} | Validate:{validate_trade}")
+    print(f"  [CLAUDE] claude-opus-4-6 | MinConf:{min_conf} | Validate:{validate_trade} | Session:{session}")
 
     # Build charts: ALL 4 TFs for Claude, only CHART_TFS for channel
     all_charts     = generate_all_charts_for_claude(data, price)
@@ -543,8 +553,23 @@ def analyze_with_claude(ticker: dict, data: dict, validate_trade: bool = False) 
         )
 
     conf_note = ""
-    if min_conf == "HIGH":   conf_note = "\n⚠️ 2+ consecutive SLs: HIGH confidence only. WAIT if any doubt."
+    if min_conf == "HIGH":     conf_note = "\n⚠️ 2+ consecutive SLs: HIGH confidence only. Return WAIT if any doubt."
     elif min_conf == "MEDIUM": conf_note = "\n⚠️ 1 recent SL: MEDIUM or HIGH confidence only."
+
+    # ── Session-aware bias note ────────────────────────────────────────────────
+    session_note = ""
+    if session == "NEW_YORK":
+        session_note = (
+            "\n\n🗽 NY SESSION ACTIVE: 4H bias is the primary signal.\n"
+            "Minor 1H disagreement is acceptable — if 4H structure is clear (confirmed BOS/CHoCH + OB/FVG),\n"
+            "issue the signal even if 1H has some noise. Do NOT return WAIT just because 1H is slightly lagging."
+        )
+    elif session == "LONDON":
+        session_note = (
+            "\n\n🇬🇧 LONDON SESSION ACTIVE: Strong session for breakouts.\n"
+            "4H + 1H alignment ideal, but if weekly + 4H both agree and price is at a clear OB/FVG,\n"
+            "give the signal. Minor 5M/1H conflict does not warrant WAIT."
+        )
 
     prompt = f"""{summary}{validation_ctx}{news_ctx}
 
@@ -558,39 +583,57 @@ STEP 1 — WEEKLY BIAS
   HH+HL = bullish | LH+LL = bearish | flat = neutral
   Note weekly high/low. Did price make new HH or LL this week?
 
-STEP 2 — 4H PRIMARY BIAS
+STEP 2 — 4H PRIMARY BIAS (most important timeframe)
   Identify structure: BOS direction, CHoCH if any.
   Find the most recent 4H Order Block (last opposing candle before big move).
   HH+HL = bullish structure | LH+LL = bearish structure.
+  The 4H structure is the PRIMARY bias. 1H is confirmation, not veto.
 
 STEP 3 — 1H CONFIRMATION
-  1H must align with 4H — if conflicting → NO TRADE.
-  Find nearest 1H OB or FVG to price = entry zone.
+  1H should ideally align with 4H.
+  If 1H is slightly lagging or consolidating but NOT in direct opposition → still issue signal.
+  Only block signal if 1H structure is actively opposing 4H (e.g. 4H bearish but 1H making new HHs).
 
 STEP 4 — 5M TIMING
   Higher lows = bullish momentum. Lower highs = bearish momentum.
+  5M is context only — do not veto based on 5M alone.
 
 STEP 5 — SIGNAL DECISION
 
-LONG requires ALL:
-  ✅ 4H bullish structure (HH+HL)
+LONG requires:
+  ✅ 4H bullish structure (HH+HL confirmed BOS)
   ✅ Price at/pulling back to 4H Bull OB or Bull FVG
-  ✅ 1H confirms bullish bias
-  ✅ 5M higher lows forming
-  ✅ Weekly not in major resistance
+  ✅ 1H not actively bearish (neutral/lagging is fine)
+  ✅ Weekly not at major resistance
 
-SHORT requires ALL:
-  ✅ 4H bearish structure (LH+LL)
+SHORT requires:
+  ✅ 4H bearish structure (LH+LL confirmed BOS)
   ✅ Price at/bouncing to 4H Bear OB or Bear FVG
-  ✅ 1H confirms bearish bias
-  ✅ 5M lower highs forming
-  ✅ Weekly not in major support
+  ✅ 1H not actively bullish (neutral/lagging is fine)
+  ✅ Weekly not at major support
 
-Return WAIT if ANY:
-  ❌ 4H and 1H conflict
-  ❌ No OB/FVG within reasonable reach
-  ❌ Low volume / tight consolidation
-  ❌ 4H structure unclear{conf_note}
+════════════════════════════════════════
+ WAIT CONDITIONS (strict — all must be true)
+════════════════════════════════════════
+
+Return WAIT ONLY IF one of these hard blocks applies:
+
+  HARD BLOCK A: ALL THREE timeframes conflict simultaneously
+    → 4H says one direction AND 1H actively contradicts AND weekly is also unclear/opposite
+    → All three misaligned at the same time
+
+  HARD BLOCK B: No OB or FVG exists anywhere on 4H or 1H within 1000 pts of current price
+    → Price is in total dead space with no structure to reference
+
+  HARD BLOCK C: 4H structure is completely flat/neutral
+    → Impossible to determine HH/HL or LH/LL — genuinely no swing structure
+    → NOT just "1H lags" — the 4H itself has zero identifiable swing sequence
+
+  DO NOT return WAIT for:
+    ❌ Minor 1H lag while 4H is clear → issue signal
+    ❌ 5M noise while 4H+1H agree → issue signal
+    ❌ Weekly is neutral but 4H is clear → issue signal
+    ❌ Low volume alone → issue signal if structure is there{conf_note}{session_note}
 
 ════════════════════════════════════════
  ENTRY TYPE
@@ -627,7 +670,7 @@ Session: {session}
 
 Return ONLY valid JSON, no markdown:
 
-WAIT:  {{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"why no valid setup","trade_valid":null}}
+WAIT:  {{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"which HARD BLOCK triggered and why","trade_valid":null}}
 
 HOLD (active trade still valid, no new trade needed):
        {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"why current trade remains valid","trade_valid":true}}
@@ -673,7 +716,22 @@ Trade: {{
             return None
 
         if sig_type == "WAIT":
-            print(f"  [WAIT] {signal.get('reasoning','')[:80]}")
+            reason = signal.get("reasoning", "no reason given")
+            bias   = signal.get("bias", "?")
+            zone   = signal.get("entry_zone", "?")
+            print(f"  [WAIT] {reason[:120]}")
+            print(f"  [WAIT] bias={bias} | zone={zone[:60]} | session={session}")
+            # Post to channel so you can see exactly why no signal was issued
+            send_telegram(
+                f"🔍 <b>Scan Complete — No Signal</b>\n\n"
+                f"💵 Price: <b>{price:,.2f}</b> ({ticker['change']:+.2f}%)\n"
+                f"📍 Session: {session}\n"
+                f"📊 Bias: {bias}\n"
+                f"💭 <i>{reason[:200]}</i>\n\n"
+                f"🕐 {ist_str()}\n\n"
+                f"Next scan in {SIGNAL_SCAN_INTERVAL//3600}h. /signal to force.\n\n"
+                f"<i>— CLEXER V5.0 —</i>"
+            )
             return None
 
         if sig_type not in ("BUY", "SELL"):
@@ -684,7 +742,7 @@ Trade: {{
         sl_raw  = float(signal["sl"])
         sl_dist = abs(entry - sl_raw)
 
-        # ── Auto-fix SL if too tight (instead of rejecting) ───────────────
+        # ── Auto-fix SL if too tight ───────────────────────────────────────
         if sl_dist < 500:
             print(f"  [FIX] SL dist={sl_dist:.0f} pts too tight — auto-expanding to 650 pts")
             fix_dist = 650
@@ -711,11 +769,21 @@ Trade: {{
                 signal["tp2"] = round(price - sl_dist*4, -1)
                 print(f"  [FIX] SELL pullback TPs corrected below {price:,.0f}")
 
-        # ── Confidence filter ─────────────────────────────────────────────
+        # ── Confidence filter — now with Telegram alert ───────────────────
         conf = signal.get("confidence", "LOW")
         rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
         if rank.get(conf, 1) < rank.get(min_conf, 1):
             print(f"  [SKIP] Confidence {conf} < required {min_conf}")
+            print(f"  [SKIP] Would-be signal: {sig_type} entry:{entry:,.0f} "
+                  f"bias:{signal.get('bias','?')} zone:{signal.get('entry_zone','?')[:60]}")
+            send_telegram(
+                f"⚠️ <b>Signal filtered — low confidence</b>\n\n"
+                f"{'🟢' if sig_type=='BUY' else '🔴'} Claude found: <b>{sig_type}</b> @ {entry:,.0f}\n"
+                f"Confidence: <b>{conf}</b> (required: {min_conf})\n"
+                f"Bias: {signal.get('bias','?')} | Zone: {signal.get('entry_zone','?')[:80]}\n\n"
+                f"💭 <i>{signal.get('reasoning','')[:160]}</i>\n\n"
+                f"<i>Increase confidence or use /resetsl to lower the bar.\n— CLEXER V5.0 —</i>"
+            )
             return None
 
         # ── Recalculate R:R ───────────────────────────────────────────────
@@ -917,7 +985,7 @@ def run_tick_check() -> bool:
                 )
                 print(f"  [TICK] ✅ TP1 HIT! SL→BE={entry:,.0f}")
 
-        # ── SL — only if clearly through (80pt buffer against noise) ─────
+        # ── SL — 80pt buffer against noise ────────────────────────────────
         sl_margin = 80
         sl_clearly = (sig=="BUY" and price < sl - sl_margin) or (sig=="SELL" and price > sl + sl_margin)
         if sl_clearly:
@@ -969,7 +1037,7 @@ def run_price_check() -> bool:
         print(f"  [1H] {active_trade['signal']} | {status}")
 
         if status == "TP2_HIT":
-            if active_trade["signal"]:   # guard (tick may have closed already)
+            if active_trade["signal"]:
                 trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
                 send_telegram(fmt_update("TP2_HIT")); reset_trade(); return True
 
@@ -1013,7 +1081,6 @@ def run_price_check() -> bool:
 # ─── NEWS SYSTEM ──────────────────────────────────────────────────────────────
 def get_article_image(entry) -> bytes | None:
     """Try RSS media fields first, then OG tag from article URL."""
-    # RSS media fields
     for field in ("media_content", "media_thumbnail"):
         items = getattr(entry, field, []) or entry.get(field, [])
         if items:
@@ -1024,7 +1091,6 @@ def get_article_image(entry) -> bytes | None:
                     if r.status_code == 200 and len(r.content) > 2000: return r.content
                 except: pass
 
-    # Enclosures
     for enc in (entry.get("enclosures") or []):
         if "image" in enc.get("type", ""):
             try:
@@ -1032,7 +1098,6 @@ def get_article_image(entry) -> bytes | None:
                 if r.status_code == 200: return r.content
             except: pass
 
-    # OG image from article URL
     link = entry.get("link", "")
     if not link: return None
     try:
@@ -1061,7 +1126,6 @@ def check_news(force: bool = False):
     """
     Fetch all 8 RSS feeds, filter recent BTC-relevant items,
     run Claude haiku impact analysis, post to channel with images.
-    All free — no API key, no credit card required.
     """
     global latest_news_context
     if not SEND_NEWS and not force: return
@@ -1116,7 +1180,6 @@ def check_news(force: bool = False):
     except:
         btc_price = 0
 
-    # Batch through Claude haiku (cheap + fast)
     to_post = []
     for i in range(0, len(candidates), 10):
         batch = candidates[i:i+10]
@@ -1152,10 +1215,8 @@ def check_news(force: bool = False):
     if not to_post:
         print("  [NEWS] No high-impact items found"); return
 
-    # HIGH strength first
     to_post.sort(key=lambda x: 0 if x.get("strength")=="HIGH" else 1)
 
-    # Update news context for trade Claude
     latest_news_context = [
         f"• {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} — {e.get('reason','')[:80]}"
         for e in to_post[:3]
@@ -1277,6 +1338,8 @@ def handle_command(text: str, chat_id, message: dict = None):
             f"Session: {get_session()} {'✅' if is_trading_hours() else '⏸'}\n"
             f"IST: {ist_str()}\n"
             f"Scan interval: {SIGNAL_SCAN_INTERVAL//3600}h\n"
+            f"Min confidence: {required_confidence()}\n"
+            f"Consecutive SL: {trade_stats['consecutive_sl']}\n"
             f"Users: {len(registered_users)}\n\n"
             f"📊 Charts: {'✅ ON' if SEND_CHARTS else '❌ OFF'} | TFs: {','.join(CHART_TFS)}\n"
             f"📰 News:   {'✅ ON' if SEND_NEWS else '❌ OFF'} | feedparser: {fp}\n\n"
@@ -1411,7 +1474,7 @@ def handle_command(text: str, chat_id, message: dict = None):
 
     elif cmd == "/resetsl":
         trade_stats["consecutive_sl"] = 0; trade_stats["cooldown_scans"] = 0
-        send_reply(chat_id, "✅ SL streak counter reset.")
+        send_reply(chat_id, "✅ SL streak + cooldown reset.")
 
     elif cmd == "/setinterval":
         if len(parts) < 2: send_reply(chat_id, f"Current: {SIGNAL_SCAN_INTERVAL//3600}h\nUsage: /setinterval 4")
@@ -1424,7 +1487,6 @@ def handle_command(text: str, chat_id, message: dict = None):
                     send_reply(chat_id, f"✅ Signal scan interval → {h}h")
             except: send_reply(chat_id, "❌ /setinterval 4")
 
-    # ── IMAGE COMMANDS ────────────────────────────────────────────────────────
     elif cmd == "/images":
         if len(parts) < 2:
             send_reply(chat_id,
@@ -1461,7 +1523,6 @@ def handle_command(text: str, chat_id, message: dict = None):
                     f"Posting: {', '.join(CHART_TFS).upper()}\n"
                     f"({len(CHART_TFS)} image{'s' if len(CHART_TFS)>1 else ''} per scan)")
 
-    # ── NEWS COMMANDS ─────────────────────────────────────────────────────────
     elif cmd == "/news":
         if len(parts) < 2:
             fp = "✅ installed" if HAS_FEEDPARSER else "❌ pip install feedparser"
@@ -1559,6 +1620,8 @@ def main():
         f"🔄 4-hour:      trade validation (auto-close if flip)\n"
         f"📰 30-min:      8 RSS sources + Claude news\n"
         f"🛑 SL min 500 pts enforced + auto-fix\n"
+        f"✅ WAIT loosened — 4H primary, 1H noise OK\n"
+        f"✅ Filtered signals now show Telegram reason\n"
         f"📊 Charts: {', '.join(CHART_TFS).upper()} | {'✅ ON' if SEND_CHARTS else '❌ OFF'}\n"
         f"📰 News: {'✅ ON' if SEND_NEWS else '❌ OFF'}\n"
         f"💬 /help for commands\n"
@@ -1566,7 +1629,7 @@ def main():
         f"<i>— CLEXER V5.0 —</i>"
     )
 
-    MAIN_TICK = 60  # heartbeat
+    MAIN_TICK = 60
 
     while True:
         try:
@@ -1579,13 +1642,13 @@ def main():
             h_str = now_ist().strftime('%H:%M IST')
             print(f"\n[{h_str}] {get_session()}{' FORCED' if forced else ''}")
 
-            # ── NEWS CHECK (runs even during sleep, background thread) ────
+            # ── NEWS CHECK ────────────────────────────────────────────────
             news_due = (now - last_news_check_time) >= NEWS_CHECK_INTERVAL
             if news_due and SEND_NEWS:
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── SLEEP HOURS (01:00–07:29 IST) — skip price + signal ──────
+            # ── SLEEP HOURS ───────────────────────────────────────────────
             if not forced and is_ist_sleep():
                 print("  [SLEEP] 01:00–07:29 IST — resting")
                 time.sleep(MAIN_TICK); continue
@@ -1595,7 +1658,6 @@ def main():
             if (tick_due or forced) and active_trade["signal"]:
                 last_tick_time = now
                 if run_tick_check():
-                    # TP2 or SL hit → trigger Claude scan immediately
                     forced = True; last_signal_scan_time = 0
                     print("  [TICK] Critical event → Claude scan triggered")
 
@@ -1607,12 +1669,12 @@ def main():
                     forced = True; last_signal_scan_time = 0
                     print("  [1H] Critical event → Claude scan triggered")
 
-            # ── SIGNAL SCAN DUE? ─────────────────────────────────────────
+            # ── SCAN DUE? ─────────────────────────────────────────────────
             scan_due = (now - last_signal_scan_time) >= SIGNAL_SCAN_INTERVAL
             if not forced and not scan_due:
                 time.sleep(MAIN_TICK); continue
 
-            # ── Session check for NEW signals (not for validation) ────────
+            # ── Session check for NEW signals ─────────────────────────────
             if not forced and not is_trading_hours() and not active_trade["signal"]:
                 print(f"  [WAIT] {get_session()} — not London/NY, no trade to validate")
                 time.sleep(MAIN_TICK); continue
@@ -1641,15 +1703,7 @@ def main():
                     send_telegram(fmt_signal(signal))
                     set_trade(signal)
                     print(f"  [SIGNAL SENT] {signal['signal']} R:R:{signal.get('rr','?')} Conf:{signal.get('confidence','?')}")
-                else:
-                    send_telegram(
-                        f"🔍 <b>Scan Complete — No Signal</b>\n\n"
-                        f"💵 Price: <b>{price:,.2f}</b> ({ticker['change']:+.2f}%)\n"
-                        f"📍 Session: {get_session()}\n"
-                        f"🕐 {ist_str()}\n\n"
-                        f"No clean SMC setup found. Next scan in {SIGNAL_SCAN_INTERVAL//3600}h.\n\n"
-                        f"<i>— CLEXER V5.0 —</i>"
-                    )
+                # No-signal message now sent inside analyze_with_claude (WAIT block)
 
             else:
                 # ── Active trade: validate structure ──────────────────────
@@ -1658,7 +1712,6 @@ def main():
                 signal = analyze_with_claude(ticker, data, validate_trade=True)
 
                 if signal is None:
-                    # Claude returned HOLD or WAIT → trade still valid
                     print("  [VALIDATE] Trade remains valid")
                     if forced:
                         send_telegram(
@@ -1668,7 +1721,6 @@ def main():
                             f"<i>— CLEXER V5.0 —</i>"
                         )
                 elif signal["signal"] != t["signal"]:
-                    # Structure flipped → close old, open new
                     old_info = f"{t['signal']} @ {t['entry']:,.0f}"
                     send_telegram(
                         f"🔄 <b>STRUCTURE FLIP!</b>  {ist_str()}\n\n"
@@ -1682,7 +1734,6 @@ def main():
                     set_trade(signal)
                     print(f"  [FLIP] Closed {old_info}, opened {signal['signal']} @ {signal['entry']:,.0f}")
                 else:
-                    # Same direction — analysis update only, don't touch trade
                     print(f"  [VALIDATE] Same direction ({signal['signal']}) — analysis only")
                     if forced:
                         send_telegram(
