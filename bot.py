@@ -1626,7 +1626,6 @@ def handle_command(text, chat_id, message=None):
             + (f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | TFs: {','.join(CHART_TFS)}\n"
                f"News: {'ON' if SEND_NEWS else 'OFF'}\n\n" if is_admin else "")
             + f"<b>Active Trade:</b>\n{ti}")
-
 elif cmd == "/price":
         try:
             tk = get_ticker()
