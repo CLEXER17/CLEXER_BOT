@@ -67,7 +67,7 @@ IST                  = timedelta(hours=5, minutes=30)
 # ─── IMAGE & NEWS SETTINGS ────────────────────────────────────────────────────
 SEND_CHARTS       = True
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
-SEND_NEWS         = False  # ★ V7: OFF by default
+SEND_NEWS         = False  # V7: OFF by default
 MAX_NEWS_AGE      = 4
 MAX_NEWS_PER_RUN  = 3
 
@@ -117,7 +117,7 @@ active_trade = {
     "entry_hit": False, "sl_wicked": False, "scan_count": 0,
 }
 signal_history        = []
-trade_outcomes        = []   # ★ V7: tracks why trades ended (for next signal context)
+trade_outcomes        = []
 force_scan            = threading.Event()
 bot_paused            = threading.Event()
 last_update_id        = 0
@@ -134,24 +134,19 @@ trade_lock = threading.Lock()
 USER_DB_FILE = "users.json"
 registered_users: set = set()
 
-# ─── ★ V7: FRIEND RATE LIMITER ────────────────────────────────────────────────
-# Tracks { (chat_id, command): [timestamp1, timestamp2, ...] }
-# Limit: 2 uses per command per hour for non-admin users
-RATE_LIMIT_USES = 2
-RATE_LIMIT_WINDOW = 3600  # 1 hour
+# ─── V7: FRIEND RATE LIMITER ──────────────────────────────────────────────────
+RATE_LIMIT_USES   = 2
+RATE_LIMIT_WINDOW = 3600
 friend_usage = defaultdict(list)
 
 def check_rate_limit(chat_id, cmd):
-    """Returns (allowed, reset_time_str). Admin bypasses limit."""
     if str(chat_id) == str(ADMIN_CHAT_ID):
         return (True, None)
     now = time.time()
     key = (str(chat_id), cmd)
-    # Clean expired uses
     friend_usage[key] = [t for t in friend_usage[key] if now - t < RATE_LIMIT_WINDOW]
     if len(friend_usage[key]) >= RATE_LIMIT_USES:
-        # Find when oldest use expires
-        oldest = friend_usage[key][0]
+        oldest   = friend_usage[key][0]
         reset_at = oldest + RATE_LIMIT_WINDOW
         reset_dt = datetime.fromtimestamp(reset_at, timezone.utc) + IST
         reset_str = reset_dt.strftime("%I:%M %p IST")
@@ -223,11 +218,10 @@ def set_trade(s: dict):
     if len(signal_history) > 10: signal_history.pop(0)
 
 def log_trade_outcome(reason: str, detail: str = ""):
-    """★ V7: Log why a trade ended — used as context for next analysis."""
     trade_outcomes.append({
-        "time": ist_str(),
+        "time":   ist_str(),
         "signal": active_trade.get("signal"),
-        "entry": active_trade.get("entry"),
+        "entry":  active_trade.get("entry"),
         "reason": reason,
         "detail": detail,
     })
@@ -396,7 +390,6 @@ def get_current_source():
     return "Binance"
 
 def is_tv_online():
-    """★ V7: returns True if TV bridge is live AND CDP connected."""
     return bool(TV_BRIDGE_URL and tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
 
 # ─── SMC CALCULATIONS ─────────────────────────────────────────────────────────
@@ -455,7 +448,6 @@ def detect_fvgs(df, n=5):
     return fvgs[-n:] if len(fvgs) > n else fvgs
 
 def calc_atr(df, period=14):
-    """★ V7: ATR for SL validation in new prompt."""
     if len(df) < period + 1: return 0
     h, l, c = df["high"].values, df["low"].values, df["close"].values
     trs = []
@@ -465,19 +457,17 @@ def calc_atr(df, period=14):
     return float(np.mean(trs[-period:])) if trs else 0
 
 def get_volume_profile(df, n=5):
-    """★ V7: Returns avg vol + last big vol candle info."""
     if len(df) < 10: return {"avg_vol": 0, "last_big_candle": None}
-    avg_vol = float(df["vol"].tail(20).mean())
-    # Find last candle with vol > 1.5x avg
+    avg_vol  = float(df["vol"].tail(20).mean())
     last_big = None
     for i in range(len(df) - 1, max(0, len(df) - 30), -1):
         if df["vol"].iloc[i] > avg_vol * 1.5:
             last_big = {
-                "idx": i,
-                "vol": float(df["vol"].iloc[i]),
-                "vol_ratio": float(df["vol"].iloc[i] / avg_vol),
-                "is_bull": bool(df["close"].iloc[i] > df["open"].iloc[i]),
-                "close": float(df["close"].iloc[i]),
+                "idx":        i,
+                "vol":        float(df["vol"].iloc[i]),
+                "vol_ratio":  float(df["vol"].iloc[i] / avg_vol),
+                "is_bull":    bool(df["close"].iloc[i] > df["open"].iloc[i]),
+                "close":      float(df["close"].iloc[i]),
                 "candles_ago": len(df) - 1 - i,
             }
             break
@@ -596,10 +586,10 @@ def build_smc_summary(data, ticker):
         f"Data Source: {src}", "",
     ]
     for tf_key, (df, lb) in data.items():
-        trend   = detect_trend(df); obs = detect_order_blocks(df, 4); fvgs = detect_fvgs(df, 4)
-        bos     = detect_bos_choch(df); sh, sl_pts = find_swing_points(df, lb)
-        atr     = calc_atr(df, 14)
-        volp    = get_volume_profile(df)
+        trend  = detect_trend(df); obs = detect_order_blocks(df, 4); fvgs = detect_fvgs(df, 4)
+        bos    = detect_bos_choch(df); sh, sl_pts = find_swing_points(df, lb)
+        atr    = calc_atr(df, 14)
+        volp   = get_volume_profile(df)
         lines.append(f"--- {tf_key.upper()} | {trend} | ATR:{atr:,.0f} | AvgVol:{volp['avg_vol']:,.0f} ---")
         if volp["last_big_candle"]:
             b = volp["last_big_candle"]
@@ -656,8 +646,8 @@ def detect_stop_hunt(df_5m):
     sig = t["signal"]; sl = t["sl"]
     for i in range(-3, 0):
         row = df_5m.iloc[i]
-        if sig == "BUY"  and row["low"] < sl  and row["close"] > sl and row["close"] - row["low"]   > 100: return True
-        if sig == "SELL" and row["high"] > sl  and row["close"] < sl and row["high"] - row["close"]  > 100: return True
+        if sig == "BUY"  and row["low"] < sl  and row["close"] > sl and row["close"] - row["low"]  > 100: return True
+        if sig == "SELL" and row["high"] > sl  and row["close"] < sl and row["high"] - row["close"] > 100: return True
     return False
 
 def detect_entry_missed(price):
@@ -692,11 +682,10 @@ def fetch_all_data():
     return data
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ★ V7 — NEW 10-STEP PROMPT (used when TradingView ONLINE)
+#  V7 — NEW 10-STEP PROMPT (used when TradingView ONLINE)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
-    """The user's 10-step framework."""
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
 You are CLEXER — elite BTC SMC trader using TRADINGVIEW data (most accurate).
@@ -842,11 +831,10 @@ Trade:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ★ V7 — OLD PROMPT (used when TradingView OFFLINE, Binance fallback)
+#  V7 — OLD PROMPT (used when TradingView OFFLINE, Binance fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_old_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
-    """Original 4-step SMC framework — used as Binance fallback."""
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
 You are CLEXER — elite BTC SMC trader (BINANCE data — fallback mode).
@@ -925,8 +913,8 @@ Trade: {{"signal":"BUY" or "SELL","entry":<price>,"sl":<price>,"tp1":<price>,"tp
 
 # ─── CLAUDE FULL ANALYSIS ─────────────────────────────────────────────────────
 def analyze_with_claude(ticker, data, validate_trade=False):
-    price    = ticker["price"]
-    session  = get_session()
+    price   = ticker["price"]
+    session = get_session()
     min_conf = required_confidence()
     src      = get_current_source()
     tv_on    = is_tv_online()
@@ -939,19 +927,16 @@ def analyze_with_claude(ticker, data, validate_trade=False):
 
     summary = build_smc_summary(data, ticker)
 
-    # News context
     news_ctx = ""
     if latest_news_context:
         news_ctx = "\n\nRECENT MARKET NEWS:\n" + "\n".join(latest_news_context[-3:])
 
-    # ★ V7: trade outcome history (helps Claude learn from past)
     outcome_ctx = ""
     if trade_outcomes:
         outcome_ctx = "\n\nRECENT TRADE OUTCOMES (last 3):\n"
         for o in trade_outcomes[-3:]:
             outcome_ctx += f"  {o['time']}: {o['signal']} @ {o['entry']} → {o['reason']} ({o['detail']})\n"
 
-    # Active trade validation
     validate_ctx = ""
     if validate_trade and active_trade["signal"]:
         t = active_trade
@@ -966,7 +951,6 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             f"  - If price has already hit SL/TP2 → close it implicitly with new opposite/same direction signal\n"
         )
 
-    # Confidence notes
     conf_note = ""
     if min_conf == "HIGH":     conf_note = "\n!!! 2+ consecutive SLs: HIGH confidence only. Return WAIT if any doubt."
     elif min_conf == "MEDIUM": conf_note = "\n!! 1 recent SL: MEDIUM or HIGH confidence only."
@@ -979,7 +963,6 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         session_note = ("\n\nLONDON SESSION: Strong for breakouts. If weekly+4H agree and price at OB/FVG, "
                        "give the signal. Minor 5M/1H conflict does NOT warrant WAIT.")
 
-    # ★ V7: SELECT PROMPT based on TV status
     if tv_on:
         prompt = build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
     else:
@@ -997,8 +980,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 {"type": "text",  "text": prompt},
             ]}]
         )
-        raw    = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        signal = json.loads(raw)
+        raw      = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        signal   = json.loads(raw)
         sig_type = signal.get("signal", "")
 
         if sig_type == "HOLD":
@@ -1133,9 +1116,9 @@ def fmt_signal(s):
     el  = f"Entry    <b>{s['entry']:,.0f}</b>"
     if s.get("entry_type") == "PULLBACK" and s.get("entry_note"):
         el += f"\n   <i>{s['entry_note']}</i>"
-    wk  = s.get("weekly_trend", ""); s4h = s.get("structure_4h", "")
-    ez  = s.get("entry_zone", "");   rs  = s.get("reasoning", "")
-    src = s.get("data_source", get_current_source())
+    wk   = s.get("weekly_trend", ""); s4h = s.get("structure_4h", "")
+    ez   = s.get("entry_zone",   ""); rs  = s.get("reasoning",    "")
+    src  = s.get("data_source", get_current_source())
     mode = s.get("prompt_mode", "?")
     return (
         f"{e} <b>{s['signal']} — {SYMBOL}</b>  {ci}\n"
@@ -1148,8 +1131,8 @@ def fmt_signal(s):
         f"R:R     <b>{s.get('rr', '—')}</b>\n\n"
         + (f"Weekly: <i>{wk}</i>\n" if wk else "")
         + (f"4H:     <i>{s4h}</i>\n" if s4h else "")
-        + (f"Zone:   <i>{ez}</i>\n" if ez else "")
-        + (f"\n<i>{rs}</i>\n" if rs else "")
+        + (f"Zone:   <i>{ez}</i>\n"  if ez  else "")
+        + (f"\n<i>{rs}</i>\n"         if rs  else "")
         + f"\n<i>— CLEXER V7.0 —</i>\n<i>Not financial advice</i>"
     )
 
@@ -1365,7 +1348,7 @@ def check_news(force=False):
         "blackrock","fidelity","coinbase","binance","tether","stablecoin","geopolit"]
     for src in NEWS_SOURCES:
         try:
-            feed = feedparser.parse(src["url"])
+            feed  = feedparser.parse(src["url"])
             added = 0
             for entry in feed.entries:
                 title = (entry.get("title") or "").strip()
@@ -1376,7 +1359,7 @@ def check_news(force=False):
                 if pub and (time.time() - time.mktime(pub)) / 3600 > MAX_NEWS_AGE: continue
                 raw_sum = entry.get("summary") or entry.get("description") or ""
                 if HAS_BS4: summary = BeautifulSoup(raw_sum, "html.parser").get_text()[:400]
-                else: summary = re.sub(r"<[^>]+>", "", raw_sum)[:400]
+                else:        summary = re.sub(r"<[^>]+>", "", raw_sum)[:400]
                 combined = (title + " " + summary).lower()
                 if not any(kw in combined for kw in btc_kw): continue
                 candidates.append({"title": title, "link": link, "guid": guid,
@@ -1392,8 +1375,9 @@ def check_news(force=False):
     except: btc_price = 0
     to_post = []
     for i in range(0, len(candidates), 10):
-        batch = candidates[i:i+10]
-        news_block = "\n\n".join(f"[{j}] {e['source']}\nTITLE: {e['title']}\nSUMMARY: {e['summary'][:200]}"
+        batch      = candidates[i:i+10]
+        news_block = "\n\n".join(
+            f"[{j}] {e['source']}\nTITLE: {e['title']}\nSUMMARY: {e['summary'][:200]}"
             for j, e in enumerate(batch))
         try:
             resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
@@ -1417,7 +1401,8 @@ def check_news(force=False):
     if not to_post:
         print("  [NEWS] No high-impact"); return
     to_post.sort(key=lambda x: 0 if x.get("strength") == "HIGH" else 1)
-    latest_news_context = [f"• {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} — {e.get('reason','')[:80]}"
+    latest_news_context = [
+        f"• {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} — {e.get('reason','')[:80]}"
         for e in to_post[:3]]
     posted = 0
     for item in to_post[:MAX_NEWS_PER_RUN]:
@@ -1458,7 +1443,7 @@ def cmd_tvstatus(chat_id):
             f"{ist_str()}\n<i>— CLEXER V7.0 —</i>")
         return
     send_reply(chat_id, f"Checking connection...\n<code>{TV_BRIDGE_URL}</code>")
-    now = time.time()
+    now    = time.time()
     health = tv_ping()
     if not health:
         last_seen = tv_bridge_state.get("last_seen", 0)
@@ -1468,9 +1453,9 @@ def cmd_tvstatus(chat_id):
             f"Currently using: <b>Binance (fallback)</b>\n\n"
             f"{ist_str()}\n<i>— CLEXER V7.0 —</i>")
         return
-    tv_bridge_state["online"]   = True
-    tv_bridge_state["last_seen"] = now
-    tv_bridge_state["cdp_ok"]   = health.get("cdp_connected", False)
+    tv_bridge_state["online"]           = True
+    tv_bridge_state["last_seen"]        = now
+    tv_bridge_state["cdp_ok"]           = health.get("cdp_connected", False)
     tv_bridge_state["tv_version"]       = health.get("tv_version", "")
     tv_bridge_state["cached_intervals"] = health.get("cached_intervals", [])
     bridge_ok  = True
@@ -1489,10 +1474,10 @@ def cmd_tvstatus(chat_id):
         candles_ok = True; candles_count = len(df)
     def tick(ok): return "🟢" if ok else "🔴"
     if cdp_ok and price_ok and candles_ok:
-        overall = "<b>ALL SYSTEMS GO</b> — TradingView data flowing"
+        overall  = "<b>ALL SYSTEMS GO</b> — TradingView data flowing"
         data_src = "TradingView"
     else:
-        overall = "<b>PARTIAL</b> — Some issues"
+        overall  = "<b>PARTIAL</b> — Some issues"
         data_src = "Binance (fallback)"
     uptime_str = f"{uptime//3600:.0f}h {(uptime%3600)//60:.0f}m" if uptime >= 3600 else f"{uptime//60:.0f}m {uptime%60:.0f}s"
     msg = (f"<b>TradingView Status</b>\n\n{overall}\n\n"
@@ -1574,12 +1559,10 @@ def handle_command(text, chat_id, message=None):
     cmd      = parts[0].lower().split("@")[0]
     is_admin = (str(chat_id) == str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
 
-    # Block non-admin from admin commands
     if cmd in ADMIN_COMMANDS and not is_admin:
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see available commands.")
         return
 
-    # ★ V7: Rate limit check for non-admin users
     if not is_admin and cmd in FRIEND_COMMANDS:
         allowed, reset_str = check_rate_limit(chat_id, cmd)
         if not allowed:
@@ -1626,7 +1609,8 @@ def handle_command(text, chat_id, message=None):
             + (f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | TFs: {','.join(CHART_TFS)}\n"
                f"News: {'ON' if SEND_NEWS else 'OFF'}\n\n" if is_admin else "")
             + f"<b>Active Trade:</b>\n{ti}")
-elif cmd == "/price":
+
+    elif cmd == "/price":
         try:
             tk = get_ticker()
             send_reply(chat_id,
@@ -1721,14 +1705,15 @@ elif cmd == "/price":
             send_reply(chat_id, "Usage: /setsl 61500")
         else:
             try:
-                v = float(parts[1].replace(",", ""))
+                v   = float(parts[1].replace(",", ""))
                 old = active_trade["sl"]
                 active_trade["sl"] = v
                 send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>— CLEXER V7.0 —</i>")
                 send_reply(chat_id, f"SL = {v:,.0f}")
             except:
                 send_reply(chat_id, "Usage: /setsl 61500")
-elif cmd == "/settp1":
+
+    elif cmd == "/settp1":
         if not active_trade["signal"]:
             send_reply(chat_id, "No active trade.")
         elif len(parts) < 2:
@@ -1760,7 +1745,7 @@ elif cmd == "/settp1":
         if bot_paused.is_set():
             send_reply(chat_id, "Bot paused. /resume first.")
         else:
-            now = time.time()
+            now     = time.time()
             elapsed = now - last_force_scan_time
             if elapsed < 900 and last_force_scan_time > 0:
                 send_reply(chat_id, f"Cooldown: {int((900-elapsed)/60)} min left")
@@ -1820,7 +1805,7 @@ elif cmd == "/settp1":
                 f"Usage:\n  /setimages weekly,4h,1h,5m\n  /setimages 4h,1h\n"
                 f"Available: weekly, 4h, 1h, 5m")
         else:
-            valid = {"weekly", "4h", "1h", "5m"}
+            valid  = {"weekly", "4h", "1h", "5m"}
             chosen = [tf.strip().lower() for tf in parts[1].split(",") if tf.strip().lower() in valid]
             if not chosen:
                 send_reply(chat_id, "No valid TFs. Available: weekly, 4h, 1h, 5m")
@@ -1867,16 +1852,16 @@ elif cmd == "/settp1":
 
 
 def handle_broadcast_message(chat_id, message):
-    text = message.get("text") or message.get("caption") or ""
+    text  = message.get("text") or message.get("caption") or ""
     photo = message.get("photo")
-    doc = message.get("document")
-    file_id = None
+    doc   = message.get("document")
+    file_id   = None
     file_type = None
     if photo:
-        file_id = photo[-1]["file_id"]
+        file_id   = photo[-1]["file_id"]
         file_type = "photo"
     elif doc:
-        file_id = doc["file_id"]
+        file_id   = doc["file_id"]
         file_type = "document"
     if not text and not file_id:
         send_reply(chat_id, "Empty. Send text/image/PDF or /cancel.")
@@ -1908,9 +1893,9 @@ def command_listener():
                 continue
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
-                msg = upd.get("message", {})
-                text = msg.get("text", "") or ""
-                cid = msg.get("chat", {}).get("id")
+                msg   = upd.get("message", {})
+                text  = msg.get("text", "") or ""
+                cid   = msg.get("chat", {}).get("id")
                 uname = msg.get("from", {}).get("username", "?")
                 if not cid:
                     continue
@@ -1924,6 +1909,7 @@ def command_listener():
         except Exception as e:
             print(f"  [CMD] {e}")
         time.sleep(2)
+
 # ─── MAIN LOOP ────────────────────────────────────────────────────────────────
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time
@@ -1934,7 +1920,6 @@ def main():
     print(f"  News: {'ON' if SEND_NEWS else 'OFF (default)'}")
     load_users()
 
-    # Initial TV bridge check
     if TV_BRIDGE_URL:
         print("  Checking TV bridge at startup...")
         if tv_update_state():
@@ -1945,7 +1930,6 @@ def main():
 
     threading.Thread(target=command_listener, daemon=True).start()
 
-    # Build startup message
     if TV_BRIDGE_URL:
         if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:
             tv_line = "TradingView: ONLINE (NEW prompt active)\n"
@@ -1978,19 +1962,19 @@ def main():
                 time.sleep(MAIN_TICK)
                 continue
 
-            now = time.time()
+            now    = time.time()
             forced = force_scan.is_set()
             if forced:
                 force_scan.clear()
 
-            h_str = now_ist().strftime('%H:%M IST')
+            h_str    = now_ist().strftime('%H:%M IST')
             mode_str = "NEW" if is_tv_online() else "OLD"
             print(f"\n[{h_str}] {get_session()}{' FORCED' if forced else ''} | Src:{get_current_source()} | Mode:{mode_str}")
 
-            # ── Periodic TV bridge health check ───────────────────────────
+            # ── Periodic TV bridge health check ──────────────────────────
             if TV_BRIDGE_URL and (now - tv_bridge_state["last_check"]) >= tv_bridge_state["check_interval"]:
                 was_online = tv_bridge_state["online"]
-                is_online = tv_update_state()
+                is_online  = tv_update_state()
                 if was_online and not is_online:
                     print("  TV bridge OFFLINE — switching to Binance")
                     send_telegram(
@@ -2003,7 +1987,7 @@ def main():
                         f"<b>TradingView Back Online</b>\n\n"
                         f"Switched back to TradingView (NEW prompt).\n\n<i>— CLEXER V7.0 —</i>")
 
-            # ── NEWS CHECK (only if SEND_NEWS is True) ───────────────────
+            # ── NEWS CHECK ────────────────────────────────────────────────
             news_due = (now - last_news_check_time) >= NEWS_CHECK_INTERVAL
             if news_due and SEND_NEWS:
                 last_news_check_time = now
@@ -2057,15 +2041,15 @@ def main():
                 continue
 
             # ════════════════════════════════════════════════════════════════
-            #  ★ V7: FULL CLAUDE SCAN WITH TRADE STATUS REPORT
+            #  V7: FULL CLAUDE SCAN WITH TRADE STATUS REPORT
             # ════════════════════════════════════════════════════════════════
             last_signal_scan_time = now
             print("  Fetching candles for full Claude scan...")
             ticker = get_ticker()
-            price = ticker["price"]
+            price  = ticker["price"]
             print(f"  BTC: {price:,.2f} | {ticker['change']:+.2f}% | {get_session()} | {get_current_source()}")
 
-            # ★ V7: STEP 1 — If trade exists, report its current status FIRST
+            # V7: STEP 1 — If trade exists, report its current status FIRST
             if active_trade["signal"]:
                 t = active_trade
                 status_info = (
@@ -2083,22 +2067,18 @@ def main():
 
             data = fetch_all_data()
 
-            # ── New trade or validate existing? ──
             if not active_trade["signal"]:
-                # No active trade — generate fresh signal
                 signal = analyze_with_claude(ticker, data, validate_trade=False)
                 if signal and not signal.get("_hold"):
                     send_telegram(fmt_signal(signal))
                     set_trade(signal)
                     print(f"  [SIGNAL SENT] {signal['signal']} R:R:{signal.get('rr','?')}")
             else:
-                # Active trade exists — validate
                 t = active_trade
                 print(f"  Validating: {t['signal']} @ {t['entry']:,.0f}")
                 signal = analyze_with_claude(ticker, data, validate_trade=True)
 
                 if signal is None:
-                    # WAIT or error
                     if forced:
                         send_telegram(
                             f"<b>Trade Status: HOLD</b>  {ist_str()}\n\n"
@@ -2107,7 +2087,6 @@ def main():
                             f"Source: {get_current_source()}\n\n<i>— CLEXER V7.0 —</i>")
 
                 elif signal.get("_hold"):
-                    # Explicit HOLD from Claude
                     reasoning = signal.get("reasoning", "Structure intact")
                     send_telegram(
                         f"<b>Trade Validated — HOLD</b>  {ist_str()}\n\n"
@@ -2117,8 +2096,7 @@ def main():
                         f"Source: {get_current_source()}\n\n<i>— CLEXER V7.0 —</i>")
 
                 elif signal["signal"] != t["signal"]:
-                    # Direction flipped — close old, open new
-                    old_info = f"{t['signal']} @ {t['entry']:,.0f}"
+                    old_info    = f"{t['signal']} @ {t['entry']:,.0f}"
                     flip_reason = signal.get("reasoning", "Structure flipped")
                     log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
                     send_telegram(
@@ -2132,7 +2110,6 @@ def main():
                     send_telegram(fmt_signal(signal))
                     set_trade(signal)
                 else:
-                    # Same direction — new entry/SL/TP from Claude
                     print(f"  [VALIDATE] Same direction — replacing with updated levels")
                     if forced:
                         send_telegram(
