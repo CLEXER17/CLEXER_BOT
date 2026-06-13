@@ -642,6 +642,27 @@ Else:
 NEVER enter at top/bottom of big momentum candle.
 
 ═══════════════════════════════════════════════════
+ CRITICAL ENTRY DISTANCE RULE
+═══════════════════════════════════════════════════
+After finding the entry level, check:
+  distance = abs(current_price - entry)
+
+IF distance > 1500 pts:
+  DO NOT use that swing level as entry.
+
+  For LONG:
+    Find the most recent 4H swing low WITHIN 1000 pts of {price:,.0f}.
+    If no swing low within 1000 pts → use MARKET entry at {price:,.0f}.
+
+  For SHORT:
+    Find the most recent 4H swing high WITHIN 1000 pts of {price:,.0f}.
+    If no swing high within 1000 pts → use MARKET entry at {price:,.0f}.
+
+VERIFY before outputting — if ANY check fails use MARKET entry at {price:,.0f}:
+  BUY:  entry <= {price:,.0f} + 200 | tp1 > {price:,.0f} | tp2 > tp1 | abs(entry - {price:,.0f}) < 1500
+  SELL: entry >= {price:,.0f} - 200 | tp1 < {price:,.0f} | tp2 < tp1 | abs(entry - {price:,.0f}) < 1500
+
+═══════════════════════════════════════════════════
  STEP 8 — STOP LOSS
 ═══════════════════════════════════════════════════
 sl_dist = ATR_1H × 1.5
