@@ -25,7 +25,7 @@ try:
 except ImportError:
     HAS_BS4 = False
 
-# â”€â”€â”€ CONFIG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- CONFIG -------------------------------------------------------------------
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
@@ -40,7 +40,7 @@ NEWS_CHECK_INTERVAL  = 1800
 BINANCE_BASE         = "https://api1.binance.com/api/v3"
 IST                  = timedelta(hours=5, minutes=30)
 
-SEND_CHARTS       = False   # OFF by default â€” /images on to enable
+SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
 MAX_NEWS_AGE      = 4
@@ -178,9 +178,9 @@ def log_trade_outcome(reason: str, detail: str = ""):
     })
     if len(trade_outcomes) > 5: trade_outcomes.pop(0)
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 #  TV BRIDGE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def tv_ping():
     if not TV_BRIDGE_URL: return None
@@ -292,12 +292,12 @@ def build_indicator_context(indicators: dict) -> str:
             if study.get("title"): lines.append(f"  {study['title']}: {study.get('value','')}")
     if len(lines) == 1: return ""
     lines += ["", "Use indicators as ADDITIONAL CONFIRMATION only.",
-              "Do not rely on indicators alone â€” confirm with price structure."]
+              "Do not rely on indicators alone - confirm with price structure."]
     return "\n".join(lines)
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 #  BINANCE FALLBACK
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def binance_get_candles(interval, limit):
     iv_map = {"weekly": "1w", "4h": "4h", "1h": "1h", "5m": "5m"}
@@ -357,7 +357,7 @@ def get_current_source():
 def is_tv_online():
     return bool(TV_BRIDGE_URL and tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
 
-# â”€â”€â”€ SMC CALCULATIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- SMC CALCULATIONS ---------------------------------------------------------
 def find_swing_points(df, lookback=5):
     highs, lows = [], []
     for i in range(lookback, len(df) - lookback):
@@ -507,7 +507,7 @@ def send_charts_to_channel(charts, label="SMC Analysis"):
         try:
             img_bytes = base64.b64decode(b64)
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                data={"chat_id": TELEGRAM_CHANNEL_ID, "caption": f"{label} â€” {tf_key.upper()} [{get_current_source()}]"},
+                data={"chat_id": TELEGRAM_CHANNEL_ID, "caption": f"{label} - {tf_key.upper()} [{get_current_source()}]"},
                 files={"photo": (f"chart_{tf_key}.png", img_bytes, "image/png")}, timeout=20)
             time.sleep(0.4)
         except Exception as e: print(f"  [CHART SEND] {tf_key}: {e}")
@@ -554,83 +554,83 @@ def extract_json_from_response(text: str):
     if end == -1: return None
     try: return json.loads(cleaned[start:end])
     except: return None
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 #  PROMPTS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
-You are CLEXER â€” elite BTC trader using TradingView data.
+You are CLEXER - elite BTC trader using TradingView data.
 Current Price: {price:,.0f}
 
 Use ONLY the data provided in the summary above. Do not invent levels.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 1 â€” WEEKLY DIRECTION
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 1 - WEEKLY DIRECTION
+═══════════════════════════════════════════════════
 From weekly data: closes going UP = BULLISH, DOWN = BEARISH.
 Swing high higher than last = bullish. Lower = bearish.
 This gives background bias only.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 2 â€” 4H TREND (MOST IMPORTANT)
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 2 - 4H TREND (MOST IMPORTANT)
+═══════════════════════════════════════════════════
 HH + HL = 4H BULLISH. LH + LL = 4H BEARISH. Mixed = NEUTRAL.
 Find from swing data:
   LAST 4H SWING HIGH = most recent resistance (price went up then back down)
   LAST 4H SWING LOW  = most recent support (price went down then back up)
 These are your entry reference points.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 3 â€” 4H VOLUME CONFIRMATION
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 3 - 4H VOLUME CONFIRMATION
+═══════════════════════════════════════════════════
 Last big GREEN candle = buying pressure (confirms LONG).
 Last big RED candle   = selling pressure (confirms SHORT).
 0-5 bars ago = strong | 6-15 = moderate | 15+ = weak.
-Volume CONFIRMS bias â€” does not create it alone.
+Volume CONFIRMS bias - does not create it alone.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 4 â€” 1H CONFIRMATION
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 4 - 1H CONFIRMATION
+═══════════════════════════════════════════════════
 Same as 4H = strong confirmation. Neutral = acceptable.
-Opposite = lower confidence â€” NOT a block alone.
+Opposite = lower confidence - NOT a block alone.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 5 â€” 5M TIMING
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 5 - 5M TIMING
+═══════════════════════════════════════════════════
 Higher lows = bullish NOW. Lower highs = bearish NOW.
 5M conflict = lower confidence only, NOT a block.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 6 â€” DECIDE DIRECTION
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 6 - DECIDE DIRECTION
+═══════════════════════════════════════════════════
 LONG requires ALL:
-  âœ… 4H trend = BULLISH (HH+HL)
-  âœ… Last big 4H or 1H vol candle = GREEN
-  âœ… 1H not actively bearish
-  âœ… Price {price:,.0f} is above last 4H swing LOW
-  âœ… Weekly not making new lows this week
+  ✅ 4H trend = BULLISH (HH+HL)
+  ✅ Last big 4H or 1H vol candle = GREEN
+  ✅ 1H not actively bearish
+  ✅ Price {price:,.0f} is above last 4H swing LOW
+  ✅ Weekly not making new lows this week
 
 SHORT requires ALL:
-  âœ… 4H trend = BEARISH (LH+LL)
-  âœ… Last big 4H or 1H vol candle = RED
-  âœ… 1H not actively bullish
-  âœ… Price {price:,.0f} is below last 4H swing HIGH
-  âœ… Weekly not making new highs this week
+  ✅ 4H trend = BEARISH (LH+LL)
+  ✅ Last big 4H or 1H vol candle = RED
+  ✅ 1H not actively bullish
+  ✅ Price {price:,.0f} is below last 4H swing HIGH
+  ✅ Weekly not making new highs this week
 
 WAIT only when:
-  âŒ 4H trend = NEUTRAL (no clear swing pattern)
-  âŒ 4H AND 1H both trending OPPOSITE directions
-  âŒ No 4H swing point within 2000 pts of current price
-  âŒ Last 5 4H candles all flat (total consolidation)
+  ❌ 4H trend = NEUTRAL (no clear swing pattern)
+  ❌ 4H AND 1H both trending OPPOSITE directions
+  ❌ No 4H swing point within 2000 pts of current price
+  ❌ Last 5 4H candles all flat (total consolidation)
 
 DO NOT WAIT for: low volume, 5M conflict, 1H lag,
 weekly neutral, missing big volume candle.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 7 â€” ENTRY
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ STEP 7 - ENTRY
+═══════════════════════════════════════════════════
 LONG:  entry = last 4H SWING LOW price
 SHORT: entry = last 4H SWING HIGH price
 
@@ -641,9 +641,9 @@ Else:
 
 NEVER enter at top/bottom of big momentum candle.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
  CRITICAL ENTRY DISTANCE RULE
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
 After finding the entry level, check:
   distance = abs(current_price - entry)
 
@@ -652,47 +652,47 @@ IF distance > 1500 pts:
 
   For LONG:
     Find the most recent 4H swing low WITHIN 1000 pts of {price:,.0f}.
-    If no swing low within 1000 pts â†’ use MARKET entry at {price:,.0f}.
+    If no swing low within 1000 pts → use MARKET entry at {price:,.0f}.
 
   For SHORT:
     Find the most recent 4H swing high WITHIN 1000 pts of {price:,.0f}.
-    If no swing high within 1000 pts â†’ use MARKET entry at {price:,.0f}.
+    If no swing high within 1000 pts → use MARKET entry at {price:,.0f}.
 
-VERIFY before outputting â€” if ANY check fails use MARKET entry at {price:,.0f}:
+VERIFY before outputting - if ANY check fails use MARKET entry at {price:,.0f}:
   BUY:  entry <= {price:,.0f} + 200 | tp1 > {price:,.0f} | tp2 > tp1 | abs(entry - {price:,.0f}) < 1500
   SELL: entry >= {price:,.0f} - 200 | tp1 < {price:,.0f} | tp2 < tp1 | abs(entry - {price:,.0f}) < 1500
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 8 â€” STOP LOSS
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-sl_dist = ATR_1H Ã— 1.5
+═══════════════════════════════════════════════════
+ STEP 8 - STOP LOSS
+═══════════════════════════════════════════════════
+sl_dist = ATR_1H × 1.5
 Min 500 pts | Max 2500 pts
 LONG  SL = entry - sl_dist (below 4H swing low)
 SHORT SL = entry + sl_dist (above 4H swing high)
-Never at round number â€” offset by 50 pts.
-Never exactly at wick â€” offset by 80-100 pts beyond.
+Never at round number - offset by 50 pts.
+Never exactly at wick - offset by 80-100 pts beyond.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 9 â€” TAKE PROFIT
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-TP1 = entry Â± (sl_dist Ã— 2)
-TP2 = entry Â± (sl_dist Ã— 4)
+═══════════════════════════════════════════════════
+ STEP 9 - TAKE PROFIT
+═══════════════════════════════════════════════════
+TP1 = entry ± (sl_dist × 2)
+TP2 = entry ± (sl_dist × 4)
 LONG:  TP1 and TP2 must be > {price:,.0f}
 SHORT: TP1 and TP2 must be < {price:,.0f}
 If TP wrong side, recalculate from current price.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- STEP 10 â€” ACTIVE TRADE VALIDATION
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-Same 4H direction â†’ HOLD (reference swing prices).
-Opposite direction â†’ new signal + reason why flipped.
-Unclear â†’ HOLD with low confidence.
+═══════════════════════════════════════════════════
+ STEP 10 - ACTIVE TRADE VALIDATION
+═══════════════════════════════════════════════════
+Same 4H direction → HOLD (reference swing prices).
+Opposite direction → new signal + reason why flipped.
+Unclear → HOLD with low confidence.
 
 {conf_note}
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
- OUTPUT â€” RAW JSON ONLY. NO MARKDOWN. NO TEXT BEFORE/AFTER.
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════
+ OUTPUT - RAW JSON ONLY. NO MARKDOWN. NO TEXT BEFORE/AFTER.
+═══════════════════════════════════════════════════
 
 WAIT:
 {{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"NEUTRAL","structure_4h":"NEUTRAL","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"Exact WAIT condition triggered with price references from summary.","trade_valid":null}}
@@ -701,22 +701,22 @@ HOLD:
 {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL or NEUTRAL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"Why active trade still valid with swing point prices.","trade_valid":true}}
 
 Trade:
-{{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"clear instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"4H swing level and price","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swing high X swing low Y 3)Volume direction X bars ago 4)1H 5)5M 6)Entry at swing 7)SL=ATR_1HÃ—1.5 8)TP=slÃ—2 and slÃ—4","trade_valid":null}}"""
+{{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"clear instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"4H swing level and price","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swing high X swing low Y 3)Volume direction X bars ago 4)1H 5)5M 6)Entry at swing 7)SL=ATR_1H×1.5 8)TP=sl×2 and sl×4","trade_valid":null}}"""
 
 
 def build_old_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
-You are CLEXER â€” elite BTC trader (Binance fallback mode).
+You are CLEXER - elite BTC trader (Binance fallback mode).
 Current Price: {price:,.0f}
 Use ONLY the data in the summary. Do not invent levels.
 
-STEP 1 â€” WEEKLY: closes UP=BULLISH, DOWN=BEARISH.
-STEP 2 â€” 4H TREND: HH+HL=BULLISH, LH+LL=BEARISH, flat=NEUTRAL.
-  Find LAST 4H SWING HIGH and LAST 4H SWING LOW â€” these are entry levels.
-STEP 3 â€” VOLUME: last big GREEN=buy pressure, RED=sell pressure. Confirms only.
-STEP 4 â€” 1H: same=strong, neutral=ok, opposite=lower confidence (not a block).
-STEP 5 â€” 5M: higher lows=bullish now, lower highs=bearish now. Conflict=lower confidence only.
+STEP 1 - WEEKLY: closes UP=BULLISH, DOWN=BEARISH.
+STEP 2 - 4H TREND: HH+HL=BULLISH, LH+LL=BEARISH, flat=NEUTRAL.
+  Find LAST 4H SWING HIGH and LAST 4H SWING LOW - these are entry levels.
+STEP 3 - VOLUME: last big GREEN=buy pressure, RED=sell pressure. Confirms only.
+STEP 4 - 1H: same=strong, neutral=ok, opposite=lower confidence (not a block).
+STEP 5 - 5M: higher lows=bullish now, lower highs=bearish now. Conflict=lower confidence only.
 
 SIGNAL:
 LONG:  4H bullish + last big vol GREEN + 1H not bearish + price above last 4H swing low
@@ -728,10 +728,10 @@ DO NOT WAIT for: low vol, 5M conflict, 1H lag, weekly neutral, missing vol candl
 ENTRY: LONG=last 4H swing LOW | SHORT=last 4H swing HIGH
   Within 100 pts = MARKET | else = PULLBACK
 
-SL: sl_dist = ATR_1H Ã— 1.5 | Min 500 | Max 2500
+SL: sl_dist = ATR_1H × 1.5 | Min 500 | Max 2500
   LONG SL = entry - sl_dist | SHORT SL = entry + sl_dist | offset round numbers by 50 pts
 
-TP: TP1 = entry Â± sl_distÃ—2 | TP2 = entry Â± sl_distÃ—4
+TP: TP1 = entry ± sl_dist×2 | TP2 = entry ± sl_dist×4
   LONG: both must be > {price:,.0f} | SHORT: both must be < {price:,.0f}
 
 ACTIVE TRADE: same direction=HOLD | flipped=new signal
@@ -744,7 +744,7 @@ HOLD:  {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_typ
 Trade: {{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"","structure_4h":"HH+HL or LH+LL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swings 3)Volume 4)1H 5)5M 6)Entry 7)SL 8)TP","trade_valid":null}}"""
 
 
-# â”€â”€â”€ CLAUDE ANALYSIS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- CLAUDE ANALYSIS ----------------------------------------------------------
 def analyze_with_claude(ticker, data, validate_trade=False):
     price = ticker["price"]; session = get_session()
     min_conf = required_confidence(); src = get_current_source()
@@ -770,7 +770,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                     img_bytes = base64.b64decode(img_b64)
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                         data={"chat_id": TELEGRAM_CHANNEL_ID,
-                              "caption": f"SMC Analysis â€” {tf_key.upper()} [TradingView Live]"},
+                              "caption": f"SMC Analysis - {tf_key.upper()} [TradingView Live]"},
                         files={"photo": (f"chart_{tf_key}.png", img_bytes, "image/png")}, timeout=20)
                     time.sleep(0.4)
                 except Exception as e: print(f"  [CHARTS] {e}")
@@ -791,7 +791,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     if trade_outcomes:
         outcome_ctx = "\n\nRECENT TRADE OUTCOMES (last 3):\n"
         for o in trade_outcomes[-3:]:
-            outcome_ctx += f"  {o['time']}: {o['signal']} @ {o['entry']} â†’ {o['reason']} ({o['detail']})\n"
+            outcome_ctx += f"  {o['time']}: {o['signal']} @ {o['entry']} → {o['reason']} ({o['detail']})\n"
     validate_ctx = ""
     if validate_trade and active_trade["signal"]:
         t = active_trade
@@ -799,8 +799,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             f"  Signal:{t['signal']}  Entry:{t['entry']:,.0f}  SL:{t['sl']:,.0f}  "
             f"TP1:{t['tp1']:,.0f}  TP2:{t['tp2']:,.0f}\n"
             f"  TP1 hit:{t['tp1_hit']}  Entry hit:{t['entry_hit']}\n\n"
-            f"  If structure still supports â†’ return HOLD\n"
-            f"  If structure flipped â†’ return new signal with reason\n")
+            f"  If structure still supports → return HOLD\n"
+            f"  If structure flipped → return new signal with reason\n")
     conf_note = ""
     if min_conf == "HIGH":   conf_note = "\n!!! 2+ SLs: HIGH confidence only."
     elif min_conf == "MEDIUM": conf_note = "\n!! 1 recent SL: MEDIUM+ only."
@@ -863,13 +863,13 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             reason = signal.get("reasoning", ""); bias = signal.get("bias", "?")
             print(f"  [WAIT] {reason[:120]}")
             send_telegram(
-                f"<b>Scan Complete â€” No Signal</b>\n\n"
+                f"<b>Scan Complete - No Signal</b>\n\n"
                 f"Price: <b>{price:,.2f}</b> ({ticker['change']:+.2f}%)\n"
                 f"Session: {session} | Bias: {bias}\n"
                 f"Source: {src} ({prompt_mode})\n"
                 f"<i>{reason[:250]}</i>\n\n"
                 f"Next scan in {SIGNAL_SCAN_INTERVAL//3600}h. /signal to force.\n\n"
-                f"{ist_str()}\n<i>â€” CLEXER V7.0 â€”</i>")
+                f"{ist_str()}\n<i>- CLEXER V7.0 -</i>")
             return None
         if sig_type not in ("BUY", "SELL"): return None
 
@@ -891,10 +891,10 @@ def analyze_with_claude(ticker, data, validate_trade=False):
 
         conf = signal.get("confidence", "LOW"); rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
         if rank.get(conf,1) < rank.get(min_conf,1):
-            send_telegram(f"<b>Signal filtered â€” low confidence</b>\n\n"
+            send_telegram(f"<b>Signal filtered - low confidence</b>\n\n"
                 f"Claude found: <b>{sig_type}</b> @ {entry:,.0f}\n"
                 f"Confidence: <b>{conf}</b> (required: {min_conf})\n\n"
-                f"<i>/resetsl to lower bar. â€” CLEXER V7.0 â€”</i>")
+                f"<i>/resetsl to lower bar. - CLEXER V7.0 -</i>")
             return None
 
         tp2_dist = abs(entry-float(signal["tp2"]))
@@ -906,7 +906,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         print(f"  [CLAUDE PARSE ERROR] {e}"); import traceback; traceback.print_exc(); return None
 
 
-# â”€â”€â”€ PRICE / DETECTION HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- PRICE / DETECTION HELPERS ------------------------------------------------
 def price_only_advice(price):
     t = active_trade; sig = t["signal"]; entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
     tp2_dist = abs(entry-tp2) or 1
@@ -916,18 +916,18 @@ def price_only_advice(price):
     else:
         dist_to_sl = sl-price; dist_to_tp1 = price-tp1; dist_to_tp2 = price-tp2
         pct = (entry-price)/tp2_dist*100
-    if pct >= 75:   advice = "HOLD â€” Consider trailing SL"
-    elif pct >= 40: advice = "HOLD â€” Strong momentum"
-    elif pct >= 10: advice = "HOLD â€” In profit"
-    else:           advice = "WAIT â€” Near entry, watch momentum"
-    tp1_status = "HIT â€” SL at breakeven" if t["tp1_hit"] else f"{abs(dist_to_tp1):.0f} pts away"
+    if pct >= 75:   advice = "HOLD - Consider trailing SL"
+    elif pct >= 40: advice = "HOLD - Strong momentum"
+    elif pct >= 10: advice = "HOLD - In profit"
+    else:           advice = "WAIT - Near entry, watch momentum"
+    tp1_status = "HIT - SL at breakeven" if t["tp1_hit"] else f"{abs(dist_to_tp1):.0f} pts away"
     return (f"<b>HOURLY CHECK</b>  {ist_str()}\n\n{sig} {SYMBOL}\n\n"
         f"Price:    <b>{price:,.2f}</b>\nEntry:    <b>{entry:,.0f}</b>\n"
         f"SL:       <b>{sl:,.0f}</b>  ({dist_to_sl:.0f} pts)\n"
         f"TP1:      <b>{tp1:,.0f}</b>  {tp1_status}\n"
         f"TP2:      <b>{tp2:,.0f}</b>  ({abs(dist_to_tp2):.0f} pts)\n"
         f"Progress: <b>{max(0,pct):.1f}%</b> to TP2\nAdvice:   <b>{advice}</b>\n"
-        f"Source:   <b>{get_current_source()}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+        f"Source:   <b>{get_current_source()}</b>\n\n<i>- CLEXER V7.0 -</i>")
 
 def required_confidence():
     n = trade_stats["consecutive_sl"]
@@ -989,7 +989,7 @@ def check_price_status(price, high, low, df_5m=None):
     return "RUNNING"
 import copytrade as ct
 
-# â”€â”€â”€ TELEGRAM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- TELEGRAM -----------------------------------------------------------------
 def send_telegram(text):
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -1037,11 +1037,11 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None):
         if send_to_user(cid, text, file_id, file_type): ok += 1
         else: fail += 1
         time.sleep(0.05)
-    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed\n\n<i>â€” CLEXER V7.0 â€”</i>")
+    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed\n\n<i>- CLEXER V7.0 -</i>")
 
-# â”€â”€â”€ MESSAGE FORMATS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
-    e  = "ðŸŸ¢" if s["signal"]=="BUY" else "ðŸ”´"
+    e  = "🟢" if s["signal"]=="BUY" else "🔴"
     ci = {"HIGH":"[HIGH]","MEDIUM":"[MED]","LOW":"[LOW]"}.get(s.get("confidence",""),"")
     el = f"Entry    <b>{s['entry']:,.0f}</b>"
     if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
@@ -1049,33 +1049,33 @@ def fmt_signal(s):
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
     src = s.get("data_source", get_current_source()); mode = s.get("prompt_mode","?")
-    return (f"{e} <b>{s['signal']} â€” {SYMBOL}</b>  {ci}\n"
+    return (f"{e} <b>{s['signal']} - {SYMBOL}</b>  {ci}\n"
         f"{ist_str()}  |  {s.get('session',get_session())}\n"
         f"Source: <b>{src}</b> | Mode: {mode}\n\n"
         f"{el}\nSL       <b>{s['sl']:,.0f}</b>\nTP1     <b>{s['tp1']:,.0f}</b>\n"
-        f"TP2     <b>{s['tp2']:,.0f}</b>\nR:R     <b>{s.get('rr','â€”')}</b>\n\n"
+        f"TP2     <b>{s['tp2']:,.0f}</b>\nR:R     <b>{s.get('rr','-')}</b>\n\n"
         + (f"Weekly: <i>{wk}</i>\n" if wk else "")
         + (f"4H:     <i>{s4h}</i>\n" if s4h else "")
         + (f"Zone:   <i>{ez}</i>\n"  if ez else "")
         + (f"\n<i>{rs}</i>\n"        if rs else "")
-        + f"\n<i>â€” CLEXER V7.0 â€”</i>\n<i>Not financial advice</i>")
+        + f"\n<i>- CLEXER V7.0 -</i>\n<i>Not financial advice</i>")
 
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
     msgs = {
-        "SL_HIT":         "<b>SL HIT</b> â€” Finding next trade",
+        "SL_HIT":         "<b>SL HIT</b> - Finding next trade",
         "TP1_HIT":        f"<b>TP1 HIT!</b>\nSL -> Breakeven ({entry:,.0f})\nRiding to TP2 -> <b>{t.get('tp2',0):,.0f}</b>",
-        "TP2_HIT":        "<b>TP2 HIT â€” Trade Complete!</b>",
-        "STOP_HUNT":      "<b>STOP HUNT</b> â€” SL wicked, closed back. Holding.",
-        "SETUP_INVALID":  "<b>Setup Invalid</b> â€” SL hit before entry. Resetting.",
-        "ENTRY_MISSED":   f"<b>Entry Missed</b> â€” Price bypassed zone {entry:,.0f}. Resetting.",
-        "STRUCTURE_FLIP": "<b>Structure Flipped</b> â€” Closing trade.",
+        "TP2_HIT":        "<b>TP2 HIT - Trade Complete!</b>",
+        "STOP_HUNT":      "<b>STOP HUNT</b> - SL wicked, closed back. Holding.",
+        "SETUP_INVALID":  "<b>Setup Invalid</b> - SL hit before entry. Resetting.",
+        "ENTRY_MISSED":   f"<b>Entry Missed</b> - Price bypassed zone {entry:,.0f}. Resetting.",
+        "STRUCTURE_FLIP": "<b>Structure Flipped</b> - Closing trade.",
         "WAITING_ENTRY":  (f"<b>Waiting Pullback</b>\nEntry zone: <b>{entry:,.0f}</b>\n"
             + (f"Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")),
     }
-    return f"<b>{SYMBOL} UPDATE</b>  {ist_str()}\n\n{msgs.get(status,'Trade running')}\n\n<i>â€” CLEXER V7.0 â€”</i>"
+    return f"<b>{SYMBOL} UPDATE</b>  {ist_str()}\n\n{msgs.get(status,'Trade running')}\n\n<i>- CLEXER V7.0 -</i>"
 
-# â”€â”€â”€ TICK CHECK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
     if not active_trade["signal"]: return False
     try:
@@ -1088,13 +1088,13 @@ def run_tick_check():
                 send_telegram(f"<b>ENTRY TRIGGERED!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n\n"
                     f"Entry:  <b>{entry:,.0f}</b>  Price: <b>{price:,.2f}</b>\n"
                     f"SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
-                    f"TP1:    <b>{tp1:,.0f}</b>\nTP2:    <b>{tp2:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                    f"TP1:    <b>{tp1:,.0f}</b>\nTP2:    <b>{tp2:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
             return False
         if (sig=="BUY" and price>=tp2) or (sig=="SELL" and price<=tp2):
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             send_telegram(f"<b>TP2 HIT!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n"
-                f"Entry: {entry:,.0f} -> TP2: <b>{tp2:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                f"Entry: {entry:,.0f} -> TP2: <b>{tp2:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
             ct.on_tp2(); reset_trade(); return True
         if not t["tp1_hit"]:
             if (sig=="BUY" and price>=tp1) or (sig=="SELL" and price<=tp1):
@@ -1102,21 +1102,21 @@ def run_tick_check():
                 trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
                 ct.on_tp1(entry)
                 send_telegram(f"<b>TP1 HIT!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n"
-                    f"TP1: <b>{tp1:,.0f}</b> â€” SL moved to BE: <b>{entry:,.0f}</b>\n"
-                    f"Riding TP2: <b>{tp2:,.0f}</b>...\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                    f"TP1: <b>{tp1:,.0f}</b> - SL moved to BE: <b>{entry:,.0f}</b>\n"
+                    f"Riding TP2: <b>{tp2:,.0f}</b>...\n\n<i>- CLEXER V7.0 -</i>")
         sl_margin = 80
         if (sig=="BUY" and price<sl-sl_margin) or (sig=="SELL" and price>sl+sl_margin):
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row, price {price:,.0f} vs sl {sl:,.0f}")
-            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 2 scans.\n\n<i>â€” CLEXER V7.0 â€”</i>")
-            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 1 scan.\n\n<i>â€” CLEXER V7.0 â€”</i>")
+            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 2 scans.\n\n<i>- CLEXER V7.0 -</i>")
+            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 1 scan.\n\n<i>- CLEXER V7.0 -</i>")
             else:        send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
 
-# â”€â”€â”€ 1-HOUR PRICE CHECK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- 1-HOUR PRICE CHECK -------------------------------------------------------
 def run_price_check():
     if not active_trade["signal"]: return False
     try:
@@ -1144,8 +1144,8 @@ def run_price_check():
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row during 1H check")
-            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 2 scans.\n\n<i>â€” CLEXER V7.0 â€”</i>")
-            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 1 scan.\n\n<i>â€” CLEXER V7.0 â€”</i>")
+            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 2 scans.\n\n<i>- CLEXER V7.0 -</i>")
+            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 1 scan.\n\n<i>- CLEXER V7.0 -</i>")
             else:        send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
@@ -1164,7 +1164,7 @@ def run_price_check():
     except Exception as e: print(f"  [1H ERROR] {e}")
     return False
 
-# â”€â”€â”€ NEWS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- NEWS ---------------------------------------------------------------------
 def get_article_image(entry):
     for field in ("media_content","media_thumbnail"):
         items = getattr(entry, field, []) or entry.get(field, [])
@@ -1227,12 +1227,12 @@ def check_news(force=False):
         except Exception as e: print(f"  [NEWS CLAUDE] {e}")
     if not to_post: return
     to_post.sort(key=lambda x: 0 if x.get("strength")=="HIGH" else 1)
-    latest_news_context = [f"â€¢ {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} â€” {e.get('reason','')[:80]}" for e in to_post[:3]]
+    latest_news_context = [f"• {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} - {e.get('reason','')[:80]}" for e in to_post[:3]]
     for item in to_post[:MAX_NEWS_PER_RUN]:
-        impact = item.get("impact","NEUTRAL"); emoji = "ðŸŸ¢" if impact=="BULLISH" else ("ðŸ”´" if impact=="BEARISH" else "âšª")
+        impact = item.get("impact","NEUTRAL"); emoji = "🟢" if impact=="BULLISH" else ("🔴" if impact=="BEARISH" else "⚪")
         msg_text = (f"<b>MARKET NEWS</b>\n\n{emoji} <b>{impact}</b> for BTC\n"
             f"<b>{item['title'][:120]}</b>\n\n<i>{item.get('reason','')}</i>\n\n"
-            f"{item['source']}\n<a href='{item['link']}'>Read article</a>\n\n<i>â€” CLEXER V7.0 Â· {ist_str()} â€”</i>")
+            f"{item['source']}\n<a href='{item['link']}'>Read article</a>\n\n<i>- CLEXER V7.0 · {ist_str()} -</i>")
         try:
             img_bytes = get_article_image(item["entry"])
             if img_bytes and len(img_bytes)>2000:
@@ -1247,16 +1247,16 @@ def check_news(force=False):
             time.sleep(1)
         except Exception as e: print(f"  [NEWS POST] {e}")
 
-# â”€â”€â”€ /tvstatus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- /tvstatus ----------------------------------------------------------------
 def cmd_tvstatus(chat_id):
     if not TV_BRIDGE_URL:
-        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>.\n\n<i>â€” CLEXER V7.0 â€”</i>"); return
+        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>.\n\n<i>- CLEXER V7.0 -</i>"); return
     send_reply(chat_id, f"Checking...\n<code>{TV_BRIDGE_URL}</code>")
     now = time.time(); health = tv_ping()
     if not health:
         ls = tv_bridge_state.get("last_seen",0)
         since = f"{int((now-ls)//60)}m ago" if ls else "never"
-        send_reply(chat_id, f"<b>TV Status</b>\n\nðŸ”´ Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>\n\n<i>â€” CLEXER V7.0 â€”</i>"); return
+        send_reply(chat_id, f"<b>TV Status</b>\n\n🔴 Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>\n\n<i>- CLEXER V7.0 -</i>"); return
     tv_bridge_state.update({"online":True,"last_seen":now,"cdp_ok":health.get("cdp_connected",False),
         "tv_version":health.get("tv_version",""),"cached_intervals":health.get("cached_intervals",[])})
     cdp_ok = health.get("cdp_connected",False); tv_version = health.get("tv_version","?")
@@ -1264,7 +1264,7 @@ def cmd_tvstatus(chat_id):
     cached_ivs = health.get("cached_intervals",[])
     tk = tv_get_ticker(); price_ok = tk and tk.get("price",0)>0; price_val = tk["price"] if price_ok else 0
     df = tv_get_candles("1h",10); candles_ok = df is not None and len(df)>0
-    def tick(ok): return "ðŸŸ¢" if ok else "ðŸ”´"
+    def tick(ok): return "🟢" if ok else "🔴"
     overall = "<b>ALL SYSTEMS GO</b>" if (cdp_ok and price_ok and candles_ok) else "<b>PARTIAL</b>"
     uptime_str = f"{uptime//3600:.0f}h {(uptime%3600)//60:.0f}m" if uptime>=3600 else f"{uptime//60:.0f}m {uptime%60:.0f}s"
     send_reply(chat_id, f"<b>TV Status</b>\n\n{overall}\n\n"
@@ -1273,32 +1273,32 @@ def cmd_tvstatus(chat_id):
         f"{tick(candles_ok)} Candles" + (f" ({len(df)} bars 1H)" if candles_ok else "") + "\n\n"
         f"Cached: {', '.join(cached_ivs) if cached_ivs else 'none'}\n"
         f"TV: <code>{tv_version}</code> | Symbol: <code>{tv_symbol}</code>\n"
-        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}\n<i>â€” CLEXER V7.0 â€”</i>")
+        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}\n<i>- CLEXER V7.0 -</i>")
 
-# â”€â”€â”€ COMMANDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-ADMIN_HELP = """<b>CLEXER V7.0 â€” Admin Commands</b>
-â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+# --- COMMANDS -----------------------------------------------------------------
+ADMIN_HELP = """<b>CLEXER V7.0 - Admin Commands</b>
+--------------------
 
 <b>BOT CONTROL</b>
-/go â€” START scanning (required after deploy)
-/pause â€” STOP scanning
-/resume â€” Same as /go
-/signal â€” Force scan now
-/resetsl â€” Reset SL streak + cooldown
-/setinterval 4 â€” Set scan interval (hours)
+/go - START scanning (required after deploy)
+/pause - STOP scanning
+/resume - Same as /go
+/signal - Force scan now
+/resetsl - Reset SL streak + cooldown
+/setinterval 4 - Set scan interval (hours)
 
 <b>INFO</b>
-/status â€” Bot status
-/price â€” Live BTC price
-/trade â€” Active trade
-/history â€” Last 5 signals
-/stats â€” Win/loss stats
-/session â€” Current session
-/tvstatus â€” TV connection
+/status - Bot status
+/price - Live BTC price
+/trade - Active trade
+/history - Last 5 signals
+/stats - Win/loss stats
+/session - Current session
+/tvstatus - TV connection
 
 <b>TRADE CONTROL</b>
-/close â€” Close trade
-/sltobe â€” SL to breakeven
+/close - Close trade
+/sltobe - SL to breakeven
 /setsl 61500
 /settp1 63000
 /settp2 65000
@@ -1312,34 +1312,34 @@ ADMIN_HELP = """<b>CLEXER V7.0 â€” Admin Commands</b>
 /latestnews
 
 <b>COPY TRADE (ADMIN)</b>
-/users â€” Copy trade users list
-/allusers â€” Summary stats
-/user ID â€” User detail + position
-/kick ID â€” Remove user
-/pauseuser ID â€” Pause/unpause user
+/users - Copy trade users list
+/allusers - Summary stats
+/user ID - User detail + position
+/kick ID - Remove user
+/pauseuser ID - Pause/unpause user
 
-/broadcast â€” Send to all
+/broadcast - Send to all
 /help"""
 
 FRIEND_HELP = """<b>CLEXER V7.0 Commands</b>
-â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
-/status â€” Bot status
-/price â€” Live BTC price
-/trade â€” Active trade
-/history â€” Last 5 signals
-/stats â€” Statistics
-/session â€” Current session
-/help â€” This menu
+--------------------
+/status - Bot status
+/price - Live BTC price
+/trade - Active trade
+/history - Last 5 signals
+/stats - Statistics
+/session - Current session
+/help - This menu
 
 <b>COPY TRADE (BingX)</b>
-/connect KEY SECRET â€” Link BingX
-/disconnect â€” Remove keys
-/copytrade on|off â€” Auto-copy
-/setsize 50 â€” Trade size (USDT)
-/setleverage 10 â€” Leverage
-/mytrade â€” Your open position
-/mysize â€” Your settings
-/myhistory â€” Trade history
+/connect KEY SECRET - Link BingX
+/disconnect - Remove keys
+/copytrade on|off - Auto-copy
+/setsize 50 - Trade size (USDT)
+/setleverage 10 - Leverage
+/mytrade - Your open position
+/mysize - Your settings
+/myhistory - Trade history
 
 <i>Note: 2 uses per command per hour</i>"""
 
@@ -1363,7 +1363,7 @@ def handle_command(text, chat_id, message=None):
         if not allowed:
             send_reply(chat_id, f"<b>Limit reached</b>\n\nUse <code>{cmd}</code> again at <b>{reset_str}</b>\n\n<i>Free tier: 2 uses/hr</i>"); return
 
-    # â”€â”€ Copy trade commands (user + admin) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- Copy trade commands (user + admin) -----------------------------------
     if ct.is_ct_command(cmd, is_admin):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
@@ -1376,15 +1376,15 @@ def handle_command(text, chat_id, message=None):
         bot_paused.clear()
         send_reply(chat_id,
             f"<b>CLEXER Started</b>\n\n"
-            f"âœ… Scanning active\n"
+            f"✅ Scanning active\n"
             f"Tick: {TICK_INTERVAL}s | Price: {PRICE_CHECK_INTERVAL//60}m | Signal: {SIGNAL_SCAN_INTERVAL//3600}h\n"
             f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | News: {'ON' if SEND_NEWS else 'OFF'}\n"
             f"Source: {get_current_source()}\n\n"
-            f"<i>â€” CLEXER V7.0 â€”</i>")
+            f"<i>- CLEXER V7.0 -</i>")
 
     elif cmd == "/pause":
         bot_paused.set()
-        send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>â€” CLEXER V7.0 â€”</i>")
+        send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>- CLEXER V7.0 -</i>")
 
     elif cmd == "/tvstatus":
         cmd_tvstatus(chat_id)
@@ -1397,7 +1397,7 @@ def handle_command(text, chat_id, message=None):
             ) if t["signal"] else "No active trade"
         src = get_current_source()
         tv_status = ("ONLINE" if (tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
-            else "Bridge OK â€” TV not connected" if tv_bridge_state["online"] else "OFFLINE â€” Binance") if TV_BRIDGE_URL else "Not configured â€” Binance"
+            else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - Binance") if TV_BRIDGE_URL else "Not configured - Binance"
         send_reply(chat_id,
             f"<b>CLEXER V7.0</b>\n\nBot: {st}\n{cd}"
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
@@ -1424,7 +1424,7 @@ def handle_command(text, chat_id, message=None):
         else:
             try: tk = get_ticker(); pl = f"Current: <b>{tk['price']:,.2f}</b>\n"
             except: pl = ""
-            send_reply(chat_id, f"<b>Active Trade</b>\n\n{t['signal']} â€” {SYMBOL}\n{pl}"
+            send_reply(chat_id, f"<b>Active Trade</b>\n\n{t['signal']} - {SYMBOL}\n{pl}"
                 f"Entry: <b>{t['entry']:,.0f}</b> {'OK' if t['entry_hit'] else 'pending'}\n"
                 f"SL:    <b>{t['sl']:,.0f}</b>\nTP1:   <b>{t['tp1']:,.0f}</b> {'HIT' if t['tp1_hit'] else 'pending'}\n"
                 f"TP2:   <b>{t['tp2']:,.0f}</b>\nType:  {t['entry_type']}\n"
@@ -1449,7 +1449,7 @@ def handle_command(text, chat_id, message=None):
     elif cmd == "/session":
         s = get_session()
         send_reply(chat_id, f"<b>Session</b>\n\n{s} {'Active' if is_trading_hours() else 'Inactive'}\n\n"
-            f"London:  07:30â€“16:30 IST\nNY:      18:30â€“01:00 IST\nSleep:   01:00â€“07:29 IST\n\n{ist_str()}")
+            f"London:  07:30-16:30 IST\nNY:      18:30-01:00 IST\nSleep:   01:00-07:29 IST\n\n{ist_str()}")
 
     elif cmd == "/users":
         uname = (message.get("from",{}).get("username","?") if message else "?")
@@ -1462,7 +1462,7 @@ def handle_command(text, chat_id, message=None):
             info = f"{t['signal']} @ {t['entry']:,.0f}"
             log_trade_outcome("MANUAL_CLOSE", f"closed by admin")
             ct.on_close_all()
-            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}\n\n<i>â€” CLEXER V7.0 â€”</i>")
+            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}\n\n<i>- CLEXER V7.0 -</i>")
             send_reply(chat_id, f"Closed: {info}"); force_scan.set()
 
     elif cmd == "/sltobe":
@@ -1470,7 +1470,7 @@ def handle_command(text, chat_id, message=None):
         else:
             old = active_trade["sl"]; active_trade["sl"] = active_trade["entry"]
             ct.on_sl_to_be(active_trade["entry"])
-            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
             send_reply(chat_id, f"SL -> {active_trade['entry']:,.0f}")
 
     elif cmd == "/setsl":
@@ -1481,7 +1481,7 @@ def handle_command(text, chat_id, message=None):
                 v = float(parts[1].replace(",","")); old = active_trade["sl"]
                 active_trade["sl"] = v
                 ct.on_update_sl(v)
-                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
                 send_reply(chat_id, f"SL = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /setsl 61500")
 
@@ -1491,7 +1491,7 @@ def handle_command(text, chat_id, message=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp1"] = v
-                send_telegram(f"<b>TP1 -> {v:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                send_telegram(f"<b>TP1 -> {v:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
                 send_reply(chat_id, f"TP1 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp1 63000")
 
@@ -1501,7 +1501,7 @@ def handle_command(text, chat_id, message=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp2"] = v
-                send_telegram(f"<b>TP2 -> {v:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                send_telegram(f"<b>TP2 -> {v:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
                 send_reply(chat_id, f"TP2 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp2 65000")
 
@@ -1531,7 +1531,7 @@ def handle_command(text, chat_id, message=None):
         if len(parts)<2:
             send_reply(chat_id, f"Charts: {'ON' if SEND_CHARTS else 'OFF'}\nTFs: {', '.join(CHART_TFS).upper()}\n\nUsage: /images on|off\n(OFF by default)")
         elif parts[1].lower()=="on":
-            SEND_CHARTS = True; send_reply(chat_id, f"Charts ON â€” posting to channel only\nTFs: {', '.join(CHART_TFS).upper()}")
+            SEND_CHARTS = True; send_reply(chat_id, f"Charts ON - posting to channel only\nTFs: {', '.join(CHART_TFS).upper()}")
         elif parts[1].lower()=="off":
             SEND_CHARTS = False; send_reply(chat_id, "Charts OFF")
         else: send_reply(chat_id, "Usage: /images on|off")
@@ -1547,7 +1547,7 @@ def handle_command(text, chat_id, message=None):
     elif cmd == "/news":
         if len(parts)<2:
             send_reply(chat_id, f"News: {'ON' if SEND_NEWS else 'OFF (default)'}\nUsage: /news on|off")
-        elif parts[1].lower()=="on":  SEND_NEWS = True;  send_reply(chat_id, f"News ON â€” {len(NEWS_SOURCES)} sources")
+        elif parts[1].lower()=="on":  SEND_NEWS = True;  send_reply(chat_id, f"News ON - {len(NEWS_SOURCES)} sources")
         elif parts[1].lower()=="off": SEND_NEWS = False; send_reply(chat_id, "News OFF")
         else: send_reply(chat_id, "Usage: /news on|off")
 
@@ -1601,48 +1601,48 @@ def command_listener():
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
 
-# â”€â”€â”€ MAIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# --- MAIN ---------------------------------------------------------------------
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time
 
     print(f"[CLEXER V7.0] Starting | {SYMBOL}")
-    print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET â€” Binance-only'}")
-    print(f"  Starting PAUSED â€” send /go to start scanning")
+    print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET - Binance-only'}")
+    print(f"  Starting PAUSED - send /go to start scanning")
     load_users()
     ct.load()
 
-    # Start PAUSED â€” user must send /go
+    # Start PAUSED - user must send /go
     bot_paused.set()
 
     if TV_BRIDGE_URL:
         print("  Checking TV bridge...")
         if tv_update_state():
             cdp = "TV connected" if tv_bridge_state["cdp_ok"] else "TV not connected yet"
-            print(f"  Bridge ONLINE â€” {cdp}")
+            print(f"  Bridge ONLINE - {cdp}")
         else:
-            print("  TV bridge OFFLINE â€” Binance fallback")
+            print("  TV bridge OFFLINE - Binance fallback")
 
     threading.Thread(target=command_listener, daemon=True).start()
 
-    # Startup message â†’ admin DM only
+    # Startup message → admin DM only
     tv_line = ""
     if TV_BRIDGE_URL:
-        if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:   tv_line = "TV: ONLINE âœ…\n"
-        elif tv_bridge_state["online"]:                                 tv_line = "TV: Bridge OK â€” TV not connected\n"
-        else:                                                           tv_line = "TV: OFFLINE â€” Binance fallback\n"
+        if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:   tv_line = "TV: ONLINE ✅\n"
+        elif tv_bridge_state["online"]:                                 tv_line = "TV: Bridge OK - TV not connected\n"
+        else:                                                           tv_line = "TV: OFFLINE - Binance fallback\n"
     else:
-        tv_line = "TV: Not configured â€” Binance-only\n"
+        tv_line = "TV: Not configured - Binance-only\n"
 
     send_admin(
         f"<b>CLEXER V7.0 Deployed</b>\n"
-        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+        f"---------------------\n"
         f"{tv_line}"
         f"Charts: {'ON' if SEND_CHARTS else 'OFF (default)'}\n"
         f"News: {'ON' if SEND_NEWS else 'OFF (default)'}\n\n"
-        f"âš ï¸ <b>Bot is PAUSED</b>\n"
+        f"⚠️ <b>Bot is PAUSED</b>\n"
         f"Send /go to start scanning.\n"
-        f"â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
-        f"<i>â€” CLEXER V7.0 â€”</i>")
+        f"---------------------\n"
+        f"<i>- CLEXER V7.0 -</i>")
 
     MAIN_TICK = 60
 
@@ -1662,12 +1662,12 @@ def main():
                 was_online = tv_bridge_state["online"]
                 is_online  = tv_update_state()
                 if was_online and not is_online:
-                    print("  TV OFFLINE â€” Binance fallback")
-                    # Admin DM only â€” not channel
-                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                    print("  TV OFFLINE - Binance fallback")
+                    # Admin DM only - not channel
+                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).\n\n<i>- CLEXER V7.0 -</i>")
                 elif not was_online and is_online:
                     print("  TV back ONLINE")
-                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>- CLEXER V7.0 -</i>")
 
             # News
             if (now-last_news_check_time) >= NEWS_CHECK_INTERVAL and SEND_NEWS:
@@ -1676,7 +1676,7 @@ def main():
 
             # Sleep hours
             if not forced and is_ist_sleep():
-                print("  [SLEEP] 01:00â€“07:29 IST")
+                print("  [SLEEP] 01:00-07:29 IST")
                 time.sleep(MAIN_TICK); continue
 
             # 1-min tick
@@ -1697,17 +1697,17 @@ def main():
 
             # Session check
             if not forced and not is_trading_hours() and not active_trade["signal"]:
-                print(f"  [WAIT] {get_session()} â€” not London/NY")
+                print(f"  [WAIT] {get_session()} - not London/NY")
                 time.sleep(MAIN_TICK); continue
 
             # Cooldown
             if trade_stats["cooldown_scans"] > 0 and not forced:
                 trade_stats["cooldown_scans"] -= 1
                 if trade_stats["cooldown_scans"] == 0:
-                    send_telegram("<b>Cooldown over â€” scanning now</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                    send_telegram("<b>Cooldown over - scanning now</b>\n\n<i>- CLEXER V7.0 -</i>")
                 last_signal_scan_time = now; time.sleep(MAIN_TICK); continue
 
-            # â”€â”€ FULL CLAUDE SCAN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- FULL CLAUDE SCAN ----------------------------------------------
             last_signal_scan_time = now
             print("  Fetching candles...")
             ticker = get_ticker(); price = ticker["price"]
@@ -1716,12 +1716,12 @@ def main():
             if active_trade["signal"]:
                 t = active_trade
                 send_telegram(
-                    f"<b>4H Scan â€” Active Trade</b>  {ist_str()}\n\n"
+                    f"<b>4H Scan - Active Trade</b>  {ist_str()}\n\n"
                     f"{t['signal']} @ {t['entry']:,.0f}\n"
                     f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n"
                     f"Current: {price:,.2f}\n"
                     f"Entry: {'YES' if t['entry_hit'] else 'pending'} | TP1: {'YES' if t['tp1_hit'] else 'no'}\n\n"
-                    f"Analyzing...\n<i>â€” CLEXER V7.0 â€”</i>")
+                    f"Analyzing...\n<i>- CLEXER V7.0 -</i>")
 
             data = fetch_all_data()
 
@@ -1738,19 +1738,19 @@ def main():
                     if forced:
                         send_telegram(f"<b>Trade Status: HOLD</b>  {ist_str()}\n\n"
                             f"{t['signal']} @ {t['entry']:,.0f}\nStructure intact.\n"
-                            f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                            f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
                 elif signal.get("_hold"):
-                    send_telegram(f"<b>Trade Validated â€” HOLD</b>  {ist_str()}\n\n"
+                    send_telegram(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
-                        f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                        f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>- CLEXER V7.0 -</i>")
                 elif signal["signal"] != t["signal"]:
                     flip_reason = signal.get("reasoning","Structure flipped")
                     log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
                     send_telegram(f"<b>STRUCTURE FLIP!</b>  {ist_str()}\n\n"
                         f"Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                         f"Why: <i>{flip_reason[:200]}</i>\n\n"
-                        f"New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                        f"New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
                     ct.on_close_all()
                     reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
                     ct.on_signal(signal, price)
@@ -1759,7 +1759,7 @@ def main():
                         send_telegram(f"<b>Trade Update</b>  {ist_str()}\n\n"
                             f"Old: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"New: {signal['signal']} @ {signal['entry']:,.0f}\n"
-                            f"Bias confirmed.\n\n<i>â€” CLEXER V7.0 â€”</i>")
+                            f"Bias confirmed.\n\n<i>- CLEXER V7.0 -</i>")
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
                     reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
@@ -1767,7 +1767,7 @@ def main():
 
         except KeyboardInterrupt:
             print("\n[BOT] Stopped.")
-            send_telegram("<b>CLEXER V7.0 Stopped</b>\n\n<i>â€” CLEXER â€”</i>"); break
+            send_telegram("<b>CLEXER V7.0 Stopped</b>\n\n<i>- CLEXER -</i>"); break
         except Exception as e:
             print(f"  [MAIN ERROR] {e}"); import traceback; traceback.print_exc()
 
