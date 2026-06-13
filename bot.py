@@ -473,7 +473,7 @@ def get_volume_profile(df, n=5):
             break
     return {"avg_vol": avg_vol, "last_big_candle": last_big}
 
-# ─── CHART DRAWING ────────────────────────────────────────────────────────────
+# ─── CHART DRAWING (for channel display only — NOT sent to Claude API) ────────
 def draw_smc_chart(df, tf, obs, fvgs, bos_events, s_highs, s_lows_list, price=None):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10),
         gridspec_kw={"height_ratios": [4, 1]}, facecolor="#0d0d0d")
@@ -554,7 +554,7 @@ def _build_chart(df, lb, tf_key, price):
     bos  = detect_bos_choch(df);       sh, sl_pts = find_swing_points(df, lb)
     return draw_smc_chart(df, tf_key.upper(), obs, fvgs, bos, sh[-8:], sl_pts[-8:], price)
 
-def generate_all_charts_for_claude(data, price):
+def generate_all_charts(data, price):
     charts = {}
     for tf_key, (df, lb) in data.items():
         charts[tf_key] = _build_chart(df, lb, tf_key, price)
@@ -682,7 +682,54 @@ def fetch_all_data():
     return data
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  V7 — NEW 10-STEP PROMPT (used when TradingView ONLINE)
+#  JSON EXTRACTION HELPER — FIX FOR ISSUE 2
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def extract_json_from_response(text: str) -> dict | None:
+    """Safely extract JSON from Claude response — handles markdown, preamble, partial text."""
+    if not text or not text.strip():
+        print("  [JSON] Empty response from Claude")
+        return None
+
+    # Strip markdown fences
+    cleaned = re.sub(r'```json\s*', '', text)
+    cleaned = re.sub(r'```\s*', '', cleaned).strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Find the outermost {...} block
+    start = cleaned.find('{')
+    if start == -1:
+        print(f"  [JSON] No JSON object found in: {cleaned[:200]}")
+        return None
+
+    depth = 0
+    end   = -1
+    for i in range(start, len(cleaned)):
+        if cleaned[i] == '{':
+            depth += 1
+        elif cleaned[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    if end == -1:
+        print(f"  [JSON] Unclosed JSON object in response")
+        return None
+
+    try:
+        return json.loads(cleaned[start:end])
+    except json.JSONDecodeError as e:
+        print(f"  [JSON] Parse error after extraction: {e}")
+        print(f"  [JSON] Extracted: {cleaned[start:end][:300]}")
+        return None
+# ═══════════════════════════════════════════════════════════════════════════════
+#  V7 — NEW 10-STEP PROMPT (TradingView ONLINE) — SOFTENED WAIT CONDITIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
@@ -716,7 +763,7 @@ Is price rising or falling? What is the current volume?
 ═══════════════════════════════════════
  STEP 4 — 1H TF (CONFIRMATION)
 ═══════════════════════════════════════
-- Does it confirm 4H bias?
+- Does it confirm 4H bias? (minor lag is OK — only block if actively opposing)
 - Nearest support/resistance levels
 - Any liquidity above or below current price?
 
@@ -724,31 +771,36 @@ Is price rising or falling? What is the current volume?
  STEP 5 — 5M TF (TIMING)
 ═══════════════════════════════════════
 - Current momentum (higher lows = bullish, lower highs = bearish)
-- Volume trend on 5M
+- Volume trend on 5M (5M noise alone is NOT a reason to skip a trade)
 
 ═══════════════════════════════════════
  STEP 6 — DECIDE DIRECTION
 ═══════════════════════════════════════
 
-LONG requires ALL:
-  ✅ 4H making HH and HL
-  ✅ Price above 4H bullish OB
-  ✅ Weekly support held
-  ✅ 5M higher lows forming
-  ✅ Big green volume candle recently (within last 10 bars on 4H or 1H)
+LONG requires:
+  ✅ 4H making HH and HL (bullish structure)
+  ✅ Price at or pulling back toward 4H bullish OB or FVG
+  ✅ Weekly not at major resistance ceiling
+  ✅ 5M not showing strong lower highs (minor conflict OK if 4H is clear)
 
-SHORT requires ALL:
-  ✅ 4H making LH and LL
-  ✅ Price below 4H bearish OB
-  ✅ Weekly resistance holding
-  ✅ 5M lower highs forming
-  ✅ Big red volume candle recently (within last 10 bars on 4H or 1H)
+SHORT requires:
+  ✅ 4H making LH and LL (bearish structure)
+  ✅ Price at or bouncing toward 4H bearish OB or FVG
+  ✅ Weekly not at major support floor
+  ✅ 5M not showing strong higher lows (minor conflict OK if 4H is clear)
 
-NO TRADE (return WAIT) when ANY:
-  ❌ Price in middle of range with no clear bias
-  ❌ Low volume consolidation
-  ❌ 4H and 5M conflict on direction
-  ❌ No big volume candle in recent 10 bars
+HARD NO TRADE — return WAIT ONLY when:
+  ❌ 4H structure is completely flat / no clear HH+HL or LH+LL
+  ❌ ALL three timeframes (4H, 1H, 5M) actively conflict with each other
+  ❌ No OB or FVG within 2000 pts on 4H or 1H (nothing to trade toward)
+  ❌ Price is mid-range with no structure to lean on in any timeframe
+
+IMPORTANT: Do NOT return WAIT for:
+  • Missing big volume candle — volume confirms but absence alone does not block
+  • 5M conflict while 4H + 1H agree
+  • 1H lagging while 4H is clear
+  • Low volume alone
+  • Neutral weekly while 4H has clear directional structure
 
 ═══════════════════════════════════════
  STEP 7 — FIND ENTRY (PULLBACK PREFERRED)
@@ -770,7 +822,6 @@ Only use MARKET entry if price is ALREADY inside an OB/FVG zone right now.
 
 NEVER enter:
   ❌ At top/bottom of a big momentum candle (chasing)
-  ❌ Without volume confirmation
   ❌ Against 4H trend direction
 
 ═══════════════════════════════════════
@@ -821,7 +872,7 @@ If validating an active trade (see ACTIVE TRADE TO VALIDATE above):
 ═══════════════════════════════════════
 
 WAIT:
-{{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"which step rejected the trade and why","trade_valid":null}}
+{{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"which HARD BLOCK triggered and why","trade_valid":null}}
 
 HOLD (only when validating active trade and it's still valid):
 {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"why current trade still valid","trade_valid":true}}
@@ -831,7 +882,7 @@ Trade:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  V7 — OLD PROMPT (used when TradingView OFFLINE, Binance fallback)
+#  V7 — OLD PROMPT (TradingView OFFLINE, Binance fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def build_old_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
@@ -865,14 +916,15 @@ SHORT requires:
  WAIT CONDITIONS
 ═══════════════════════════════════════
 HARD BLOCK A: ALL THREE timeframes conflict
-HARD BLOCK B: No OB or FVG within 1000 pts on 4H or 1H
+HARD BLOCK B: No OB or FVG within 2000 pts on 4H or 1H
 HARD BLOCK C: 4H structure completely flat
 
 DO NOT WAIT for:
   ❌ Minor 1H lag while 4H is clear
   ❌ 5M noise while 4H+1H agree
   ❌ Weekly neutral but 4H clear
-  ❌ Low volume alone{conf_note}{session_note}
+  ❌ Low volume alone
+  ❌ Missing big volume candle{conf_note}{session_note}
 
 ═══════════════════════════════════════
  ENTRY TYPE
@@ -911,7 +963,7 @@ HOLD:  {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_typ
 Trade: {{"signal":"BUY" or "SELL","entry":<price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:X.X","entry_type":"MARKET" or "PULLBACK","entry_note":"","bias":"BULLISH" or "BEARISH","weekly_trend":"","structure_4h":"","entry_zone":"","confidence":"HIGH" or "MEDIUM" or "LOW","session":"{session}","reasoning":"","trade_valid":null}}"""
 
 
-# ─── CLAUDE FULL ANALYSIS ─────────────────────────────────────────────────────
+# ─── CLAUDE FULL ANALYSIS — NO IMAGES SENT TO API (FIX FOR ISSUE 3) ──────────
 def analyze_with_claude(ticker, data, validate_trade=False):
     price   = ticker["price"]
     session = get_session()
@@ -921,9 +973,14 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     prompt_mode = "NEW (TradingView)" if tv_on else "OLD (Binance)"
     print(f"  [CLAUDE] Mode:{prompt_mode} | MinConf:{min_conf} | Validate:{validate_trade} | Session:{session}")
 
-    all_charts     = generate_all_charts_for_claude(data, price)
-    channel_charts = {k: v for k, v in all_charts.items() if k in CHART_TFS}
-    send_charts_to_channel(channel_charts, "SMC Analysis")
+    # Generate charts for channel display only — NOT sent to Claude API
+    if SEND_CHARTS:
+        try:
+            channel_charts = generate_all_charts(data, price)
+            charts_to_send = {k: v for k, v in channel_charts.items() if k in CHART_TFS}
+            send_charts_to_channel(charts_to_send, "SMC Analysis")
+        except Exception as e:
+            print(f"  [CHARTS] Channel chart error: {e}")
 
     summary = build_smc_summary(data, ticker)
 
@@ -968,20 +1025,39 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     else:
         prompt = build_old_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note)
 
+    # ── Claude API call — TEXT ONLY, no images (Fix Issue 3) ──────────────────
+    max_retries = 2
+    raw = None
+    for attempt in range(max_retries):
+        try:
+            msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                model="claude-opus-4-6",
+                max_tokens=1200,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                ]}]
+            )
+            raw = msg.content[0].text.strip() if msg.content else ""
+            if raw:
+                break
+            print(f"  [CLAUDE] Empty response on attempt {attempt+1}, retrying...")
+            time.sleep(2)
+        except Exception as e:
+            print(f"  [CLAUDE ERROR] attempt {attempt+1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(3)
+
+    if not raw:
+        print("  [CLAUDE] No response after retries")
+        return None
+
+    # ── Safe JSON extraction (Fix Issue 2) ────────────────────────────────────
+    signal = extract_json_from_response(raw)
+    if signal is None:
+        print(f"  [CLAUDE] Could not parse JSON. Raw response:\n{raw[:500]}")
+        return None
+
     try:
-        msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1200,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": all_charts["weekly"]}},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": all_charts["4h"]}},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": all_charts["1h"]}},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": all_charts["5m"]}},
-                {"type": "text",  "text": prompt},
-            ]}]
-        )
-        raw      = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        signal   = json.loads(raw)
         sig_type = signal.get("signal", "")
 
         if sig_type == "HOLD":
@@ -1058,7 +1134,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         return signal
 
     except Exception as e:
-        print(f"  [CLAUDE ERROR] {e}")
+        print(f"  [CLAUDE PARSE ERROR] {e}")
         import traceback; traceback.print_exc()
         return None
 
@@ -1388,8 +1464,8 @@ def check_news(force=False):
                     f"Return JSON array MEDIUM/HIGH impact only.\n"
                     f"Fields: index(int), impact(BULLISH/BEARISH/NEUTRAL), strength(HIGH/MEDIUM), reason(str).\n"
                     f"Empty [] if none. JSON only."}])
-            raw      = resp.content[0].text.strip().replace("```json","").replace("```","").strip()
-            analyzed = json.loads(raw)
+            raw_news = resp.content[0].text.strip().replace("```json","").replace("```","").strip()
+            analyzed = json.loads(raw_news)
             for item in analyzed:
                 idx = item.get("index", -1)
                 if 0 <= idx < len(batch):
@@ -1751,7 +1827,7 @@ def handle_command(text, chat_id, message=None):
                 send_reply(chat_id, f"Cooldown: {int((900-elapsed)/60)} min left")
             else:
                 last_force_scan_time = now
-                send_reply(chat_id, "Forcing full scan — charts + signal (~30s)")
+                send_reply(chat_id, "Forcing full scan — text analysis only (~15s)")
                 force_scan.set()
 
     elif cmd == "/pause":
@@ -1788,10 +1864,11 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id,
                 f"Charts: {'ON' if SEND_CHARTS else 'OFF'}\n"
                 f"TFs: {', '.join(CHART_TFS).upper()}\n\n"
-                f"Usage: /images on  or  /images off")
+                f"Usage: /images on  or  /images off\n"
+                f"(Charts are sent to channel only — not to Claude API)")
         elif parts[1].lower() == "on":
             SEND_CHARTS = True
-            send_reply(chat_id, f"Chart images ON\nPosting: {', '.join(CHART_TFS).upper()}")
+            send_reply(chat_id, f"Chart images ON (channel only)\nPosting: {', '.join(CHART_TFS).upper()}")
         elif parts[1].lower() == "off":
             SEND_CHARTS = False
             send_reply(chat_id, "Chart images OFF")
@@ -1918,6 +1995,7 @@ def main():
     print(f"  TV Bridge URL: {TV_BRIDGE_URL or 'NOT SET — Binance-only mode'}")
     print(f"  Tick:{TICK_INTERVAL}s | Price:{PRICE_CHECK_INTERVAL//60}m | Signal:{SIGNAL_SCAN_INTERVAL//3600}h")
     print(f"  News: {'ON' if SEND_NEWS else 'OFF (default)'}")
+    print(f"  Claude mode: TEXT ONLY (no images sent to API)")
     load_users()
 
     if TV_BRIDGE_URL:
@@ -1945,10 +2023,10 @@ def main():
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"1-min tick: entry/TP/SL alerts\n"
         f"1-hour: TV/Binance tick-perfect check\n"
-        f"4-hour: Claude SMC analysis\n"
+        f"4-hour: Claude SMC analysis (text only)\n"
         f"News: {'ON' if SEND_NEWS else 'OFF (admin /news on to enable)'}\n\n"
         f"{tv_line}"
-        f"Charts: {', '.join(CHART_TFS).upper()} | {'ON' if SEND_CHARTS else 'OFF'}\n"
+        f"Charts: {', '.join(CHART_TFS).upper()} | {'ON (channel only)' if SEND_CHARTS else 'OFF'}\n"
         f"/help for commands | /tvstatus to check TV\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>— CLEXER V7.0 —</i>"
