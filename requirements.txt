@@ -8,3 +8,4 @@ Pillow
 feedparser
 beautifulsoup4
 lxml
+cryptography
