@@ -990,10 +990,14 @@ def check_price_status(price, high, low, df_5m=None):
 import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
+channel_paused = {"1": False, "2": False}  # per-channel pause state
+
 def send_telegram(text):
     success = False
-    for cid in [TELEGRAM_CHANNEL_ID, os.getenv("TELEGRAM_CHANNEL_ID_2","")]:
+    channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
+    for key, cid in channels:
         if not cid: continue
+        if channel_paused.get(key): continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text,
@@ -1307,6 +1311,11 @@ ADMIN_HELP = """<b>CLEXER V7.0 - Admin Commands</b>
 /settp1 63000
 /settp2 65000
 
+<b>CHANNELS</b>
+/channels - show status
+/pausechannel 1 or 2
+/resumechannel 1 or 2
+
 <b>CHARTS (off by default)</b>
 /images on|off
 /setimages weekly,4h,1h,5m
@@ -1351,7 +1360,8 @@ FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/sta
 ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/close","/sltobe","/setsl","/settp1","/settp2","/tvstatus",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
-    "/images","/setimages","/news","/latestnews"}
+    "/images","/setimages","/news","/latestnews",
+    "/pausechannel","/resumechannel","/channels"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -1563,6 +1573,30 @@ def handle_command(text, chat_id, message=None):
         broadcast_pending[chat_id] = {"step":"waiting_message"}
         send_reply(chat_id, "<b>Broadcast Mode</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>")
 
+    elif cmd == "/channels":
+        ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
+        s1 = "PAUSED" if channel_paused["1"] else "ACTIVE"
+        s2 = "PAUSED" if channel_paused["2"] else ("ACTIVE" if ch2 else "NOT SET")
+        send_reply(chat_id,
+            f"<b>Channel Status</b>\n\n"
+            f"Channel 1: <b>{s1}</b>\n<code>{TELEGRAM_CHANNEL_ID}</code>\n\n"
+            f"Channel 2: <b>{s2}</b>\n<code>{ch2 or 'not configured'}</code>\n\n"
+            f"/pausechannel 1 or 2\n/resumechannel 1 or 2")
+
+    elif cmd == "/pausechannel":
+        if len(parts) < 2 or parts[1] not in ("1","2"):
+            send_reply(chat_id, "Usage: /pausechannel 1\nor /pausechannel 2"); return
+        key = parts[1]
+        channel_paused[key] = True
+        send_reply(chat_id, f"<b>Channel {key} PAUSED</b>\n\nNo signals will be sent to channel {key}.\nUse /resumechannel {key} to resume.")
+
+    elif cmd == "/resumechannel":
+        if len(parts) < 2 or parts[1] not in ("1","2"):
+            send_reply(chat_id, "Usage: /resumechannel 1\nor /resumechannel 2"); return
+        key = parts[1]
+        channel_paused[key] = False
+        send_reply(chat_id, f"<b>Channel {key} RESUMED</b>\n\nSignals will now be sent to channel {key}.")
+
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
         else: send_reply(chat_id, "Nothing to cancel.")
@@ -1597,6 +1631,9 @@ def command_listener():
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 if not cid: continue
+                # Ignore messages from the second group (send-only)
+                ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
+                if ch2 and str(cid) == str(ch2): continue
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
                 register_user(cid)
                 if cid in broadcast_pending and not text.startswith("/"):
@@ -1749,15 +1786,20 @@ def main():
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
                         f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>- CLEXER V7.0 -</i>")
                 elif signal["signal"] != t["signal"]:
-                    flip_reason = signal.get("reasoning","Structure flipped")
-                    log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
-                    send_telegram(f"<b>STRUCTURE FLIP!</b>  {ist_str()}\n\n"
-                        f"Closing: {t['signal']} @ {t['entry']:,.0f}\n"
-                        f"Why: <i>{flip_reason[:200]}</i>\n\n"
-                        f"New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
-                    ct.on_close_all()
-                    reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
-                    ct.on_signal(signal, price)
+                    # Only flip if entry has already been hit — never flip a pending trade
+                    if not t["entry_hit"]:
+                        print(f"  [FLIP BLOCKED] Entry not hit yet — holding {t['signal']} @ {t['entry']:,.0f}")
+                        send_admin(f"<b>Flip Blocked</b>\n\nClaude wanted to flip {t['signal']} -> {signal['signal']} but entry not hit yet.\nHolding original trade.\n\n<i>- CLEXER V7.0 -</i>")
+                    else:
+                        flip_reason = signal.get("reasoning","Structure flipped")
+                        log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
+                        send_telegram(f"<b>STRUCTURE FLIP!</b>  {ist_str()}\n\n"
+                            f"Closing: {t['signal']} @ {t['entry']:,.0f}\n"
+                            f"Why: <i>{flip_reason[:200]}</i>\n\n"
+                            f"New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
+                        ct.on_close_all()
+                        reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
+                        ct.on_signal(signal, price)
                 else:
                     if forced:
                         send_telegram(f"<b>Trade Update</b>  {ist_str()}\n\n"
