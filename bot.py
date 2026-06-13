@@ -991,12 +991,16 @@ import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
 def send_telegram(text):
-    try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHANNEL_ID, "text": text,
-                  "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
-        r.raise_for_status(); return True
-    except Exception as e: print(f"  [TG ERROR] {e}"); return False
+    success = False
+    for cid in [TELEGRAM_CHANNEL_ID, os.getenv("TELEGRAM_CHANNEL_ID_2","")]:
+        if not cid: continue
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": cid, "text": text,
+                      "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            r.raise_for_status(); success = True
+        except Exception as e: print(f"  [TG ERROR] {cid}: {e}")
+    return success
 
 def send_admin(text):
     """Send message to admin DM only (not channel)."""
