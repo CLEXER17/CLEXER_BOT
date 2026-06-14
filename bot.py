@@ -1048,6 +1048,36 @@ def check_price_status(price, high, low, df_5m=None):
 import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
+_SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
+
+def load_settings():
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL
+    try:
+        if os.path.exists(_SETTINGS_FILE):
+            d = json.load(open(_SETTINGS_FILE))
+            channel_paused.update(d.get("channel_paused", {}))
+            SEND_CHARTS           = d.get("send_charts",       SEND_CHARTS)
+            CHART_TFS             = d.get("chart_tfs",         CHART_TFS)
+            SEND_NEWS             = d.get("send_news",         SEND_NEWS)
+            SIGNAL_SCAN_INTERVAL  = d.get("scan_interval",     SIGNAL_SCAN_INTERVAL)
+            print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
+                  f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
+                  f"ch_paused:{channel_paused}")
+    except Exception as e:
+        print(f"[SETTINGS] Load error: {e}")
+
+def save_settings():
+    try:
+        json.dump({
+            "channel_paused":   channel_paused,
+            "send_charts":      SEND_CHARTS,
+            "chart_tfs":        CHART_TFS,
+            "send_news":        SEND_NEWS,
+            "scan_interval":    SIGNAL_SCAN_INTERVAL,
+        }, open(_SETTINGS_FILE, "w"), indent=2)
+    except Exception as e:
+        print(f"[SETTINGS] Save error: {e}")
+
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
 def send_telegram(text):
@@ -1603,16 +1633,17 @@ def handle_command(text, chat_id, message=None):
             try:
                 h = float(parts[1])
                 if h<1 or h>24: send_reply(chat_id, "1-24 hours only.")
-                else: SIGNAL_SCAN_INTERVAL = int(h*3600); send_reply(chat_id, f"Scan interval -> {h}h")
+                else: SIGNAL_SCAN_INTERVAL = int(h*3600); save_settings(); send_reply(chat_id, f"Scan interval -> {h}h")
             except: send_reply(chat_id, "Usage: /setinterval 4")
 
     elif cmd == "/images":
         if len(parts)<2:
             send_reply(chat_id, f"Charts: {'ON' if SEND_CHARTS else 'OFF'}\nTFs: {', '.join(CHART_TFS).upper()}\n\nUsage: /images on|off\n(OFF by default)")
         elif parts[1].lower()=="on":
-            SEND_CHARTS = True; send_reply(chat_id, f"Charts ON - posting to channel only\nTFs: {', '.join(CHART_TFS).upper()}")
+            SEND_CHARTS = True; save_settings()
+            send_reply(chat_id, f"Charts ON - posting to channel only\nTFs: {', '.join(CHART_TFS).upper()}")
         elif parts[1].lower()=="off":
-            SEND_CHARTS = False; send_reply(chat_id, "Charts OFF")
+            SEND_CHARTS = False; save_settings(); send_reply(chat_id, "Charts OFF")
         else: send_reply(chat_id, "Usage: /images on|off")
 
     elif cmd == "/setimages":
@@ -1621,13 +1652,13 @@ def handle_command(text, chat_id, message=None):
             valid = {"weekly","4h","1h","5m"}
             chosen = [tf.strip().lower() for tf in parts[1].split(",") if tf.strip().lower() in valid]
             if not chosen: send_reply(chat_id, "No valid TFs. Use: weekly, 4h, 1h, 5m")
-            else: CHART_TFS = chosen; send_reply(chat_id, f"Chart TFs: {', '.join(CHART_TFS).upper()}")
+            else: CHART_TFS = chosen; save_settings(); send_reply(chat_id, f"Chart TFs: {', '.join(CHART_TFS).upper()}")
 
     elif cmd == "/news":
         if len(parts)<2:
             send_reply(chat_id, f"News: {'ON' if SEND_NEWS else 'OFF (default)'}\nUsage: /news on|off")
-        elif parts[1].lower()=="on":  SEND_NEWS = True;  send_reply(chat_id, f"News ON - {len(NEWS_SOURCES)} sources")
-        elif parts[1].lower()=="off": SEND_NEWS = False; send_reply(chat_id, "News OFF")
+        elif parts[1].lower()=="on":  SEND_NEWS = True;  save_settings(); send_reply(chat_id, f"News ON - {len(NEWS_SOURCES)} sources")
+        elif parts[1].lower()=="off": SEND_NEWS = False; save_settings(); send_reply(chat_id, "News OFF")
         else: send_reply(chat_id, "Usage: /news on|off")
 
     elif cmd == "/latestnews":
@@ -1653,6 +1684,7 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "Usage: /pausechannel 1\nor /pausechannel 2"); return
         key = parts[1]
         channel_paused[key] = True
+        save_settings()
         send_reply(chat_id, f"<b>Channel {key} PAUSED</b>\n\nNo signals will be sent to channel {key}.\nUse /resumechannel {key} to resume.")
 
     elif cmd == "/resumechannel":
@@ -1660,6 +1692,7 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "Usage: /resumechannel 1\nor /resumechannel 2"); return
         key = parts[1]
         channel_paused[key] = False
+        save_settings()
         send_reply(chat_id, f"<b>Channel {key} RESUMED</b>\n\nSignals will now be sent to channel {key}.")
 
     elif cmd == "/cancel":
@@ -1716,6 +1749,7 @@ def main():
     print(f"  Starting PAUSED - send /go to start scanning")
     load_users()
     ct.load()
+    load_settings()
 
     # Start PAUSED - user must send /go
     bot_paused.set()
