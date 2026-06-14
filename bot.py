@@ -1869,7 +1869,19 @@ def main():
                 signal = analyze_with_claude(ticker, data, validate_trade=False)
                 if signal and not signal.get("_hold"):
                     send_telegram(fmt_signal(signal)); set_trade(signal)
-                    ct.on_signal(signal, price)
+                    results = ct.on_signal(signal, price)
+                    active = ct.active_count()
+                    if active == 0:
+                        send_admin(f"⚠️ <b>Copy Trade</b>\n\nNo active copy users — signal NOT copied to BingX.\n\nUse /users to check.")
+                    else:
+                        ok   = [r for r in results if r.startswith("✅")]
+                        fail = [r for r in results if r.startswith("❌")]
+                        msg  = f"📋 <b>Copy Trade Report</b>\n\n"
+                        msg += f"Signal: {signal['signal']} @ {signal['entry']:,.0f}\n\n"
+                        if ok:   msg += "\n".join(ok) + "\n"
+                        if fail: msg += "\n" + "\n".join(fail) + "\n"
+                        msg += f"\n✅ {len(ok)} executed | ❌ {len(fail)} failed"
+                        send_admin(msg)
                     print(f"  [SIGNAL SENT] {signal['signal']} R:R:{signal.get('rr','?')}")
             else:
                 t = active_trade
@@ -1908,7 +1920,10 @@ def main():
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
                     reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
-                    ct.on_signal(signal, price)
+                    results = ct.on_signal(signal, price)
+                    ok = [r for r in results if r.startswith("✅")]
+                    fail = [r for r in results if r.startswith("❌")]
+                    send_admin(f"📋 <b>Copy Trade - Flip Signal</b>\n\n{signal['signal']} @ {signal['entry']:,.0f}\n✅ {len(ok)} | ❌ {len(fail)}\n{''.join(fail)}")
 
         except KeyboardInterrupt:
             print("\n[BOT] Stopped.")
