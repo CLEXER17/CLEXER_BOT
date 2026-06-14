@@ -1,5 +1,5 @@
 """
-CLEXER Signal Bot V8.0
+CLEXER Signal Bot V7.0
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
@@ -247,6 +247,7 @@ def tv_get_ticker():
     return None
 
 def fetch_tv_screenshots():
+    """Fetch screenshots for all timeframes."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return {}
     screenshots = {}
     for tf_name, tf_code in [("W","W"),("4H","4H"),("1H","1H"),("5","5")]:
@@ -263,38 +264,93 @@ def fetch_tv_screenshots():
             print(f"      [SCREENSHOT] {tf_name}: {e}")
     return screenshots
 
-def fetch_tv_indicators():
+def fetch_tv_all_data():
+    """
+    Fetch everything from tv_bridge in ONE call using /all_data endpoint (v9+).
+    Returns: { ticker, candles, pine_labels, pine_lines, pine_boxes, studies }
+    Falls back to separate calls if /all_data not available.
+    """
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return {}
+    try:
+        r = requests.get(f"{TV_BRIDGE_URL}/all_data", timeout=20)
+        if r.status_code == 200:
+            data = r.json()
+            if "error" not in data:
+                print(f"      [ALL_DATA] labels:{len(data.get('pine_labels',[]))} "
+                      f"lines:{len(data.get('pine_lines',[]))} "
+                      f"boxes:{len(data.get('pine_boxes',[]))} "
+                      f"studies:{len(data.get('studies',[]))}")
+                return data
+    except Exception as e:
+        print(f"      [ALL_DATA] {e} — falling back to /indicators")
+    # Fallback: old /indicators endpoint
     try:
         r = requests.get(f"{TV_BRIDGE_URL}/indicators", timeout=15)
         if r.status_code == 200:
             data = r.json()
             if "error" not in data:
                 print(f"      [INDICATORS] {len(data.get('raw_studies',[]))} studies OK")
-                return data
+                return {"studies": data.get("raw_studies",[]),
+                        "pine_labels": [], "pine_lines": [], "pine_boxes": [],
+                        "clexer_sniper": data.get("clexer_sniper"),
+                        "spaceman_levels": data.get("spaceman_levels",[]),
+                        "poi_vol_surge": data.get("poi_vol_surge")}
     except Exception as e: print(f"      [INDICATORS] {e}")
     return {}
 
-def build_indicator_context(indicators: dict) -> str:
-    if not indicators: return ""
-    lines = ["\n\nINDICATOR VALUES FROM TRADINGVIEW CHART:"]
-    clexer = indicators.get("clexer_sniper")
-    if clexer: lines.append(f"CLEXER SNIPER: {clexer.get('text','active')[:150]}")
-    spaceman = indicators.get("spaceman_levels", [])
+def fetch_tv_indicators():
+    """Legacy wrapper — now calls fetch_tv_all_data."""
+    return fetch_tv_all_data()
+
+def build_indicator_context(data: dict) -> str:
+    if not data: return ""
+    lines = ["\n\nTRADINGVIEW CHART DATA:"]
+
+    # Pine Boxes — OB/FVG exact zones
+    boxes = data.get("pine_boxes", [])
+    if boxes:
+        lines.append("\nSMC ZONES (Pine Boxes — exact OB/FVG levels):")
+        for b in boxes[:10]:
+            h = b.get("high", 0); l = b.get("low", 0); study = b.get("study","")
+            if h and l:
+                lines.append(f"  Zone: {l:,.0f} - {h:,.0f}  ({study})")
+
+    # Pine Labels — BOS, CHoCH, swing text
+    labels = data.get("pine_labels", [])
+    if labels:
+        lines.append("\nSMC LABELS (BOS/CHoCH/Swing levels):")
+        for lb in labels[:15]:
+            price = lb.get("price", 0); text = lb.get("text",""); study = lb.get("study","")
+            if price:
+                lines.append(f"  {text}: {price:,.0f}  ({study})")
+
+    # Pine Lines — horizontal S/R levels
+    pine_lines = data.get("pine_lines", [])
+    if pine_lines:
+        lines.append("\nKEY PRICE LEVELS (Pine Lines):")
+        prices = sorted(set([round(l.get("price",0)) for l in pine_lines if l.get("price",0) > 1000]))
+        lines.append(f"  {prices[:12]}")
+
+    # Studies — RSI, EMA, MACD etc.
+    studies = data.get("studies", [])
+    if studies:
+        lines.append("\nACTIVE INDICATORS:")
+        for s in studies[:10]:
+            name = s.get("name",""); vals = s.get("values", s.get("value",""))
+            if name: lines.append(f"  {name}: {vals}")
+
+    # Legacy fields (old /indicators format)
+    clexer = data.get("clexer_sniper")
+    if clexer: lines.append(f"\nCLEXER SNIPER: {clexer.get('text','active')[:150]}")
+    spaceman = data.get("spaceman_levels", [])
     if spaceman:
         levels = sorted(set([round(l, 0) for l in spaceman]))
         lines.append(f"SPACEMAN KEY LEVELS: {levels[:10]}")
-        lines.append("  (nearest above = resistance, nearest below = support)")
-    poi = indicators.get("poi_vol_surge")
-    if poi: lines.append(f"POI VOL SURGE: {poi.get('text','active')[:150]}")
-    raw = indicators.get("raw_studies", [])
-    if raw:
-        lines.append("ALL ACTIVE INDICATORS:")
-        for study in raw[:8]:
-            if study.get("title"): lines.append(f"  {study['title']}: {study.get('value','')}")
+    poi = data.get("poi_vol_surge")
+    if poi: lines.append(f"POI VOL SURGE: {poi.get('text','')[:150]}")
+
     if len(lines) == 1: return ""
-    lines += ["", "Use indicators as ADDITIONAL CONFIRMATION only.",
-              "Do not rely on indicators alone - confirm with price structure."]
+    lines.append("\nUse above levels as ADDITIONAL CONFIRMATION with price structure.")
     return "\n".join(lines)
 
 # ═══════════════════════════════════════════════════════════════════════════════
