@@ -77,6 +77,7 @@ def _decrypt(enc: str) -> str:
 
 _db: dict = {}        # str(chat_id) → user_dict
 _lock = threading.Lock()
+_last_signal: dict = {}   # last active signal — cleared on SL/TP/cancel
 
 def _default_user(username: str = "?") -> dict:
     return {
@@ -92,6 +93,7 @@ def _default_user(username: str = "?") -> dict:
         "limit_order_id": "",    # BingX order ID of pending limit entry
         "in_position":    False,
         "pos_side":       "",    # "BUY" or "SELL"
+        "pos_qty":        0.0,   # full position qty in BTC (set on entry)
         "history":        {"total": 0, "profit": 0, "loss": 0},
         "paused_by_admin": False,
         "joined":         _now_ist(),
@@ -125,6 +127,9 @@ def _set(cid: str, user: dict):
 
 def active_count() -> int:
     return sum(1 for u in _db.values() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin"))
+
+def has_active_signal() -> bool:
+    return bool(_last_signal)
 
 # ─── BINGX API CLIENT ─────────────────────────────────────────────────────────
 
@@ -239,6 +244,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
     PULLBACK entry → place limit order at entry level
     Returns list of result strings for admin notification.
     """
+    global _last_signal
     side        = signal["signal"]          # "BUY" or "SELL"
     entry       = float(signal["entry"])
     sl          = float(signal["sl"])
@@ -246,6 +252,18 @@ def on_signal(signal: dict, price: float) -> list[str]:
     entry_type  = signal.get("entry_type", "MARKET")
     close_side  = "SELL" if side == "BUY" else "BUY"
     results     = []
+
+    # Save last signal for /ctretry
+    _last_signal = {
+        "signal":     signal,
+        "price":      price,
+        "entry_type": entry_type,
+        "side":       side,
+        "entry":      entry,
+        "sl":         sl,
+        "tp2":        float(signal.get("tp2", 0)),
+        "time":       _now_ist(),
+    }
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
@@ -259,17 +277,22 @@ def on_signal(signal: dict, price: float) -> list[str]:
                     # Place SL (STOP_MARKET, close full position)
                     sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
                                         qty, stop_price=sl, close_position=True)
-                    # Place TP2 (TAKE_PROFIT_MARKET)
+                    # Place TP2 (TAKE_PROFIT_MARKET) for 50% only — TP1 closes the other 50%
+                    half_qty = max(round(qty / 2, 4), 0.001)
                     tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                        qty, stop_price=tp2, close_position=True)
+                                        half_qty, stop_price=tp2)
                     user["in_position"]    = True
                     user["pos_side"]       = side
+                    user["pos_qty"]        = qty
                     user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     user["limit_order_id"] = ""
+                    user["failed_copy"]    = False
                     _set(cid, user)
                     results.append(f"✅ @{user.get('username','?')} opened {side} {qty} BTC")
                 else:
+                    user["failed_copy"] = True
+                    _set(cid, user)
                     results.append(f"❌ @{user.get('username','?')}: {r.get('msg','?')}")
 
             else:  # PULLBACK — place limit order
@@ -278,15 +301,21 @@ def on_signal(signal: dict, price: float) -> list[str]:
                     oid = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
                     user["in_position"]    = False
                     user["pos_side"]       = side
+                    user["pos_qty"]        = qty
                     user["limit_order_id"] = oid
                     user["sl_order_id"]    = ""
                     user["tp_order_id"]    = ""
+                    user["failed_copy"]    = False
                     _set(cid, user)
                     results.append(f"✅ @{user.get('username','?')} limit {side} {qty} BTC @ {entry:,.0f}")
                 else:
+                    user["failed_copy"] = True
+                    _set(cid, user)
                     results.append(f"❌ @{user.get('username','?')}: {r.get('msg','?')}")
 
         except Exception as e:
+            user["failed_copy"] = True
+            _set(cid, user)
             results.append(f"❌ @{user.get('username','?')}: {e}")
             print(f"[CT] on_signal {cid}: {e}")
 
@@ -295,44 +324,59 @@ def on_signal(signal: dict, price: float) -> list[str]:
 
 
 def on_tp1(entry: float):
-    """TP1 hit — move SL to breakeven for all copy users."""
+    """TP1 hit — close 50% of position at market, move SL to breakeven for remaining 50%."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
-            # Cancel old SL
-            _cancel_order(api_key, api_secret, user.get("sl_order_id",""))
-            # Place new SL at entry (breakeven)
-            r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                             0, stop_price=entry, close_position=True)
-            user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
+            full_qty   = user.get("pos_qty", 0.001)
+            half_qty   = max(round(full_qty / 2, 4), 0.001)
+
+            # Close 50% at market
+            _place_order(api_key, api_secret, close_side, "MARKET", half_qty)
+
+            # Cancel old full-size SL, place new BE SL for remaining 50%
+            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
+            sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                half_qty, stop_price=entry)
+            user["sl_order_id"] = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            user["pos_qty"]     = half_qty   # remaining quantity
             _set(cid, user)
+            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC, BE SL set @ {entry}")
         except Exception as e:
             print(f"[CT] on_tp1 {cid}: {e}")
 
 
 def on_tp2():
     """TP2 hit — BingX TAKE_PROFIT_MARKET auto-closes. Update records."""
+    global _last_signal
+    _last_signal = {}
     for cid, user, _, _ in _users_with_copy():
         if not user.get("in_position"): continue
         user["in_position"] = False; user["pos_side"] = ""
         user["sl_order_id"] = ""; user["tp_order_id"] = ""
+        user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["profit"] += 1
         _set(cid, user)
 
 
 def on_sl():
     """SL hit — BingX STOP_MARKET auto-closes. Update records."""
+    global _last_signal
+    _last_signal = {}   # signal is dead — block any retry after this
     for cid, user, _, _ in _users_with_copy():
         if not user.get("in_position"): continue
         user["in_position"] = False; user["pos_side"] = ""
         user["sl_order_id"] = ""; user["tp_order_id"] = ""
+        user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["loss"] += 1
         _set(cid, user)
 
 
 def on_cancel_limits():
     """Entry missed / setup invalid — cancel pending limit orders."""
+    global _last_signal
+    _last_signal = {}
     for cid, user, api_key, api_secret in _users_with_copy():
         if user.get("in_position"): continue
         try:
@@ -340,6 +384,7 @@ def on_cancel_limits():
             if oid:
                 _cancel_order(api_key, api_secret, oid)
             user["limit_order_id"] = ""; user["pos_side"] = ""
+            user["failed_copy"] = False
             _set(cid, user)
         except Exception as e:
             print(f"[CT] on_cancel_limits {cid}: {e}")
@@ -360,19 +405,31 @@ def on_close_all():
 
 
 def on_sl_to_be(entry: float):
-    """Admin /sltobe — same as on_tp1."""
-    on_tp1(entry)
-
-
-def on_update_sl(new_sl: float):
-    """Admin /setsl — cancel old SL, place new one at new_sl."""
+    """Admin /sltobe — move SL to breakeven without closing 50% (manual override)."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            remaining  = user.get("pos_qty", 0.001)
+            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
+            r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                             remaining, stop_price=entry)
+            user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
+            _set(cid, user)
+        except Exception as e:
+            print(f"[CT] on_sl_to_be {cid}: {e}")
+
+
+def on_update_sl(new_sl: float):
+    """Admin /setsl — cancel old SL, place new one at new_sl for remaining qty."""
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if not user.get("in_position"): continue
+        try:
+            close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            remaining  = user.get("pos_qty", 0.001)
             _cancel_order(api_key, api_secret, user.get("sl_order_id",""))
             r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                             0, stop_price=new_sl, close_position=True)
+                             remaining, stop_price=new_sl)
             user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
             _set(cid, user)
         except Exception as e:
@@ -383,7 +440,8 @@ def on_update_sl(new_sl: float):
 
 CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage",
                      "/copytrade", "/mytrade", "/mysize", "/myhistory"}
-CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser"}
+CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
+                     "/ctretry", "/ctstatus"}
 
 def is_ct_command(cmd: str, is_admin: bool) -> bool:
     if cmd in CT_USER_COMMANDS: return True
@@ -653,6 +711,102 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"<b>User {state}</b>\n\n"
             f"@{user.get('username','?')} (ID:{target})\n\n"
             f"<i>— CLEXER V7.0 —</i>")
+
+    elif cmd == "/ctstatus" and is_admin:
+        # Show failed copy users and current active signal
+        failed = [(cid, u) for cid, u in _db.items() if u.get("failed_copy")]
+        sig_info = ""
+        if _last_signal:
+            sig_info = (
+                f"\n\n<b>Active Signal:</b>\n"
+                f"Direction: <b>{_last_signal.get('side','?')}</b>\n"
+                f"Entry: {_last_signal.get('entry',0):,.0f} | "
+                f"SL: {_last_signal.get('sl',0):,.0f} | "
+                f"TP2: {_last_signal.get('tp2',0):,.0f}\n"
+                f"Type: {_last_signal.get('entry_type','?')}\n"
+                f"Time: {_last_signal.get('time','?')}"
+            )
+        else:
+            sig_info = "\n\n<b>No active signal</b> — /ctretry will be blocked."
+        if not failed:
+            send_reply_fn(chat_id, f"<b>Copy Trade Status</b>\n\nNo failed copies.{sig_info}\n\n<i>— CLEXER V7.0 —</i>")
+            return
+        lines = [f"<b>Failed Copy Users ({len(failed)})</b>"]
+        for cid, u in failed:
+            lines.append(f"- @{u.get('username','?')} | ID: <code>{cid}</code>\n"
+                         f"  Use: /ctretry {cid}")
+        send_reply_fn(chat_id, "\n".join(lines) + sig_info + "\n\n<i>— CLEXER V7.0 —</i>")
+
+    elif cmd == "/ctretry" and is_admin:
+        """Retry copy trade for a specific user who failed."""
+        if len(parts) < 2:
+            send_reply_fn(chat_id,
+                "<b>Retry Copy Trade</b>\n\n"
+                "Usage: <code>/ctretry TELEGRAM_ID</code>\n\n"
+                "Only works while signal is still active (before SL/TP hit).\n"
+                "Use /ctstatus to see failed users."); return
+
+        if not _last_signal:
+            send_reply_fn(chat_id,
+                "<b>Retry Blocked</b>\n\n"
+                "No active signal — trade already closed (SL/TP hit) or no signal yet.\n"
+                "Cannot retry a dead trade.\n\n"
+                "<i>— CLEXER V7.0 —</i>"); return
+
+        target = str(parts[1])
+        user = _db.get(target)
+        if not user:
+            send_reply_fn(chat_id, f"User <code>{target}</code> not found."); return
+        if not user.get("connected"):
+            send_reply_fn(chat_id, f"@{user.get('username','?')} has no BingX connected."); return
+        if user.get("in_position"):
+            send_reply_fn(chat_id, f"@{user.get('username','?')} already in position — no retry needed."); return
+
+        try:
+            api_key    = _decrypt(user["api_key_enc"])
+            api_secret = _decrypt(user["api_secret_enc"])
+            side       = _last_signal["side"]
+            sl         = _last_signal["sl"]
+            tp2        = _last_signal["tp2"]
+            close_side = "SELL" if side == "BUY" else "BUY"
+            lev        = user.get("leverage", 10)
+
+            # Get current price for MARKET retry
+            bal_r = _bingx("GET", "/openApi/swap/v2/user/balance", api_key, api_secret, {})
+            # Use MARKET order at current price regardless of original entry_type
+            # because time has passed and limit may never fill
+            qty = _calc_qty(user["size_usdt"], _last_signal["price"], lev)
+            _set_leverage(api_key, api_secret, side, lev)
+
+            r = _place_order(api_key, api_secret, side, "MARKET", qty)
+            if r.get("code") == 0:
+                sl_r  = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                     qty, stop_price=sl, close_position=True)
+                tp_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                     qty, stop_price=tp2, close_position=True)
+                user["in_position"]    = True
+                user["pos_side"]       = side
+                user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                user["limit_order_id"] = ""
+                user["failed_copy"]    = False
+                _set(target, user)
+                send_reply_fn(chat_id,
+                    f"<b>Retry Successful!</b>\n\n"
+                    f"✅ @{user.get('username','?')} entered {side} {qty} BTC\n\n"
+                    f"SL placed: {sl:,.0f}\n"
+                    f"TP2 placed: {tp2:,.0f}\n\n"
+                    f"<i>— CLEXER V7.0 —</i>")
+            else:
+                err = r.get("msg", "unknown error")
+                send_reply_fn(chat_id,
+                    f"<b>Retry Failed</b>\n\n"
+                    f"❌ @{user.get('username','?')}: {err}\n\n"
+                    f"Check their BingX margin balance.\n\n"
+                    f"<i>— CLEXER V7.0 —</i>")
+        except Exception as e:
+            send_reply_fn(chat_id, f"❌ Retry error: {e}")
+            print(f"[CT] /ctretry {target}: {e}")
 
     else:
         send_reply_fn(chat_id, f"Unknown command: {cmd}")
