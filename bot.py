@@ -96,7 +96,9 @@ posted_news_guids: set = set()
 latest_news_context: list = []
 trade_lock = threading.Lock()
 
-USER_DB_FILE = "users.json"
+DATA_DIR     = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+USER_DB_FILE = os.path.join(DATA_DIR, "users.json")
 registered_users: set = set()
 
 RATE_LIMIT_USES   = 2
