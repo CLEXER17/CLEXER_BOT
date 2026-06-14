@@ -612,6 +612,7 @@ def extract_json_from_response(text: str):
     if end == -1: return None
     try: return json.loads(cleaned[start:end])
     except: return None
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1045,6 +1046,7 @@ def check_price_status(price, high, low, df_5m=None):
     if not t["tp1_hit"]:
         if (sig=="SELL" and low<=tp1) or (sig=="BUY" and high>=tp1): return "TP1_HIT"
     return "RUNNING"
+
 import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
@@ -1163,13 +1165,56 @@ def fmt_signal(s):
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
     msgs = {
-        "SL_HIT":         "❌ <b>SL HIT</b> - Finding next trade 🔍",
-        "TP1_HIT":        f"💰 <b>TP1 HIT!</b> 🎉\n🛡️ SL moved to Breakeven ({entry:,.0f})\n🚀 Riding to TP2 - <b>{t.get('tp2',0):,.0f}</b>",
-        "TP2_HIT":        "🏆 <b>TP2 HIT - Trade Complete!</b> 🎊💵",
-        "STOP_HUNT":      "🎣 <b>STOP HUNT</b> - SL wicked, closed back. Holding 💪",
-        "SETUP_INVALID":  "⚠️ <b>Setup Invalid</b> - SL hit before entry. Resetting 🔄",
-        "ENTRY_MISSED":   f"😔 <b>Entry Missed</b> - Price bypassed zone {entry:,.0f}. Resetting 🔄",
-        "STRUCTURE_FLIP": "🔄 <b>Structure Flipped</b> - Closing trade 🚨",
+        "SL_HIT":         (
+            f"🚨 <b>TRADE CLOSED — SL HIT</b> 🚨\n\n"
+            f"❌ Loss taken on {t.get('signal','?')} @ {t.get('entry',0):,.0f}\n\n"
+            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+            f"⛔ <b>This is NOT a new signal</b>\n\n"
+            f"🔍 Waiting for next valid setup...\n\n"
+            f"<i>- CLEXER V7.0 -</i>"
+        ),
+        "TP1_HIT":        (
+            f"💰 <b>TP1 HIT — 50% CLOSED!</b> 🎉\n\n"
+            f"✅ Half position closed at <b>{t.get('tp1',0):,.0f}</b> — profit secured!\n"
+            f"🛡️ SL moved to Breakeven: <b>{entry:,.0f}</b>\n"
+            f"🚀 Remaining 50% riding to TP2: <b>{t.get('tp2',0):,.0f}</b>\n\n"
+            f"⚠️ <b>Do NOT close manually — bot is managing the rest</b>"
+        ),
+        "TP2_HIT":        (
+            f"🏆 <b>TRADE CLOSED — TP2 HIT!</b> 🎊💵\n\n"
+            f"✅ Full profit taken on {t.get('signal','?')} @ {t.get('tp2',0):,.0f}\n\n"
+            f"⛔ <b>This is NOT a new signal — trade is fully closed</b>\n"
+            f"🔍 Waiting for next valid setup..."
+        ),
+        "STOP_HUNT":      (
+            f"🎣 <b>STOP HUNT DETECTED</b>\n\n"
+            f"Price spiked below SL and closed back above.\n"
+            f"✅ Still in {t.get('signal','?')} trade — position held.\n\n"
+            f"⚠️ <b>No action needed — bot is managing this</b>"
+        ),
+        "SETUP_INVALID":  (
+            f"⚠️ <b>TRADE CANCELLED — Setup Invalid</b>\n\n"
+            f"Price closed past SL before entry was hit.\n"
+            f"No position was opened.\n\n"
+            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+            f"⛔ <b>This is NOT a new signal</b>\n\n"
+            f"🔍 Waiting for next valid setup..."
+        ),
+        "ENTRY_MISSED":   (
+            f"😔 <b>TRADE CANCELLED — Entry Missed</b>\n\n"
+            f"Price moved past entry zone <b>{entry:,.0f}</b> without filling.\n"
+            f"No position was opened.\n\n"
+            f"⛔ <b>DO NOT CHASE — do not open a trade now</b>\n"
+            f"⛔ <b>This is NOT a new signal</b>\n\n"
+            f"🔍 Waiting for next valid setup..."
+        ),
+        "STRUCTURE_FLIP": (
+            f"🔄 <b>TRADE CLOSED — Structure Flipped</b>\n\n"
+            f"Market structure changed — current {t.get('signal','?')} trade closed.\n\n"
+            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+            f"⛔ <b>Wait for the next signal from CLEXER</b>\n\n"
+            f"🔍 Analysing new direction..."
+        ),
         "WAITING_ENTRY":  (f"⏳ <b>Waiting Pullback</b>\n🎯 Entry zone: <b>{entry:,.0f}</b>\n"
             + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")),
     }
@@ -1212,9 +1257,24 @@ def run_tick_check():
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row, price {price:,.0f} vs sl {sl:,.0f}")
-            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 2 scans.\n\n<i>- CLEXER V7.0 -</i>")
-            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling down 1 scan.\n\n<i>- CLEXER V7.0 -</i>")
-            else:        send_telegram(fmt_update("SL_HIT"))
+            if n >= 3:
+                trade_stats["cooldown_scans"] = 2
+                send_telegram(
+                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
+                    f"❌ Loss taken on {sig} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+                    f"⛔ <b>This is NOT a new signal</b>\n\n"
+                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V7.0 -</i>")
+            elif n == 2:
+                trade_stats["cooldown_scans"] = 1
+                send_telegram(
+                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
+                    f"❌ Loss taken on {sig} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+                    f"⛔ <b>This is NOT a new signal</b>\n\n"
+                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V7.0 -</i>")
+            else:
+                send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -1247,9 +1307,24 @@ def run_price_check():
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row during 1H check")
-            if n >= 3:   trade_stats["cooldown_scans"] = 2; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 2 scans.\n\n<i>- CLEXER V7.0 -</i>")
-            elif n == 2: trade_stats["cooldown_scans"] = 1; send_telegram(f"<b>SL HIT</b> ({n} in a row)\nCooling 1 scan.\n\n<i>- CLEXER V7.0 -</i>")
-            else:        send_telegram(fmt_update("SL_HIT"))
+            if n >= 3:
+                trade_stats["cooldown_scans"] = 2
+                send_telegram(
+                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
+                    f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+                    f"⛔ <b>This is NOT a new signal</b>\n\n"
+                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V7.0 -</i>")
+            elif n == 2:
+                trade_stats["cooldown_scans"] = 1
+                send_telegram(
+                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
+                    f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+                    f"⛔ <b>This is NOT a new signal</b>\n\n"
+                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V7.0 -</i>")
+            else:
+                send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
