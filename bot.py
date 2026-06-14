@@ -1,5 +1,5 @@
 """
-CLEXER Signal Bot V7.0
+CLEXER Signal Bot V8.0
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
@@ -1051,39 +1051,43 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None):
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
-    e  = "🟢" if s["signal"]=="BUY" else "🔴"
-    ci = {"HIGH":"[HIGH]","MEDIUM":"[MED]","LOW":"[LOW]"}.get(s.get("confidence",""),"")
-    el = f"Entry    <b>{s['entry']:,.0f}</b>"
+    e   = "🟢" if s["signal"]=="BUY" else "🔴"
+    arr = "📈" if s["signal"]=="BUY" else "📉"
+    ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
+    el  = f"🎯 Entry    <b>{s['entry']:,.0f}</b>"
     if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
         el += f"\n   <i>{s['entry_note']}</i>"
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
     src = s.get("data_source", get_current_source()); mode = s.get("prompt_mode","?")
-    return (f"{e} <b>{s['signal']} - {SYMBOL}</b>  {ci}\n"
-        f"{ist_str()}  |  {s.get('session',get_session())}\n"
-        f"Source: <b>{src}</b> | Mode: {mode}\n\n"
-        f"{el}\nSL       <b>{s['sl']:,.0f}</b>\nTP1     <b>{s['tp1']:,.0f}</b>\n"
-        f"TP2     <b>{s['tp2']:,.0f}</b>\nR:R     <b>{s.get('rr','-')}</b>\n\n"
-        + (f"Weekly: <i>{wk}</i>\n" if wk else "")
-        + (f"4H:     <i>{s4h}</i>\n" if s4h else "")
-        + (f"Zone:   <i>{ez}</i>\n"  if ez else "")
-        + (f"\n<i>{rs}</i>\n"        if rs else "")
-        + f"\n<i>- CLEXER V7.0 -</i>\n<i>Not financial advice</i>")
+    return (f"{e} <b>{s['signal']} - {SYMBOL}</b>  {arr}  {ci}\n"
+        f"🕐 {ist_str()}  |  🌍 {s.get('session',get_session())}\n"
+        f"📡 Source: <b>{src}</b> | Mode: {mode}\n\n"
+        f"{el}\n"
+        f"🛡️ SL       <b>{s['sl']:,.0f}</b>\n"
+        f"💰 TP1     <b>{s['tp1']:,.0f}</b>\n"
+        f"🏆 TP2     <b>{s['tp2']:,.0f}</b>\n"
+        f"⚖️ R:R     <b>{s.get('rr','-')}</b>\n\n"
+        + (f"🌐 Weekly: <i>{wk}</i>\n" if wk else "")
+        + (f"📊 4H:     <i>{s4h}</i>\n" if s4h else "")
+        + (f"📍 Zone:   <i>{ez}</i>\n"  if ez else "")
+        + (f"\n💡 <i>{rs}</i>\n"        if rs else "")
+        + f"\n✨ <i>- CLEXER V7.0 -</i>\n⚠️ <i>Not financial advice</i>")
 
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
     msgs = {
-        "SL_HIT":         "<b>SL HIT</b> - Finding next trade",
-        "TP1_HIT":        f"<b>TP1 HIT!</b>\nSL -> Breakeven ({entry:,.0f})\nRiding to TP2 -> <b>{t.get('tp2',0):,.0f}</b>",
-        "TP2_HIT":        "<b>TP2 HIT - Trade Complete!</b>",
-        "STOP_HUNT":      "<b>STOP HUNT</b> - SL wicked, closed back. Holding.",
-        "SETUP_INVALID":  "<b>Setup Invalid</b> - SL hit before entry. Resetting.",
-        "ENTRY_MISSED":   f"<b>Entry Missed</b> - Price bypassed zone {entry:,.0f}. Resetting.",
-        "STRUCTURE_FLIP": "<b>Structure Flipped</b> - Closing trade.",
-        "WAITING_ENTRY":  (f"<b>Waiting Pullback</b>\nEntry zone: <b>{entry:,.0f}</b>\n"
-            + (f"Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")),
+        "SL_HIT":         "❌ <b>SL HIT</b> - Finding next trade 🔍",
+        "TP1_HIT":        f"💰 <b>TP1 HIT!</b> 🎉\n🛡️ SL moved to Breakeven ({entry:,.0f})\n🚀 Riding to TP2 - <b>{t.get('tp2',0):,.0f}</b>",
+        "TP2_HIT":        "🏆 <b>TP2 HIT - Trade Complete!</b> 🎊💵",
+        "STOP_HUNT":      "🎣 <b>STOP HUNT</b> - SL wicked, closed back. Holding 💪",
+        "SETUP_INVALID":  "⚠️ <b>Setup Invalid</b> - SL hit before entry. Resetting 🔄",
+        "ENTRY_MISSED":   f"😔 <b>Entry Missed</b> - Price bypassed zone {entry:,.0f}. Resetting 🔄",
+        "STRUCTURE_FLIP": "🔄 <b>Structure Flipped</b> - Closing trade 🚨",
+        "WAITING_ENTRY":  (f"⏳ <b>Waiting Pullback</b>\n🎯 Entry zone: <b>{entry:,.0f}</b>\n"
+            + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")),
     }
-    return f"<b>{SYMBOL} UPDATE</b>  {ist_str()}\n\n{msgs.get(status,'Trade running')}\n\n<i>- CLEXER V7.0 -</i>"
+    return f"📣 <b>{SYMBOL} UPDATE</b>  🕐 {ist_str()}\n\n{msgs.get(status,'✅ Trade running')}\n\n✨ <i>- CLEXER V7.0 -</i>"
 
 # --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
@@ -1095,25 +1099,28 @@ def run_tick_check():
             tol = abs(entry-sl)*0.25
             if (sig=="BUY" and price<=entry+tol) or (sig=="SELL" and price>=entry-tol):
                 active_trade["entry_hit"] = True
-                send_telegram(f"<b>ENTRY TRIGGERED!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n\n"
-                    f"Entry:  <b>{entry:,.0f}</b>  Price: <b>{price:,.2f}</b>\n"
-                    f"SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
-                    f"TP1:    <b>{tp1:,.0f}</b>\nTP2:    <b>{tp2:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
+                send_telegram(f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
+                    f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n\n"
+                    f"🎯 Entry:  <b>{entry:,.0f}</b>  📊 Price: <b>{price:,.2f}</b>\n"
+                    f"🛡️ SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
+                    f"💰 TP1:    <b>{tp1:,.0f}</b>\n🏆 TP2:    <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V7.0 -</i>")
             return False
         if (sig=="BUY" and price>=tp2) or (sig=="SELL" and price<=tp2):
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
-            send_telegram(f"<b>TP2 HIT!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n"
-                f"Entry: {entry:,.0f} -> TP2: <b>{tp2:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
+            send_telegram(f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
+                f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
+                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V7.0 -</i>")
             ct.on_tp2(); reset_trade(); return True
         if not t["tp1_hit"]:
             if (sig=="BUY" and price>=tp1) or (sig=="SELL" and price<=tp1):
                 active_trade["tp1_hit"] = True; active_trade["sl"] = entry
                 trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
                 ct.on_tp1(entry)
-                send_telegram(f"<b>TP1 HIT!</b>  {ist_str()}\n\n{sig} {SYMBOL}\n"
-                    f"TP1: <b>{tp1:,.0f}</b> - SL moved to BE: <b>{entry:,.0f}</b>\n"
-                    f"Riding TP2: <b>{tp2:,.0f}</b>...\n\n<i>- CLEXER V7.0 -</i>")
+                send_telegram(f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
+                    f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
+                    f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
+                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>- CLEXER V7.0 -</i>")
         sl_margin = 80
         if (sig=="BUY" and price<sl-sl_margin) or (sig=="SELL" and price>sl+sl_margin):
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
@@ -1747,7 +1754,7 @@ def main():
             if trade_stats["cooldown_scans"] > 0 and not forced:
                 trade_stats["cooldown_scans"] -= 1
                 if trade_stats["cooldown_scans"] == 0:
-                    send_telegram("<b>Cooldown over - scanning now</b>\n\n<i>- CLEXER V7.0 -</i>")
+                    send_telegram("✅ <b>Cooldown over - scanning now!</b> 🔍\n\n✨ <i>- CLEXER V7.0 -</i>")
                 last_signal_scan_time = now; time.sleep(MAIN_TICK); continue
 
             # -- FULL CLAUDE SCAN ----------------------------------------------
@@ -1795,10 +1802,10 @@ def main():
                     else:
                         flip_reason = signal.get("reasoning","Structure flipped")
                         log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
-                        send_telegram(f"<b>STRUCTURE FLIP!</b>  {ist_str()}\n\n"
-                            f"Closing: {t['signal']} @ {t['entry']:,.0f}\n"
-                            f"Why: <i>{flip_reason[:200]}</i>\n\n"
-                            f"New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n<i>- CLEXER V7.0 -</i>")
+                        send_telegram(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
+                            f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
+                            f"💡 Why: <i>{flip_reason[:200]}</i>\n\n"
+                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>- CLEXER V7.0 -</i>")
                         ct.on_close_all()
                         reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
                         ct.on_signal(signal, price)
