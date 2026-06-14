@@ -32,7 +32,8 @@ except ImportError:
     HAS_CRYPTO = False
     print("[CT] cryptography not installed — API keys stored base64 only. Run: pip install cryptography")
 
-CT_FILE        = "copy_users.json"
+_DATA_DIR      = os.getenv("DATA_DIR", ".")
+CT_FILE        = os.path.join(_DATA_DIR, "copy_users.json")
 CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
