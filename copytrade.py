@@ -38,6 +38,7 @@ CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
+SCAN_CT_ENABLED = True   # toggle with /scancopy on|off
 
 def _now_ist() -> str:
     return (datetime.now(timezone.utc) + IST).strftime("%d %b %I:%M %p IST")
@@ -526,6 +527,85 @@ def on_close_user(cid: str) -> tuple[bool, str]:
         return True, f"@{user.get('username','?')} closed"
     except Exception as e:
         return False, str(e)
+
+
+def set_scan_ct(enabled: bool):
+    """Enable or disable copy trade for /scan signals."""
+    global SCAN_CT_ENABLED
+    SCAN_CT_ENABLED = enabled
+
+
+def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
+    """
+    Place a scan-sourced trade (alt coin) for all copy users.
+    symbol = "ETH-USDT" / "SOL-USDT" etc
+    signal_dict = {"signal":"BUY"/"SELL", "entry":float, "sl":float,
+                   "tp1":float, "tp2":float, "entry_type":"MARKET"/"LIMIT"}
+    """
+    if not SCAN_CT_ENABLED:
+        return ["[CT] scan copy trade is OFF (/scancopy on to enable)"]
+
+    side       = signal_dict["signal"]           # BUY or SELL
+    entry      = float(signal_dict["entry"])
+    sl         = float(signal_dict["sl"])
+    tp1        = float(signal_dict.get("tp1", 0))
+    tp2        = float(signal_dict.get("tp2", 0))
+    entry_type = signal_dict.get("entry_type", "MARKET")
+    close_side = "SELL" if side == "BUY" else "BUY"
+    trade_ps   = "LONG" if side == "BUY" else "SHORT"
+    results    = []
+
+    for cid, user, api_key, api_secret in _users_with_copy():
+        try:
+            lev = user.get("leverage", 10)
+            qty = _calc_qty(user["size_usdt"], price, lev)
+
+            def _place_alt(s, ot, q, pr=0, sp=0, cp=False, ps=""):
+                ps = ps or ("LONG" if s == "BUY" else "SHORT")
+                params = {"symbol": symbol, "side": s, "positionSide": ps, "type": ot}
+                if cp:
+                    params["closePosition"] = "true"
+                else:
+                    params["quantity"] = round(q, 4)
+                if ot == "LIMIT" and pr:
+                    params["price"] = round(pr, 6); params["timeInForce"] = "GTC"
+                if sp and ot in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+                    params["stopPrice"] = round(sp, 6)
+                return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
+
+            # Set leverage for alt symbol
+            _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                   {"symbol": symbol, "side": trade_ps, "leverage": lev})
+
+            if entry_type == "MARKET":
+                r = _place_alt(side, "MARKET", qty)
+                if r.get("code") == 0:
+                    half = max(round(qty / 2, 4), 0.001)
+                    sl_r  = _place_alt(close_side, "STOP_MARKET",   qty,  sp=sl,  cp=True, ps=trade_ps)
+                    tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1, ps=trade_ps) if tp1 else {}
+                    tp2_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2, ps=trade_ps) if tp2 else {}
+                    results.append(
+                        f"✅ @{user.get('username','?')} {symbol} {side} {qty:.4f}"
+                        f" SL={'OK' if sl_r.get('code')==0 else 'ERR'}"
+                        f" TP1={'OK' if tp1_r.get('code')==0 else 'ERR'}"
+                        f" TP2={'OK' if tp2_r.get('code')==0 else 'ERR'}")
+                else:
+                    results.append(f"❌ @{user.get('username','?')} {symbol}: {r.get('msg','?')}")
+            else:
+                r = _place_alt(side, "LIMIT", qty, pr=entry)
+                if r.get("code") == 0:
+                    results.append(f"✅ @{user.get('username','?')} {symbol} LIMIT {side} {qty:.4f} @ {entry}")
+                else:
+                    results.append(f"❌ @{user.get('username','?')} {symbol}: {r.get('msg','?')}")
+
+        except Exception as e:
+            results.append(f"❌ @{user.get('username','?')}: {e}")
+            print(f"[CT] on_scan_signal {cid}: {e}")
+
+    if not results:
+        results = ["No copy users connected"]
+    print(f"[CT] on_scan_signal {symbol}: {results}")
+    return results
 
 
 def on_sl_to_be(entry: float):
