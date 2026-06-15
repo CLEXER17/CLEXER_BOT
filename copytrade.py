@@ -1,5 +1,5 @@
 """
-CLEXER V9.0 — BingX Copy Trade System
+CLEXER V7.0 — BingX Copy Trade System
 ──────────────────────────────────────
 Standalone module. Import into bot.py.
 
