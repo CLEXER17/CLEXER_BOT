@@ -1,5 +1,5 @@
 """
-CLEXER Signal Bot V9.0
+CLEXER Signal Bot V7.0
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
@@ -271,6 +271,41 @@ def tv_get_ticker():
                     "low24": float(d.get("low24", price)), "source": "TRADINGVIEW"}
     except Exception as e: print(f"      [TV ticker] {e}")
     return None
+
+def tv_set_symbol(symbol: str) -> bool:
+    """Switch TradingView chart to a different symbol. Returns True if bridge accepted."""
+    if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return False
+    try:
+        r = requests.get(f"{TV_BRIDGE_URL}/set_symbol",
+                         params={"symbol": symbol}, timeout=10)
+        if r.status_code == 200:
+            time.sleep(3)   # let TV load the new symbol
+            return True
+    except Exception as e:
+        print(f"  [TV set_symbol] {e}")
+    return False
+
+def tv_get_candles_for(symbol: str, interval: str, limit: int):
+    """Fetch candles from TV bridge for any symbol (used during /scan for alts)."""
+    if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
+    tv_map = {"weekly":"W","4h":"4H","1h":"1H","5m":"5","1m":"1"}
+    try:
+        r = requests.get(f"{TV_BRIDGE_URL}/candles",
+            params={"symbol": symbol, "interval": tv_map.get(interval, interval), "limit": limit},
+            timeout=15)
+        if r.status_code != 200: return None
+        data = r.json()
+        if not data.get("candles"): return None
+        rows = [{
+            "time": datetime.fromtimestamp(c["t"]/1000 if c["t"]>1e10 else c["t"], tz=timezone.utc),
+            "open": float(c["o"]), "high": float(c["h"]),
+            "low": float(c["l"]), "close": float(c["c"]), "vol": float(c.get("v", 0)),
+        } for c in data["candles"]]
+        df = pd.DataFrame(rows).set_index("time")
+        print(f"      [TV] {symbol} {interval}: {len(df)} candles OK")
+        return df
+    except Exception as e:
+        print(f"      [TV] {symbol} {interval} error: {e}"); return None
 
 def fetch_tv_screenshots():
     """Fetch screenshots for all timeframes."""
@@ -1890,35 +1925,235 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, reply + "\n\n<i>- CLEXER V7.0 -</i>")
 
     elif cmd == "/scan" and is_admin:
-        send_reply(chat_id, "🔍 Scanning best coins to trade now (~20s)...")
+        send_reply(chat_id, "📡 Scanning BingX market data to find best trade (~60s)...")
         def _do_scan(cid=chat_id):
             try:
-                tk  = get_ticker(); price = tk["price"]
-                atrade = (f"Active trade: BTC {active_trade['signal']} @ {active_trade['entry']:,.0f} "
-                          f"(SL:{active_trade['sl']:,.0f} TP2:{active_trade['tp2']:,.0f})"
-                          if active_trade["signal"] else "No active BTC trade")
-                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model="claude-haiku-4-5-20251001", max_tokens=900,
-                    messages=[{"role": "user", "content":
-                        f"You are a crypto futures trader. Current market context:\n"
-                        f"BTC: ${price:,.0f} ({tk['change']:+.2f}% 24h)\n"
-                        f"{atrade}\n"
-                        f"Session: {get_session()}\n\n"
-                        f"List the TOP 5 crypto perpetual futures to watch RIGHT NOW on BingX "
-                        f"(excluding BTC if already in trade). For each coin:\n"
-                        f"- Symbol (e.g. ETHUSDT)\n- Bias: LONG / SHORT / WAIT\n"
-                        f"- Key reason (1 short line)\n- Confidence: HIGH / MED / LOW\n\n"
-                        f"Consider: altcoin correlation with BTC, momentum, volume, session. "
-                        f"Focus on coins with clear direction. Plain text, numbered list only."}])
-                result = resp.content[0].text.strip()
+                import traceback as _tb, pandas as _pd
+
+                # ── helpers ────────────────────────────────────────────────────
+                def get_klines(symbol, interval, limit):
+                    try:
+                        kr = requests.get(
+                            "https://open-api.bingx.com/openApi/swap/v3/quote/klines",
+                            params={"symbol":symbol,"interval":interval,"limit":limit},
+                            timeout=12).json()
+                        rows = kr.get("data",[])
+                        if not rows: return None
+                        df = _pd.DataFrame([[float(x) for x in row[:6]] for row in rows],
+                                           columns=["time","open","high","low","close","volume"])
+                        return df
+                    except: return None
+
+                def check_4h_structure(df):
+                    """Returns BULLISH, BEARISH, or NEUTRAL based on swing highs/lows."""
+                    if df is None or len(df) < 8: return "NEUTRAL"
+                    h = df["high"].values[-15:]; l = df["low"].values[-15:]
+                    sh = []; sl = []
+                    for i in range(1, len(h)-1):
+                        if h[i] > h[i-1] and h[i] > h[i+1]: sh.append(h[i])
+                        if l[i] < l[i-1] and l[i] < l[i+1]: sl.append(l[i])
+                    if len(sh) >= 2 and len(sl) >= 2:
+                        if sh[-1] > sh[-2] and sl[-1] > sl[-2]: return "BULLISH"
+                        if sh[-1] < sh[-2] and sl[-1] < sl[-2]: return "BEARISH"
+                    return "NEUTRAL"
+
+                def is_momentum(df):
+                    """True if last 1-2 4H candles moved >5%."""
+                    if df is None or len(df) < 2: return False
+                    for i in [-1,-2]:
+                        r = df.iloc[i]
+                        if r["open"] > 0 and abs(r["close"]-r["open"])/r["open"]*100 > 5:
+                            return True
+                    return False
+
+                # ── Step 1: Get all BingX tickers, score = |change| × volume ──
+                r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                                 timeout=15).json()
+                skip = {"USDC","BUSD","DAI","TUSD","FDUSD","USDP","FRAX","USDT","BTC","BTCDOM"}
+                movers = []
+                for t in r.get("data",[]):
+                    sym = t.get("symbol","")
+                    if not sym.endswith("-USDT"): continue
+                    base = sym.replace("-USDT","")
+                    if base in skip: continue
+                    vol  = float(t.get("quoteVolume",0) or t.get("volume",0) or 0)
+                    chg  = float(t.get("priceChangePercent",0) or 0)
+                    px   = float(t.get("lastPrice",0) or 0)
+                    if vol < 3_000_000 or px <= 0: continue
+                    score = abs(chg) * (vol/1e6)
+                    movers.append({"sym":sym,"base":base,"price":px,
+                                   "change":chg,"vol_m":round(vol/1e6,1),"score":score})
+                movers.sort(key=lambda x: x["score"], reverse=True)
+                top10 = movers[:10]
+
+                # ── Step 2: Check 4H structure for each, pick best ─────────────
+                send_reply(cid, f"📊 Checking 4H structure on top {len(top10)} coins...")
+                structured = []   # coins with clean 4H structure
+                all_with_data = []
+                for t in top10:
+                    df4 = get_klines(t["sym"], "4h", 30)
+                    struct = check_4h_structure(df4)
+                    mom    = is_momentum(df4)
+                    t["structure"] = struct
+                    t["momentum"]  = mom
+                    t["df4h"]      = df4
+                    all_with_data.append(t)
+                    if struct != "NEUTRAL":
+                        structured.append(t)
+                    print(f"  [SCAN] {t['base']}: score={t['score']:.0f} struct={struct} mom={mom}")
+
+                # Pick highest-scored coin with clean structure, else #1 overall
+                candidate = structured[0] if structured else all_with_data[0]
+                chosen_base = candidate["base"]
+                chosen_sym  = candidate["sym"]
+                btc_price   = get_ticker()["price"]
+
+                conf_note = "" if structured else " (no clean structure — lower confidence)"
+                send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Switching TradingView...")
+
+                # ── Step 3: Switch TV to chosen coin, get full data ────────────
+                tv_sym = f"BINGX:{chosen_base}USDT.P"
+                tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
+                print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
+
+                if tv_switched and is_tv_online():
+                    df_4h = tv_get_candles_for(tv_sym,"4h",60) or get_klines(chosen_sym,"4h",60)
+                    df_1h = tv_get_candles_for(tv_sym,"1h",40) or get_klines(chosen_sym,"1h",40)
+                    df_5m = tv_get_candles_for(tv_sym,"5m",30) or get_klines(chosen_sym,"5m",30)
+                    scan_screenshots = fetch_tv_screenshots()
+                else:
+                    df_4h = candidate.get("df4h") or get_klines(chosen_sym,"4h",60)
+                    df_1h = get_klines(chosen_sym,"1h",40)
+                    df_5m = get_klines(chosen_sym,"5m",30)
+                    scan_screenshots = {}
+
+                if tv_switched: tv_set_symbol(SYMBOL)  # switch back to BTC
+
+                cp = candidate["price"]
+
+                # ── Step 4: Build rich data summary ───────────────────────────
+                smc = (f"=== {chosen_sym} DATA SUMMARY ===\n"
+                       f"Price: {cp:,.6g}\n"
+                       f"24h Change: {candidate['change']:+.2f}%\n"
+                       f"Volume (24h): ${candidate['vol_m']}M\n"
+                       f"Selection score: {candidate['score']:.0f}\n"
+                       f"4H Structure: {candidate['structure']}\n"
+                       f"Momentum move (>5% candle): {'YES' if candidate['momentum'] else 'NO'}\n")
+
+                if df_4h is not None and len(df_4h) >= 10:
+                    h4 = df_4h
+                    highs4 = h4["high"].values; lows4 = h4["low"].values; cls4 = h4["close"].values; ops4 = h4["open"].values
+                    # ATR_1H approximation from 4H data
+                    tr4 = [max(h4["high"].iloc[i]-h4["low"].iloc[i],
+                               abs(h4["high"].iloc[i]-cls4[i-1]),
+                               abs(h4["low"].iloc[i]-cls4[i-1])) for i in range(1,min(20,len(h4)))]
+                    atr4 = sum(tr4)/len(tr4) if tr4 else 0
+                    # Swing pivots
+                    sh=[]; sl_p=[]
+                    for i in range(1,len(highs4)-1):
+                        if highs4[i]>highs4[i-1] and highs4[i]>highs4[i+1]: sh.append(highs4[i])
+                        if lows4[i]<lows4[i-1] and lows4[i]<lows4[i+1]:  sl_p.append(lows4[i])
+                    # Big volume candle
+                    vols4=h4["volume"].values[-10:]; bidx=int(vols4.argmax())
+                    bdir="GREEN" if cls4[-10+bidx]>ops4[-10+bidx] else "RED"
+                    # Last 2 candle moves
+                    last2 = [f"{i}: open={ops4[i]:,.4g} close={cls4[i]:,.4g} high={highs4[i]:,.4g} low={lows4[i]:,.4g} move={abs(cls4[i]-ops4[i])/ops4[i]*100:.2f}%"
+                             for i in [-2,-1]]
+                    smc += (f"\n--- 4H CANDLES ---\n"
+                            f"Last 2 candles:\n  {last2[0]}\n  {last2[1]}\n"
+                            f"4H ATR: {atr4:,.4g}\n"
+                            f"Recent swing highs: {[round(x,4) for x in sh[-4:]]}\n"
+                            f"Recent swing lows:  {[round(x,4) for x in sl_p[-4:]]}\n"
+                            f"Last 5 closes: {[round(x,4) for x in cls4[-5:].tolist()]}\n"
+                            f"Big vol candle: {bdir} ({10-bidx} bars ago)\n")
+
+                if df_1h is not None and len(df_1h) >= 5:
+                    h1=df_1h; c1=h1["close"].values; h1_h=h1["high"].values; h1_l=h1["low"].values
+                    atr1=[max(h1["high"].iloc[i]-h1["low"].iloc[i],abs(h1["high"].iloc[i]-c1[i-1]),abs(h1["low"].iloc[i]-c1[i-1])) for i in range(1,min(15,len(h1)))]
+                    atr1v=sum(atr1)/len(atr1) if atr1 else 0
+                    sh1=[]; sl1=[]
+                    for i in range(1,len(h1_h)-1):
+                        if h1_h[i]>h1_h[i-1] and h1_h[i]>h1_h[i+1]: sh1.append(h1_h[i])
+                        if h1_l[i]<h1_l[i-1] and h1_l[i]<h1_l[i+1]: sl1.append(h1_l[i])
+                    smc += (f"\n--- 1H CANDLES ---\n"
+                            f"ATR_1H: {atr1v:,.4g}\n"
+                            f"Recent 1H swing highs: {[round(x,4) for x in sh1[-4:]]}\n"
+                            f"Recent 1H swing lows:  {[round(x,4) for x in sl1[-4:]]}\n"
+                            f"Last 5 closes: {[round(x,4) for x in c1[-5:].tolist()]}\n")
+
+                if df_5m is not None and len(df_5m) >= 5:
+                    c5=df_5m["close"].values
+                    smc += f"\n--- 5M ---\nLast 5 closes: {[round(x,4) for x in c5[-5:].tolist()]}\n"
+
+                # ── Step 5: Claude Opus analysis with full algorithm ───────────
+                analysis_prompt = f"""{smc}
+BTC: ${btc_price:,.0f} | Session: {get_session()}
+
+You are CLEXER — elite crypto trader. Analyze {chosen_sym} using this exact algorithm:
+
+STEP 1 — MOMENTUM CHECK
+Check last 2 x 4H candles: if abs(close-open)/open×100 > 5% on either → BRANCH B (Momentum).
+Else → BRANCH A (Structure).
+
+BRANCH A — STRUCTURE ANALYSIS
+Weekly bias from closes. 4H primary: HH+HL=BULLISH, LH+LL=BEARISH, mixed=NEUTRAL.
+4H volume: last big GREEN=buy pressure, RED=sell pressure.
+1H: confirms or neutral=proceed, opposite=lower confidence only.
+Direction: LONG = 4H bullish + last big vol GREEN + 1H not bearish + price above last 4H swing low.
+SHORT = 4H bearish + last big vol RED + 1H not bullish + price below last 4H swing high.
+WAIT = 4H neutral, or 4H+1H both opposite, or no swing within 2.5% of price.
+Entry = last 4H swing low (LONG) or high (SHORT). Distance check: if >2.5% away use 1H swing or MARKET.
+SL: atr_pct = ATR_1H/price×100. sl_pct = atr_pct×1.5 (clamp 0.8%-4%). sl_dist = entry×(sl_pct/100).
+TP1 = entry ± sl_dist×2. TP2 = entry ± sl_dist×4.
+
+BRANCH B — MOMENTUM ANALYSIS (if triggered)
+Use 1H as primary (4H = background bias only).
+Impulse GREEN → bias LONG. Impulse RED → bias SHORT.
+Entry = current price (MARKET) — impulse often doesn't pull back. If pullback already formed, enter now.
+SL = impulse candle open ± 0.3% buffer (NOT ATR-based).
+impulse_size = abs(impulse_close - impulse_open).
+TP1 = entry ± impulse_size×0.5. TP2 = entry ± impulse_size×1.0.
+
+OUTPUT (plain text, no markdown):
+Branch: A or B
+Signal: BUY / SELL / WAIT
+Entry: [price]
+SL: [price]
+TP1: [price]
+TP2: [price]
+R:R: [ratio]
+Confidence: HIGH / MED / LOW
+Reasoning: 3 lines max"""
+
+                content = []
+                if scan_screenshots:
+                    added = 0
+                    for tf in ["4H","1H","5"]:
+                        img_b64 = scan_screenshots.get(tf)
+                        if not img_b64: continue
+                        content.append({"type":"text","text":f"=== {chosen_sym} {tf} CHART (TradingView) ==="})
+                        content.append({"type":"image","source":{"type":"base64","media_type":"image/png","data":img_b64}})
+                        added += 1
+                    if added:
+                        content.append({"type":"text","text":f"\n{added} TV charts above — analyze visually AND use the numbers.\n"})
+                content.append({"type":"text","text":analysis_prompt})
+
+                r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                    model="claude-opus-4-6", max_tokens=800,
+                    messages=[{"role":"user","content":content}])
+                analysis = r2.content[0].text.strip()
+
+                emoji = "🟢" if candidate["change"] >= 0 else "🔴"
+                tv_src = "TV+BingX" if tv_switched else "BingX"
                 send_reply(cid,
-                    f"🔍 <b>Best Coins to Watch</b>  {ist_str()}\n\n"
-                    f"BTC: <b>${price:,.0f}</b> ({tk['change']:+.2f}%) | {get_session()}\n\n"
-                    f"<pre>{result[:1400]}</pre>\n\n"
-                    f"➡️ Use /coin ETHUSDT to analyze any coin\n\n"
+                    f"{emoji} <b>{chosen_sym} — CLEXER Scan</b>  {ist_str()}\n\n"
+                    f"Price: <b>${cp:,.6g}</b>  ({candidate['change']:+.2f}%)  Vol: ${candidate['vol_m']}M\n"
+                    f"Structure: {candidate['structure']} | {'⚡ MOMENTUM' if candidate['momentum'] else '📊 Normal'} | {tv_src}\n\n"
+                    f"<pre>{analysis[:1100]}</pre>\n\n"
                     f"⚠️ <i>Not financial advice — CLEXER V7.0</i>")
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
+                import traceback as _tb2; print(_tb2.format_exc())
         threading.Thread(target=_do_scan, daemon=True).start()
 
     elif cmd == "/coin" and is_admin:
