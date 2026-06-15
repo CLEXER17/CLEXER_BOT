@@ -1613,6 +1613,7 @@ ADMIN_HELP = """<b>CLEXER V7.0 - Admin Commands</b>
 /ctretry ID - Retry for specific user
 /ctclose - Close ALL copy positions
 /ctclose ID - Close one user's position
+/scancopy on|off - Enable/disable copy trade for /scan signals
 
 /broadcast - Send to all
 /help"""
@@ -1645,7 +1646,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/coin","/ctclose","/closetrade"}
+    "/scan","/coin","/ctclose","/closetrade","/scancopy"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -1924,6 +1925,19 @@ def handle_command(text, chat_id, message=None):
             reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
             send_reply(chat_id, reply + "\n\n<i>- CLEXER V7.0 -</i>")
 
+    elif cmd == "/scancopy" and is_admin:
+        if len(parts) < 2 or parts[1].lower() not in ("on","off"):
+            state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
+            send_reply(chat_id,
+                f"<b>Scan Copy Trade:</b> {state}\n\n"
+                "Usage: <code>/scancopy on</code> or <code>/scancopy off</code>\n\n"
+                "When ON — /scan will auto-place trades on copy users for the chosen alt coin.\n"
+                "When OFF — /scan gives analysis only, no trade placed.\n\n"
+                "<i>- CLEXER V7.0 -</i>"); return
+        ct.set_scan_ct(parts[1].lower() == "on")
+        state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
+        send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V7.0 -</i>")
+
     elif cmd == "/scan" and is_admin:
         send_reply(chat_id, "📡 Scanning BingX market data to find best trade (~60s)...")
         def _do_scan(cid=chat_id):
@@ -2188,6 +2202,31 @@ Reasoning: 3 lines max"""
                     f"Structure: {candidate['structure']} | {'⚡ MOMENTUM' if candidate['momentum'] else '📊 Normal'} | {tv_src}\n\n"
                     f"<pre>{analysis[:1100]}</pre>\n\n"
                     f"⚠️ <i>Not financial advice — CLEXER V7.0</i>")
+
+                # ── Auto-place trade for copy users if signal is BUY/SELL ──
+                import re as _re
+                def _parse(label):
+                    m = _re.search(rf"{label}[:\s]+([0-9.]+)", analysis, _re.IGNORECASE)
+                    return float(m.group(1)) if m else 0.0
+                sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
+                scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
+
+                if scan_signal_val in ("BUY", "SELL"):
+                    scan_entry = _parse("Entry") or cp
+                    scan_sl    = _parse("SL")
+                    scan_tp1   = _parse("TP1")
+                    scan_tp2   = _parse("TP2")
+                    entry_type = "MARKET" if abs(scan_entry - cp) / cp < 0.005 else "LIMIT"
+
+                    if scan_sl > 0:
+                        sd = {"signal": scan_signal_val, "entry": scan_entry,
+                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
+                              "entry_type": entry_type}
+                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
+                        ct_note = "\n".join(ct_results[:5])
+                        send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n{ct_note}")
+                    else:
+                        send_reply(cid, "⚠️ Could not parse SL from analysis — copy trade skipped")
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
                 import traceback as _tb2; print(_tb2.format_exc())
