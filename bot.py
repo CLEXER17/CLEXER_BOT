@@ -1934,15 +1934,30 @@ def handle_command(text, chat_id, message=None):
                 def get_klines(symbol, interval, limit):
                     try:
                         kr = requests.get(
-                            "https://open-api.bingx.com/openApi/swap/v3/quote/klines",
+                            "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
                             params={"symbol":symbol,"interval":interval,"limit":limit},
                             timeout=12).json()
                         rows = kr.get("data",[])
-                        if not rows: return None
-                        df = _pd.DataFrame([[float(x) for x in row[:6]] for row in rows],
-                                           columns=["time","open","high","low","close","volume"])
-                        return df
-                    except: return None
+                        if not rows:
+                            print(f"  [KLINES] {symbol} {interval}: empty data, code={kr.get('code')} msg={kr.get('msg','')}")
+                            return None
+                        # BingX v2 rows can be list [time,open,high,low,close,vol,...] or dict
+                        if isinstance(rows[0], (list, tuple)):
+                            df = _pd.DataFrame([[float(x) for x in row[:6]] for row in rows],
+                                               columns=["time","open","high","low","close","volume"])
+                        else:
+                            df = _pd.DataFrame([{
+                                "time":  float(row.get("time",0) or row.get("openTime",0)),
+                                "open":  float(row.get("open",0)),
+                                "high":  float(row.get("high",0)),
+                                "low":   float(row.get("low",0)),
+                                "close": float(row.get("close",0)),
+                                "volume":float(row.get("volume",0)),
+                            } for row in rows])
+                        return df if len(df) > 0 else None
+                    except Exception as _ke:
+                        print(f"  [KLINES] {symbol} {interval} error: {_ke}")
+                        return None
 
                 def check_4h_structure(df):
                     """Returns BULLISH, BEARISH, or NEUTRAL based on swing highs/lows."""
@@ -2049,7 +2064,7 @@ def handle_command(text, chat_id, message=None):
                     df_5m = get_klines(chosen_sym,"5m",30)
                     scan_screenshots = {}
 
-                if tv_switched: tv_set_symbol(SYMBOL)  # switch back to BTC
+                if tv_switched: tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC perpetual
 
                 cp = candidate["price"]
 
