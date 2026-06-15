@@ -581,14 +581,55 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                 r = _place_alt(side, "MARKET", qty)
                 if r.get("code") == 0:
                     half = max(round(qty / 2, 4), 0.001)
-                    sl_r  = _place_alt(close_side, "STOP_MARKET",   qty,  sp=sl,  cp=True, ps=trade_ps)
-                    tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1, ps=trade_ps) if tp1 else {}
-                    tp2_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2, ps=trade_ps) if tp2 else {}
+                    uname = user.get("username", "?")
+
+                    # ── Retry loop: up to 60s to place SL + TPs ──────────────
+                    sl_ok = tp1_ok = tp2_ok = False
+                    deadline = time.time() + 60
+                    attempt = 0
+                    while time.time() < deadline:
+                        attempt += 1
+                        if not sl_ok:
+                            sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, ps=trade_ps)
+                            sl_ok = sl_r.get("code") == 0
+                            if not sl_ok:
+                                print(f"  [CT] @{uname} SL attempt {attempt} FAIL: {sl_r.get('msg','')}")
+                        if not tp1_ok and tp1:
+                            tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1, ps=trade_ps)
+                            tp1_ok = tp1_r.get("code") == 0
+                        if not tp2_ok and tp2:
+                            tp2_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2, ps=trade_ps)
+                            tp2_ok = tp2_r.get("code") == 0
+                        if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
+                            break  # all placed
+                        time.sleep(6)
+
+                    if not sl_ok:
+                        # SL still failing after 60s — close position to protect user
+                        _bingx("POST", "/openApi/swap/v2/trade/closePosition",
+                               api_key, api_secret, {"symbol": symbol, "positionSide": trade_ps})
+                        results.append(
+                            f"🚨 @{uname} {symbol} — SL failed after 60s ({attempt} attempts)"
+                            f" — POSITION AUTO-CLOSED for safety")
+                        continue
+
+                    # Store scan trade details for monitor loop
+                    user["scan_symbol"] = symbol
+                    user["scan_side"]   = side
+                    user["scan_sl"]     = sl
+                    user["scan_tp1"]    = tp1
+                    user["scan_tp2"]    = tp2
+                    user["scan_qty"]    = qty
+                    _set(cid, user)
+
+                    tp_warn = ""
+                    if tp1 and not tp1_ok: tp_warn += " ⚠️TP1 still failed"
+                    if tp2 and not tp2_ok: tp_warn += " ⚠️TP2 still failed"
                     results.append(
-                        f"✅ @{user.get('username','?')} {symbol} {side} {qty:.4f}"
-                        f" SL={'OK' if sl_r.get('code')==0 else 'ERR'}"
-                        f" TP1={'OK' if tp1_r.get('code')==0 else 'ERR'}"
-                        f" TP2={'OK' if tp2_r.get('code')==0 else 'ERR'}")
+                        f"✅ @{uname} {symbol} {side} {qty:.4f}"
+                        f" SL=OK TP1={'OK' if not tp1 or tp1_ok else 'FAIL'}"
+                        f" TP2={'OK' if not tp2 or tp2_ok else 'FAIL'}"
+                        f" (attempts:{attempt}){tp_warn}")
                 else:
                     results.append(f"❌ @{user.get('username','?')} {symbol}: {r.get('msg','?')}")
             else:
@@ -606,6 +647,142 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
         results = ["No copy users connected"]
     print(f"[CT] on_scan_signal {symbol}: {results}")
     return results
+
+
+def _get_open_orders(api_key: str, api_secret: str, symbol: str) -> list:
+    """Fetch all open orders for a symbol."""
+    r = _bingx("GET", "/openApi/swap/v2/trade/openOrders", api_key, api_secret,
+               {"symbol": symbol})
+    return (r.get("data") or {}).get("orders", [])
+
+
+def _get_all_positions(api_key: str, api_secret: str) -> list:
+    """Fetch all open positions (all symbols)."""
+    r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {})
+    if r.get("code") == 0:
+        return [p for p in (r.get("data") or {}).get("positions", [])
+                if abs(float(p.get("positionAmt", 0))) > 0]
+    return []
+
+
+def monitor_sl_tp(notify_fn=None):
+    """
+    Check every connected user's open positions and verify SL + TP orders exist.
+    Re-places any missing ones. Call this every hour from bot main loop.
+    notify_fn(text) — optional callback to send admin alert.
+    """
+    fixes = []
+    for cid, user in list(_db.items()):
+        if not user.get("connected"): continue
+        try:
+            ak  = _decrypt(user["api_key_enc"])
+            ask = _decrypt(user["api_secret_enc"])
+            uname = user.get("username", cid)
+
+            positions = _get_all_positions(ak, ask)
+            if not positions:
+                continue
+
+            for pos in positions:
+                sym        = pos.get("symbol", "")
+                pos_side   = pos.get("positionSide", "")   # LONG or SHORT
+                pos_amt    = abs(float(pos.get("positionAmt", 0)))
+                if pos_amt <= 0 or not sym or not pos_side: continue
+
+                close_side = "SELL" if pos_side == "LONG" else "BUY"
+
+                # Get expected SL/TP from stored state
+                is_btc  = (sym == BINGX_SYMBOL)
+                is_scan = (sym == user.get("scan_symbol", ""))
+
+                if is_btc:
+                    sl_price  = user.get("scan_sl", 0)   # fallback
+                    tp1_price = 0
+                    tp2_price = 0
+                    # BTC SL/TP tracked by order IDs — just check existence
+                elif is_scan:
+                    sl_price  = float(user.get("scan_sl",  0))
+                    tp1_price = float(user.get("scan_tp1", 0))
+                    tp2_price = float(user.get("scan_tp2", 0))
+                else:
+                    continue  # unknown position, skip
+
+                # Fetch open orders for this symbol
+                open_orders = _get_open_orders(ak, ask, sym)
+                has_sl  = any(o.get("type") == "STOP_MARKET"        and o.get("positionSide") == pos_side for o in open_orders)
+                has_tp1 = any(o.get("type") == "TAKE_PROFIT_MARKET" and o.get("positionSide") == pos_side for o in open_orders)
+                tp_orders = [o for o in open_orders if o.get("type") == "TAKE_PROFIT_MARKET" and o.get("positionSide") == pos_side]
+                has_tp2 = len(tp_orders) >= 2
+
+                placed = []
+
+                if not has_sl and sl_price > 0:
+                    r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                        "symbol": sym, "side": close_side, "positionSide": pos_side,
+                        "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
+                        "stopPrice": round(sl_price, 6),
+                    })
+                    if r.get("code") == 0:
+                        placed.append("SL fixed")
+                    else:
+                        placed.append(f"SL fix FAIL:{r.get('msg','')[:30]}")
+
+                half = max(round(pos_amt / 2, 4), 0.001)
+
+                if not has_tp1 and tp1_price > 0:
+                    r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                        "symbol": sym, "side": close_side, "positionSide": pos_side,
+                        "type": "TAKE_PROFIT_MARKET", "quantity": half,
+                        "stopPrice": round(tp1_price, 6),
+                    })
+                    if r.get("code") == 0:
+                        placed.append("TP1 fixed")
+                    else:
+                        placed.append(f"TP1 fix FAIL:{r.get('msg','')[:30]}")
+
+                if not has_tp2 and tp2_price > 0:
+                    r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                        "symbol": sym, "side": close_side, "positionSide": pos_side,
+                        "type": "TAKE_PROFIT_MARKET", "quantity": half,
+                        "stopPrice": round(tp2_price, 6),
+                    })
+                    if r.get("code") == 0:
+                        placed.append("TP2 fixed")
+                    else:
+                        placed.append(f"TP2 fix FAIL:{r.get('msg','')[:30]}")
+
+                if placed:
+                    msg = f"🔧 [Monitor] @{uname} {sym}: {', '.join(placed)}"
+                    fixes.append(msg)
+                    print(f"[CT] {msg}")
+                else:
+                    print(f"[CT] [Monitor] @{uname} {sym}: SL+TP OK")
+
+        except Exception as e:
+            print(f"[CT] monitor {cid}: {e}")
+
+    if fixes and notify_fn:
+        notify_fn("🔧 <b>SL/TP Monitor fixed:</b>\n" + "\n".join(fixes))
+    elif not fixes:
+        print("[CT] [Monitor] All positions have SL+TP ✅")
+
+    return fixes
+
+
+def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
+    """Start background thread that runs monitor_sl_tp every interval_hours."""
+    import threading as _th
+    def _loop():
+        while True:
+            time.sleep(interval_hours * 3600)
+            print(f"[CT] Running SL/TP monitor check...")
+            try:
+                monitor_sl_tp(notify_fn)
+            except Exception as e:
+                print(f"[CT] monitor loop error: {e}")
+    t = _th.Thread(target=_loop, daemon=True)
+    t.start()
+    print(f"[CT] SL/TP monitor started — checks every {interval_hours}h")
 
 
 def on_sl_to_be(entry: float):
