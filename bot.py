@@ -1986,12 +1986,23 @@ def handle_command(text, chat_id, message=None):
                 movers.sort(key=lambda x: x["score"], reverse=True)
                 top10 = movers[:10]
 
+                if not top10:
+                    send_reply(cid, "❌ No coins found from BingX ticker (API issue?)"); return
+
+                # Show top 10 so user can verify real data was fetched
+                top_lines = "\n".join(
+                    f"{i+1}. {t['base']:8s} {t['change']:+.2f}%  Vol:${t['vol_m']}M  Score:{t['score']:.0f}"
+                    for i, t in enumerate(top10))
+                send_reply(cid, f"📈 <b>Top 10 by score (|change|×vol):</b>\n<pre>{top_lines}</pre>")
+
                 # ── Step 2: Check 4H structure for each, pick best ─────────────
-                send_reply(cid, f"📊 Checking 4H structure on top {len(top10)} coins...")
+                send_reply(cid, f"📊 Fetching 4H candles & checking structure...")
                 structured = []   # coins with clean 4H structure
                 all_with_data = []
+                kline_ok = 0
                 for t in top10:
                     df4 = get_klines(t["sym"], "4h", 30)
+                    if df4 is not None: kline_ok += 1
                     struct = check_4h_structure(df4)
                     mom    = is_momentum(df4)
                     t["structure"] = struct
@@ -2000,7 +2011,14 @@ def handle_command(text, chat_id, message=None):
                     all_with_data.append(t)
                     if struct != "NEUTRAL":
                         structured.append(t)
-                    print(f"  [SCAN] {t['base']}: score={t['score']:.0f} struct={struct} mom={mom}")
+                    print(f"  [SCAN] {t['base']}: klines={'OK' if df4 is not None else 'FAIL'} score={t['score']:.0f} struct={struct} mom={mom}")
+
+                struct_lines = "\n".join(
+                    f"{'✅' if t['structure']!='NEUTRAL' else '⬜'} {t['base']:8s} {t['structure']:8s} {'⚡' if t['momentum'] else ''}"
+                    for t in all_with_data)
+                send_reply(cid,
+                    f"🔍 Structure results ({kline_ok}/10 kline OK):\n<pre>{struct_lines}</pre>\n"
+                    f"{'✅ Found structured coins!' if structured else '⚠️ All NEUTRAL — picking highest score'}")
 
                 # Pick highest-scored coin with clean structure, else #1 overall
                 candidate = structured[0] if structured else all_with_data[0]
@@ -2017,12 +2035,16 @@ def handle_command(text, chat_id, message=None):
                 print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
                 if tv_switched and is_tv_online():
-                    df_4h = tv_get_candles_for(tv_sym,"4h",60) or get_klines(chosen_sym,"4h",60)
-                    df_1h = tv_get_candles_for(tv_sym,"1h",40) or get_klines(chosen_sym,"1h",40)
-                    df_5m = tv_get_candles_for(tv_sym,"5m",30) or get_klines(chosen_sym,"5m",30)
+                    _t4 = tv_get_candles_for(tv_sym,"4h",60)
+                    df_4h = _t4 if _t4 is not None else get_klines(chosen_sym,"4h",60)
+                    _t1 = tv_get_candles_for(tv_sym,"1h",40)
+                    df_1h = _t1 if _t1 is not None else get_klines(chosen_sym,"1h",40)
+                    _t5 = tv_get_candles_for(tv_sym,"5m",30)
+                    df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
                     scan_screenshots = fetch_tv_screenshots()
                 else:
-                    df_4h = candidate.get("df4h") or get_klines(chosen_sym,"4h",60)
+                    _c4 = candidate.get("df4h")
+                    df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
                     df_1h = get_klines(chosen_sym,"1h",40)
                     df_5m = get_klines(chosen_sym,"5m",30)
                     scan_screenshots = {}
