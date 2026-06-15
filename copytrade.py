@@ -1,5 +1,5 @@
 """
-CLEXER V7.0 — BingX Copy Trade System
+CLEXER V9.0 — BingX Copy Trade System
 ──────────────────────────────────────
 Standalone module. Import into bot.py.
 
@@ -94,7 +94,8 @@ def _default_user(username: str = "?") -> dict:
         "in_position":    False,
         "pos_side":       "",    # "BUY" or "SELL"
         "pos_qty":        0.0,   # full position qty in BTC (set on entry)
-        "history":        {"total": 0, "profit": 0, "loss": 0},
+        "history":        {"total": 0, "profit": 0, "loss": 0,
+                           "total_pnl": 0.0, "won_usdt": 0.0, "lost_usdt": 0.0},
         "paused_by_admin": False,
         "joined":         _now_ist(),
     }
@@ -171,8 +172,13 @@ def _set_leverage(api_key: str, api_secret: str, side: str, leverage: int) -> bo
 
 def _place_order(api_key: str, api_secret: str, side: str, order_type: str,
                  quantity: float, price: float = 0, stop_price: float = 0,
-                 close_position: bool = False) -> dict:
-    pos_side = "LONG" if side == "BUY" else "SHORT"
+                 close_position: bool = False, position_side: str = "") -> dict:
+    # position_side must be "LONG"/"SHORT" explicitly for close orders.
+    # Deriving from side is WRONG for closes: close-LONG uses side=SELL but positionSide=LONG.
+    if position_side:
+        pos_side = position_side
+    else:
+        pos_side = "LONG" if side == "BUY" else "SHORT"
     params = {
         "symbol":       BINGX_SYMBOL,
         "side":         side,
@@ -223,6 +229,20 @@ def _calc_qty(size_usdt: float, price: float, leverage: int) -> float:
     qty = (size_usdt * leverage) / price
     return max(round(qty, 4), 0.001)
 
+def _calc_pnl(side: str, entry: float, close_price: float, qty: float) -> float:
+    if entry <= 0 or close_price <= 0 or qty <= 0: return 0.0
+    raw = (close_price - entry) * qty if side == "BUY" else (entry - close_price) * qty
+    return round(raw, 4)
+
+def _record_pnl(user: dict, pnl: float):
+    h = user.setdefault("history", {"total":0,"profit":0,"loss":0,
+                                     "total_pnl":0.0,"won_usdt":0.0,"lost_usdt":0.0})
+    # backfill missing keys for old users
+    h.setdefault("total_pnl", 0.0); h.setdefault("won_usdt", 0.0); h.setdefault("lost_usdt", 0.0)
+    h["total_pnl"] = round(h["total_pnl"] + pnl, 4)
+    if pnl >= 0: h["won_usdt"]  = round(h["won_usdt"]  + pnl, 4)
+    else:        h["lost_usdt"] = round(h["lost_usdt"] + abs(pnl), 4)
+
 # ─── COPY TRADE MIRROR ACTIONS ────────────────────────────────────────────────
 
 def _users_with_copy() -> list[tuple[str, dict, str, str]]:
@@ -251,6 +271,8 @@ def on_signal(signal: dict, price: float) -> list[str]:
     tp2         = float(signal["tp2"])
     entry_type  = signal.get("entry_type", "MARKET")
     close_side  = "SELL" if side == "BUY" else "BUY"
+    # positionSide for close orders — opposite of order side in hedge mode
+    trade_ps    = "LONG" if side == "BUY" else "SHORT"
     results     = []
 
     # Save last signal for /ctretry
@@ -276,11 +298,12 @@ def on_signal(signal: dict, price: float) -> list[str]:
                 if r.get("code") == 0:
                     # Place SL (STOP_MARKET, close full position)
                     sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                        qty, stop_price=sl, close_position=True)
+                                        qty, stop_price=sl, close_position=True,
+                                        position_side=trade_ps)
                     # Place TP2 (TAKE_PROFIT_MARKET) for 50% only — TP1 closes the other 50%
                     half_qty = max(round(qty / 2, 4), 0.001)
                     tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                        half_qty, stop_price=tp2)
+                                        half_qty, stop_price=tp2, position_side=trade_ps)
                     user["in_position"]    = True
                     user["pos_side"]       = side
                     user["pos_qty"]        = qty
@@ -323,50 +346,68 @@ def on_signal(signal: dict, price: float) -> list[str]:
     return results
 
 
-def on_tp1(entry: float):
+def on_tp1(entry: float, tp1: float = 0):
     """TP1 hit — close 50% of position at market, move SL to breakeven for remaining 50%."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             full_qty   = user.get("pos_qty", 0.001)
             half_qty   = max(round(full_qty / 2, 4), 0.001)
 
             # Close 50% at market
-            _place_order(api_key, api_secret, close_side, "MARKET", half_qty)
+            _place_order(api_key, api_secret, close_side, "MARKET", half_qty,
+                         position_side=pos_side)
+
+            # Record TP1 PnL on 50%
+            close_price = tp1 if tp1 > 0 else entry
+            pnl = _calc_pnl(user["pos_side"], entry, close_price, half_qty)
+            _record_pnl(user, pnl)
+            user["history"]["total"] += 1; user["history"]["profit"] += 1
 
             # Cancel old full-size SL, place new BE SL for remaining 50%
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
             sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                half_qty, stop_price=entry)
+                                half_qty, stop_price=entry, position_side=pos_side)
             user["sl_order_id"] = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
             user["pos_qty"]     = half_qty   # remaining quantity
             _set(cid, user)
-            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC, BE SL set @ {entry}")
+            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f}")
         except Exception as e:
             print(f"[CT] on_tp1 {cid}: {e}")
 
 
-def on_tp2():
+def on_tp2(entry: float = 0, tp2: float = 0):
     """TP2 hit — BingX TAKE_PROFIT_MARKET auto-closes. Update records."""
     global _last_signal
     _last_signal = {}
     for cid, user, _, _ in _users_with_copy():
         if not user.get("in_position"): continue
-        user["in_position"] = False; user["pos_side"] = ""
+        # Record TP2 PnL on remaining qty
+        if entry > 0 and tp2 > 0:
+            pnl = _calc_pnl(user["pos_side"], entry, tp2, user.get("pos_qty", 0.001))
+            _record_pnl(user, pnl)
+            print(f"[CT] on_tp2 {cid}: pnl={pnl:+.2f}")
+        user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["profit"] += 1
         _set(cid, user)
 
 
-def on_sl():
+def on_sl(entry: float = 0, sl: float = 0):
     """SL hit — BingX STOP_MARKET auto-closes. Update records."""
     global _last_signal
     _last_signal = {}   # signal is dead — block any retry after this
     for cid, user, _, _ in _users_with_copy():
         if not user.get("in_position"): continue
-        user["in_position"] = False; user["pos_side"] = ""
+        # Record SL loss on remaining qty
+        if entry > 0 and sl > 0:
+            pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
+            _record_pnl(user, pnl)
+            print(f"[CT] on_sl {cid}: pnl={pnl:+.2f}")
+        user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["loss"] += 1
@@ -390,6 +431,40 @@ def on_cancel_limits():
             print(f"[CT] on_cancel_limits {cid}: {e}")
 
 
+def on_entry_hit(entry: float, sl: float, tp2: float):
+    """
+    Pullback entry triggered — limit order should have filled.
+    Place SL + TP orders for copy users who had a pending limit order.
+    Only acts on users with an active limit_order_id (TV signal copies).
+    """
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if user.get("in_position"): continue          # market-entry users already set
+        if not user.get("pos_side"): continue         # no pending trade at all
+        if not user.get("limit_order_id"): continue   # no pending limit — skip (not a TV copy)
+        try:
+            close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+            qty        = user.get("pos_qty", 0.001)
+            half_qty   = max(round(qty / 2, 4), 0.001)
+
+            # Place SL for full qty
+            sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                qty, stop_price=sl, close_position=True,
+                                position_side=pos_side)
+            # Place TP2 for 50% — TP1 will close the other half
+            tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                half_qty, stop_price=tp2, position_side=pos_side)
+
+            user["in_position"]    = True
+            user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            user["limit_order_id"] = ""
+            _set(cid, user)
+            print(f"[CT] on_entry_hit {cid}: SL@{sl:,.0f} TP2@{tp2:,.0f} placed")
+        except Exception as e:
+            print(f"[CT] on_entry_hit {cid}: {e}")
+
+
 def on_close_all():
     """Admin /close or structure flip — close all positions + cancel all orders."""
     for cid, user, api_key, api_secret in _users_with_copy():
@@ -404,16 +479,66 @@ def on_close_all():
             print(f"[CT] on_close_all {cid}: {e}")
 
 
+def close_coin_all(coin: str) -> list[str]:
+    """
+    Close a specific coin position + cancel its orders for ALL copy users.
+    coin = "BTC" / "ETH" / "SOL" etc  (auto-converts to BTC-USDT format)
+    """
+    coin = coin.upper().replace("USDT","").replace("-","")
+    symbol = f"{coin}-USDT"
+    results = []
+    for cid, user in list(_db.items()):
+        if not user.get("connected"): continue
+        try:
+            ak  = _decrypt(user["api_key_enc"])
+            ask = _decrypt(user["api_secret_enc"])
+            # Cancel all open orders on this symbol
+            _bingx("DELETE", "/openApi/swap/v2/trade/allOpenOrders", ak, ask,
+                   {"symbol": symbol})
+            # Close any open position
+            for ps in ("LONG", "SHORT"):
+                _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
+                       {"symbol": symbol, "positionSide": ps})
+            # Clear local state only if it matches this coin (BINGX_SYMBOL is BTC-USDT)
+            if symbol == BINGX_SYMBOL:
+                user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
+                user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
+                _set(cid, user)
+            results.append(f"✅ @{user.get('username','?')} {symbol} closed")
+        except Exception as e:
+            results.append(f"❌ @{user.get('username','?')}: {e}")
+    return results or [f"No users found"]
+
+
+def on_close_user(cid: str) -> tuple[bool, str]:
+    """Close position + cancel orders for one specific user."""
+    user = _db.get(str(cid))
+    if not user or not user.get("connected"):
+        return False, "not connected"
+    try:
+        ak = _decrypt(user["api_key_enc"]); ask = _decrypt(user["api_secret_enc"])
+        if user.get("in_position") and user.get("pos_side"):
+            _close_position(ak, ask, user["pos_side"])
+        _cancel_all_orders(ak, ask)
+        user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
+        user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
+        _set(str(cid), user)
+        return True, f"@{user.get('username','?')} closed"
+    except Exception as e:
+        return False, str(e)
+
+
 def on_sl_to_be(entry: float):
     """Admin /sltobe — move SL to breakeven without closing 50% (manual override)."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             remaining  = user.get("pos_qty", 0.001)
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
             r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                             remaining, stop_price=entry)
+                             remaining, stop_price=entry, position_side=pos_side)
             user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
             _set(cid, user)
         except Exception as e:
@@ -426,10 +551,11 @@ def on_update_sl(new_sl: float):
         if not user.get("in_position"): continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             remaining  = user.get("pos_qty", 0.001)
             _cancel_order(api_key, api_secret, user.get("sl_order_id",""))
             r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                             remaining, stop_price=new_sl)
+                             remaining, stop_price=new_sl, position_side=pos_side)
             user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
             _set(cid, user)
         except Exception as e:
@@ -441,7 +567,7 @@ def on_update_sl(new_sl: float):
 CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage",
                      "/copytrade", "/mytrade", "/mysize", "/myhistory"}
 CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
-                     "/ctretry", "/ctstatus"}
+                     "/ctretry", "/ctstatus", "/ctclose"}
 
 def is_ct_command(cmd: str, is_admin: bool) -> bool:
     if cmd in CT_USER_COMMANDS: return True
@@ -603,14 +729,19 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/myhistory":
         user = _get(cid) or {}
-        h = user.get("history", {"total":0,"profit":0,"loss":0})
-        wr = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
+        h = user.get("history", {"total":0,"profit":0,"loss":0,"total_pnl":0.0,"won_usdt":0.0,"lost_usdt":0.0})
+        h.setdefault("total_pnl", 0.0); h.setdefault("won_usdt", 0.0); h.setdefault("lost_usdt", 0.0)
+        wr   = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
+        pnl  = h["total_pnl"]
+        pnl_s = f"+${pnl:.2f} 🟢" if pnl > 0 else (f"-${abs(pnl):.2f} 🔴" if pnl < 0 else "$0.00")
         send_reply_fn(chat_id,
             f"<b>Your Copy Trade History</b>\n\n"
-            f"Total trades: {h['total']}\n"
-            f"Profit:       {h['profit']}\n"
-            f"Loss:         {h['loss']}\n"
-            f"Win rate:     {wr}\n\n"
+            f"Total trades: <b>{h['total']}</b>\n"
+            f"Wins:         <b>{h['profit']}</b>  (+${h['won_usdt']:.2f})\n"
+            f"Losses:       <b>{h['loss']}</b>  (-${h['lost_usdt']:.2f})\n"
+            f"Win rate:     <b>{wr}</b>\n\n"
+            f"Total PnL:    <b>{pnl_s}</b>\n\n"
+            f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
             f"<i>— CLEXER V7.0 —</i>")
 
     # ── ADMIN COMMANDS ────────────────────────────────────────────────────────
@@ -666,7 +797,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     pnl_s = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
                     pos_info = f"\nPosition: {side} {abs(amt):.4f} BTC | Entry:{entry:,.0f} | PnL:{pnl_s}"
             except: pos_info = "\nPosition: (fetch error)"
-        h = user.get("history",{"total":0,"profit":0,"loss":0})
+        h = user.get("history",{"total":0,"profit":0,"loss":0,"total_pnl":0.0,"won_usdt":0.0,"lost_usdt":0.0})
+        h.setdefault("total_pnl", 0.0); h.setdefault("won_usdt", 0.0); h.setdefault("lost_usdt", 0.0)
+        pnl   = h["total_pnl"]
+        pnl_s = f"+${pnl:.2f} 🟢" if pnl > 0 else (f"-${abs(pnl):.2f} 🔴" if pnl < 0 else "$0.00")
+        wr    = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
         paused = "\n⚠️ PAUSED BY ADMIN" if user.get("paused_by_admin") else ""
         send_reply_fn(chat_id,
             f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
@@ -674,7 +809,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
             f"Size: <b>${user.get('size_usdt',0)} USDT</b> | Leverage: <b>{user.get('leverage',1)}x</b>"
             f"{pos_info}\n\n"
-            f"History: {h['total']} trades | {h['profit']} profit | {h['loss']} loss\n"
+            f"Trades: {h['total']} | Wins: {h['profit']} | Losses: {h['loss']} | WR: {wr}\n"
+            f"Won:  +${h['won_usdt']:.2f}  |  Lost: -${h['lost_usdt']:.2f}\n"
+            f"Total PnL: <b>{pnl_s}</b>\n\n"
             f"Joined: {user.get('joined','?')}\n\n"
             f"<i>— CLEXER V7.0 —</i>")
 
@@ -769,23 +906,33 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             sl         = _last_signal["sl"]
             tp2        = _last_signal["tp2"]
             close_side = "SELL" if side == "BUY" else "BUY"
+            trade_ps   = "LONG" if side == "BUY" else "SHORT"
             lev        = user.get("leverage", 10)
 
-            # Get current price for MARKET retry
-            bal_r = _bingx("GET", "/openApi/swap/v2/user/balance", api_key, api_secret, {})
-            # Use MARKET order at current price regardless of original entry_type
-            # because time has passed and limit may never fill
-            qty = _calc_qty(user["size_usdt"], _last_signal["price"], lev)
+            # Get live price for accurate qty calculation
+            import requests as _req
+            try:
+                _tk = _req.get("https://open-api.bingx.com/openApi/swap/v2/quote/price",
+                               params={"symbol": BINGX_SYMBOL}, timeout=5).json()
+                live_price = float((_tk.get("data") or {}).get("price", _last_signal["price"]))
+            except Exception:
+                live_price = _last_signal["price"]
+
+            qty      = _calc_qty(user["size_usdt"], live_price, lev)
+            half_qty = max(round(qty / 2, 4), 0.001)
             _set_leverage(api_key, api_secret, side, lev)
 
             r = _place_order(api_key, api_secret, side, "MARKET", qty)
             if r.get("code") == 0:
                 sl_r  = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                     qty, stop_price=sl, close_position=True)
+                                     qty, stop_price=sl, close_position=True,
+                                     position_side=trade_ps)
+                # TP2 for 50% only — matches on_signal behaviour
                 tp_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                     qty, stop_price=tp2, close_position=True)
+                                     half_qty, stop_price=tp2, position_side=trade_ps)
                 user["in_position"]    = True
                 user["pos_side"]       = side
+                user["pos_qty"]        = qty
                 user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
                 user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
                 user["limit_order_id"] = ""
@@ -795,7 +942,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     f"<b>Retry Successful!</b>\n\n"
                     f"✅ @{user.get('username','?')} entered {side} {qty} BTC\n\n"
                     f"SL placed: {sl:,.0f}\n"
-                    f"TP2 placed: {tp2:,.0f}\n\n"
+                    f"TP2 placed (50%): {tp2:,.0f}\n\n"
                     f"<i>— CLEXER V7.0 —</i>")
             else:
                 err = r.get("msg", "unknown error")
@@ -807,6 +954,26 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         except Exception as e:
             send_reply_fn(chat_id, f"❌ Retry error: {e}")
             print(f"[CT] /ctretry {target}: {e}")
+
+    elif cmd == "/ctclose" and is_admin:
+        if len(parts) >= 2 and parts[1].lower() != "all":
+            # Close one specific user
+            target = str(parts[1])
+            ok, msg = on_close_user(target)
+            send_reply_fn(chat_id,
+                f"<b>CT Close</b>\n\n{'✅' if ok else '❌'} {msg}\n\n<i>— CLEXER V7.0 —</i>")
+        else:
+            # Close all copy trade positions
+            results = []
+            for cid, user, api_key, api_secret in _users_with_copy():
+                ok, msg = on_close_user(cid)
+                results.append(f"{'✅' if ok else '❌'} {msg}")
+            if not results:
+                send_reply_fn(chat_id, "<b>CT Close All</b>\n\nNo active copy users.\n\n<i>— CLEXER V7.0 —</i>")
+            else:
+                send_reply_fn(chat_id,
+                    f"<b>CT Close All</b>\n\n" + "\n".join(results) +
+                    f"\n\n<i>— CLEXER V7.0 —</i>")
 
     else:
         send_reply_fn(chat_id, f"Unknown command: {cmd}")
