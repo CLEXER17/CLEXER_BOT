@@ -1,5 +1,5 @@
 """
-CLEXER Signal Bot V7.0
+CLEXER Signal Bot V9.0
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
@@ -33,7 +33,7 @@ ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 
 SYMBOL               = "BTCUSDT"
-TICK_INTERVAL        = 60
+TICK_INTERVAL        = 10    # price check every 10s when trade active
 PRICE_CHECK_INTERVAL = 3600
 SIGNAL_SCAN_INTERVAL = 14400
 NEWS_CHECK_INTERVAL  = 1800
@@ -96,9 +96,10 @@ posted_news_guids: set = set()
 latest_news_context: list = []
 trade_lock = threading.Lock()
 
-DATA_DIR     = os.getenv("DATA_DIR", ".")
+DATA_DIR           = os.getenv("DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
-USER_DB_FILE = os.path.join(DATA_DIR, "users.json")
+USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
+ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
 registered_users: set = set()
 
 RATE_LIMIT_USES   = 2
@@ -143,6 +144,29 @@ trade_stats = {
     "total_signals": 0, "missed_entries": 0, "stop_hunts": 0,
 }
 
+def save_active_trade():
+    try:
+        with open(ACTIVE_TRADE_FILE, "w") as f:
+            json.dump({"trade": active_trade, "stats": trade_stats}, f, indent=2)
+    except Exception as e:
+        print(f"[TRADE] Save error: {e}")
+
+def load_active_trade():
+    global active_trade, trade_stats
+    try:
+        if os.path.exists(ACTIVE_TRADE_FILE):
+            d = json.load(open(ACTIVE_TRADE_FILE))
+            t = d.get("trade", {})
+            if t.get("signal"):   # only restore if there was an active trade
+                active_trade = t
+                trade_stats.update(d.get("stats", {}))
+                print(f"[TRADE] Restored: {t['signal']} @ {t['entry']:,.0f} "
+                      f"entry_hit:{t.get('entry_hit')} tp1_hit:{t.get('tp1_hit')}")
+            else:
+                print("[TRADE] No active trade to restore")
+    except Exception as e:
+        print(f"[TRADE] Load error: {e}")
+
 def reset_trade():
     global active_trade
     with trade_lock:
@@ -152,6 +176,7 @@ def reset_trade():
             "entry_type": "MARKET", "entry_note": "",
             "entry_hit": False, "sl_wicked": False, "scan_count": 0,
         }
+    save_active_trade()
 
 def set_trade(s: dict):
     global active_trade
@@ -164,6 +189,7 @@ def set_trade(s: dict):
             "entry_hit": s.get("entry_type", "MARKET") == "MARKET",
             "sl_wicked": False, "scan_count": 0,
         }
+    save_active_trade()
     trade_stats["total_signals"] += 1
     signal_history.append({
         "time": ist_str(), "signal": s["signal"],
@@ -214,7 +240,7 @@ def tv_update_state():
 
 def tv_get_candles(interval, limit):
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
-    tv_map = {"weekly": "W", "4h": "4H", "1h": "1H", "5m": "5"}
+    tv_map = {"weekly": "W", "4h": "4H", "1h": "1H", "5m": "5", "1m": "1"}
     try:
         r = requests.get(f"{TV_BRIDGE_URL}/candles",
             params={"symbol": SYMBOL, "interval": tv_map.get(interval, interval), "limit": limit},
@@ -408,6 +434,19 @@ def get_price_range_since(minutes):
         except Exception as e: print(f"  [aggTrades] {e}")
         chunk_start = chunk_end + 1; time.sleep(0.05)
     return {"high": max(all_highs) if all_highs else None, "low": min(all_lows) if all_lows else None}
+
+def get_recent_range(minutes: int = 3) -> tuple[float, float]:
+    """
+    Return (high, low) over the last N minutes using 1m candles.
+    Catches spikes that happen between tick checks (millisecond wicks).
+    Falls back to Binance if TV offline.
+    """
+    try:
+        df = get_candles("1m", minutes + 1)
+        return float(df["high"].max()), float(df["low"].min())
+    except Exception as e:
+        print(f"  [RANGE] {e}")
+        return 0.0, 0.0
 
 def get_current_source():
     return "TradingView" if (TV_BRIDGE_URL and tv_bridge_state["online"]) else "Binance"
@@ -1226,42 +1265,69 @@ def run_tick_check():
     try:
         ticker = get_ticker(); price = ticker["price"]
         t = active_trade; sig = t["signal"]; entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
+
+        # Get last 3 x 1m candle range to catch spikes missed between checks
+        candle_high, candle_low = get_recent_range(3)
+        # Use worst-case price in each direction
+        check_high = max(price, candle_high) if candle_high else price
+        check_low  = min(price, candle_low)  if candle_low  else price
+
         if not t["entry_hit"]:
             tol = abs(entry-sl)*0.25
-            if (sig=="BUY" and price<=entry+tol) or (sig=="SELL" and price>=entry-tol):
+            # Use candle range so a spike that touched entry and reversed is caught
+            entry_touched = (sig=="BUY"  and check_low  <= entry+tol) or \
+                            (sig=="SELL" and check_high >= entry-tol)
+            if entry_touched:
                 active_trade["entry_hit"] = True
-                send_telegram(f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
-                    f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n\n"
-                    f"🎯 Entry:  <b>{entry:,.0f}</b>  📊 Price: <b>{price:,.2f}</b>\n"
+                save_active_trade()
+                ct.on_entry_hit(entry, sl, tp2)
+                send_telegram(
+                    f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
+                    f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig} — {SYMBOL}</b>\n\n"
+                    f"🎯 Entry:  <b>{entry:,.0f}</b>  |  📊 Price: <b>{price:,.2f}</b>\n"
                     f"🛡️ SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
-                    f"💰 TP1:    <b>{tp1:,.0f}</b>\n🏆 TP2:    <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V7.0 -</i>")
+                    f"💰 TP1:   <b>{tp1:,.0f}</b>\n"
+                    f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
+                    f"⚠️ <b>Trade is now LIVE — SL and TP active</b>\n\n"
+                    f"✨ <i>- CLEXER V7.0 -</i>\n⚠️ <i>Not financial advice</i>")
             return False
-        if (sig=="BUY" and price>=tp2) or (sig=="SELL" and price<=tp2):
+
+        # TP2 — use candle high/low to catch spike
+        tp2_hit = (sig=="BUY" and check_high >= tp2) or (sig=="SELL" and check_low <= tp2)
+        if tp2_hit:
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             send_telegram(f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V7.0 -</i>")
-            ct.on_tp2(); reset_trade(); return True
+            ct.on_tp2(entry, tp2); reset_trade(); return True
+
+        # TP1 — use candle high/low
         if not t["tp1_hit"]:
-            if (sig=="BUY" and price>=tp1) or (sig=="SELL" and price<=tp1):
+            tp1_hit = (sig=="BUY" and check_high >= tp1) or (sig=="SELL" and check_low <= tp1)
+            if tp1_hit:
                 active_trade["tp1_hit"] = True; active_trade["sl"] = entry
                 trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
-                ct.on_tp1(entry)
+                save_active_trade()
+                ct.on_tp1(entry, tp1)
                 send_telegram(f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>- CLEXER V7.0 -</i>")
+
+        # SL — use candle low/high to catch wick SL hits
         sl_margin = 80
-        if (sig=="BUY" and price<sl-sl_margin) or (sig=="SELL" and price>sl+sl_margin):
+        sl_hit = (sig=="BUY"  and check_low  < sl - sl_margin) or \
+                 (sig=="SELL" and check_high > sl + sl_margin)
+        if sl_hit:
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
-            log_trade_outcome("SL_HIT", f"{n} in a row, price {price:,.0f} vs sl {sl:,.0f}")
+            log_trade_outcome("SL_HIT", f"{n} in a row, low:{check_low:,.0f} sl:{sl:,.0f}")
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
                 send_telegram(
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {sig} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V7.0 -</i>")
@@ -1269,13 +1335,13 @@ def run_tick_check():
                 trade_stats["cooldown_scans"] = 1
                 send_telegram(
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {sig} @ {active_trade.get('entry',0):,.0f}\n\n"
+                    f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V7.0 -</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
-            ct.on_sl(); reset_trade(); return True
+            ct.on_sl(entry, sl); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
 
@@ -1302,7 +1368,7 @@ def run_price_check():
         if status == "TP2_HIT":
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", "hit during 1H check")
-            ct.on_tp2(); send_telegram(fmt_update("TP2_HIT")); reset_trade(); return True
+            ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0)); send_telegram(fmt_update("TP2_HIT")); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
@@ -1325,11 +1391,12 @@ def run_price_check():
                     f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V7.0 -</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
-            ct.on_sl(); reset_trade(); return True
+            ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
             trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
-            ct.on_tp1(active_trade["entry"])
+            save_active_trade()
+            ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             send_telegram(fmt_update("TP1_HIT"))
         elif status in ("STOP_HUNT",):      send_telegram(fmt_update("STOP_HUNT"))
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
@@ -1475,11 +1542,18 @@ ADMIN_HELP = """<b>CLEXER V7.0 - Admin Commands</b>
 /tvstatus - TV connection
 
 <b>TRADE CONTROL</b>
-/close - Close trade
+/close - Close BTC bot trade
+/closetrade BTC - Close BTC for all copy users
+/closetrade ETH - Close ETH for all copy users
+/closetrade all - Close ALL positions (every coin)
 /sltobe - SL to breakeven
 /setsl 61500
 /settp1 63000
 /settp2 65000
+
+<b>COIN RESEARCH</b>
+/scan - Best coins to trade now (Claude AI)
+/coin ETHUSDT - Analyze any coin
 
 <b>CHANNELS</b>
 /channels - show status
@@ -1500,6 +1574,10 @@ ADMIN_HELP = """<b>CLEXER V7.0 - Admin Commands</b>
 /user ID - User detail + position
 /kick ID - Remove user
 /pauseuser ID - Pause/unpause user
+/ctstatus - Failed copies + active signal
+/ctretry ID - Retry for specific user
+/ctclose - Close ALL copy positions
+/ctclose ID - Close one user's position
 
 /broadcast - Send to all
 /help"""
@@ -1531,7 +1609,8 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/close","/sltobe","/setsl","/settp1","/settp2","/tvstatus",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
-    "/pausechannel","/resumechannel","/channels"}
+    "/pausechannel","/resumechannel","/channels",
+    "/scan","/coin","/ctclose","/closetrade"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -1774,6 +1853,163 @@ def handle_command(text, chat_id, message=None):
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
         else: send_reply(chat_id, "Nothing to cancel.")
 
+    elif cmd == "/ctclose" and is_admin:
+        uname = (message.get("from",{}).get("username","?") if message else "?")
+        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
+
+    elif cmd == "/closetrade" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                "<b>Close Trade</b>\n\n"
+                "Usage:\n"
+                "<code>/closetrade BTC</code> — close BTC-USDT for all copy users\n"
+                "<code>/closetrade ETH</code> — close ETH-USDT for all copy users\n"
+                "<code>/closetrade SOL</code> — close SOL-USDT for all copy users\n"
+                "<code>/closetrade all</code> — close ALL positions (every coin)\n\n"
+                "<i>- CLEXER V7.0 -</i>"); return
+        coin = parts[1].upper()
+        if coin == "ALL":
+            # Close every position on every symbol
+            ct.on_close_all()
+            if active_trade["signal"]:
+                log_trade_outcome("MANUAL_CLOSE", "admin /closetrade all")
+                reset_trade()
+            send_telegram(
+                f"🔴 <b>ALL TRADES CLOSED</b>  {ist_str()}\n\n"
+                f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+                f"⛔ <b>This is NOT a new signal</b>\n\n"
+                f"Admin closed all positions.\n\n<i>- CLEXER V7.0 -</i>")
+            send_reply(chat_id, "✅ All positions closed + orders cancelled for all copy users.")
+        else:
+            results = ct.close_coin_all(coin)
+            # If it's BTC and we have an active BTC trade, also reset it
+            if coin in ("BTC","BTCUSDT","BTC-USDT") and active_trade["signal"]:
+                log_trade_outcome("MANUAL_CLOSE", f"admin /closetrade {coin}")
+                reset_trade()
+            reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
+            send_reply(chat_id, reply + "\n\n<i>- CLEXER V7.0 -</i>")
+
+    elif cmd == "/scan" and is_admin:
+        send_reply(chat_id, "🔍 Scanning best coins to trade now (~20s)...")
+        def _do_scan(cid=chat_id):
+            try:
+                tk  = get_ticker(); price = tk["price"]
+                atrade = (f"Active trade: BTC {active_trade['signal']} @ {active_trade['entry']:,.0f} "
+                          f"(SL:{active_trade['sl']:,.0f} TP2:{active_trade['tp2']:,.0f})"
+                          if active_trade["signal"] else "No active BTC trade")
+                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=900,
+                    messages=[{"role": "user", "content":
+                        f"You are a crypto futures trader. Current market context:\n"
+                        f"BTC: ${price:,.0f} ({tk['change']:+.2f}% 24h)\n"
+                        f"{atrade}\n"
+                        f"Session: {get_session()}\n\n"
+                        f"List the TOP 5 crypto perpetual futures to watch RIGHT NOW on BingX "
+                        f"(excluding BTC if already in trade). For each coin:\n"
+                        f"- Symbol (e.g. ETHUSDT)\n- Bias: LONG / SHORT / WAIT\n"
+                        f"- Key reason (1 short line)\n- Confidence: HIGH / MED / LOW\n\n"
+                        f"Consider: altcoin correlation with BTC, momentum, volume, session. "
+                        f"Focus on coins with clear direction. Plain text, numbered list only."}])
+                result = resp.content[0].text.strip()
+                send_reply(cid,
+                    f"🔍 <b>Best Coins to Watch</b>  {ist_str()}\n\n"
+                    f"BTC: <b>${price:,.0f}</b> ({tk['change']:+.2f}%) | {get_session()}\n\n"
+                    f"<pre>{result[:1400]}</pre>\n\n"
+                    f"➡️ Use /coin ETHUSDT to analyze any coin\n\n"
+                    f"⚠️ <i>Not financial advice — CLEXER V7.0</i>")
+            except Exception as e:
+                send_reply(cid, f"❌ Scan error: {e}")
+        threading.Thread(target=_do_scan, daemon=True).start()
+
+    elif cmd == "/coin" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                "<b>Coin Lookup</b>\n\n"
+                "Usage: <code>/coin ETH</code> or <code>/coin ETHUSDT</code>\n\n"
+                "Searches BingX, shows matches, then analyzes the coin you pick.\n\n"
+                "<i>- CLEXER V7.0 -</i>"); return
+        query = parts[1].upper().strip()
+        send_reply(chat_id, f"🔍 Searching for <b>{query}</b> on BingX...")
+        def _do_coin(cid=chat_id, q=query):
+            try:
+                # Fetch all BingX perpetual contracts
+                r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts",
+                                 timeout=12).json()
+                all_contracts = r.get("data", [])
+                # Match query against symbol (BTC-USDT format on BingX)
+                q_bare = q.replace("USDT","").replace("-","").replace("_","")
+                matches = []
+                for c in all_contracts:
+                    sym = c.get("symbol","")   # e.g. "BTC-USDT"
+                    base = sym.replace("-USDT","").replace("-","")
+                    if q_bare == base or q_bare == sym.replace("-",""):
+                        matches.append(sym)
+                # Also try partial if exact empty
+                if not matches:
+                    matches = [c.get("symbol","") for c in all_contracts
+                               if q_bare in c.get("symbol","").replace("-","")]
+
+                if not matches:
+                    send_reply(cid,
+                        f"❌ <b>{q}</b> not found on BingX perpetuals.\n\n"
+                        f"Try: /coin ETH  /coin SOL  /coin BNB\n\n"
+                        f"<i>- CLEXER V7.0 -</i>"); return
+
+                if len(matches) > 1:
+                    # Multiple matches — fetch prices and show list
+                    lines = [f"<b>Multiple matches for '{q}'</b>\n\nChoose and run /coin SYMBOL:\n"]
+                    for sym in matches[:10]:
+                        try:
+                            pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/price",
+                                              params={"symbol": sym}, timeout=5).json()
+                            p = float((pr.get("data") or {}).get("price", 0))
+                            lines.append(f"• <code>/coin {sym.replace('-','')}</code>  ${p:,.4f}")
+                        except:
+                            lines.append(f"• <code>/coin {sym.replace('-','')}</code>")
+                    send_reply(cid, "\n".join(lines) + "\n\n<i>- CLEXER V7.0 -</i>"); return
+
+                # Exact match — fetch ticker then analyze
+                sym = matches[0]   # e.g. "ETH-USDT"
+                pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                                  params={"symbol": sym}, timeout=10).json()
+                if pr.get("code") != 0:
+                    send_reply(cid, f"❌ Could not fetch ticker for {sym}: {pr.get('msg','?')}"); return
+                d    = pr.get("data", {})
+                price  = float(d.get("lastPrice", 0))
+                change = float(d.get("priceChangePercent", 0))
+                high24 = float(d.get("highPrice", 0))
+                low24  = float(d.get("lowPrice",  0))
+                vol    = float(d.get("volume", 0))
+
+                # Ask Claude for brief analysis
+                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=700,
+                    messages=[{"role": "user", "content":
+                        f"Analyze {sym} for a short-term futures trade:\n"
+                        f"Current Price: ${price:,.6g}\n"
+                        f"24h Change: {change:+.2f}%\n"
+                        f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
+                        f"24h Volume: ${vol:,.0f}\n"
+                        f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
+                        f"Give:\n1. Bias: LONG / SHORT / WAIT\n"
+                        f"2. Entry zone\n3. SL zone\n4. TP target\n"
+                        f"5. Confidence: HIGH / MED / LOW\n"
+                        f"6. Reasoning (2-3 lines max)\n\n"
+                        f"Be practical and concise. No fluff."}])
+                analysis = resp.content[0].text.strip()
+                emoji = "🟢" if change >= 0 else "🔴"
+                send_reply(cid,
+                    f"{emoji} <b>{sym} Analysis</b>  {ist_str()}\n\n"
+                    f"Price:  <b>${price:,.6g}</b>  ({change:+.2f}%)\n"
+                    f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
+                    f"Vol:   ${vol/1e6:.1f}M\n\n"
+                    f"<b>Claude Analysis:</b>\n<i>{analysis[:900]}</i>\n\n"
+                    f"⚠️ Not financial advice\n<i>- CLEXER V7.0 -</i>")
+            except Exception as e:
+                send_reply(cid, f"❌ Error: {e}")
+                import traceback; traceback.print_exc()
+        threading.Thread(target=_do_coin, daemon=True).start()
+
     else:
         send_reply(chat_id, f"Unknown: {cmd}\n/help")
 
@@ -1825,6 +2061,7 @@ def main():
     load_users()
     ct.load()
     load_settings()
+    load_active_trade()
 
     # Start PAUSED - user must send /go
     bot_paused.set()
@@ -1859,7 +2096,7 @@ def main():
         f"---------------------\n"
         f"<i>- CLEXER V7.0 -</i>")
 
-    MAIN_TICK = 60
+    MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
     while True:
         try:
@@ -1891,8 +2128,10 @@ def main():
 
             # Sleep hours
             if not forced and is_ist_sleep():
-                print("  [SLEEP] 01:00-07:29 IST")
-                time.sleep(MAIN_TICK); continue
+                if active_trade["signal"]:
+                    pass   # still watch entry/SL/TP even during sleep hours
+                else:
+                    time.sleep(60); continue  # no trade — sleep a full minute
 
             # 1-min tick
             if ((now-last_tick_time) >= TICK_INTERVAL or forced) and active_trade["signal"]:
