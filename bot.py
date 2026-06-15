@@ -2387,6 +2387,9 @@ def main():
 
     threading.Thread(target=command_listener, daemon=True).start()
 
+    # Start SL/TP monitor — checks all copy users' positions every 1 hour
+    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
+
     # Startup message → admin DM only
     tv_line = ""
     if TV_BRIDGE_URL:
