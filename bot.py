@@ -455,26 +455,46 @@ def fetch_spaceman_levels() -> dict:
                 {"label": "Prev Month Mid",  "price": pm_mid},
             ]
 
-        # Quarterly — current quarter open = open of bar 3 months ago
-        if len(mo) >= 4:
-            cur_q  = mo[-3:]
-            prev_q = mo[-6:-3] if len(mo) >= 6 else []
-            levels.append({"label": "Quarterly Open", "price": cur_q[0]["o"]})
-            if prev_q:
-                pq_h = max(b["h"] for b in prev_q)
-                pq_l = min(b["l"] for b in prev_q)
-                levels.append({"label": "Prev Quarter Mid", "price": (pq_h + pq_l) / 2})
+        # Quarterly + Yearly — use calendar boundaries from timestamps
+        import datetime as _dt
+        now_utc   = _dt.datetime.utcnow()
+        cur_year  = now_utc.year
+        cur_month = now_utc.month
+        cur_qnum  = (cur_month - 1) // 3  # 0=Q1,1=Q2,2=Q3,3=Q4
 
-        # Yearly — need 13 bars (12 for year + 1 current)
-        if len(mo) >= 13:
-            yr_bars = mo[-13:-1]   # prev 12 months = one full year
-            yr_open = yr_bars[0]["o"]
-            yr_h    = max(b["h"] for b in yr_bars)
-            yr_l    = min(b["l"] for b in yr_bars)
+        def _bar_dt(b):
+            ts = b["t"]
+            if ts > 1e12: ts = ts / 1000
+            return _dt.datetime.utcfromtimestamp(ts)
+
+        def _qnum(b):
+            return (_bar_dt(b).month - 1) // 3
+
+        sorted_mo = sorted(mo, key=lambda b: b["t"])
+
+        # Calendar-year bars — all months of current year (including partial current month)
+        all_yr = [b for b in sorted_mo if _bar_dt(b).year == cur_year]
+        if all_yr:
             levels += [
-                {"label": "Yearly Open",      "price": yr_open},
-                {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
+                {"label": "Yearly Open",      "price": all_yr[0]["o"]},
+                {"label": "Current Year Mid", "price": (
+                    max(b["h"] for b in all_yr) +
+                    min(b["l"] for b in all_yr)
+                ) / 2},
             ]
+
+        # Calendar-quarter bars
+        cur_q_bars = [b for b in sorted_mo if _bar_dt(b).year == cur_year and _qnum(b) == cur_qnum]
+        prev_qnum  = (cur_qnum - 1) % 4
+        prev_qyr   = cur_year if cur_qnum > 0 else cur_year - 1
+        prev_q_bars = [b for b in sorted_mo if _bar_dt(b).year == prev_qyr and _qnum(b) == prev_qnum]
+
+        if cur_q_bars:
+            levels.append({"label": "Quarterly Open", "price": cur_q_bars[0]["o"]})
+        if prev_q_bars:
+            pq_h = max(b["h"] for b in prev_q_bars)
+            pq_l = min(b["l"] for b in prev_q_bars)
+            levels.append({"label": "Prev Quarter Mid", "price": (pq_h + pq_l) / 2})
 
     except Exception as e:
         print(f"  [SPACEMAN CALC] {e}")
