@@ -441,8 +441,8 @@ def fetch_spaceman_levels() -> dict:
                     ]
                     break
 
-        # ── Monthly levels ─────────────────────────────────────────────
-        mo = _klines("1M", 3)
+        # ── Monthly + Quarterly + Yearly — one call, 14 bars covers all ──
+        mo = _klines("1M", 14)
         if len(mo) >= 2:
             monthly_open = mo[-1]["o"]
             pm_high      = mo[-2]["h"]
@@ -455,24 +455,19 @@ def fetch_spaceman_levels() -> dict:
                 {"label": "Prev Month Mid",  "price": pm_mid},
             ]
 
-        # ── Quarterly levels — derived from monthly (3M not always supported) ──
-        # Quarter = group of 3 monthly candles
-        mo14 = _klines("1M", 14)  # enough for prev quarter
-        if len(mo14) >= 4:
-            # Current quarter: last 3 monthly bars
-            cur_q  = mo14[-3:]
-            prev_q = mo14[-6:-3] if len(mo14) >= 6 else []
-            quarterly_open = cur_q[0]["o"]
-            levels.append({"label": "Quarterly Open", "price": quarterly_open})
+        # Quarterly — current quarter open = open of bar 3 months ago
+        if len(mo) >= 4:
+            cur_q  = mo[-3:]
+            prev_q = mo[-6:-3] if len(mo) >= 6 else []
+            levels.append({"label": "Quarterly Open", "price": cur_q[0]["o"]})
             if prev_q:
-                pq_h   = max(b["h"] for b in prev_q)
-                pq_l   = min(b["l"] for b in prev_q)
+                pq_h = max(b["h"] for b in prev_q)
+                pq_l = min(b["l"] for b in prev_q)
                 levels.append({"label": "Prev Quarter Mid", "price": (pq_h + pq_l) / 2})
 
-        # ── Yearly levels — derived from monthly (12M not always supported) ──
-        mo14_full = mo14 if len(mo14) >= 13 else _klines("1M", 14)
-        if len(mo14_full) >= 13:
-            yr_bars = mo14_full[-12:]
+        # Yearly — need 13 bars (12 for year + 1 current)
+        if len(mo) >= 13:
+            yr_bars = mo[-13:-1]   # prev 12 months = one full year
             yr_open = yr_bars[0]["o"]
             yr_h    = max(b["h"] for b in yr_bars)
             yr_l    = min(b["l"] for b in yr_bars)
@@ -480,14 +475,6 @@ def fetch_spaceman_levels() -> dict:
                 {"label": "Yearly Open",      "price": yr_open},
                 {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
             ]
-        else:
-            # Try direct 1Y kline
-            yr = _klines("1Y", 2)
-            if yr:
-                levels += [
-                    {"label": "Yearly Open",      "price": yr[-1]["o"]},
-                    {"label": "Current Year Mid", "price": (yr[-1]["h"] + yr[-1]["l"]) / 2},
-                ]
 
     except Exception as e:
         print(f"  [SPACEMAN CALC] {e}")
@@ -844,6 +831,7 @@ def extract_json_from_response(text: str):
     if end == -1: return None
     try: return json.loads(cleaned[start:end])
     except: return None
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1277,6 +1265,7 @@ def check_price_status(price, high, low, df_5m=None):
     if not t["tp1_hit"]:
         if (sig=="SELL" and low<=tp1) or (sig=="BUY" and high>=tp1): return "TP1_HIT"
     return "RUNNING"
+
 import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
@@ -2265,7 +2254,7 @@ def handle_command(text, chat_id, message=None):
             if spaceman.get("all_levels"):
                 lvls = spaceman["all_levels"]
                 msg += f"✅ <b>SpacemanBTC Levels:</b> {len(lvls)} read (via {spaceman.get('source','?')})\n"
-                for lv in lvls[:8]:
+                for lv in lvls:  # show ALL levels, no truncation
                     msg += f"  • {lv['label']}: <b>{lv['price']:,.2f}</b>\n"
                 if spaceman.get("nearest_support"):
                     s = spaceman["nearest_support"]
@@ -2277,12 +2266,7 @@ def handle_command(text, chat_id, message=None):
             else:
                 msg += "❌ <b>SpacemanBTC Levels:</b> none detected\n\n"
 
-            # Pine Lines (generic WS stream levels)
-            if lines:
-                prices = sorted(set([round(l.get("price",0)) for l in lines if l.get("price",0) > 0]))
-                msg += f"✅ <b>Pine Lines (WS):</b> {len(lines)} read\n<code>{prices[:10]}</code>\n\n"
-            else:
-                msg += "❌ <b>Pine Lines:</b> 0 read\n\n"
+            # Pine Lines (WS) — removed from display, not SpacemanBTC data
 
             # Pine Labels
             if labels:
