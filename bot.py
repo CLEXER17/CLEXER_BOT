@@ -371,50 +371,130 @@ def fetch_tv_indicators():
 
 def fetch_spaceman_levels() -> dict:
     """
-    Fetch SpacemanBTC key levels from tv_bridge.
-    TV Desktop renders labels on canvas so we can't get named labels —
-    instead we read raw price levels from the WS stream via /pine_lines.
-    These are the actual level prices, just without names.
+    Calculate SpacemanBTC Key Levels directly from BingX OHLCV data.
+    Replicates Pine Script logic from Key Levels SpacemanBTC IDWM v13.1 exactly.
+    No TV bridge needed — works always, fully labeled.
     """
-    if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return {}
-    try:
-        # Try labeled endpoint first (works on TV Web, may work on Desktop)
-        r = requests.get(f"{TV_BRIDGE_URL}/spaceman_levels", timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            levels = data.get("levels", [])
-            if levels:
-                try: price = get_ticker()["price"]
-                except: price = 0
-                below = [l for l in levels if l["price"] < price]
-                above = [l for l in levels if l["price"] > price]
-                return {
-                    "all_levels":         levels,
-                    "nearest_support":    max(below, key=lambda x: x["price"]) if below else None,
-                    "nearest_resistance": min(above, key=lambda x: x["price"]) if above else None,
-                    "count": len(levels), "source": data.get("source","labeled"),
-                }
+    import math as _math
+    from datetime import datetime, timezone
 
-        # Fallback: use WS stream prices from /pine_lines (unlabeled but accurate)
-        r2 = requests.get(f"{TV_BRIDGE_URL}/pine_lines", timeout=10)
-        if r2.status_code == 200:
-            data2 = r2.json()
-            raw_lines = data2.get("lines", [])
-            if raw_lines:
-                try: price = get_ticker()["price"]
-                except: price = 0
-                levels = [{"label": f"Level {l['price']:,.0f}", "price": l["price"]} for l in raw_lines]
-                below = [l for l in levels if l["price"] < price]
-                above = [l for l in levels if l["price"] > price]
-                return {
-                    "all_levels":         levels,
-                    "nearest_support":    max(below, key=lambda x: x["price"]) if below else None,
-                    "nearest_resistance": min(above, key=lambda x: x["price"]) if above else None,
-                    "count": len(levels), "source": "ws_stream",
-                }
+    def _klines(interval, limit):
+        try:
+            r = requests.get(
+                "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+                params={"symbol": SYMBOL, "interval": interval, "limit": limit},
+                timeout=10).json()
+            rows = r.get("data", [])
+            if not rows: return []
+            result = []
+            for row in rows:
+                if isinstance(row, dict):
+                    result.append({
+                        "t": int(row.get("time") or row.get("openTime") or 0),
+                        "o": float(row.get("open", 0)),
+                        "h": float(row.get("high", 0)),
+                        "l": float(row.get("low", 0)),
+                        "c": float(row.get("close", 0)),
+                    })
+            return result
+        except Exception as e:
+            print(f"  [SPACEMAN KLINES] {interval}: {e}")
+            return []
+
+    levels = []
+
+    try:
+        # ── Weekly levels ──────────────────────────────────────────────
+        wk = _klines("1w", 3)
+        if len(wk) >= 2:
+            weekly_open  = wk[-1]["o"]
+            pw_high      = wk[-2]["h"]
+            pw_low       = wk[-2]["l"]
+            pw_mid       = (pw_high + pw_low) / 2
+            levels += [
+                {"label": "Weekly Open",    "price": weekly_open},
+                {"label": "Prev Week High", "price": pw_high},
+                {"label": "Prev Week Low",  "price": pw_low},
+                {"label": "Prev Week Mid",  "price": pw_mid},
+            ]
+
+        # ── Monday levels — first day candle of current week ──────────
+        d1 = _klines("1d", 10)
+        if d1:
+            # Find Monday (TV Pine: first daily bar of the week)
+            for bar in reversed(d1):
+                ts  = bar["t"] / 1000
+                dow = datetime.fromtimestamp(ts, tz=timezone.utc).weekday()  # 0=Mon
+                if dow == 0:
+                    levels += [
+                        {"label": "Monday High", "price": bar["h"]},
+                        {"label": "Monday Low",  "price": bar["l"]},
+                        {"label": "Monday Mid",  "price": (bar["h"] + bar["l"]) / 2},
+                    ]
+                    break
+
+        # ── Monthly levels ─────────────────────────────────────────────
+        mo = _klines("1M", 3)
+        if len(mo) >= 2:
+            monthly_open = mo[-1]["o"]
+            pm_high      = mo[-2]["h"]
+            pm_low       = mo[-2]["l"]
+            pm_mid       = (pm_high + pm_low) / 2
+            levels += [
+                {"label": "Monthly Open",    "price": monthly_open},
+                {"label": "Prev Month High", "price": pm_high},
+                {"label": "Prev Month Low",  "price": pm_low},
+                {"label": "Prev Month Mid",  "price": pm_mid},
+            ]
+
+        # ── Quarterly levels — 3M candles ──────────────────────────────
+        qr = _klines("3M", 3)
+        if len(qr) >= 2:
+            quarterly_open = qr[-1]["o"]
+            pq_mid         = (qr[-2]["h"] + qr[-2]["l"]) / 2
+            levels += [
+                {"label": "Quarterly Open",   "price": quarterly_open},
+                {"label": "Prev Quarter Mid", "price": pq_mid},
+            ]
+
+        # ── Yearly levels — 12M candles ────────────────────────────────
+        yr = _klines("12M", 3)
+        if not yr:  # BingX might not support 12M, fallback to 1Y from monthly
+            if len(mo) >= 13:
+                yr_open = mo[-12]["o"]
+                yr_h    = max(b["h"] for b in mo[-12:])
+                yr_l    = min(b["l"] for b in mo[-12:])
+                levels += [
+                    {"label": "Yearly Open",      "price": yr_open},
+                    {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
+                ]
+        elif len(yr) >= 1:
+            yr_open = yr[-1]["o"]
+            yr_h    = yr[-1]["h"]
+            yr_l    = yr[-1]["l"]
+            levels += [
+                {"label": "Yearly Open",      "price": yr_open},
+                {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
+            ]
+
     except Exception as e:
-        print(f"  [SPACEMAN] {e}")
-    return {}
+        print(f"  [SPACEMAN CALC] {e}")
+
+    if not levels:
+        return {}
+
+    try: price = get_ticker()["price"]
+    except: price = 0
+
+    below = [l for l in levels if l["price"] < price]
+    above = [l for l in levels if l["price"] > price]
+    return {
+        "all_levels":         sorted(levels, key=lambda x: x["price"]),
+        "nearest_support":    max(below, key=lambda x: x["price"]) if below else None,
+        "nearest_resistance": min(above, key=lambda x: x["price"]) if above else None,
+        "count":              len(levels),
+        "source":             "calculated",
+    }
 
 def build_indicator_context(data: dict) -> str:
     if not data: return ""
