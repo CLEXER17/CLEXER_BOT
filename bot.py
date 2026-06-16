@@ -1974,16 +1974,36 @@ def handle_command(text, chat_id, message=None):
                         return None
 
                 def check_4h_structure(df):
-                    """Returns BULLISH, BEARISH, or NEUTRAL based on swing highs/lows."""
+                    """Returns BULLISH, BEARISH, or NEUTRAL based on swing highs/lows + close trend."""
                     if df is None or len(df) < 8: return "NEUTRAL"
-                    h = df["high"].values[-15:]; l = df["low"].values[-15:]
+                    h   = df["high"].values[-15:]
+                    l   = df["low"].values[-15:]
+                    cls = df["close"].values[-15:]
                     sh = []; sl = []
                     for i in range(1, len(h)-1):
                         if h[i] > h[i-1] and h[i] > h[i+1]: sh.append(h[i])
                         if l[i] < l[i-1] and l[i] < l[i+1]: sl.append(l[i])
+                    swing_result = "NEUTRAL"
                     if len(sh) >= 2 and len(sl) >= 2:
-                        if sh[-1] > sh[-2] and sl[-1] > sl[-2]: return "BULLISH"
-                        if sh[-1] < sh[-2] and sl[-1] < sl[-2]: return "BEARISH"
+                        if sh[-1] > sh[-2] and sl[-1] > sl[-2]: swing_result = "BULLISH"
+                        if sh[-1] < sh[-2] and sl[-1] < sl[-2]: swing_result = "BEARISH"
+                    # Overall close trend: compare last close vs midpoint close
+                    mid = cls[len(cls)//2]
+                    if mid > 0:
+                        trend_pct = (cls[-1] - mid) / mid * 100
+                        if trend_pct < -5:   close_trend = "BEARISH"
+                        elif trend_pct > 5:  close_trend = "BULLISH"
+                        else:                close_trend = "NEUTRAL"
+                    else:
+                        close_trend = "NEUTRAL"
+                    # If swing and close trend agree → return that
+                    if swing_result == close_trend: return swing_result
+                    # If swing says BULLISH but closes are clearly falling → trust closes
+                    if swing_result == "BULLISH" and close_trend == "BEARISH": return "BEARISH"
+                    if swing_result == "BEARISH" and close_trend == "BULLISH": return "BULLISH"
+                    # One is NEUTRAL → use whichever has a signal
+                    if swing_result != "NEUTRAL": return swing_result
+                    if close_trend != "NEUTRAL":  return close_trend
                     return "NEUTRAL"
 
                 def is_momentum(df):
