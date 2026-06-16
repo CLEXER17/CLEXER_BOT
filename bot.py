@@ -2062,16 +2062,38 @@ def handle_command(text, chat_id, message=None):
         except Exception as e: send_reply(chat_id, f"Error: {e}")
 
     elif cmd == "/trade":
+        parts_out = []
+        # BTC trade
         t = active_trade
-        if not t["signal"]: send_reply(chat_id, "No active trade.")
-        else:
+        if t["signal"]:
             try: tk = get_ticker(); pl = f"Current: <b>{tk['price']:,.2f}</b>\n"
             except: pl = ""
-            send_reply(chat_id, f"<b>Active Trade</b>\n\n{t['signal']} - {SYMBOL}\n{pl}"
-                f"Entry: <b>{t['entry']:,.0f}</b> {'OK' if t['entry_hit'] else 'pending'}\n"
-                f"SL:    <b>{t['sl']:,.0f}</b>\nTP1:   <b>{t['tp1']:,.0f}</b> {'HIT' if t['tp1_hit'] else 'pending'}\n"
+            parts_out.append(
+                f"<b>BTC Trade</b>\n\n{t['signal']} - {SYMBOL}\n{pl}"
+                f"Entry: <b>{t['entry']:,.0f}</b> {'✅' if t['entry_hit'] else '⏳ pending'}\n"
+                f"SL:    <b>{t['sl']:,.0f}</b>\n"
+                f"TP1:   <b>{t['tp1']:,.0f}</b> {'✅ HIT' if t['tp1_hit'] else '⏳ pending'}\n"
                 f"TP2:   <b>{t['tp2']:,.0f}</b>\nType:  {t['entry_type']}\n"
-                + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else ""))
+                + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else "")
+            )
+        # Scan coin trade
+        sc = scan_active_trade
+        if sc.get("signal"):
+            try:
+                sp = get_bingx_price(sc["symbol"])
+                spl = f"Current: <b>{sp:,.4g}</b>\n" if sp else ""
+            except: spl = ""
+            parts_out.append(
+                f"<b>Scan Trade</b>\n\n{sc['signal']} - {sc['symbol']}\n{spl}"
+                f"Entry: <b>{sc['entry']:,.4g}</b> {'✅' if sc.get('entry_hit') else '⏳ pending'}\n"
+                f"SL:    <b>{sc['sl']:,.4g}</b>\n"
+                f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if sc.get('tp1_hit') else '⏳ pending'}\n"
+                f"TP2:   <b>{sc['tp2']:,.4g}</b>\nType:  {sc.get('entry_type','MARKET')}"
+            )
+        if parts_out:
+            send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
+        else:
+            send_reply(chat_id, "No active trade.")
 
     elif cmd == "/history":
         if not signal_history: send_reply(chat_id, "No history.")
@@ -2891,7 +2913,7 @@ def main():
 
             # Sleep hours
             if not forced and is_ist_sleep():
-                if active_trade["signal"]:
+                if active_trade["signal"] or scan_active_trade.get("signal"):
                     pass   # still watch entry/SL/TP even during sleep hours
                 else:
                     time.sleep(60); continue  # no trade — sleep a full minute
