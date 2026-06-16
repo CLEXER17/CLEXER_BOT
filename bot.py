@@ -217,6 +217,7 @@ def set_trade(s: dict):
             "entry_type": s.get("entry_type", "MARKET"),
             "entry_note": s.get("entry_note", ""),
             "entry_hit": s.get("entry_type", "MARKET") == "MARKET",
+            "entry_time": time.time(),   # used to clip price range checks to post-entry only
             "sl_wicked": False, "scan_count": 0,
         }
     trade_stats["total_signals"] += 1
@@ -642,8 +643,13 @@ def get_ticker():
             if tk: return tk
     return binance_get_ticker()
 
-def get_price_range_since(minutes):
-    since_ms = int((time.time() - minutes*60)*1000)
+def get_price_range_since(minutes, since_ts: float = None):
+    # since_ts: Unix timestamp — if provided, use it instead of (now - minutes)
+    # This prevents pre-entry wicks from falsely triggering SL/TP
+    if since_ts:
+        since_ms = int(since_ts * 1000)
+    else:
+        since_ms = int((time.time() - minutes*60)*1000)
     now_ms   = int(time.time()*1000)
     all_highs, all_lows = [], []
     chunk_start = since_ms
@@ -1497,11 +1503,18 @@ def run_tick_check():
         ticker = get_ticker(); price = ticker["price"]
         t = active_trade; sig = t["signal"]; entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
 
-        # Get last 3 x 1m candle range to catch spikes missed between checks
-        candle_high, candle_low = get_recent_range(3)
-        # Use worst-case price in each direction
-        check_high = max(price, candle_high) if candle_high else price
-        check_low  = min(price, candle_low)  if candle_low  else price
+        # Only use candles since entry — pre-entry wicks must not trigger SL/TP
+        # If entry was within the last 3 minutes, only use current price (no candle history)
+        entry_ts  = t.get("entry_time", 0)
+        mins_since_entry = (time.time() - entry_ts) / 60 if entry_ts else 999
+        if mins_since_entry >= 1:
+            candle_high, candle_low = get_recent_range(3)
+            check_high = max(price, candle_high) if candle_high else price
+            check_low  = min(price, candle_low)  if candle_low  else price
+        else:
+            # Too soon after entry — use live price only, not candle lows
+            check_high = price
+            check_low  = price
 
         if not t["entry_hit"]:
             tol = abs(entry-sl)*0.25
@@ -1754,7 +1767,9 @@ def run_price_check():
     if not active_trade["signal"]: return False
     try:
         ticker = get_ticker(); price = ticker["price"]
-        range_1h = get_price_range_since(60)
+        # Only check price range SINCE entry — pre-entry wicks must not trigger SL/TP
+        entry_ts = active_trade.get("entry_time")
+        range_1h = get_price_range_since(60, since_ts=entry_ts)
         high_1h = range_1h["high"] or price; low_1h = range_1h["low"] or price
         print(f"  [1H] cur:{price:,.2f} H:{high_1h:,.2f} L:{low_1h:,.2f}")
         df_5m = get_candles("5m", 50); df_4h = get_candles("4h", 10)
