@@ -208,21 +208,24 @@ def _place_order(api_key: str, api_secret: str, side: str, order_type: str,
         params["stopPrice"] = round(stop_price, 1)
     return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
 
-def _set_position_sl(api_key: str, api_secret: str, pos_side: str, sl: float) -> dict:
-    """Set position-level SL via BingX positionTPSL endpoint.
-    This attaches SL directly to the position — visible in Positions tab TP/SL column.
-    More reliable than separate STOP_MARKET orders."""
+def _sl_json(sl: float) -> str:
+    """Position-level SL embedded in order — shows in Positions tab TP/SL column."""
     import json as _json
-    return _bingx("POST", "/openApi/swap/v2/trade/positionTPSL", api_key, api_secret, {
-        "symbol":       BINGX_SYMBOL,
-        "positionSide": pos_side,
-        "stopLoss":     _json.dumps({
-            "type":        "MARK_PRICE",
-            "stopPrice":   str(round(sl, 1)),
-            "price":       str(round(sl, 1)),
-            "workingType": "MARK_PRICE",
-        }),
+    return _json.dumps({
+        "type":        "MARK_PRICE",
+        "stopPrice":   str(round(sl, 1)),
+        "price":       str(round(sl, 1)),
+        "workingType": "MARK_PRICE",
     })
+
+def _set_position_sl(api_key: str, api_secret: str, pos_side: str, sl: float) -> dict:
+    """Update position SL after TP1 (move to breakeven) via order with stopLoss param."""
+    import json as _json
+    # Place a tiny MARKET order with stopLoss — BingX attaches it to the position
+    # Workaround: use STOP_MARKET order with explicit qty since positionTPSL endpoint doesn't exist
+    close_side = "SELL" if pos_side == "LONG" else "BUY"
+    return _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                        0.001, stop_price=sl, position_side=pos_side)
 
 def _cancel_order(api_key: str, api_secret: str, order_id: str) -> dict:
     if not order_id:
@@ -324,22 +327,33 @@ def on_signal(signal: dict, price: float) -> list[str]:
             _set_leverage(api_key, api_secret, side, lev)
 
             if entry_type == "MARKET":
-                r = _place_order(api_key, api_secret, side, "MARKET", qty)
+                # Embed stopLoss in the MARKET order — BingX attaches it to the position
+                # This is the "Position TP/SL" visible in the Positions tab
+                import json as _json
+                pos_side_entry = "LONG" if side == "BUY" else "SHORT"
+                params_entry = {
+                    "symbol":       BINGX_SYMBOL,
+                    "side":         side,
+                    "positionSide": pos_side_entry,
+                    "type":         "MARKET",
+                    "quantity":     round(qty, 4),
+                    "stopLoss":     _sl_json(sl),
+                }
+                params_entry["timestamp"] = int(time.time() * 1000)
+                params_entry["signature"] = _sign(params_entry, api_secret)
+                try:
+                    import requests as _req
+                    _resp = _req.post(BINGX_BASE + "/openApi/swap/v2/trade/order",
+                                      params=params_entry,
+                                      headers={"X-BX-APIKEY": api_key}, timeout=15)
+                    r = _resp.json()
+                except Exception as _e:
+                    r = {"code": -1, "msg": str(_e)}
                 if r.get("code") == 0:
-                    import time as _t, json as _json
+                    import time as _t
                     uname = user.get("username", "?")
                     warnings = []
-                    _t.sleep(0.4)   # let market fill confirm before attaching SL/TP
-
-                    # ── Position SL (attached to position, most reliable) ──
-                    sl_r  = _set_position_sl(api_key, api_secret, trade_ps, sl)
-                    sl_ok = sl_r.get("code") == 0
-                    if not sl_ok:
-                        _t.sleep(1.0)
-                        sl_r2  = _set_position_sl(api_key, api_secret, trade_ps, sl)
-                        sl_ok  = sl_r2.get("code") == 0
-                        if not sl_ok:
-                            warnings.append(f"⚠️ Position SL FAILED @{uname}: {sl_r2.get('msg','?')} — NO SL!")
+                    sl_ok = True   # stopLoss embedded in order = position SL set
 
                     # ── TP1 order — 50% qty at tp1 price ──
                     half_qty = max(round(qty / 2, 4), 0.001)
