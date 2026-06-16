@@ -369,6 +369,32 @@ def fetch_tv_indicators():
     """Legacy wrapper — now calls fetch_tv_all_data."""
     return fetch_tv_all_data()
 
+def fetch_spaceman_levels() -> dict:
+    """Fetch SpacemanBTC Key Levels from tv_bridge — works even when lines are hidden."""
+    if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return {}
+    try:
+        r = requests.get(f"{TV_BRIDGE_URL}/spaceman_levels", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            levels = data.get("levels", [])
+            if not levels: return {}
+            try: price = get_ticker()["price"]
+            except: price = 0
+            below = [l for l in levels if l["price"] < price]
+            above = [l for l in levels if l["price"] > price]
+            support    = max(below, key=lambda x: x["price"]) if below else None
+            resistance = min(above, key=lambda x: x["price"]) if above else None
+            return {
+                "all_levels":         levels,
+                "nearest_support":    support,
+                "nearest_resistance": resistance,
+                "count":              len(levels),
+                "source":             data.get("source","?"),
+            }
+    except Exception as e:
+        print(f"  [SPACEMAN] {e}")
+    return {}
+
 def build_indicator_context(data: dict) -> str:
     if not data: return ""
     lines = ["\n\nTRADINGVIEW CHART DATA:"]
@@ -415,6 +441,19 @@ def build_indicator_context(data: dict) -> str:
         lines.append(f"SPACEMAN KEY LEVELS: {levels[:10]}")
     poi = data.get("poi_vol_surge")
     if poi: lines.append(f"POI VOL SURGE: {poi.get('text','')[:150]}")
+
+    # SpacemanBTC Key Levels — fetched directly, works even when hidden
+    spaceman = fetch_spaceman_levels()
+    if spaceman.get("all_levels"):
+        lines.append("\nSPACEMAN KEY LEVELS (Weekly/Monthly/Quarterly/Yearly S&R):")
+        for lv in spaceman["all_levels"]:
+            lines.append(f"  {lv['label']}: {lv['price']:,.2f}")
+        if spaceman.get("nearest_support"):
+            s = spaceman["nearest_support"]
+            lines.append(f"  >> Nearest Support:    {s['label']} @ {s['price']:,.2f}")
+        if spaceman.get("nearest_resistance"):
+            r = spaceman["nearest_resistance"]
+            lines.append(f"  >> Nearest Resistance: {r['label']} @ {r['price']:,.2f}")
 
     if len(lines) == 1: return ""
     lines.append("\nUse above levels as ADDITIONAL CONFIRMATION with price structure.")
