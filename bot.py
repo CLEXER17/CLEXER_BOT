@@ -370,27 +370,48 @@ def fetch_tv_indicators():
     return fetch_tv_all_data()
 
 def fetch_spaceman_levels() -> dict:
-    """Fetch SpacemanBTC Key Levels from tv_bridge — works even when lines are hidden."""
+    """
+    Fetch SpacemanBTC key levels from tv_bridge.
+    TV Desktop renders labels on canvas so we can't get named labels —
+    instead we read raw price levels from the WS stream via /pine_lines.
+    These are the actual level prices, just without names.
+    """
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return {}
     try:
+        # Try labeled endpoint first (works on TV Web, may work on Desktop)
         r = requests.get(f"{TV_BRIDGE_URL}/spaceman_levels", timeout=10)
         if r.status_code == 200:
             data = r.json()
             levels = data.get("levels", [])
-            if not levels: return {}
-            try: price = get_ticker()["price"]
-            except: price = 0
-            below = [l for l in levels if l["price"] < price]
-            above = [l for l in levels if l["price"] > price]
-            support    = max(below, key=lambda x: x["price"]) if below else None
-            resistance = min(above, key=lambda x: x["price"]) if above else None
-            return {
-                "all_levels":         levels,
-                "nearest_support":    support,
-                "nearest_resistance": resistance,
-                "count":              len(levels),
-                "source":             data.get("source","?"),
-            }
+            if levels:
+                try: price = get_ticker()["price"]
+                except: price = 0
+                below = [l for l in levels if l["price"] < price]
+                above = [l for l in levels if l["price"] > price]
+                return {
+                    "all_levels":         levels,
+                    "nearest_support":    max(below, key=lambda x: x["price"]) if below else None,
+                    "nearest_resistance": min(above, key=lambda x: x["price"]) if above else None,
+                    "count": len(levels), "source": data.get("source","labeled"),
+                }
+
+        # Fallback: use WS stream prices from /pine_lines (unlabeled but accurate)
+        r2 = requests.get(f"{TV_BRIDGE_URL}/pine_lines", timeout=10)
+        if r2.status_code == 200:
+            data2 = r2.json()
+            raw_lines = data2.get("lines", [])
+            if raw_lines:
+                try: price = get_ticker()["price"]
+                except: price = 0
+                levels = [{"label": f"Level {l['price']:,.0f}", "price": l["price"]} for l in raw_lines]
+                below = [l for l in levels if l["price"] < price]
+                above = [l for l in levels if l["price"] > price]
+                return {
+                    "all_levels":         levels,
+                    "nearest_support":    max(below, key=lambda x: x["price"]) if below else None,
+                    "nearest_resistance": min(above, key=lambda x: x["price"]) if above else None,
+                    "count": len(levels), "source": "ws_stream",
+                }
     except Exception as e:
         print(f"  [SPACEMAN] {e}")
     return {}
