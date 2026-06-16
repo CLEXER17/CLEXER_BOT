@@ -1803,7 +1803,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/coin","/ctclose","/closetrade","/scancopy"}
+    "/scan","/coin","/ctclose","/closetrade","/scancopy","/readindicators"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -2094,6 +2094,64 @@ def handle_command(text, chat_id, message=None):
         ct.set_scan_ct(parts[1].lower() == "on")
         state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
         send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V7.0 -</i>")
+
+    elif cmd == "/readindicators" and is_admin:
+        if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
+            send_reply(chat_id, "❌ TV Bridge is offline — cannot read indicators."); return
+        send_reply(chat_id, "🔍 Reading indicators from TradingView chart...")
+        try:
+            data = fetch_tv_all_data()
+            labels   = data.get("pine_labels", [])
+            lines    = data.get("pine_lines", [])
+            boxes    = data.get("pine_boxes", [])
+            studies  = data.get("studies", [])
+            spaceman = data.get("spaceman_levels", [])
+
+            msg = f"📊 <b>Indicator Read Test</b>  🕐 {ist_str()}\n\n"
+
+            # Pine Lines (SpacemanBTC key levels)
+            if lines:
+                prices = sorted(set([round(l.get("price",0)) for l in lines if l.get("price",0) > 0]))
+                msg += f"✅ <b>Pine Lines:</b> {len(lines)} read\n<code>{prices[:10]}</code>\n\n"
+            else:
+                msg += "❌ <b>Pine Lines:</b> 0 read (hidden or not present)\n\n"
+
+            # Pine Labels
+            if labels:
+                msg += f"✅ <b>Pine Labels:</b> {len(labels)} read\n"
+                for lb in labels[:5]:
+                    msg += f"  • {lb.get('text','?')} @ {lb.get('price',0):,.0f}\n"
+                msg += "\n"
+            else:
+                msg += "❌ <b>Pine Labels:</b> 0 read (hidden or not present)\n\n"
+
+            # Pine Boxes
+            if boxes:
+                msg += f"✅ <b>Pine Boxes:</b> {len(boxes)} read\n"
+                for bx in boxes[:3]:
+                    msg += f"  • Zone: {bx.get('low',0):,.0f} – {bx.get('high',0):,.0f}\n"
+                msg += "\n"
+            else:
+                msg += "❌ <b>Pine Boxes:</b> 0 read (hidden or not present)\n\n"
+
+            # Spaceman legacy
+            if spaceman:
+                msg += f"✅ <b>SpacemanBTC Levels:</b> {sorted(set([round(x) for x in spaceman]))[:8]}\n\n"
+            else:
+                msg += "❌ <b>SpacemanBTC Levels:</b> none detected\n\n"
+
+            # Studies
+            if studies:
+                msg += f"✅ <b>Studies/Indicators:</b> {len(studies)} found\n"
+                for s in studies[:5]:
+                    msg += f"  • {s.get('name','?')}: {s.get('values',s.get('value',''))}\n"
+            else:
+                msg += "❌ <b>Studies:</b> none found\n"
+
+            msg += "\n<i>Hide lines → run /readindicators again → compare counts</i>"
+            send_reply(chat_id, msg)
+        except Exception as e:
+            send_reply(chat_id, f"❌ Read error: {e}")
 
     elif cmd == "/scan" and is_admin:
         send_reply(chat_id, "📡 Scanning BingX market data to find best trade (~60s)...")
