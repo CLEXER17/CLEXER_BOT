@@ -2008,8 +2008,11 @@ def handle_command(text, chat_id, message=None):
                     vol  = float(t.get("quoteVolume",0) or t.get("volume",0) or 0)
                     chg  = float(t.get("priceChangePercent",0) or 0)
                     px   = float(t.get("lastPrice",0) or 0)
-                    if vol < 3_000_000 or px <= 0: continue
-                    score = abs(chg) * (vol/1e6)
+                    if vol < 500_000 or px <= 0: continue
+                    # Balanced score: weights % change more than raw volume
+                    # abs(chg)^1.5 × vol^0.5 → a 30% mover beats a 10% mover even at lower volume
+                    import math as _math
+                    score = (abs(chg) ** 1.5) * (_math.sqrt(vol / 1e6))
                     movers.append({"sym":sym,"base":base,"price":px,
                                    "change":chg,"vol_m":round(vol/1e6,1),"score":score})
                 movers.sort(key=lambda x: x["score"], reverse=True)
