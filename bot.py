@@ -2952,6 +2952,17 @@ def main():
                 if signal and not signal.get("_hold"):
                     send_telegram(fmt_signal(signal)); set_trade(signal)
                     results = ct.on_signal(signal, price)
+                    # MARKET orders filled instantly — send entry confirmation immediately
+                    if signal.get("entry_type", "MARKET") == "MARKET":
+                        send_telegram(
+                            f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
+                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} <b>{signal['signal']} {SYMBOL}</b>\n"
+                            f"🎯 Entry: <b>{signal['entry']:,.0f}</b>  ✅ MARKET FILLED\n"
+                            f"🛑 SL:    <b>{signal['sl']:,.0f}</b>\n"
+                            f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
+                            f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>\n\n"
+                            f"✨ <i>- CLEXER V9.0 -</i>"
+                        )
                     active = ct.active_count()
                     if active == 0:
                         send_admin(f"⚠️ <b>Copy Trade</b>\n\nNo active copy users — signal NOT copied to BingX.\n\nUse /users to check.")
