@@ -192,29 +192,37 @@ def _set_leverage(api_key: str, api_secret: str, side: str, leverage: int) -> bo
 
 def _place_order(api_key: str, api_secret: str, side: str, order_type: str,
                  quantity: float, price: float = 0, stop_price: float = 0,
-                 close_position: bool = False, position_side: str = "") -> dict:
-    # position_side must be "LONG"/"SHORT" explicitly for close orders.
-    # Deriving from side is WRONG for closes: close-LONG uses side=SELL but positionSide=LONG.
-    if position_side:
-        pos_side = position_side
-    else:
-        pos_side = "LONG" if side == "BUY" else "SHORT"
+                 position_side: str = "") -> dict:
+    pos_side = position_side if position_side else ("LONG" if side == "BUY" else "SHORT")
     params = {
         "symbol":       BINGX_SYMBOL,
         "side":         side,
         "positionSide": pos_side,
         "type":         order_type,
+        "quantity":     round(quantity, 4),
     }
-    if close_position:
-        params["closePosition"] = "true"
-    else:
-        params["quantity"] = round(quantity, 4)
     if order_type == "LIMIT" and price:
         params["price"] = round(price, 1)
         params["timeInForce"] = "GTC"
     if stop_price and order_type in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
         params["stopPrice"] = round(stop_price, 1)
     return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
+
+def _set_position_sl(api_key: str, api_secret: str, pos_side: str, sl: float) -> dict:
+    """Set position-level SL via BingX positionTPSL endpoint.
+    This attaches SL directly to the position — visible in Positions tab TP/SL column.
+    More reliable than separate STOP_MARKET orders."""
+    import json as _json
+    return _bingx("POST", "/openApi/swap/v2/trade/positionTPSL", api_key, api_secret, {
+        "symbol":       BINGX_SYMBOL,
+        "positionSide": pos_side,
+        "stopLoss":     _json.dumps({
+            "type":        "MARK_PRICE",
+            "stopPrice":   str(round(sl, 1)),
+            "price":       str(round(sl, 1)),
+            "workingType": "MARK_PRICE",
+        }),
+    })
 
 def _cancel_order(api_key: str, api_secret: str, order_id: str) -> dict:
     if not order_id:
@@ -317,50 +325,53 @@ def on_signal(signal: dict, price: float) -> list[str]:
             if entry_type == "MARKET":
                 r = _place_order(api_key, api_secret, side, "MARKET", qty)
                 if r.get("code") == 0:
-                    uname = user.get('username','?')
+                    import time as _t, json as _json
+                    uname = user.get("username", "?")
                     warnings = []
+                    _t.sleep(0.4)   # let market fill confirm before attaching SL/TP
 
-                    # Place SL (STOP_MARKET closePosition=true — closes full position)
-                    sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                        qty, stop_price=sl, close_position=True,
-                                        position_side=trade_ps)
-                    sl_ok  = sl_r.get("code") == 0
-                    sl_oid = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    # ── Position SL (attached to position, most reliable) ──
+                    sl_r  = _set_position_sl(api_key, api_secret, trade_ps, sl)
+                    sl_ok = sl_r.get("code") == 0
                     if not sl_ok:
-                        # Retry once
-                        import time as _t; _t.sleep(0.5)
-                        sl_r2 = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                             qty, stop_price=sl, close_position=True,
-                                             position_side=trade_ps)
+                        _t.sleep(1.0)
+                        sl_r2  = _set_position_sl(api_key, api_secret, trade_ps, sl)
                         sl_ok  = sl_r2.get("code") == 0
-                        sl_oid = str((sl_r2.get("data") or {}).get("order", {}).get("orderId", ""))
                         if not sl_ok:
-                            warnings.append(f"⚠️ SL ORDER FAILED for @{uname}: {sl_r2.get('msg','?')} — POSITION HAS NO SL!")
+                            warnings.append(f"⚠️ Position SL FAILED @{uname}: {sl_r2.get('msg','?')} — NO SL!")
 
-                    # Place TP2 (TAKE_PROFIT_MARKET) at 50% qty — TP1 closed manually by bot
+                    # ── TP1 order — 50% qty at tp1 price ──
                     half_qty = max(round(qty / 2, 4), 0.001)
-                    tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                        half_qty, stop_price=tp2, position_side=trade_ps)
-                    tp_ok  = tp_r.get("code") == 0
-                    tp_oid = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
-                    if not tp_ok:
-                        warnings.append(f"⚠️ TP2 ORDER FAILED for @{uname}: {tp_r.get('msg','?')}")
+                    tp1_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                          half_qty, stop_price=tp1, position_side=trade_ps)
+                    tp1_ok = tp1_r.get("code") == 0
+                    tp1_oid = str((tp1_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    if not tp1_ok:
+                        warnings.append(f"⚠️ TP1 ORDER FAILED @{uname}: {tp1_r.get('msg','?')}")
+
+                    # ── TP2 order — remaining 50% qty at tp2 price ──
+                    tp2_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                          half_qty, stop_price=tp2, position_side=trade_ps)
+                    tp2_ok = tp2_r.get("code") == 0
+                    tp2_oid = str((tp2_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    if not tp2_ok:
+                        warnings.append(f"⚠️ TP2 ORDER FAILED @{uname}: {tp2_r.get('msg','?')}")
 
                     user["in_position"]    = True
                     user["pos_side"]       = side
                     user["pos_qty"]        = qty
-                    user["sl_order_id"]    = sl_oid
-                    user["tp_order_id"]    = tp_oid
+                    user["sl_order_id"]    = ""          # SL is position-level, no order ID
+                    user["tp_order_id"]    = tp2_oid     # TP2 order ID (for cancellation on TP1 hit)
+                    user["tp1_order_id"]   = tp1_oid
                     user["limit_order_id"] = ""
                     user["failed_copy"]    = False
                     _set(cid, user)
 
-                    status = f"✅ SL:{sl_ok} TP:{tp_ok}"
-                    results.append(f"✅ @{uname} opened {side} {qty} BTC | {status}")
-                    if warnings:
-                        for w in warnings:
-                            results.append(w)
-                        print(f"[CT] ORDER WARNING: {' | '.join(warnings)}")
+                    status = f"PosSL:{'✅' if sl_ok else '❌'} TP1:{'✅' if tp1_ok else '❌'} TP2:{'✅' if tp2_ok else '❌'}"
+                    results.append(f"✅ @{uname} {side} {qty} BTC | {status}")
+                    for w in warnings:
+                        results.append(w)
+                    print(f"[CT] on_signal {cid}: {status}")
                 else:
                     user["failed_copy"] = True
                     _set(cid, user)
@@ -395,7 +406,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
 
 
 def on_tp1(entry: float, tp1: float = 0):
-    """TP1 hit — close 50% of position at market, move SL to breakeven for remaining 50%."""
+    """TP1 hit — cancel TP1 order, close 50% at market, move position SL to breakeven."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
@@ -404,24 +415,26 @@ def on_tp1(entry: float, tp1: float = 0):
             full_qty   = user.get("pos_qty", 0.001)
             half_qty   = max(round(full_qty / 2, 4), 0.001)
 
+            # Cancel the TP1 order (so BingX doesn't auto-close again)
+            _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
+
             # Close 50% at market
             _place_order(api_key, api_secret, close_side, "MARKET", half_qty,
                          position_side=pos_side)
 
-            # Record TP1 PnL on 50%
+            # Record TP1 PnL
             close_price = tp1 if tp1 > 0 else entry
             pnl = _calc_pnl(user["pos_side"], entry, close_price, half_qty)
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # Cancel old full-size SL, place new BE SL for remaining 50%
-            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
-            sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                half_qty, stop_price=entry, position_side=pos_side)
-            user["sl_order_id"] = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-            user["pos_qty"]     = half_qty   # remaining quantity
+            # Move position SL to breakeven (entry price) for the remaining 50%
+            _set_position_sl(api_key, api_secret, pos_side, entry)
+
+            user["tp1_order_id"] = ""
+            user["pos_qty"]      = half_qty   # remaining quantity
             _set(cid, user)
-            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f}")
+            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
         except Exception as e:
             print(f"[CT] on_tp1 {cid}: {e}")
 
