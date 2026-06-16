@@ -299,7 +299,7 @@ def tv_get_candles_for(symbol: str, interval: str, limit: int):
         rows = [{
             "time": datetime.fromtimestamp(c["t"]/1000 if c["t"]>1e10 else c["t"], tz=timezone.utc),
             "open": float(c["o"]), "high": float(c["h"]),
-            "low": float(c["l"]), "close": float(c["c"]), "vol": float(c.get("v", 0)),
+            "low": float(c["l"]), "close": float(c["c"]), "volume": float(c.get("v", 0)),
         } for c in data["candles"]]
         df = pd.DataFrame(rows).set_index("time")
         print(f"      [TV] {symbol} {interval}: {len(df)} candles OK")
