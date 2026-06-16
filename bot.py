@@ -2139,21 +2139,37 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "❌ TV Bridge is offline — cannot read indicators."); return
         send_reply(chat_id, "🔍 Reading indicators from TradingView chart...")
         try:
-            data = fetch_tv_all_data()
+            data     = fetch_tv_all_data()
             labels   = data.get("pine_labels", [])
             lines    = data.get("pine_lines", [])
             boxes    = data.get("pine_boxes", [])
             studies  = data.get("studies", [])
-            spaceman = data.get("spaceman_levels", [])
+            spaceman = fetch_spaceman_levels()   # dedicated endpoint
 
             msg = f"📊 <b>Indicator Read Test</b>  🕐 {ist_str()}\n\n"
 
-            # Pine Lines (SpacemanBTC key levels)
+            # SpacemanBTC Key Levels (labeled)
+            if spaceman.get("all_levels"):
+                lvls = spaceman["all_levels"]
+                msg += f"✅ <b>SpacemanBTC Levels:</b> {len(lvls)} read (via {spaceman.get('source','?')})\n"
+                for lv in lvls[:8]:
+                    msg += f"  • {lv['label']}: <b>{lv['price']:,.2f}</b>\n"
+                if spaceman.get("nearest_support"):
+                    s = spaceman["nearest_support"]
+                    msg += f"  🟢 Nearest Support: {s['label']} @ {s['price']:,.2f}\n"
+                if spaceman.get("nearest_resistance"):
+                    r = spaceman["nearest_resistance"]
+                    msg += f"  🔴 Nearest Resistance: {r['label']} @ {r['price']:,.2f}\n"
+                msg += "\n"
+            else:
+                msg += "❌ <b>SpacemanBTC Levels:</b> none detected\n\n"
+
+            # Pine Lines (generic WS stream levels)
             if lines:
                 prices = sorted(set([round(l.get("price",0)) for l in lines if l.get("price",0) > 0]))
-                msg += f"✅ <b>Pine Lines:</b> {len(lines)} read\n<code>{prices[:10]}</code>\n\n"
+                msg += f"✅ <b>Pine Lines (WS):</b> {len(lines)} read\n<code>{prices[:10]}</code>\n\n"
             else:
-                msg += "❌ <b>Pine Lines:</b> 0 read (hidden or not present)\n\n"
+                msg += "❌ <b>Pine Lines:</b> 0 read\n\n"
 
             # Pine Labels
             if labels:
@@ -2162,7 +2178,7 @@ def handle_command(text, chat_id, message=None):
                     msg += f"  • {lb.get('text','?')} @ {lb.get('price',0):,.0f}\n"
                 msg += "\n"
             else:
-                msg += "❌ <b>Pine Labels:</b> 0 read (hidden or not present)\n\n"
+                msg += "❌ <b>Pine Labels:</b> 0 read\n\n"
 
             # Pine Boxes
             if boxes:
@@ -2171,23 +2187,17 @@ def handle_command(text, chat_id, message=None):
                     msg += f"  • Zone: {bx.get('low',0):,.0f} – {bx.get('high',0):,.0f}\n"
                 msg += "\n"
             else:
-                msg += "❌ <b>Pine Boxes:</b> 0 read (hidden or not present)\n\n"
-
-            # Spaceman legacy
-            if spaceman:
-                msg += f"✅ <b>SpacemanBTC Levels:</b> {sorted(set([round(x) for x in spaceman]))[:8]}\n\n"
-            else:
-                msg += "❌ <b>SpacemanBTC Levels:</b> none detected\n\n"
+                msg += "❌ <b>Pine Boxes:</b> 0 read\n\n"
 
             # Studies
             if studies:
-                msg += f"✅ <b>Studies/Indicators:</b> {len(studies)} found\n"
+                msg += f"✅ <b>Studies:</b> {len(studies)} found\n"
                 for s in studies[:5]:
-                    msg += f"  • {s.get('name','?')}: {s.get('values',s.get('value',''))}\n"
+                    msg += f"  • {s.get('name','?')}\n"
             else:
                 msg += "❌ <b>Studies:</b> none found\n"
 
-            msg += "\n<i>Hide lines → run /readindicators again → compare counts</i>"
+            msg += "\n<i>Now hide SpacemanBTC lines → /readindicators → compare</i>"
             send_reply(chat_id, msg)
         except Exception as e:
             send_reply(chat_id, f"❌ Read error: {e}")
