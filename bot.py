@@ -82,6 +82,12 @@ active_trade = {
     "entry_type": "MARKET", "entry_note": "",
     "entry_hit": False, "sl_wicked": False, "scan_count": 0,
 }
+scan_active_trade = {
+    "symbol": None, "signal": None, "entry": None, "sl": None,
+    "tp1": None, "tp2": None, "tp1_hit": False,
+    "entry_type": "MARKET", "entry_hit": False,
+}
+last_scan_tick_time = 0
 signal_history        = []
 trade_outcomes        = []
 force_scan            = threading.Event()
@@ -686,7 +692,6 @@ def extract_json_from_response(text: str):
     if end == -1: return None
     try: return json.loads(cleaned[start:end])
     except: return None
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1120,7 +1125,6 @@ def check_price_status(price, high, low, df_5m=None):
     if not t["tp1_hit"]:
         if (sig=="SELL" and low<=tp1) or (sig=="BUY" and high>=tp1): return "TP1_HIT"
     return "RUNNING"
-
 import copytrade as ct
 
 # --- TELEGRAM -----------------------------------------------------------------
@@ -1289,8 +1293,14 @@ def fmt_update(status, price=None):
             f"⛔ <b>Wait for the next signal from CLEXER</b>\n\n"
             f"🔍 Analysing new direction..."
         ),
-        "WAITING_ENTRY":  (f"⏳ <b>Waiting Pullback</b>\n🎯 Entry zone: <b>{entry:,.0f}</b>\n"
-            + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")),
+        "WAITING_ENTRY":  (
+            f"⏳ <b>Waiting Pullback</b>\n"
+            f"🎯 Entry: <b>{entry:,.0f}</b>\n"
+            f"🛑 SL:    <b>{t.get('sl',0):,.0f}</b>\n"
+            f"🎯 TP1:   <b>{t.get('tp1',0):,.0f}</b>\n"
+            f"🎯 TP2:   <b>{t.get('tp2',0):,.0f}</b>\n"
+            + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")
+        ),
     }
     return f"📣 <b>{SYMBOL} UPDATE</b>  🕐 {ist_str()}\n\n{msgs.get(status,'✅ Trade running')}\n\n✨ <i>- CLEXER V7.0 -</i>"
 
@@ -1378,6 +1388,153 @@ def run_tick_check():
                 send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(entry, sl); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
+    return False
+
+# --- SCAN COIN MONITORING -----------------------------------------------------
+
+def reset_scan_trade():
+    global scan_active_trade
+    scan_active_trade = {
+        "symbol": None, "signal": None, "entry": None, "sl": None,
+        "tp1": None, "tp2": None, "tp1_hit": False,
+        "entry_type": "MARKET", "entry_hit": False,
+    }
+
+def get_bingx_price(symbol: str) -> float:
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                         params={"symbol": symbol}, timeout=8).json()
+        d = r.get("data", {})
+        if isinstance(d, list): d = d[0] if d else {}
+        p = float(d.get("lastPrice") or d.get("price") or 0)
+        return p
+    except Exception as e:
+        print(f"  [SCAN PRICE] {symbol}: {e}")
+        return 0.0
+
+def fmt_scan_signal(t: dict) -> str:
+    sym  = t["symbol"]; sig = t["signal"]
+    entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
+    et   = t.get("entry_type","MARKET")
+    sl_pct = abs(entry - sl) / entry * 100 if entry else 0
+    arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
+    return (
+        f"📣 <b>{sym} SCAN SIGNAL</b>  🕐 {ist_str()}\n\n"
+        f"{arrow} — <b>{'MARKET' if et=='MARKET' else 'LIMIT'} ENTRY</b>\n\n"
+        f"🎯 Entry: <b>{entry:,.4g}</b>\n"
+        f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
+        f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
+        f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
+        f"✨ <i>- CLEXER V7.0 -</i>\n⚠️ <i>Not financial advice</i>"
+    )
+
+def fmt_scan_update(status: str, price: float = 0) -> str:
+    t    = scan_active_trade
+    sym  = t.get("symbol","?"); sig = t.get("signal","?")
+    entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
+    msgs = {
+        "ENTRY_HIT": (
+            f"🚀 <b>ENTRY TRIGGERED — {sym}</b>  🕐 {ist_str()}\n\n"
+            f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig}</b>\n"
+            f"🎯 Entry: <b>{entry:,.4g}</b>  |  📊 Price: <b>{price:,.4g}</b>\n"
+            f"🛑 SL:    <b>{t.get('sl',0):,.4g}</b>\n"
+            f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
+            f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
+            f"⚠️ <b>Trade is now LIVE</b>\n\n✨ <i>- CLEXER V7.0 -</i>"
+        ),
+        "TP1_HIT": (
+            f"💰 <b>TP1 HIT — {sym}!</b> 🎉  🕐 {ist_str()}\n\n"
+            f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
+            f"✅ TP1: <b>{tp1:,.4g}</b>\n"
+            f"🛡️ SL moved to BE: <b>{entry:,.4g}</b>\n"
+            f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n\n✨ <i>- CLEXER V7.0 -</i>"
+        ),
+        "TP2_HIT": (
+            f"🏆 <b>TP2 HIT — {sym}!</b> 🎊💵  🕐 {ist_str()}\n\n"
+            f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
+            f"✅ Full profit @ TP2: <b>{tp2:,.4g}</b>\n\n✨ <i>- CLEXER V7.0 -</i>"
+        ),
+        "SL_HIT": (
+            f"🚨 <b>SL HIT — {sym}</b> 🚨  🕐 {ist_str()}\n\n"
+            f"❌ Loss on {sig} @ {entry:,.4g}\n\n"
+            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
+            f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V7.0 -</i>"
+        ),
+        "ENTRY_MISSED": (
+            f"😔 <b>ENTRY MISSED — {sym}</b>  🕐 {ist_str()}\n\n"
+            f"Price bypassed entry zone <b>{entry:,.4g}</b> without filling.\n"
+            f"⛔ <b>DO NOT CHASE</b>\n\n✨ <i>- CLEXER V7.0 -</i>"
+        ),
+        "WAITING_ENTRY": (
+            f"⏳ <b>Waiting Entry — {sym}</b>\n"
+            f"🎯 Entry: <b>{entry:,.4g}</b>\n"
+            f"🛑 SL:    <b>{t.get('sl',0):,.4g}</b>\n"
+            f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
+            f"🏆 TP2:  <b>{tp2:,.4g}</b>\n"
+            + (f"📊 Current: <b>{price:,.4g}</b> ({abs(price-entry)/entry*100:.2f}% away)" if price else "")
+        ),
+    }
+    return msgs.get(status, f"✅ {sym} trade running")
+
+def run_scan_tick_check() -> bool:
+    if not scan_active_trade.get("signal"): return False
+    t   = scan_active_trade
+    sym = t["symbol"]; sig = t["signal"]
+    entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
+    try:
+        price = get_bingx_price(sym)
+        if price <= 0: return False
+
+        # Get recent 1m candle range (3 bars) from BingX klines
+        df1m = get_klines(sym, "1m", 3)
+        if df1m is not None and len(df1m) > 0:
+            check_high = max(price, float(df1m["high"].max()))
+            check_low  = min(price, float(df1m["low"].min()))
+        else:
+            check_high = price; check_low = price
+
+        print(f"  [SCAN TICK] {sym} {sig} price:{price:.4g} H:{check_high:.4g} L:{check_low:.4g}")
+
+        if not t["entry_hit"]:
+            tol = abs(entry - sl) * 0.25
+            entry_touched = (sig == "BUY"  and check_low  <= entry + tol) or \
+                            (sig == "SELL" and check_high >= entry - tol)
+            if entry_touched:
+                scan_active_trade["entry_hit"] = True
+                send_telegram(fmt_scan_update("ENTRY_HIT", price))
+                # Check if entry was instantly blown past (entry missed case)
+                if sig == "BUY"  and price > entry * 1.015:
+                    send_telegram(fmt_scan_update("ENTRY_MISSED", price))
+                    reset_scan_trade(); return True
+                if sig == "SELL" and price < entry * 0.985:
+                    send_telegram(fmt_scan_update("ENTRY_MISSED", price))
+                    reset_scan_trade(); return True
+            return False
+
+        # TP2
+        tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
+        if tp2_hit:
+            send_telegram(fmt_scan_update("TP2_HIT", price))
+            reset_scan_trade(); return True
+
+        # TP1
+        if not t["tp1_hit"]:
+            tp1_hit = (sig == "BUY" and check_high >= tp1) or (sig == "SELL" and check_low <= tp1)
+            if tp1_hit:
+                scan_active_trade["tp1_hit"] = True
+                scan_active_trade["sl"] = entry  # move SL to breakeven
+                send_telegram(fmt_scan_update("TP1_HIT", price))
+
+        # SL — use % margin (0.2% of entry) for altcoins instead of fixed 80 pts
+        sl_margin = entry * 0.002
+        sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
+                 (sig == "SELL" and check_high > sl + sl_margin)
+        if sl_hit:
+            send_telegram(fmt_scan_update("SL_HIT", price))
+            reset_scan_trade(); return True
+
+    except Exception as e:
+        print(f"  [SCAN TICK ERROR] {e}")
     return False
 
 # --- 1-HOUR PRICE CHECK -------------------------------------------------------
@@ -2101,7 +2258,7 @@ def handle_command(text, chat_id, message=None):
                     df_5m = get_klines(chosen_sym,"5m",30)
                     scan_screenshots = {}
 
-                if tv_switched: tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC perpetual
+                if tv_switched: tv_set_symbol("BTCUSDT.P")  # switch back to BTC perpetual
 
                 cp = candidate["price"]
 
@@ -2245,6 +2402,17 @@ Reasoning: 3 lines max"""
                         sd = {"signal": scan_signal_val, "entry": scan_entry,
                               "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
                               "entry_type": entry_type}
+                        # Store in scan_active_trade for monitoring (like BTC logic)
+                        scan_active_trade.update({
+                            "symbol": chosen_sym, "signal": scan_signal_val,
+                            "entry": scan_entry, "sl": scan_sl,
+                            "tp1": scan_tp1, "tp2": scan_tp2,
+                            "entry_type": entry_type, "tp1_hit": False,
+                            "entry_hit": entry_type == "MARKET",
+                        })
+                        # Send BTC-style signal to group
+                        send_telegram(fmt_scan_signal(scan_active_trade))
+                        # Copy trade placement
                         ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
                         ct_note = "\n".join(ct_results[:5])
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n{ct_note}")
@@ -2387,7 +2555,7 @@ def command_listener():
 
 # --- MAIN ---------------------------------------------------------------------
 def main():
-    global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time
+    global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time, last_scan_tick_time
 
     print(f"[CLEXER V7.0] Starting | {SYMBOL}")
     print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET - Binance-only'}")
@@ -2470,11 +2638,16 @@ def main():
                 else:
                     time.sleep(60); continue  # no trade — sleep a full minute
 
-            # 1-min tick
+            # 1-min tick — BTC
             if ((now-last_tick_time) >= TICK_INTERVAL or forced) and active_trade["signal"]:
                 last_tick_time = now
                 if run_tick_check():
                     forced = True; last_signal_scan_time = 0
+
+            # 1-min tick — scan coin (runs same interval as BTC tick)
+            if ((now-last_scan_tick_time) >= TICK_INTERVAL) and scan_active_trade.get("signal"):
+                last_scan_tick_time = now
+                run_scan_tick_check()
 
             # 1-hour price check
             if (now-last_price_check_time) >= PRICE_CHECK_INTERVAL and active_trade["signal"]:
