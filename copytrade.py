@@ -317,23 +317,50 @@ def on_signal(signal: dict, price: float) -> list[str]:
             if entry_type == "MARKET":
                 r = _place_order(api_key, api_secret, side, "MARKET", qty)
                 if r.get("code") == 0:
-                    # Place SL (STOP_MARKET, close full position)
+                    uname = user.get('username','?')
+                    warnings = []
+
+                    # Place SL (STOP_MARKET closePosition=true — closes full position)
                     sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
                                         qty, stop_price=sl, close_position=True,
                                         position_side=trade_ps)
-                    # Place TP2 (TAKE_PROFIT_MARKET) for 50% only — TP1 closes the other 50%
+                    sl_ok  = sl_r.get("code") == 0
+                    sl_oid = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    if not sl_ok:
+                        # Retry once
+                        import time as _t; _t.sleep(0.5)
+                        sl_r2 = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                             qty, stop_price=sl, close_position=True,
+                                             position_side=trade_ps)
+                        sl_ok  = sl_r2.get("code") == 0
+                        sl_oid = str((sl_r2.get("data") or {}).get("order", {}).get("orderId", ""))
+                        if not sl_ok:
+                            warnings.append(f"⚠️ SL ORDER FAILED for @{uname}: {sl_r2.get('msg','?')} — POSITION HAS NO SL!")
+
+                    # Place TP2 (TAKE_PROFIT_MARKET) at 50% qty — TP1 closed manually by bot
                     half_qty = max(round(qty / 2, 4), 0.001)
                     tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
                                         half_qty, stop_price=tp2, position_side=trade_ps)
+                    tp_ok  = tp_r.get("code") == 0
+                    tp_oid = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    if not tp_ok:
+                        warnings.append(f"⚠️ TP2 ORDER FAILED for @{uname}: {tp_r.get('msg','?')}")
+
                     user["in_position"]    = True
                     user["pos_side"]       = side
                     user["pos_qty"]        = qty
-                    user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-                    user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    user["sl_order_id"]    = sl_oid
+                    user["tp_order_id"]    = tp_oid
                     user["limit_order_id"] = ""
                     user["failed_copy"]    = False
                     _set(cid, user)
-                    results.append(f"✅ @{user.get('username','?')} opened {side} {qty} BTC")
+
+                    status = f"✅ SL:{sl_ok} TP:{tp_ok}"
+                    results.append(f"✅ @{uname} opened {side} {qty} BTC | {status}")
+                    if warnings:
+                        for w in warnings:
+                            results.append(w)
+                        print(f"[CT] ORDER WARNING: {' | '.join(warnings)}")
                 else:
                     user["failed_copy"] = True
                     _set(cid, user)
