@@ -296,6 +296,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
     side        = signal["signal"]          # "BUY" or "SELL"
     entry       = float(signal["entry"])
     sl          = float(signal["sl"])
+    tp1         = float(signal["tp1"])
     tp2         = float(signal["tp2"])
     entry_type  = signal.get("entry_type", "MARKET")
     close_side  = "SELL" if side == "BUY" else "BUY"
