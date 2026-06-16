@@ -378,28 +378,36 @@ def fetch_spaceman_levels() -> dict:
     import math as _math
     from datetime import datetime, timezone
 
+    # BingX swap uses BTC-USDT format, not BTCUSDT
+    bx_sym = SYMBOL.replace("USDT", "-USDT") if "-" not in SYMBOL else SYMBOL
+
     def _klines(interval, limit):
-        try:
-            r = requests.get(
-                "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
-                params={"symbol": SYMBOL, "interval": interval, "limit": limit},
-                timeout=10).json()
-            rows = r.get("data", [])
-            if not rows: return []
-            result = []
-            for row in rows:
-                if isinstance(row, dict):
-                    result.append({
-                        "t": int(row.get("time") or row.get("openTime") or 0),
-                        "o": float(row.get("open", 0)),
-                        "h": float(row.get("high", 0)),
-                        "l": float(row.get("low", 0)),
-                        "c": float(row.get("close", 0)),
-                    })
-            return result
-        except Exception as e:
-            print(f"  [SPACEMAN KLINES] {interval}: {e}")
-            return []
+        # Try both symbol formats
+        for sym in [bx_sym, SYMBOL]:
+            try:
+                r = requests.get(
+                    "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+                    params={"symbol": sym, "interval": interval, "limit": limit},
+                    timeout=10).json()
+                rows = r.get("data", [])
+                if not rows:
+                    print(f"  [SPACEMAN] {interval} empty: code={r.get('code')} msg={r.get('msg','')}")
+                    continue
+                result = []
+                for row in rows:
+                    if isinstance(row, dict):
+                        result.append({
+                            "t": int(float(row.get("time") or row.get("openTime") or 0)),
+                            "o": float(row.get("open", 0)),
+                            "h": float(row.get("high", 0)),
+                            "l": float(row.get("low", 0)),
+                            "c": float(row.get("close", 0)),
+                        })
+                if result:
+                    return result
+            except Exception as e:
+                print(f"  [SPACEMAN KLINES] {interval} {sym}: {e}")
+        return []
 
     levels = []
 
@@ -447,35 +455,39 @@ def fetch_spaceman_levels() -> dict:
                 {"label": "Prev Month Mid",  "price": pm_mid},
             ]
 
-        # ── Quarterly levels — 3M candles ──────────────────────────────
-        qr = _klines("3M", 3)
-        if len(qr) >= 2:
-            quarterly_open = qr[-1]["o"]
-            pq_mid         = (qr[-2]["h"] + qr[-2]["l"]) / 2
-            levels += [
-                {"label": "Quarterly Open",   "price": quarterly_open},
-                {"label": "Prev Quarter Mid", "price": pq_mid},
-            ]
+        # ── Quarterly levels — derived from monthly (3M not always supported) ──
+        # Quarter = group of 3 monthly candles
+        mo14 = _klines("1M", 14)  # enough for prev quarter
+        if len(mo14) >= 4:
+            # Current quarter: last 3 monthly bars
+            cur_q  = mo14[-3:]
+            prev_q = mo14[-6:-3] if len(mo14) >= 6 else []
+            quarterly_open = cur_q[0]["o"]
+            levels.append({"label": "Quarterly Open", "price": quarterly_open})
+            if prev_q:
+                pq_h   = max(b["h"] for b in prev_q)
+                pq_l   = min(b["l"] for b in prev_q)
+                levels.append({"label": "Prev Quarter Mid", "price": (pq_h + pq_l) / 2})
 
-        # ── Yearly levels — 12M candles ────────────────────────────────
-        yr = _klines("12M", 3)
-        if not yr:  # BingX might not support 12M, fallback to 1Y from monthly
-            if len(mo) >= 13:
-                yr_open = mo[-12]["o"]
-                yr_h    = max(b["h"] for b in mo[-12:])
-                yr_l    = min(b["l"] for b in mo[-12:])
-                levels += [
-                    {"label": "Yearly Open",      "price": yr_open},
-                    {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
-                ]
-        elif len(yr) >= 1:
-            yr_open = yr[-1]["o"]
-            yr_h    = yr[-1]["h"]
-            yr_l    = yr[-1]["l"]
+        # ── Yearly levels — derived from monthly (12M not always supported) ──
+        mo14_full = mo14 if len(mo14) >= 13 else _klines("1M", 14)
+        if len(mo14_full) >= 13:
+            yr_bars = mo14_full[-12:]
+            yr_open = yr_bars[0]["o"]
+            yr_h    = max(b["h"] for b in yr_bars)
+            yr_l    = min(b["l"] for b in yr_bars)
             levels += [
                 {"label": "Yearly Open",      "price": yr_open},
                 {"label": "Current Year Mid", "price": (yr_h + yr_l) / 2},
             ]
+        else:
+            # Try direct 1Y kline
+            yr = _klines("1Y", 2)
+            if yr:
+                levels += [
+                    {"label": "Yearly Open",      "price": yr[-1]["o"]},
+                    {"label": "Current Year Mid", "price": (yr[-1]["h"] + yr[-1]["l"]) / 2},
+                ]
 
     except Exception as e:
         print(f"  [SPACEMAN CALC] {e}")
