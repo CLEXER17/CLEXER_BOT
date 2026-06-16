@@ -455,38 +455,56 @@ def on_tp1(entry: float, tp1: float = 0):
 
 
 def on_tp2(entry: float = 0, tp2: float = 0):
-    """TP2 hit — BingX TAKE_PROFIT_MARKET auto-closes. Update records."""
+    """TP2 hit — cancel remaining orders, force-close if needed, update records."""
     global _last_signal
     _last_signal = {}
     _save_last_signal()
-    for cid, user, _, _ in _users_with_copy():
+    for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
-        # Record TP2 PnL on remaining qty
+        try:
+            # Cancel any leftover TP1/SL orders
+            _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
+            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
+            # Force-close remaining position (TP2 order auto-closes 50%, this closes any remainder)
+            _close_position(api_key, api_secret, user["pos_side"])
+        except Exception as e:
+            print(f"[CT] on_tp2 {cid} close error: {e}")
         if entry > 0 and tp2 > 0:
             pnl = _calc_pnl(user["pos_side"], entry, tp2, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl)
             print(f"[CT] on_tp2 {cid}: pnl={pnl:+.2f}")
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
-        user["sl_order_id"] = ""; user["tp_order_id"] = ""
+        user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["profit"] += 1
         _set(cid, user)
 
 
 def on_sl(entry: float = 0, sl: float = 0):
-    """SL hit — BingX STOP_MARKET auto-closes. Update records."""
+    """SL hit — force-close position on BingX, cancel open TP orders, update records."""
     global _last_signal
-    _last_signal = {}   # signal is dead — block any retry after this
+    _last_signal = {}
     _save_last_signal()
-    for cid, user, _, _ in _users_with_copy():
+    for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
-        # Record SL loss on remaining qty
+        try:
+            pos_side = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+            # Cancel open TP1/TP2 orders first so they don't fire after close
+            _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
+            _cancel_order(api_key, api_secret, user.get("tp_order_id", ""))
+            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
+            # Force-close the position at market (in case position SL didn't fire)
+            close_r = _close_position(api_key, api_secret, user["pos_side"])
+            print(f"[CT] on_sl {cid}: close_position={close_r.get('code')} msg={close_r.get('msg','')}")
+        except Exception as e:
+            print(f"[CT] on_sl {cid} close error: {e}")
+        # Record PnL
         if entry > 0 and sl > 0:
             pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl)
             print(f"[CT] on_sl {cid}: pnl={pnl:+.2f}")
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
-        user["sl_order_id"] = ""; user["tp_order_id"] = ""
+        user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["loss"] += 1
         _set(cid, user)
