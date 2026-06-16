@@ -1578,6 +1578,31 @@ def run_tick_check():
 
 # --- SCAN COIN MONITORING -----------------------------------------------------
 
+def bingx_klines(symbol: str, interval: str, limit: int):
+    """Module-level BingX klines fetch returning a pandas DataFrame or None."""
+    try:
+        import pandas as _pd
+        kr = requests.get(
+            "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=12).json()
+        rows = kr.get("data", [])
+        if not rows: return None
+        if isinstance(rows[0], (list, tuple)):
+            df = _pd.DataFrame([[float(x) for x in row[:6]] for row in rows],
+                               columns=["time","open","high","low","close","volume"])
+        else:
+            df = _pd.DataFrame([{
+                "time": float(row.get("time",0) or row.get("openTime",0)),
+                "open": float(row.get("open",0)), "high": float(row.get("high",0)),
+                "low":  float(row.get("low",0)),  "close": float(row.get("close",0)),
+                "volume": float(row.get("volume",0)),
+            } for row in rows])
+        return df if len(df) > 0 else None
+    except Exception as e:
+        print(f"  [BINGX KLINES] {symbol} {interval}: {e}")
+        return None
+
 def reset_scan_trade():
     global scan_active_trade
     scan_active_trade = {
@@ -1673,7 +1698,7 @@ def run_scan_tick_check() -> bool:
         if price <= 0: return False
 
         # Get recent 1m candle range (3 bars) from BingX klines
-        df1m = get_klines(sym, "1m", 3)
+        df1m = bingx_klines(sym, "1m", 3)
         if df1m is not None and len(df1m) > 0:
             check_high = max(price, float(df1m["high"].max()))
             check_low  = min(price, float(df1m["low"].min()))
@@ -2374,33 +2399,7 @@ def handle_command(text, chat_id, message=None):
                 import traceback as _tb, pandas as _pd
 
                 # ── helpers ────────────────────────────────────────────────────
-                def get_klines(symbol, interval, limit):
-                    try:
-                        kr = requests.get(
-                            "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
-                            params={"symbol":symbol,"interval":interval,"limit":limit},
-                            timeout=12).json()
-                        rows = kr.get("data",[])
-                        if not rows:
-                            print(f"  [KLINES] {symbol} {interval}: empty data, code={kr.get('code')} msg={kr.get('msg','')}")
-                            return None
-                        # BingX v2 rows can be list [time,open,high,low,close,vol,...] or dict
-                        if isinstance(rows[0], (list, tuple)):
-                            df = _pd.DataFrame([[float(x) for x in row[:6]] for row in rows],
-                                               columns=["time","open","high","low","close","volume"])
-                        else:
-                            df = _pd.DataFrame([{
-                                "time":  float(row.get("time",0) or row.get("openTime",0)),
-                                "open":  float(row.get("open",0)),
-                                "high":  float(row.get("high",0)),
-                                "low":   float(row.get("low",0)),
-                                "close": float(row.get("close",0)),
-                                "volume":float(row.get("volume",0)),
-                            } for row in rows])
-                        return df if len(df) > 0 else None
-                    except Exception as _ke:
-                        print(f"  [KLINES] {symbol} {interval} error: {_ke}")
-                        return None
+                get_klines = bingx_klines   # use module-level function
 
                 def check_4h_structure(df):
                     """Returns BULLISH, BEARISH, or NEUTRAL based on swing highs/lows + close trend."""
