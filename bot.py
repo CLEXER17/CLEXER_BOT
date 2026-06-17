@@ -300,16 +300,19 @@ def tv_get_ticker():
     return None
 
 def tv_set_symbol(symbol: str) -> bool:
-    """Switch TradingView chart to a different symbol. Returns True if bridge accepted."""
+    """Switch TradingView chart to symbol AND wait for all TFs to load.
+    Uses /load_symbol which cycles 4H→1H→5M and waits for candles before returning."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return False
     try:
-        r = requests.get(f"{TV_BRIDGE_URL}/set_symbol",
-                         params={"symbol": symbol}, timeout=10)
+        r = requests.get(f"{TV_BRIDGE_URL}/load_symbol",
+                         params={"symbol": symbol}, timeout=60)   # up to 30s inside bridge
         if r.status_code == 200:
-            time.sleep(3)   # let TV load the new symbol
+            d = r.json()
+            loaded = d.get("loaded", {})
+            print(f"  [TV load_symbol] {symbol} — loaded TFs: {loaded}")
             return True
     except Exception as e:
-        print(f"  [TV set_symbol] {e}")
+        print(f"  [TV load_symbol] {e}")
     return False
 
 def tv_get_candles_for(symbol: str, interval: str, limit: int, live_price: float = 0.0):
@@ -2630,7 +2633,7 @@ def handle_command(text, chat_id, message=None):
                     print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
                     if tv_switched and is_tv_online():
-                        time.sleep(6)   # let TV load + WS flush new symbol candles
+                        # /load_symbol already waited for each TF to populate — fetch immediately
                         _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
                         _t1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
                         _t5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
@@ -2660,7 +2663,7 @@ def handle_command(text, chat_id, message=None):
                         df_5m = get_klines(chosen_sym,"5m",30)
                         scan_screenshots = {}
 
-                    if tv_switched: tv_set_symbol("BTCUSDT.P")  # switch back to BTC perpetual
+                    tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC after scan
 
                 print(f"  [SCAN] candle source: {_tv_data_source}")
 
