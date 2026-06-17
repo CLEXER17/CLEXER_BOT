@@ -82,15 +82,9 @@ active_trade = {
     "entry_type": "MARKET", "entry_note": "",
     "entry_hit": False, "sl_wicked": False, "scan_count": 0,
 }
-def _empty_scan_slot():
-    return {"symbol": None, "signal": None, "entry": None, "sl": None,
-            "tp1": None, "tp2": None, "tp1_hit": False,
-            "entry_type": "MARKET", "entry_hit": False}
-
-scan_active_trade  = _empty_scan_slot()   # scan1 slot
-scan2_active_trade = _empty_scan_slot()   # scan2 slot
-last_scan_tick_time  = 0
-last_scan2_tick_time = 0
+scan1_trades = []   # list of active scan1 trade dicts (unlimited slots)
+scan2_trades = []   # list of active scan2 trade dicts (unlimited slots)
+last_scan_tick_time = 0
 signal_history        = []
 trade_outcomes        = []
 force_scan            = threading.Event()
@@ -159,12 +153,12 @@ def save_state():
     try:
         with open(STATE_FILE, "w") as f:
             json.dump({
-                "trade":         active_trade,
-                "scan_trade":    scan_active_trade,
-                "scan2_trade":   scan2_active_trade,
-                "stats":         trade_stats,
-                "history":       signal_history,
-                "outcomes":      trade_outcomes,
+                "trade":       active_trade,
+                "scan1_trades": scan1_trades,
+                "scan2_trades": scan2_trades,
+                "stats":       trade_stats,
+                "history":     signal_history,
+                "outcomes":    trade_outcomes,
             }, f, indent=2)
     except Exception as e:
         print(f"[STATE] Save error: {e}")
@@ -173,7 +167,7 @@ def save_active_trade():
     save_state()
 
 def load_active_trade():
-    global active_trade, scan_active_trade, scan2_active_trade, trade_stats, signal_history, trade_outcomes
+    global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     try:
         if os.path.exists(path):
@@ -186,14 +180,10 @@ def load_active_trade():
                 active_trade = t
                 print(f"[STATE] Restored BTC trade: {t['signal']} @ {t['entry']:,.0f} "
                       f"entry_hit:{t.get('entry_hit')} tp1_hit:{t.get('tp1_hit')}")
-            sc = d.get("scan_trade", {})
-            if sc.get("signal"):
-                scan_active_trade.update(sc)
-                print(f"[STATE] Restored scan1 trade: {sc['signal']} {sc.get('symbol')}")
-            sc2 = d.get("scan2_trade", {})
-            if sc2.get("signal"):
-                scan2_active_trade.update(sc2)
-                print(f"[STATE] Restored scan2 trade: {sc2['signal']} {sc2.get('symbol')}")
+            scan1_trades[:] = [x for x in d.get("scan1_trades", []) if x.get("signal")]
+            scan2_trades[:] = [x for x in d.get("scan2_trades", []) if x.get("signal")]
+            if scan1_trades: print(f"[STATE] Restored scan1: {[t['symbol'] for t in scan1_trades]}")
+            if scan2_trades: print(f"[STATE] Restored scan2: {[t['symbol'] for t in scan2_trades]}")
             print(f"[STATE] Stats restored — SL:{trade_stats['total_sl']} "
                   f"TP1:{trade_stats['total_tp1']} TP2:{trade_stats['total_tp2']} "
                   f"Signals:{trade_stats['total_signals']}")
@@ -1596,6 +1586,8 @@ def run_tick_check():
 
 # --- SCAN COIN MONITORING -----------------------------------------------------
 
+_tv_scan_lock = threading.Lock()   # only one scan can use TradingView at a time
+
 def bingx_klines(symbol: str, interval: str, limit: int):
     """Module-level BingX klines fetch returning a pandas DataFrame or None."""
     try:
@@ -1621,26 +1613,27 @@ def bingx_klines(symbol: str, interval: str, limit: int):
         print(f"  [BINGX KLINES] {symbol} {interval}: {e}")
         return None
 
-def _reset_slot(slot: int):
-    global scan_active_trade, scan2_active_trade
-    if slot == 2:
-        scan2_active_trade = _empty_scan_slot()
-    else:
-        scan_active_trade  = _empty_scan_slot()
+def _scan_list(ver: int) -> list:
+    """Return the active trades list for scan version 1 or 2."""
+    return scan1_trades if ver == 1 else scan2_trades
+
+def _all_active_scan_syms() -> set:
+    """Return set of all symbols currently active across both scan lists."""
+    return {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
+
+def _remove_scan_trade(ver: int, symbol: str):
+    """Remove a specific symbol from a scan list and save state."""
+    lst = _scan_list(ver)
+    lst[:] = [t for t in lst if t.get("symbol") != symbol]
     save_state()
 
 def reset_scan_trade():
-    _reset_slot(1)
+    scan1_trades.clear(); save_state()
 
-def _get_slot(slot: int) -> dict:
-    return scan2_active_trade if slot == 2 else scan_active_trade
-
-def _all_active_scan_syms() -> set:
-    """Return set of symbols currently in any active scan slot."""
-    s = set()
-    if scan_active_trade.get("symbol"):  s.add(scan_active_trade["symbol"])
-    if scan2_active_trade.get("symbol"): s.add(scan2_active_trade["symbol"])
-    return s
+def _get_slot(ver: int) -> dict:
+    """Return first active trade dict for a scan version, or empty dict."""
+    lst = _scan_list(ver)
+    return lst[0] if lst else {}
 
 def get_bingx_price(symbol: str) -> float:
     try:
@@ -1726,13 +1719,10 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     }
     return msgs.get(status, f"✅ {sym} trade running")
 
-def _run_scan_slot_tick(slot: int) -> bool:
-    """Tick check for one scan slot (1 or 2). Returns True if trade closed."""
-    t = _get_slot(slot)
-    if not t.get("signal"): return False
+def _tick_one(ver: int, t: dict) -> bool:
+    """Tick check for one trade dict. Returns True if trade closed."""
     sym = t["symbol"]; sig = t["signal"]
     entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
-    tag = f"SCAN{slot}"
     try:
         price = get_bingx_price(sym)
         if price <= 0: return False
@@ -1742,7 +1732,7 @@ def _run_scan_slot_tick(slot: int) -> bool:
             check_low  = min(price, float(df1m["low"].min()))
         else:
             check_high = price; check_low = price
-        print(f"  [{tag} TICK] {sym} {sig} price:{price:.4g} H:{check_high:.4g} L:{check_low:.4g}")
+        print(f"  [SCAN{ver} {sym}] {sig} price:{price:.4g} H:{check_high:.4g} L:{check_low:.4g}")
 
         if not t["entry_hit"]:
             tol = abs(entry - sl) * 0.25
@@ -1753,22 +1743,22 @@ def _run_scan_slot_tick(slot: int) -> bool:
                 send_telegram(fmt_scan_update("ENTRY_HIT", price, t))
                 if sig == "BUY"  and price > entry * 1.015:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
-                    _reset_slot(slot); return True
+                    _remove_scan_trade(ver, sym); return True
                 if sig == "SELL" and price < entry * 0.985:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
-                    _reset_slot(slot); return True
+                    _remove_scan_trade(ver, sym); return True
             return False
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
         if tp2_hit:
             send_telegram(fmt_scan_update("TP2_HIT", price, t))
-            _reset_slot(slot); return True
+            _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
             tp1_hit = (sig == "BUY" and check_high >= tp1) or (sig == "SELL" and check_low <= tp1)
             if tp1_hit:
                 t["tp1_hit"] = True
-                t["sl"] = entry  # move SL to breakeven
+                t["sl"] = entry
                 send_telegram(fmt_scan_update("TP1_HIT", price, t))
 
         sl_margin = entry * 0.002
@@ -1776,16 +1766,17 @@ def _run_scan_slot_tick(slot: int) -> bool:
                  (sig == "SELL" and check_high > sl + sl_margin)
         if sl_hit:
             send_telegram(fmt_scan_update("SL_HIT", price, t))
-            _reset_slot(slot); return True
+            _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
-        print(f"  [{tag} TICK ERROR] {e}")
+        print(f"  [SCAN{ver} {sym} TICK ERROR] {e}")
     return False
 
 def run_scan_tick_check() -> bool:
-    r1 = _run_scan_slot_tick(1)
-    r2 = _run_scan_slot_tick(2)
-    return r1 or r2
+    any_closed = False
+    for t in list(scan1_trades): any_closed |= _tick_one(1, t)
+    for t in list(scan2_trades): any_closed |= _tick_one(2, t)
+    return any_closed
 
 # --- 1-HOUR PRICE CHECK -------------------------------------------------------
 def run_price_check():
@@ -2141,15 +2132,15 @@ def handle_command(text, chat_id, message=None):
                 f"TP2:   <b>{t['tp2']:,.0f}</b>\nType:  {t['entry_type']}\n"
                 + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else "")
             )
-        # Scan slot 1 trade
-        for _slabel, sc in [("Scan1 Trade", scan_active_trade), ("Scan2 Trade", scan2_active_trade)]:
-            if sc.get("signal"):
+        # Scan trades — all from both lists
+        for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
+            for sc in _lst:
                 try:
                     sp = get_bingx_price(sc["symbol"])
                     spl = f"Current: <b>{sp:,.4g}</b>\n" if sp else ""
                 except: spl = ""
                 parts_out.append(
-                    f"<b>{_slabel}</b>\n\n{sc['signal']} - {sc['symbol']}\n{spl}"
+                    f"<b>Scan{_ver} Trade</b>\n\n{sc['signal']} - {sc['symbol']}\n{spl}"
                     f"Entry: <b>{sc['entry']:,.4g}</b> {'✅' if sc.get('entry_hit') else '⏳ pending'}\n"
                     f"SL:    <b>{sc['sl']:,.4g}</b>\n"
                     f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if sc.get('tp1_hit') else '⏳ pending'}\n"
@@ -2566,37 +2557,62 @@ def handle_command(text, chat_id, message=None):
                 chosen_sym  = candidate["sym"]
                 btc_price   = get_ticker()["price"]
 
-                # ── Skip if coin already running in ANY scan slot ──────────────
+                # ── Remind about all existing trades in this scan version ──────
+                my_list = _scan_list(scan_ver)
+                if my_list:
+                    lines = "\n".join(
+                        f"{'🟢' if x['signal']=='BUY' else '🔴'} {x['signal']} {x['symbol']} "
+                        f"| Entry:{x['entry']:,.4g} SL:{x['sl']:,.4g} "
+                        f"TP1:{'✅' if x.get('tp1_hit') else '⏳'} TP2:⏳"
+                        for x in my_list
+                    )
+                    send_reply(cid,
+                        f"📌 <b>Scan{scan_ver} running trades:</b>\n<pre>{lines}</pre>\n\n"
+                        f"➕ New pick <b>{chosen_sym}</b> — adding as additional trade.\n\n"
+                        f"<i>- CLEXER V9.0 -</i>")
+
+                # ── Skip if chosen coin already in the OTHER slot ──────────────
                 if chosen_sym in _all_active_scan_syms():
                     send_reply(cid,
                         f"⏭ <b>Skip — {chosen_sym} already in active scan trade</b>\n\n"
                         f"Waiting for next auto-scan loop.\n\n<i>- CLEXER V9.0 -</i>")
                     return
 
+                # ── Block if TradingView offline — need TV for reliable analysis ─
+                if not is_tv_online():
+                    send_reply(cid,
+                        f"📴 <b>TradingView Offline — Scan{scan_ver} blocked</b>\n\n"
+                        f"Cannot place new trade without TV chart analysis.\n"
+                        f"Will retry at next auto-scan loop.\n\n<i>- CLEXER V9.0 -</i>")
+                    return
+
                 conf_note = "" if structured else " (no clean structure — lower confidence)"
-                send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Switching TradingView...")
+                send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Waiting for TradingView...")
 
-                # ── Step 3: Switch TV to chosen coin, get full data ────────────
-                tv_sym = f"BINGX:{chosen_base}USDT.P"
-                tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
-                print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
+                # ── Step 3: Switch TV to chosen coin (serialised — only one scan at a time) ──
+                with _tv_scan_lock:
+                    send_reply(cid, f"📡 Switching TradingView to {chosen_sym}...")
+                    tv_sym = f"BINGX:{chosen_base}USDT.P"
+                    tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
+                    print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
-                if tv_switched and is_tv_online():
-                    _t4 = tv_get_candles_for(tv_sym,"4h",60)
-                    df_4h = _t4 if _t4 is not None else get_klines(chosen_sym,"4h",60)
-                    _t1 = tv_get_candles_for(tv_sym,"1h",40)
-                    df_1h = _t1 if _t1 is not None else get_klines(chosen_sym,"1h",40)
-                    _t5 = tv_get_candles_for(tv_sym,"5m",30)
-                    df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
-                    scan_screenshots = fetch_tv_screenshots()
-                else:
-                    _c4 = candidate.get("df4h")
-                    df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
-                    df_1h = get_klines(chosen_sym,"1h",40)
-                    df_5m = get_klines(chosen_sym,"5m",30)
-                    scan_screenshots = {}
+                    if tv_switched and is_tv_online():
+                        time.sleep(2)   # let TV load the new coin before fetching
+                        _t4 = tv_get_candles_for(tv_sym,"4h",60)
+                        df_4h = _t4 if _t4 is not None else get_klines(chosen_sym,"4h",60)
+                        _t1 = tv_get_candles_for(tv_sym,"1h",40)
+                        df_1h = _t1 if _t1 is not None else get_klines(chosen_sym,"1h",40)
+                        _t5 = tv_get_candles_for(tv_sym,"5m",30)
+                        df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
+                        scan_screenshots = fetch_tv_screenshots()
+                    else:
+                        _c4 = candidate.get("df4h")
+                        df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
+                        df_1h = get_klines(chosen_sym,"1h",40)
+                        df_5m = get_klines(chosen_sym,"5m",30)
+                        scan_screenshots = {}
 
-                if tv_switched: tv_set_symbol("BTCUSDT.P")  # switch back to BTC perpetual
+                    if tv_switched: tv_set_symbol("BTCUSDT.P")  # switch back to BTC perpetual
 
                 cp = candidate["price"]
 
@@ -2747,11 +2763,8 @@ Reasoning: 3 lines max"""
                             "entry_type": entry_type, "tp1_hit": False,
                             "entry_hit": entry_type == "MARKET",
                         }
-                        # Write to correct slot based on scan version
-                        if scan_ver == 2:
-                            scan2_active_trade.update(slot_data)
-                        else:
-                            scan_active_trade.update(slot_data)
+                        # Append to the correct scan list
+                        _scan_list(scan_ver).append(slot_data)
                         save_state()
                         # Send BTC-style signal to group
                         send_telegram(fmt_scan_signal(slot_data))
@@ -2996,7 +3009,7 @@ def main():
 
             # Sleep hours
             if not forced and is_ist_sleep():
-                if active_trade["signal"] or scan_active_trade.get("signal") or scan2_active_trade.get("signal"):
+                if active_trade["signal"] or scan1_trades or scan2_trades:
                     pass   # still watch entry/SL/TP even during sleep hours
                 else:
                     time.sleep(60); continue  # no trade — sleep a full minute
@@ -3007,8 +3020,8 @@ def main():
                 if run_tick_check():
                     forced = True; last_signal_scan_time = 0
 
-            # 1-min tick — scan coins (checks both slot 1 and slot 2)
-            if ((now-last_scan_tick_time) >= TICK_INTERVAL) and (scan_active_trade.get("signal") or scan2_active_trade.get("signal")):
+            # 1-min tick — all active scan trades (scan1 + scan2 lists)
+            if ((now-last_scan_tick_time) >= TICK_INTERVAL) and (scan1_trades or scan2_trades):
                 last_scan_tick_time = now
                 run_scan_tick_check()
 
