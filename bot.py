@@ -312,27 +312,47 @@ def tv_set_symbol(symbol: str) -> bool:
         print(f"  [TV set_symbol] {e}")
     return False
 
-def tv_get_candles_for(symbol: str, interval: str, limit: int):
-    """Fetch candles from TV bridge for any symbol (used during /scan for alts)."""
+def tv_get_candles_for(symbol: str, interval: str, limit: int, live_price: float = 0.0):
+    """Fetch candles from TV bridge for any symbol (used during /scan for alts).
+    Retries up to 3x if bridge returns symbol_mismatch (chart not yet switched).
+    live_price: if provided, sanity-checks last close against real price (>30% diff = reject)."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
     tv_map = {"weekly":"W","4h":"4H","1h":"1H","5m":"5","1m":"1"}
-    try:
-        r = requests.get(f"{TV_BRIDGE_URL}/candles",
-            params={"symbol": symbol, "interval": tv_map.get(interval, interval), "limit": limit},
-            timeout=15)
-        if r.status_code != 200: return None
-        data = r.json()
-        if not data.get("candles"): return None
-        rows = [{
-            "time": datetime.fromtimestamp(c["t"]/1000 if c["t"]>1e10 else c["t"], tz=timezone.utc),
-            "open": float(c["o"]), "high": float(c["h"]),
-            "low": float(c["l"]), "close": float(c["c"]), "volume": float(c.get("v", 0)),
-        } for c in data["candles"]]
-        df = pd.DataFrame(rows).set_index("time")
-        print(f"      [TV] {symbol} {interval}: {len(df)} candles OK")
-        return df
-    except Exception as e:
-        print(f"      [TV] {symbol} {interval} error: {e}"); return None
+    iv = tv_map.get(interval, interval)
+    for attempt in range(3):
+        try:
+            r = requests.get(f"{TV_BRIDGE_URL}/candles",
+                params={"symbol": symbol, "interval": iv, "limit": limit},
+                timeout=15)
+            if r.status_code == 409:
+                err = r.json().get("error","")
+                print(f"      [TV] {symbol} {interval} symbol_mismatch (attempt {attempt+1}): {err}")
+                time.sleep(3)
+                continue
+            if r.status_code != 200:
+                print(f"      [TV] {symbol} {interval} HTTP {r.status_code}")
+                return None
+            data = r.json()
+            if not data.get("candles"): return None
+            rows = [{
+                "time": datetime.fromtimestamp(c["t"]/1000 if c["t"]>1e10 else c["t"], tz=timezone.utc),
+                "open": float(c["o"]), "high": float(c["h"]),
+                "low": float(c["l"]), "close": float(c["c"]), "volume": float(c.get("v", 0)),
+            } for c in data["candles"]]
+            df = pd.DataFrame(rows).set_index("time")
+            # Sanity check: last close must be within 30% of real price
+            if live_price > 0 and len(df) > 0:
+                last_close = float(df["close"].iloc[-1])
+                ratio = abs(last_close - live_price) / live_price
+                if ratio > 0.30:
+                    print(f"      [TV] ⚠️ PRICE MISMATCH — {symbol} {interval}: last_close={last_close:.6g} live={live_price:.6g} diff={ratio*100:.1f}%")
+                    return None   # reject — wrong symbol's data
+            print(f"      [TV] {symbol} {interval}: {len(df)} candles OK")
+            return df
+        except Exception as e:
+            print(f"      [TV] {symbol} {interval} error: {e}"); return None
+    print(f"      [TV] {symbol} {interval}: gave up after 3 mismatch retries")
+    return None
 
 def fetch_tv_screenshots():
     """Fetch screenshots for all timeframes."""
@@ -2590,6 +2610,9 @@ def handle_command(text, chat_id, message=None):
                 send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Waiting for TradingView...")
 
                 # ── Step 3: Switch TV to chosen coin (serialised — only one scan at a time) ──
+                cp = candidate["price"]
+                _tv_data_source = "BingX"   # track where candles came from for error reporting
+
                 with _tv_scan_lock:
                     send_reply(cid, f"📡 Switching TradingView to {chosen_sym}...")
                     tv_sym = f"BINGX:{chosen_base}USDT.P"
@@ -2597,14 +2620,28 @@ def handle_command(text, chat_id, message=None):
                     print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
                     if tv_switched and is_tv_online():
-                        time.sleep(2)   # let TV load the new coin before fetching
-                        _t4 = tv_get_candles_for(tv_sym,"4h",60)
-                        df_4h = _t4 if _t4 is not None else get_klines(chosen_sym,"4h",60)
-                        _t1 = tv_get_candles_for(tv_sym,"1h",40)
-                        df_1h = _t1 if _t1 is not None else get_klines(chosen_sym,"1h",40)
-                        _t5 = tv_get_candles_for(tv_sym,"5m",30)
-                        df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
-                        scan_screenshots = fetch_tv_screenshots()
+                        time.sleep(4)   # let TV load + WS flush new symbol candles
+                        _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
+                        _t1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
+                        _t5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
+
+                        if _t4 is None or _t1 is None:
+                            # TV returned wrong symbol data — abort TV and fall back to BingX
+                            send_reply(cid,
+                                f"⚠️ <b>TV data mismatch for {chosen_sym}</b> — candle prices don't match live price.\n"
+                                f"Falling back to BingX candles.\n\n<i>- CLEXER V9.0 -</i>")
+                            _c4 = candidate.get("df4h")
+                            df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
+                            df_1h = get_klines(chosen_sym,"1h",40)
+                            df_5m = get_klines(chosen_sym,"5m",30)
+                            scan_screenshots = {}
+                            _tv_data_source = "BingX(fallback-mismatch)"
+                        else:
+                            df_4h = _t4
+                            df_1h = _t1
+                            df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
+                            scan_screenshots = fetch_tv_screenshots()
+                            _tv_data_source = "TradingView"
                     else:
                         _c4 = candidate.get("df4h")
                         df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
@@ -2614,7 +2651,7 @@ def handle_command(text, chat_id, message=None):
 
                     if tv_switched: tv_set_symbol("BTCUSDT.P")  # switch back to BTC perpetual
 
-                cp = candidate["price"]
+                print(f"  [SCAN] candle source: {_tv_data_source}")
 
                 # ── Step 4: Build rich data summary ───────────────────────────
                 smc = (f"=== {chosen_sym} DATA SUMMARY ===\n"
@@ -2623,7 +2660,8 @@ def handle_command(text, chat_id, message=None):
                        f"Volume (24h): ${candidate['vol_m']}M\n"
                        f"Selection score: {candidate['score']:.0f}\n"
                        f"4H Structure: {candidate['structure']}\n"
-                       f"Momentum move (>5% candle): {'YES' if candidate['momentum'] else 'NO'}\n")
+                       f"Momentum move (>5% candle): {'YES' if candidate['momentum'] else 'NO'}\n"
+                       f"Candle data source: {_tv_data_source}\n")
 
                 if df_4h is not None and len(df_4h) >= 10:
                     h4 = df_4h
