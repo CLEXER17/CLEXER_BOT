@@ -319,7 +319,7 @@ def tv_get_candles_for(symbol: str, interval: str, limit: int, live_price: float
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
     tv_map = {"weekly":"W","4h":"4H","1h":"1H","5m":"5","1m":"1"}
     iv = tv_map.get(interval, interval)
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             r = requests.get(f"{TV_BRIDGE_URL}/candles",
                 params={"symbol": symbol, "interval": iv, "limit": limit},
@@ -329,11 +329,19 @@ def tv_get_candles_for(symbol: str, interval: str, limit: int, live_price: float
                 print(f"      [TV] {symbol} {interval} symbol_mismatch (attempt {attempt+1}): {err}")
                 time.sleep(3)
                 continue
+            if r.status_code == 503:
+                # Candles not yet in cache — TV chart still loading, wait and retry
+                print(f"      [TV] {symbol} {interval} cache empty (attempt {attempt+1}/5) — waiting...")
+                time.sleep(3)
+                continue
             if r.status_code != 200:
                 print(f"      [TV] {symbol} {interval} HTTP {r.status_code}")
                 return None
             data = r.json()
-            if not data.get("candles"): return None
+            if not data.get("candles"):
+                print(f"      [TV] {symbol} {interval} empty candles (attempt {attempt+1}/5) — waiting...")
+                time.sleep(3)
+                continue
             rows = [{
                 "time": datetime.fromtimestamp(c["t"]/1000 if c["t"]>1e10 else c["t"], tz=timezone.utc),
                 "open": float(c["o"]), "high": float(c["h"]),
@@ -351,7 +359,7 @@ def tv_get_candles_for(symbol: str, interval: str, limit: int, live_price: float
             return df
         except Exception as e:
             print(f"      [TV] {symbol} {interval} error: {e}"); return None
-    print(f"      [TV] {symbol} {interval}: gave up after 3 mismatch retries")
+    print(f"      [TV] {symbol} {interval}: gave up after 5 retries (still not loaded)")
     return None
 
 def fetch_tv_screenshots():
@@ -2620,16 +2628,17 @@ def handle_command(text, chat_id, message=None):
                     print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
                     if tv_switched and is_tv_online():
-                        time.sleep(4)   # let TV load + WS flush new symbol candles
+                        time.sleep(6)   # let TV load + WS flush new symbol candles
                         _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
                         _t1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
                         _t5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
 
                         if _t4 is None or _t1 is None:
-                            # TV returned wrong symbol data — abort TV and fall back to BingX
+                            # TV candles failed — either price mismatch or chart didn't load in time
                             send_reply(cid,
-                                f"⚠️ <b>TV data mismatch for {chosen_sym}</b> — candle prices don't match live price.\n"
-                                f"Falling back to BingX candles.\n\n<i>- CLEXER V9.0 -</i>")
+                                f"⚠️ <b>TV candles unavailable for {chosen_sym}</b>\n"
+                                f"Chart may not have loaded in time, or price data was from wrong symbol.\n"
+                                f"Using BingX candles instead.\n\n<i>- CLEXER V9.0 -</i>")
                             _c4 = candidate.get("df4h")
                             df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
                             df_1h = get_klines(chosen_sym,"1h",40)
