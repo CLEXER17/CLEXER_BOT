@@ -2433,6 +2433,12 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, f"❌ Read error: {e}")
 
     elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
+        if cmd == "/scan":
+            # Force-run both scan1 and scan2 back-to-back
+            send_reply(chat_id, "📡 Force-running Scan1 + Scan2 (~3 min total)...")
+            threading.Thread(target=lambda: handle_command("/scan1", chat_id), daemon=True).start()
+            threading.Thread(target=lambda: handle_command("/scan2", chat_id), daemon=True).start()
+            return
         ver = 1 if cmd == "/scan1" else 2
         lbl = "V1 (big movers)" if ver == 1 else "V2 (fresh momentum)"
         send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
@@ -2985,11 +2991,8 @@ def main():
                 _auto_scan_last_hour = _ist_now.hour
                 print(f"  [AUTO-SCAN] Triggered at {_ist_now.strftime('%H:24 IST')} — running scan1 + scan2")
                 if ADMIN_CHAT_ID:
-                    def _run_both_scans(cid=ADMIN_CHAT_ID):
-                        _run_auto_scan(cid, scan_ver=1)   # scan1 first
-                        time.sleep(90)                     # wait 90s so scan1 finishes before scan2 starts
-                        _run_auto_scan(cid, scan_ver=2)   # scan2 second
-                    threading.Thread(target=_run_both_scans, daemon=True).start()
+                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
+                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
