@@ -2077,7 +2077,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/scancopy","/readindicators"}
+    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -2363,12 +2363,18 @@ def handle_command(text, chat_id, message=None):
             if active_trade["signal"]:
                 log_trade_outcome("MANUAL_CLOSE", "admin /closetrade all")
                 reset_trade()
+            # Clear all scan trades too
+            scan1_count = len(scan1_trades)
+            scan2_count = len(scan2_trades)
+            scan1_trades.clear()
+            scan2_trades.clear()
+            save_state()
             send_telegram(
                 f"🔴 <b>ALL TRADES CLOSED</b>  {ist_str()}\n\n"
                 f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                 f"⛔ <b>This is NOT a new signal</b>\n\n"
                 f"Admin closed all positions.\n\n<i>- CLEXER V9.0 -</i>")
-            send_reply(chat_id, "✅ All positions closed + orders cancelled for all copy users.")
+            send_reply(chat_id, f"✅ All positions closed.\nBTC trade reset + Scan1 ({scan1_count}) + Scan2 ({scan2_count}) trades cleared.")
         else:
             results = ct.close_coin_all(coin)
             # If it's BTC and we have an active BTC trade, also reset it
@@ -2377,6 +2383,13 @@ def handle_command(text, chat_id, message=None):
                 reset_trade()
             reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
             send_reply(chat_id, reply + "\n\n<i>- CLEXER V9.0 -</i>")
+
+    elif cmd == "/closescan" and is_admin:
+        s1 = len(scan1_trades); s2 = len(scan2_trades)
+        scan1_trades.clear(); scan2_trades.clear(); save_state()
+        send_reply(chat_id,
+            f"✅ <b>Scan trades cleared</b>\n\n"
+            f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V9.0 -</i>")
 
     elif cmd == "/scancopy" and is_admin:
         if len(parts) < 2 or parts[1].lower() not in ("on","off"):
