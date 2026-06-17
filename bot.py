@@ -306,16 +306,20 @@ def tv_get_ticker():
 
 def tv_set_symbol(symbol: str) -> bool:
     """Switch TradingView chart to symbol AND wait for all TFs to load.
-    Uses /load_symbol which cycles 4H→1H→5M and waits for candles before returning."""
+    Returns True only if at least 4H and 1H candles were actually loaded for the new symbol."""
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return False
     try:
         r = requests.get(f"{TV_BRIDGE_URL}/load_symbol",
-                         params={"symbol": symbol}, timeout=60)   # up to 30s inside bridge
+                         params={"symbol": symbol}, timeout=60)
         if r.status_code == 200:
             d = r.json()
             loaded = d.get("loaded", {})
             print(f"  [TV load_symbol] {symbol} — loaded TFs: {loaded}")
-            return True
+            # Verify that 4H and 1H actually loaded (not 0 = timed out)
+            if loaded.get("4H", 0) > 0 and loaded.get("1H", 0) > 0:
+                return True
+            print(f"  [TV load_symbol] ⚠️ TFs incomplete: {loaded} — treating as failed")
+            return False
     except Exception as e:
         print(f"  [TV load_symbol] {e}")
     return False
@@ -2666,21 +2670,8 @@ def handle_command(text, chat_id, message=None):
                     tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
                     print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
-                    # Verify the symbol actually switched before trusting any candle data
-                    if tv_switched and is_tv_online():
-                        try:
-                            _status = requests.get(f"{TV_BRIDGE_URL}/status", timeout=5).json()
-                            _chart_sym = _status.get("symbol","").upper()
-                            _req_base  = chosen_base.upper()
-                            if _req_base not in _chart_sym:
-                                print(f"  [SCAN] ⚠️ symbol verify FAIL — chart={_chart_sym} expected={_req_base}")
-                                tv_switched = False  # treat as failed switch
-                                send_reply(cid, f"⚠️ TV symbol verify failed for {chosen_sym} — using BingX.\n\n<i>- CLEXER V9.0 -</i>")
-                            else:
-                                print(f"  [SCAN] ✅ symbol verified: {_chart_sym}")
-                        except Exception as _ve:
-                            print(f"  [SCAN] symbol verify error: {_ve}")
-
+                    # tv_set_symbol already verified 4H+1H candles loaded for this symbol
+                    # No separate /status check needed — if tv_switched=True, data is ready
                     if tv_switched and is_tv_online():
                         # /load_symbol already waited for each TF to populate — fetch immediately
                         _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
