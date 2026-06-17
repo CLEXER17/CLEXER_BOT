@@ -1655,7 +1655,7 @@ def fmt_scan_signal(t: dict) -> str:
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
     return (
         f"📣 <b>{sym} SCAN SIGNAL</b>  🕐 {ist_str()}\n\n"
-        f"{arrow} — <b>{'MARKET' if et=='MARKET' else 'LIMIT'} ENTRY</b>\n\n"
+        f"{arrow} — <b>{'MARKET' if et=='MARKET' else 'PULLBACK'} ENTRY</b>\n\n"
         f"🎯 Entry: <b>{entry:,.4g}</b>\n"
         f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
         f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
@@ -2667,42 +2667,57 @@ def handle_command(text, chat_id, message=None):
                             f"Last 5 closes: {[round(x,4) for x in c1[-5:].tolist()]}\n")
 
                 if df_5m is not None and len(df_5m) >= 5:
-                    c5=df_5m["close"].values
-                    smc += f"\n--- 5M ---\nLast 5 closes: {[round(x,4) for x in c5[-5:].tolist()]}\n"
+                    c5=df_5m["close"].values; h5=df_5m["high"].values; l5=df_5m["low"].values
+                    last10_5m = [
+                        f"  [{i}] H:{h5[i]:,.4g} L:{l5[i]:,.4g} C:{c5[i]:,.4g}"
+                        for i in range(max(-10,-len(c5)), 0)
+                    ]
+                    smc += f"\n--- 5M (last 10 candles, newest last) ---\n" + "\n".join(last10_5m) + "\n"
 
-                # ── Step 5: Claude Opus analysis with full algorithm ───────────
+                # ── Step 5: Claude Opus analysis — trend continuation method ───
                 analysis_prompt = f"""{smc}
-BTC: ${btc_price:,.0f} | Session: {get_session()}
+BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
 
-You are CLEXER — elite crypto trader. Analyze {chosen_sym} using this exact algorithm:
+You are CLEXER — elite crypto trader. Analyze {chosen_sym} using this exact method:
 
-STEP 1 — MOMENTUM CHECK
-Check last 2 x 4H candles: if abs(close-open)/open×100 > 5% on either → BRANCH B (Momentum).
-Else → BRANCH A (Structure).
+STEP 1 — CONFIRM 4H TREND DIRECTION
+HH+HL = BULLISH. LH+LL = BEARISH. Mixed = NEUTRAL → output WAIT immediately.
 
-BRANCH A — STRUCTURE ANALYSIS
-Weekly bias from closes. 4H primary: HH+HL=BULLISH, LH+LL=BEARISH, mixed=NEUTRAL.
-4H volume: last big GREEN=buy pressure, RED=sell pressure.
-1H: confirms or neutral=proceed, opposite=lower confidence only.
-Direction: LONG = 4H bullish + last big vol GREEN + 1H not bearish + price above last 4H swing low.
-SHORT = 4H bearish + last big vol RED + 1H not bullish + price below last 4H swing high.
-WAIT = 4H neutral, or 4H+1H both opposite, or no swing within 2.5% of price.
-Entry = last 4H swing low (LONG) or high (SHORT). Distance check: if >2.5% away use 1H swing or MARKET.
-SL: atr_pct = ATR_1H/price×100. sl_pct = atr_pct×1.5 (clamp 0.8%-4%). sl_dist = entry×(sl_pct/100).
-TP1 = entry ± sl_dist×2. TP2 = entry ± sl_dist×4.
+STEP 2 — FIND RECENT PAUSE ON 5M (do NOT use old 4H swing points as entry)
+Look at the last 10 x 5M candles provided above.
+A pause = 2-4 consecutive candles moving sideways or slightly against the trend.
+BULLISH: pause = recent cluster where candles have similar lows (consolidation low).
+BEARISH: pause = recent cluster where candles have similar highs (consolidation high).
+If NO pause exists (straight line, no consolidation in last 10 candles) → output WAIT.
+Reasoning must say: "no recent pause — no safe entry reference"
 
-BRANCH B — MOMENTUM ANALYSIS (if triggered)
-Use 1H as primary (4H = background bias only).
-Impulse GREEN → bias LONG. Impulse RED → bias SHORT.
-Entry = current price (MARKET) — impulse often doesn't pull back. If pullback already formed, enter now.
-SL = impulse candle open ± 0.3% buffer (NOT ATR-based).
-impulse_size = abs(impulse_close - impulse_open).
-TP1 = entry ± impulse_size×0.5. TP2 = entry ± impulse_size×1.0.
+STEP 3 — SET ENTRY FROM THE PAUSE
+BULLISH: entry = lowest low of the pause candles.
+BEARISH: entry = highest high of the pause candles.
 
-OUTPUT (plain text, no markdown):
-Branch: A or B
+Distance check:
+dist_pct = abs(current_price - entry) / current_price × 100
+IF dist_pct > 1.0%: entry is stale — use entry_type MARKET at current_price instead.
+IF dist_pct <= 1.0%: entry_type PULLBACK at that exact level.
+
+STEP 4 — STOP LOSS (tight, based on the pause itself)
+BULLISH: sl = lowest low of pause minus 0.4%
+BEARISH: sl = highest high of pause plus 0.4%
+
+STEP 5 — TAKE PROFIT
+sl_dist = abs(entry - sl)
+TP1 = entry ± sl_dist × 2
+TP2 = entry ± sl_dist × 4
+
+STEP 6 — CONFIDENCE
+HIGH = clear trend + clear pause + dist_pct < 0.5%
+MED  = clear trend + clear pause + dist_pct 0.5-1.0% or MARKET entry used
+LOW  = unclear trend or weak pause
+
+OUTPUT (plain text only, no markdown):
 Signal: BUY / SELL / WAIT
 Entry: [price]
+Entry_Type: MARKET or PULLBACK
 SL: [price]
 TP1: [price]
 TP2: [price]
@@ -2750,7 +2765,10 @@ Reasoning: 3 lines max"""
                     scan_sl    = _parse("SL")
                     scan_tp1   = _parse("TP1")
                     scan_tp2   = _parse("TP2")
-                    entry_type = "MARKET" if abs(scan_entry - cp) / cp < 0.005 else "LIMIT"
+                    et_m = _re.search(r"Entry_Type[:\s]+(MARKET|PULLBACK)", analysis, _re.IGNORECASE)
+                    entry_type = et_m.group(1).upper() if et_m else (
+                        "MARKET" if abs(scan_entry - cp) / cp < 0.01 else "LIMIT"
+                    )
 
                     if scan_sl > 0:
                         sd = {"signal": scan_signal_val, "entry": scan_entry,
