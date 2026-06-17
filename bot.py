@@ -2527,10 +2527,12 @@ def handle_command(text, chat_id, message=None):
                     if vol < 2_000_000: continue          # min $2M real volume
                     if px <= 0: continue
                     if abs(chg) > 200: continue           # >200% change = bad data / scam pump
-                    # Reject tickers that look like structured products / RWAs (numbers in base name)
                     import re as _re
-                    if _re.search(r'\d{3,}', base): continue   # 3+ consecutive digits = phantom
-                    if len(base) > 12: continue           # real coins have short names
+                    # Reject tickers that look like structured products / RWAs / phantom symbols
+                    if _re.search(r'\d', base): continue          # ANY digit in base = phantom (e.g. NCSKSPCX2USD)
+                    if len(base) > 10: continue                   # real coins: BTC ETH SOL etc — max 10 chars
+                    if "USD" in base: continue                    # base already contains USD = garbage symbol
+                    if not _re.match(r'^[A-Z]+$', base): continue # must be all uppercase letters only
                     import math as _math
                     if scan_ver == 1:
                         # V1 — original: rewards biggest movers (high % change × volume)
