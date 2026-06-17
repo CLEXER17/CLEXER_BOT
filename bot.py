@@ -3,6 +3,11 @@ CLEXER Signal Bot V9.0
 """
 
 import os, time, json, base64, requests, anthropic, threading, re
+
+# Global TradingView chart lock — held by scan while switching symbol + fetching all TFs.
+# All other TV access (price/candle checks) must NOT switch the chart; they use non-blocking
+# acquire so they fall through to BingX when scan holds the chart.
+_tv_chart_lock = threading.Lock()
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -657,16 +662,29 @@ def get_candles(interval, limit):
     if TV_BRIDGE_URL:
         tv_update_state()
         if tv_bridge_state["online"]:
-            df = tv_get_candles(interval, limit)
-            if df is not None and len(df) >= 2: return df
+            # Non-blocking: if scan holds the TV chart, skip TV and use BingX
+            if _tv_chart_lock.acquire(blocking=False):
+                try:
+                    df = tv_get_candles(interval, limit)
+                    if df is not None and len(df) >= 2: return df
+                finally:
+                    _tv_chart_lock.release()
+            else:
+                print("  [TV] chart locked by scan — using BingX for candles")
     return binance_get_candles(interval, limit)
 
 def get_ticker():
     if TV_BRIDGE_URL:
         tv_update_state()
         if tv_bridge_state["online"]:
-            tk = tv_get_ticker()
-            if tk: return tk
+            if _tv_chart_lock.acquire(blocking=False):
+                try:
+                    tk = tv_get_ticker()
+                    if tk: return tk
+                finally:
+                    _tv_chart_lock.release()
+            else:
+                print("  [TV] chart locked by scan — using BingX for ticker")
     return binance_get_ticker()
 
 def get_price_range_since(minutes, since_ts: float = None):
@@ -1617,7 +1635,7 @@ def run_tick_check():
 
 # --- SCAN COIN MONITORING -----------------------------------------------------
 
-_tv_scan_lock = threading.Lock()   # only one scan can use TradingView at a time
+# _tv_chart_lock is declared in bot_p1.py — used here to hold the TV chart during full scan sequence
 
 def bingx_klines(symbol: str, interval: str, limit: int):
     """Module-level BingX klines fetch returning a pandas DataFrame or None."""
@@ -2639,11 +2657,29 @@ def handle_command(text, chat_id, message=None):
                 cp = candidate["price"]
                 _tv_data_source = "BingX"   # track where candles came from for error reporting
 
-                with _tv_scan_lock:
+                with _tv_chart_lock:
+                    # Lock held for ENTIRE sequence: switch → verify → fetch all TFs
+                    # get_candles() / get_ticker() in main loop use non-blocking acquire
+                    # so they fall to BingX while we hold this lock — no race condition
                     send_reply(cid, f"📡 Switching TradingView to {chosen_sym}...")
                     tv_sym = f"BINGX:{chosen_base}USDT.P"
                     tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
                     print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
+
+                    # Verify the symbol actually switched before trusting any candle data
+                    if tv_switched and is_tv_online():
+                        try:
+                            _status = requests.get(f"{TV_BRIDGE_URL}/status", timeout=5).json()
+                            _chart_sym = _status.get("symbol","").upper()
+                            _req_base  = chosen_base.upper()
+                            if _req_base not in _chart_sym:
+                                print(f"  [SCAN] ⚠️ symbol verify FAIL — chart={_chart_sym} expected={_req_base}")
+                                tv_switched = False  # treat as failed switch
+                                send_reply(cid, f"⚠️ TV symbol verify failed for {chosen_sym} — using BingX.\n\n<i>- CLEXER V9.0 -</i>")
+                            else:
+                                print(f"  [SCAN] ✅ symbol verified: {_chart_sym}")
+                        except Exception as _ve:
+                            print(f"  [SCAN] symbol verify error: {_ve}")
 
                     if tv_switched and is_tv_online():
                         # /load_symbol already waited for each TF to populate — fetch immediately
@@ -2679,6 +2715,45 @@ def handle_command(text, chat_id, message=None):
                     tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC after scan
 
                 print(f"  [SCAN] candle source: {_tv_data_source}")
+
+                # ── Step 3b: DATA INTEGRITY CHECK ─────────────────────────────
+                def _integrity_ok(d4, d1, d5, live_px, label=""):
+                    """Returns True only if all available TF last-closes are within 8% of live price."""
+                    for tf_name, df in [("4H", d4), ("1H", d1), ("5M", d5)]:
+                        if df is None or len(df) == 0: continue
+                        last_close = float(df["close"].iloc[-1])
+                        diff = abs(last_close - live_px) / live_px * 100
+                        print(f"  [INTEGRITY{label}] {tf_name} last_close={last_close:.6g} live={live_px:.6g} diff={diff:.1f}%")
+                        if diff > 8.0:
+                            print(f"  [INTEGRITY{label}] ❌ FAIL — {tf_name} data does NOT match {chosen_sym}")
+                            return False
+                    return True
+
+                _pass = _integrity_ok(df_4h, df_1h, df_5m, cp, " attempt1")
+
+                if not _pass:
+                    send_reply(cid,
+                        f"⚠️ <b>Data mismatch — {chosen_sym}</b>\n"
+                        f"Candle prices don't match live price. Retrying once...\n\n<i>- CLEXER V9.0 -</i>")
+                    # Retry: re-switch TV and re-fetch
+                    with _tv_chart_lock:
+                        tv_switched2 = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
+                        if tv_switched2 and is_tv_online():
+                            _r4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
+                            _r1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
+                            _r5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
+                            if _r4 is not None: df_4h = _r4
+                            if _r1 is not None: df_1h = _r1
+                            if _r5 is not None: df_5m = _r5
+                        tv_set_symbol("BINGX:BTCUSDT.P")
+
+                    _pass2 = _integrity_ok(df_4h, df_1h, df_5m, cp, " retry")
+                    if not _pass2:
+                        send_reply(cid,
+                            f"🚫 <b>Data mismatch for {chosen_sym} — scan skipped</b>\n"
+                            f"Candle data still doesn't match after retry.\n"
+                            f"Will try again next auto-scan cycle.\n\n<i>- CLEXER V9.0 -</i>")
+                        return
 
                 # ── Step 4: Build rich data summary ───────────────────────────
                 smc = (f"=== {chosen_sym} DATA SUMMARY ===\n"
