@@ -253,9 +253,8 @@ def get_price(sym: str = "BTC-USDT"):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.get("/trades/active")
-def get_active_trades(user: dict = Depends(get_current_user)):
-    """Return all active trades from bot state file."""
-    upsert_user(user)
+def get_active_trades():
+    """Return all active trades from bot state. No auth required — public bot positions."""
     state = read_state()
 
     # bot.py saves key "trade" (not "active_trade")
@@ -297,9 +296,7 @@ def get_active_trades(user: dict = Depends(get_current_user)):
 
 
 @app.get("/trades/history")
-def get_trade_history(user: dict = Depends(get_current_user)):
-    """Return closed trade outcomes from bot state file."""
-    upsert_user(user)
+def get_trade_history():
     state  = read_state()
     # bot.py saves as "outcomes"; also check scan_history
     closed = state.get("outcomes", state.get("trade_outcomes", []))
@@ -309,9 +306,7 @@ def get_trade_history(user: dict = Depends(get_current_user)):
 
 
 @app.get("/trades/stats")
-def get_trade_stats(user: dict = Depends(get_current_user)):
-    """Return summary stats from bot state file."""
-    upsert_user(user)
+def get_trade_stats():
     state = read_state()
     stats = state.get("stats", state.get("trade_stats", {}))
     return stats
