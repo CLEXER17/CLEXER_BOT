@@ -287,14 +287,20 @@
         <div style="display:flex;gap:10px;margin-bottom:10px">
           <div style="flex:1">
             <div class="k" style="margin-bottom:4px">Virtual Balance (USDT)</div>
-            <input id="vcBalance" value="1000" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="calcVirtual()"/>
+            <input id="vcBalance" value="1000" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="vcSave();calcVirtual()"/>
           </div>
           <div style="flex:1">
             <div class="k" style="margin-bottom:4px">Leverage</div>
-            <input id="vcLev" value="10" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="calcVirtual()"/>
+            <input id="vcLev" value="10" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="vcSave();calcVirtual()"/>
           </div>
         </div>
         <div id="vcResults"></div>
+      </div>
+
+      <!-- Virtual Trade History -->
+      <div class="card" style="margin-top:0">
+        <div class="ttl" style="margin-bottom:10px">Virtual Trade History</div>
+        <div id="vhList"></div>
       </div>
     </div>
   </section>
@@ -413,7 +419,8 @@
         if(t.side==="SHORT") prog=100-prog;
         col=pnl>=0?"var(--long)":"var(--short)";
       }
-      html+=`<div class="tcard"><div class="top"><div class="coin"><span class="side ${t.side.toLowerCase()}">${t.side}</span><div><div class="cname">${s.replace('USDT','')}/USDT</div><div style="font-family:var(--mono);font-size:10px;color:var(--muted)">${running?'● RUNNING':'○ LIMIT'} · ${t.lev}×</div></div></div>
+      const dispSym = s.replace(/-?USDT$/,'').replace(/-$/,'');
+      html+=`<div class="tcard"><div class="top"><div class="coin"><span class="side ${t.side.toLowerCase()}">${t.side}</span><div><div class="cname">${dispSym}/USDT</div><div style="font-family:var(--mono);font-size:10px;color:var(--muted)">${running?'● RUNNING':'○ PENDING'} · ${t.lev}×</div></div></div>
       <div><div class="pnlbig ${running?cls:''}" ${!running?'style="color:var(--muted)"':''}>${running?(pnl>=0?'+':'')+'$'+fmt(Math.abs(pnl),2):'pending'}</div>${running?`<div class="pnlpct ${cls}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</div>`:''}</div></div>
       <div class="levels"><div>Entry <b style="color:var(--text)">${fmt(t.entry,d)}</b></div><div>TP <b class="up">${fmt(t.tp,d)}</b></div><div>SL <b class="down">${fmt(t.sl,d)}</b></div></div>
       ${running?`<div class="prog"><i style="width:${prog}%;background:${col}"></i></div>`:''}</div>`;
@@ -697,6 +704,9 @@
     // load closed trades
     try{
       const hist = await api("/trades/history");
+      // sync virtual history and render
+      syncVirtualHistory(hist.history||[]);
+      document.getElementById("vhList").innerHTML = renderVirtualHistory();
       updateUnreal();
       document.getElementById("closedlist").innerHTML=(hist.history||[]).slice(0,10).map(c=>{
         const win=c.result==="WIN"||c.pnl>0;
@@ -737,7 +747,72 @@
     b.classList.add("on"); haptic("sel"); loadPortfolio(b.dataset.p);
   });
 
-  /* ---------- Virtual Calculator ---------- */
+  /* ---------- Virtual Calculator — localStorage persistence ---------- */
+  const VC_KEY = "clexer_vc";
+  function vcSave(){
+    const bal = document.getElementById("vcBalance").value;
+    const lev = document.getElementById("vcLev").value;
+    try{ localStorage.setItem(VC_KEY, JSON.stringify({bal, lev})); }catch(e){}
+  }
+  function vcLoad(){
+    try{
+      const d = JSON.parse(localStorage.getItem(VC_KEY)||"{}");
+      if(d.bal) document.getElementById("vcBalance").value = d.bal;
+      if(d.lev) document.getElementById("vcLev").value = d.lev;
+    }catch(e){}
+  }
+
+  // Virtual trade history — keyed by signal id (symbol+time), stored in localStorage
+  const VH_KEY = "clexer_vh";
+  function vhLoad(){ try{ return JSON.parse(localStorage.getItem(VH_KEY)||"[]"); }catch(e){ return []; } }
+  function vhSave(arr){ try{ localStorage.setItem(VH_KEY, JSON.stringify(arr.slice(-100))); }catch(e){} }
+
+  function syncVirtualHistory(closedTrades){
+    const bal  = parseFloat(document.getElementById("vcBalance").value) || 1000;
+    const lev  = parseFloat(document.getElementById("vcLev").value)     || 10;
+    const hist = vhLoad();
+    const seen = new Set(hist.map(h => h.id));
+    let changed = false;
+    for(const c of closedTrades){
+      const id = (c.symbol||"") + "|" + (c.time||c.closed_at||"");
+      if(seen.has(id)) continue;
+      const entry  = parseFloat(c.entry)  || 0;
+      const close  = parseFloat(c.close_price || c.close || 0);
+      const isLong = (c.signal||c.direction||"LONG").toUpperCase() === "BUY" || (c.signal||"").toUpperCase() === "LONG";
+      const sign   = isLong ? 1 : -1;
+      if(!entry || !close) continue;
+      const posSize = bal * lev;
+      const qty     = posSize / entry;
+      const pnl     = (close - entry) * qty * sign;
+      hist.push({ id, symbol: c.symbol, result: c.result, entry, close, pnl: parseFloat(pnl.toFixed(2)),
+                  time: c.time || c.closed_at || "", side: isLong ? "LONG" : "SHORT" });
+      changed = true;
+    }
+    if(changed) vhSave(hist);
+    return hist;
+  }
+
+  function renderVirtualHistory(){
+    const hist = vhLoad().slice().reverse().slice(0,20);
+    if(!hist.length) return '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:8px 0">No closed virtual trades yet.</div>';
+    let total = 0;
+    let rows = hist.map(h => {
+      total += h.pnl;
+      const win = h.pnl >= 0;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div><span class="side ${(h.side||'long').toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${h.side}</span>
+        <span style="font-family:var(--mono);font-size:12px">${(h.symbol||'').replace(/-?USDT$/,'')}/USDT</span>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${h.result||''} · ${(h.time||'').slice(0,16)}</div></div>
+        <div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:14px;font-weight:700">${win?'+':''} $${Math.abs(h.pnl).toFixed(2)}</div>
+      </div>`;
+    }).join('');
+    const totCls = total >= 0 ? 'up' : 'down';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-size:12px;color:var(--muted)">Virtual P/L (last ${hist.length} trades)</span>
+      <span class="${totCls}" style="font-family:var(--mono);font-size:15px;font-weight:700">${total>=0?'+':''}$${total.toFixed(2)}</span>
+    </div>${rows}`;
+  }
+
   function calcVirtual(){
     const bal  = parseFloat(document.getElementById("vcBalance").value) || 0;
     const lev  = parseFloat(document.getElementById("vcLev").value)     || 1;
@@ -816,6 +891,7 @@
 
   /* ---------- boot ---------- */
   async function boot(){
+    vcLoad();  // restore saved balance/leverage
     await loadTrades();
     buildQuick();
     loadChart();
