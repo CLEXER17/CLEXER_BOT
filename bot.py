@@ -2099,7 +2099,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators"}
+    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -2426,68 +2426,112 @@ def handle_command(text, chat_id, message=None):
         state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
         send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V9.0 -</i>")
 
-    elif cmd == "/readindicators" and is_admin:
+    elif cmd in ("/readindicators", "/checktvdata") and is_admin:
         if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
-            send_reply(chat_id, "❌ TV Bridge is offline — cannot read indicators."); return
-        send_reply(chat_id, "🔍 Reading indicators from TradingView chart...")
+            send_reply(chat_id, "❌ TV Bridge is offline."); return
+        send_reply(chat_id, "🔍 <b>TV Data Audit starting…</b>\nFetching all data sources from TradingView bridge…")
         try:
             data     = fetch_tv_all_data()
             labels   = data.get("pine_labels", [])
-            lines    = data.get("pine_lines", [])
-            boxes    = data.get("pine_boxes", [])
-            studies  = data.get("studies", [])
-            spaceman = fetch_spaceman_levels()   # dedicated endpoint
+            lines    = data.get("pine_lines",  [])
+            boxes    = data.get("pine_boxes",  [])
+            studies  = data.get("studies",     [])
+            spaceman = fetch_spaceman_levels()
+            ticker   = data.get("ticker",      {})
+            candles  = data.get("candles",     {})
 
-            msg = f"📊 <b>Indicator Read Test</b>  🕐 {ist_str()}\n\n"
+            # ── #3 SCREENSHOT ──────────────────────────────────────────────
+            try:
+                r3 = requests.get(f"{TV_BRIDGE_URL}/screenshot?interval=1H", timeout=20)
+                shot_ok  = r3.status_code == 200 and r3.json().get("image_base64")
+                shot_kb  = len(r3.json().get("image_base64","")) // 1024 if shot_ok else 0
+            except Exception:
+                shot_ok = False; shot_kb = 0
 
-            # SpacemanBTC Key Levels (labeled)
+            # ── #4 INDICATORS ──────────────────────────────────────────────
+            try:
+                r4      = requests.get(f"{TV_BRIDGE_URL}/indicators", timeout=15)
+                ind     = r4.json() if r4.status_code == 200 else {}
+                clexer  = ind.get("clexer_sniper")
+                poi     = ind.get("poi_vol_surge")
+                raw_st  = ind.get("raw_studies", [])
+                ind_ok  = bool(raw_st)
+            except Exception:
+                ind = {}; clexer = None; poi = None; raw_st = []; ind_ok = False
+
+            # ── #5 PINE OBJECTS ────────────────────────────────────────────
+            pine_ok = bool(labels or boxes)
+
+            # ── #6 STUDIES ─────────────────────────────────────────────────
+            studies_ok = bool(studies)
+
+            # ── BUILD REPORT ───────────────────────────────────────────────
+            msg = f"📊 <b>TV Data Audit</b>  🕐 {ist_str()}\n"
+            msg += "─────────────────────────\n\n"
+
+            # Candles + ticker (base)
+            c_tfs = list(candles.keys())
+            msg += f"✅ <b>#1 Candles:</b> {c_tfs} — {sum(len(v) for v in candles.values())} total bars\n"
+            msg += f"{'✅' if ticker.get('price',0)>0 else '❌'} <b>#2 Ticker:</b> price={ticker.get('price',0):,.2f}\n\n"
+
+            # #3 Screenshot
+            msg += f"{'✅' if shot_ok else '❌'} <b>#3 Screenshot:</b> "
+            if shot_ok:
+                msg += f"{shot_kb}KB captured\n"
+                msg += "  → <b>Used for:</b> sent to Claude as visual chart image (+10% accuracy)\n"
+                msg += "  → <b>Alternative:</b> TradingView widget embed (Mini App chart tab already does this)\n"
+                msg += "  → <b>Verdict:</b> Useful IF Claude vision improves signal quality. Remove if not.\n\n"
+            else:
+                msg += "NOT working (CDP issue or TV not open)\n\n"
+
+            # #4 Indicators
+            msg += f"{'✅' if ind_ok else '❌'} <b>#4 Indicators (DOM read):</b> {len(raw_st)} studies detected\n"
+            if clexer:
+                msg += f"  • CLEXER SNIPER: {str(clexer.get('value','?'))[:40]}\n"
+            else:
+                msg += "  • CLEXER SNIPER: ❌ not detected\n"
+            if poi:
+                msg += f"  • POI Vol Surge: {str(poi.get('value','?'))[:40]}\n"
+            else:
+                msg += "  • POI Vol Surge: ❌ not detected\n"
+            msg += f"  → <b>SpacemanBTC levels:</b> "
             if spaceman.get("all_levels"):
                 lvls = spaceman["all_levels"]
-                msg += f"✅ <b>SpacemanBTC Levels:</b> {len(lvls)} read (via {spaceman.get('source','?')})\n"
-                for lv in lvls:  # show ALL levels, no truncation
-                    msg += f"  • {lv['label']}: <b>{lv['price']:,.2f}</b>\n"
-                if spaceman.get("nearest_support"):
-                    s = spaceman["nearest_support"]
-                    msg += f"  🟢 Nearest Support: {s['label']} @ {s['price']:,.2f}\n"
-                if spaceman.get("nearest_resistance"):
-                    r = spaceman["nearest_resistance"]
-                    msg += f"  🔴 Nearest Resistance: {r['label']} @ {r['price']:,.2f}\n"
-                msg += "\n"
+                msg += f"{len(lvls)} levels (via {spaceman.get('source','?')})\n"
+                for lv in lvls[:5]:
+                    msg += f"    • {lv['label']}: {lv['price']:,.2f}\n"
+                msg += "  → <b>Alternative:</b> BingX funding/OI APIs give volume data. SpacemanBTC weekly/monthly levels can be calculated from date math (no TV needed).\n"
+                msg += "  → <b>Verdict:</b> Hide SpacemanBTC on TV, run /checktvdata again — if levels drop to 0, TV bridge is the ONLY source. If still showing, BingX is fetching them.\n\n"
             else:
-                msg += "❌ <b>SpacemanBTC Levels:</b> none detected\n\n"
+                msg += "❌ 0 detected — SpacemanBTC NOT on chart OR bridge not reading it\n\n"
 
-            # Pine Lines (WS) — removed from display, not SpacemanBTC data
-
-            # Pine Labels
-            if labels:
-                msg += f"✅ <b>Pine Labels:</b> {len(labels)} read\n"
-                for lb in labels[:5]:
-                    msg += f"  • {lb.get('text','?')} @ {lb.get('price',0):,.0f}\n"
-                msg += "\n"
+            # #5 Pine Objects
+            msg += f"{'✅' if pine_ok else '❌'} <b>#5 Pine Objects (labels/boxes):</b>\n"
+            msg += f"  • Pine Labels: {len(labels)} (BOS/CHoCH/swing labels)\n"
+            msg += f"  • Pine Boxes:  {len(boxes)} (OB/FVG zones)\n"
+            if pine_ok:
+                msg += "  → <b>Used for:</b> feeding OB/FVG zone prices into Claude analysis\n"
+                msg += "  → <b>Alternative:</b> Calculate OB/FVG directly from raw OHLCV candles in bot (no TV needed). Library: pure Python, no indicator required.\n"
+                msg += "  → <b>Verdict:</b> Can be replaced with candle-based OB/FVG detection.\n\n"
             else:
-                msg += "❌ <b>Pine Labels:</b> 0 read\n\n"
+                msg += "  → Pine objects returning 0 — indicator not on chart or CDP can't read it.\n\n"
 
-            # Pine Boxes
-            if boxes:
-                msg += f"✅ <b>Pine Boxes:</b> {len(boxes)} read\n"
-                for bx in boxes[:3]:
-                    msg += f"  • Zone: {bx.get('low',0):,.0f} – {bx.get('high',0):,.0f}\n"
-                msg += "\n"
-            else:
-                msg += "❌ <b>Pine Boxes:</b> 0 read\n\n"
-
-            # Studies
-            if studies:
-                msg += f"✅ <b>Studies:</b> {len(studies)} found\n"
-                for s in studies[:5]:
+            # #6 Studies
+            msg += f"{'✅' if studies_ok else '❌'} <b>#6 Studies (legend values):</b> {len(studies)} found\n"
+            if studies_ok:
+                for s in studies[:4]:
                     msg += f"  • {s.get('name','?')}\n"
+                msg += "  → <b>Used for:</b> reading RSI/EMA/MACD values from chart legend\n"
+                msg += "  → <b>Alternative:</b> Calculate RSI/EMA/MACD directly from OHLCV candles using pandas-ta or ta-lib (no TV needed, works on Railway).\n"
+                msg += "  → <b>Verdict:</b> Fully replaceable. Remove TV dependency for these.\n\n"
             else:
-                msg += "❌ <b>Studies:</b> none found\n"
+                msg += "  → No studies detected from chart legend.\n\n"
 
-            msg += "\n<i>Now hide SpacemanBTC lines → /readindicators → compare</i>"
+            msg += "─────────────────────────\n"
+            msg += "<b>Next step:</b> Hide SpacemanBTC on TV chart → run /checktvdata again to confirm if levels drop to 0."
             send_reply(chat_id, msg)
         except Exception as e:
-            send_reply(chat_id, f"❌ Read error: {e}")
+            send_reply(chat_id, f"❌ Audit error: {e}")
 
     elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
         if cmd == "/scan":
@@ -3149,7 +3193,7 @@ def main():
             # ── Auto-scan at IST :24 every hour — runs both V1 and V2 ──────────
             global _auto_scan_last_hour
             _ist_now = now_ist()
-            if _ist_now.minute == 24 and _auto_scan_last_hour != _ist_now.hour:
+            if _ist_now.minute == 24 and _auto_scan_last_hour != _ist_now.hour and not is_ist_sleep():
                 _auto_scan_last_hour = _ist_now.hour
                 print(f"  [AUTO-SCAN] Triggered at {_ist_now.strftime('%H:24 IST')} — running scan1 + scan2")
                 if ADMIN_CHAT_ID:
