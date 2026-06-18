@@ -952,7 +952,9 @@ def extract_json_from_response(text: str):
 def build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
-You are CLEXER - elite BTC trader using TradingView data.
+CRITICAL: Respond with RAW JSON ONLY. No markdown. No bold. No steps. No explanation. Just the JSON object.
+
+You are CLEXER - elite BTC trader.
 Current Price: {price:,.0f}
 
 Use ONLY the data provided in the summary above. Do not invent levels.
@@ -2300,7 +2302,7 @@ def handle_command(text, chat_id, message=None):
         if bot_paused.is_set(): send_reply(chat_id, "Bot paused. /go first.")
         else:
             now = time.time(); elapsed = now-last_force_scan_time
-            if elapsed<900 and last_force_scan_time>0: send_reply(chat_id, f"Cooldown: {int((900-elapsed)/60)} min left")
+            if elapsed<300 and last_force_scan_time>0: send_reply(chat_id, f"Cooldown: {int((300-elapsed)//60)+1} min left")
             else:
                 last_force_scan_time = now
                 send_reply(chat_id, "Forcing scan (~15-30s)..."); force_scan.set()
@@ -3344,7 +3346,7 @@ def main():
             now = time.time(); forced = force_scan.is_set()
             if forced: force_scan.clear()
 
-            h_str = now_ist().strftime('%H:%M IST'); mode_str = "NEW" if is_tv_online() else "OLD"
+            h_str = now_ist().strftime('%H:%M IST'); mode_str = "NEW+TV" if is_tv_online() else "NEW+BingX"
             print(f"\n[{h_str}] {get_session()}{' FORCED' if forced else ''} | Src:{get_current_source()} | Mode:{mode_str}")
 
             # TV bridge health check
