@@ -2099,7 +2099,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata"}
+    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -2497,13 +2497,12 @@ def handle_command(text, chat_id, message=None):
             msg += f"  → <b>SpacemanBTC levels:</b> "
             if spaceman.get("all_levels"):
                 lvls = spaceman["all_levels"]
-                msg += f"{len(lvls)} levels (via {spaceman.get('source','?')})\n"
+                msg += f"{len(lvls)} levels\n"
                 for lv in lvls[:5]:
                     msg += f"    • {lv['label']}: {lv['price']:,.2f}\n"
-                msg += "  → <b>Alternative:</b> BingX funding/OI APIs give volume data. SpacemanBTC weekly/monthly levels can be calculated from date math (no TV needed).\n"
-                msg += "  → <b>Verdict:</b> Hide SpacemanBTC on TV, run /checktvdata again — if levels drop to 0, TV bridge is the ONLY source. If still showing, BingX is fetching them.\n\n"
+                msg += "  → <b>Source: BingX OHLCV</b> ✅ (calculated from BingX candles directly — TV bridge NOT needed for this)\n\n"
             else:
-                msg += "❌ 0 detected — SpacemanBTC NOT on chart OR bridge not reading it\n\n"
+                msg += "❌ 0 levels — BingX candle fetch may have failed\n\n"
 
             # #5 Pine Objects
             msg += f"{'✅' if pine_ok else '❌'} <b>#5 Pine Objects (labels/boxes):</b>\n"
@@ -2528,10 +2527,120 @@ def handle_command(text, chat_id, message=None):
                 msg += "  → No studies detected from chart legend.\n\n"
 
             msg += "─────────────────────────\n"
-            msg += "<b>Next step:</b> Hide SpacemanBTC on TV chart → run /checktvdata again to confirm if levels drop to 0."
+            msg += "<b>Summary:</b>\n"
+            msg += "• SpacemanBTC levels → BingX ✅ (no TV needed)\n"
+            msg += "• Studies (#6) → replaceable with pandas-ta\n"
+            msg += "• Pine boxes (#5) → replaceable with candle OB/FVG calc\n"
+            msg += "• Screenshot (#3) → only reason to keep TV bridge\n"
+            msg += "• Indicators (#4) → only if CLEXER SNIPER shown above is ✅"
             send_reply(chat_id, msg)
         except Exception as e:
             send_reply(chat_id, f"❌ Audit error: {e}")
+
+    elif cmd == "/tvstudies" and is_admin:
+        # Read RSI/EMA/MACD from TradingView chart legend via tv_bridge studies endpoint
+        if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
+            send_reply(chat_id, "❌ TV Bridge is offline."); return
+        send_reply(chat_id, "📡 Reading studies from TV chart legend…")
+        try:
+            data    = fetch_tv_all_data()
+            studies = data.get("studies", [])
+            ticker  = data.get("ticker", {})
+            price   = ticker.get("price", 0)
+
+            msg = f"📊 <b>TV Chart Studies</b>  🕐 {ist_str()}\n"
+            msg += f"Price: <b>{price:,.2f}</b>\n\n"
+
+            if not studies:
+                msg += "❌ No studies detected from chart legend.\n"
+                msg += "Make sure RSI / EMA / MACD indicators are visible on TradingView."
+            else:
+                msg += f"<b>{len(studies)} indicators detected:</b>\n\n"
+                for s in studies:
+                    name = s.get("name", "?")
+                    vals = s.get("values", s.get("value", ""))
+                    if isinstance(vals, list):
+                        vals = "  ".join(str(v) for v in vals[:4])
+                    msg += f"• <b>{name}</b>\n  {vals}\n\n"
+
+            msg += "\n<i>Run /calcstudies to compare with candle-calculated values.</i>"
+            send_reply(chat_id, msg)
+        except Exception as e:
+            send_reply(chat_id, f"❌ Error reading TV studies: {e}")
+
+    elif cmd == "/calcstudies" and is_admin:
+        # Calculate RSI/EMA/MACD from BingX candles using pure pandas (no extra library)
+        send_reply(chat_id, "🧮 Calculating studies from BingX candles…")
+        try:
+            import pandas as _pd
+
+            def get_df(interval, limit=200):
+                raw = bingx_klines("BTC-USDT", interval, limit)
+                if not raw:
+                    return None
+                df = _pd.DataFrame(raw)
+                df["close"]  = df["c"].astype(float)
+                df["high"]   = df["h"].astype(float)
+                df["low"]    = df["l"].astype(float)
+                df["volume"] = df["v"].astype(float)
+                return df
+
+            def calc(df, label):
+                if df is None or len(df) < 30:
+                    return f"❌ {label}: not enough candles\n"
+                c = df["close"]
+                h = df["high"]
+                l = df["low"]
+                v = df["volume"]
+
+                # RSI 14
+                delta = c.diff()
+                gain  = delta.clip(lower=0).rolling(14).mean()
+                loss  = (-delta.clip(upper=0)).rolling(14).mean()
+                rsi   = (100 - 100 / (1 + gain / loss.replace(0, 1e-9))).iloc[-1]
+
+                # EMA
+                ema20  = c.ewm(span=20,  adjust=False).mean().iloc[-1]
+                ema50  = c.ewm(span=50,  adjust=False).mean().iloc[-1]
+                ema200 = c.ewm(span=200, adjust=False).mean().iloc[-1] if len(c) >= 200 else None
+
+                # MACD 12,26,9
+                ema12   = c.ewm(span=12, adjust=False).mean()
+                ema26   = c.ewm(span=26, adjust=False).mean()
+                macd    = (ema12 - ema26).iloc[-1]
+                signal  = (ema12 - ema26).ewm(span=9, adjust=False).mean().iloc[-1]
+                hist    = macd - signal
+
+                # ATR 14
+                tr   = _pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+                atr  = tr.rolling(14).mean().iloc[-1]
+
+                # Volume
+                vol_sma = v.rolling(20).mean().iloc[-1]
+                vol_rel = v.iloc[-1] / vol_sma if vol_sma > 0 else 0
+
+                trend = "ABOVE" if c.iloc[-1] > ema50 else "BELOW"
+
+                out  = f"<b>{label}</b>\n"
+                out += f"  RSI(14):  <b>{rsi:.1f}</b>  {'⚡ OB' if rsi > 70 else '🔵 OS' if rsi < 30 else '—'}\n"
+                out += f"  EMA20:    <b>{ema20:,.2f}</b>\n"
+                out += f"  EMA50:    <b>{ema50:,.2f}</b>  Price {trend} EMA50\n"
+                if ema200:
+                    out += f"  EMA200:   <b>{ema200:,.2f}</b>\n"
+                out += f"  MACD:     <b>{macd:+.2f}</b>  Sig: {signal:+.2f}  Hist: {hist:+.2f}  {'📈' if hist > 0 else '📉'}\n"
+                out += f"  ATR(14):  <b>{atr:,.2f}</b>\n"
+                out += f"  Volume:   {v.iloc[-1]:,.0f}  ({vol_rel:.1f}x avg)\n"
+                return out
+
+            msg = f"🧮 <b>Calculated Studies — BingX Candles</b>  🕐 {ist_str()}\n\n"
+            msg += calc(get_df("1H",  200), "1H Timeframe") + "\n"
+            msg += calc(get_df("4H",  100), "4H Timeframe") + "\n"
+            msg += calc(get_df("5",    50), "5M Timeframe")
+            msg += "\n\n<i>Source: BingX OHLCV — TV bridge not needed.</i>"
+            msg += "\n<i>Run /tvstudies to compare with chart legend.</i>"
+            send_reply(chat_id, msg)
+        except Exception as e:
+            send_reply(chat_id, f"❌ Calc error: {e}")
 
     elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
         if cmd == "/scan":
