@@ -15,6 +15,7 @@ import hmac
 import hashlib
 import time
 import urllib.parse
+import requests
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -50,6 +51,12 @@ def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    id          INT PRIMARY KEY DEFAULT 1,
+                    state_json  JSONB NOT NULL,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                );
+
                 CREATE TABLE IF NOT EXISTS users (
                     tg_id       BIGINT PRIMARY KEY,
                     username    TEXT,
@@ -143,13 +150,52 @@ def upsert_user(user: dict):
             """, (user["id"], user.get("username"), user.get("first_name")))
         conn.commit()
 
-# ── state file reader ─────────────────────────────────────────────────────────
+# ── state reader (DB-first, file fallback) ────────────────────────────────────
 def read_state() -> dict:
+    # Try PostgreSQL first (bot pushes state here after every save)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT state_json FROM bot_state WHERE id = 1")
+                row = cur.fetchone()
+        if row:
+            return dict(row["state_json"])
+    except Exception:
+        pass
+    # File fallback (works if same Railway volume is mounted)
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return {}
+
+
+# ── push_state (called by bot after every save_state) ─────────────────────────
+PUSH_STATE_SECRET = os.environ.get("PUSH_STATE_SECRET", "")
+
+@app.post("/push_state")
+async def push_state(request: Request):
+    """Bot calls this endpoint after every save_state() to sync state to DB."""
+    # Simple shared-secret auth (bot sets X-Push-Secret header)
+    if PUSH_STATE_SECRET:
+        secret = request.headers.get("X-Push-Secret", "")
+        if secret != PUSH_STATE_SECRET:
+            raise HTTPException(403, "Forbidden")
+    body = await request.json()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO bot_state (id, state_json, updated_at)
+                    VALUES (1, %s, NOW())
+                    ON CONFLICT (id) DO UPDATE
+                      SET state_json = EXCLUDED.state_json,
+                          updated_at = NOW()
+                """, (json.dumps(body),))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
+    return {"ok": True}
 
 # ── startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
@@ -161,6 +207,47 @@ def startup():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
+# ── price (server-side BingX fetch — avoids browser CORS block) ───────────────
+@app.get("/price")
+def get_price(sym: str = "BTC-USDT"):
+    """Fetch live price from BingX server-side. No auth required."""
+    try:
+        r = requests.get(
+            "https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+            params={"symbol": sym}, timeout=8)
+        d = r.json().get("data", {})
+        if isinstance(d, list): d = d[0] if d else {}
+        price = float(d.get("lastPrice", 0))
+        if price > 0:
+            return {
+                "price":  price,
+                "change": float(d.get("priceChangePercent", 0)),
+                "high24": float(d.get("highPrice", price)),
+                "low24":  float(d.get("lowPrice",  price)),
+                "volume": float(d.get("quoteVolume", 0)),
+                "source": "BingX",
+                "sym":    sym,
+            }
+    except Exception as e:
+        print(f"[API /price] BingX error: {e}")
+    # Binance fallback
+    try:
+        sym_b = sym.replace("-USDT", "USDT").replace("-", "")
+        r2 = requests.get(f"https://api1.binance.com/api/v3/ticker/24hr",
+                          params={"symbol": sym_b}, timeout=8)
+        d2 = r2.json()
+        return {
+            "price":  float(d2["lastPrice"]),
+            "change": float(d2["priceChangePercent"]),
+            "high24": float(d2["highPrice"]),
+            "low24":  float(d2["lowPrice"]),
+            "volume": float(d2["quoteVolume"]),
+            "source": "Binance",
+            "sym":    sym,
+        }
+    except Exception as e2:
+        raise HTTPException(status_code=502, detail=f"Price fetch failed: {e2}")
+
 # ═════════════════════════════════════════════════════════════════════════════
 # TRADES endpoints
 # ═════════════════════════════════════════════════════════════════════════════
@@ -171,18 +258,22 @@ def get_active_trades(user: dict = Depends(get_current_user)):
     upsert_user(user)
     state = read_state()
 
-    active = state.get("active_trade")
-    scan1  = state.get("scan1_trades", {})
-    scan2  = state.get("scan2_trades", {})
+    # bot.py saves key "trade" (not "active_trade")
+    active = state.get("trade") or state.get("active_trade")
+    # bot.py stores scan trades as lists
+    scan1  = state.get("scan1_trades", [])
+    scan2  = state.get("scan2_trades", [])
 
     positions = []
 
     def _add(t: dict, source: str):
-        if not t:
+        if not t or not t.get("signal"):
             return
+        raw_side = t.get("signal", t.get("direction", "LONG"))
+        side = "LONG" if raw_side in ("LONG", "BUY") else "SHORT"
         positions.append({
-            "symbol":  t.get("symbol", ""),
-            "side":    t.get("direction", "LONG"),
+            "symbol":  t.get("symbol", "BTC-USDT"),
+            "side":    side,
             "status":  t.get("status", "RUNNING"),
             "entry":   t.get("entry"),
             "tp1":     t.get("tp1"),
@@ -196,9 +287,10 @@ def get_active_trades(user: dict = Depends(get_current_user)):
 
     if active:
         _add(active, "main")
-    for sym, t in scan1.items():
+    # scan lists: each element is a trade dict
+    for t in (scan1 if isinstance(scan1, list) else scan1.values()):
         _add(t, "scan1")
-    for sym, t in scan2.items():
+    for t in (scan2 if isinstance(scan2, list) else scan2.values()):
         _add(t, "scan2")
 
     return {"positions": positions, "count": len(positions)}
@@ -209,8 +301,11 @@ def get_trade_history(user: dict = Depends(get_current_user)):
     """Return closed trade outcomes from bot state file."""
     upsert_user(user)
     state  = read_state()
-    closed = state.get("trade_outcomes", [])
-    return {"history": list(reversed(closed[-50:])), "total": len(closed)}
+    # bot.py saves as "outcomes"; also check scan_history
+    closed = state.get("outcomes", state.get("trade_outcomes", []))
+    scan_h = state.get("scan_history", [])
+    all_history = list(reversed((closed + scan_h)[-50:]))
+    return {"history": all_history, "total": len(closed) + len(scan_h)}
 
 
 @app.get("/trades/stats")
@@ -218,7 +313,7 @@ def get_trade_stats(user: dict = Depends(get_current_user)):
     """Return summary stats from bot state file."""
     upsert_user(user)
     state = read_state()
-    stats = state.get("trade_stats", {})
+    stats = state.get("stats", state.get("trade_stats", {}))
     return stats
 
 # ═════════════════════════════════════════════════════════════════════════════
