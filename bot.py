@@ -2863,6 +2863,7 @@ def handle_command(text, chat_id, message=None):
                 cp = candidate["price"]
                 _tv_data_source = "BingX"
                 scan_screenshots = {}
+                tv_switched = False
 
                 if SCAN_USE_TV and is_tv_online():
                     with _tv_chart_lock:
