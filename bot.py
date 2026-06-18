@@ -3008,47 +3008,50 @@ def handle_command(text, chat_id, message=None):
                     ]
                     smc += f"\n--- 5M (last 10 candles, newest last) ---\n" + "\n".join(last10_5m) + "\n"
 
+                # ── Step 4b: Pre-filter — block post-pump exhaustion before calling Claude ──
+                _skip_reason = None
+                if df_4h is not None and len(df_4h) >= 10:
+                    _c4v = df_4h["close"].values
+                    _o4v = df_4h["open"].values
+                    # Last candle % move
+                    _last_move_pct = (_c4v[-1] - _o4v[-1]) / _o4v[-1] * 100
+                    # Price gain over last 10 candles
+                    _gain_10 = (_c4v[-1] - _c4v[-10]) / _c4v[-10] * 100
+                    # Last candle is a large rejection after a big rally
+                    if _last_move_pct < -8 and _gain_10 > 30:
+                        _skip_reason = f"post-pump rejection: last 4H candle {_last_move_pct:.1f}% after +{_gain_10:.0f}% rally — unsafe entry"
+                    # Last candle is a large rejection (regardless of rally size)
+                    elif _last_move_pct < -10:
+                        _skip_reason = f"large 4H rejection candle {_last_move_pct:.1f}% — wait for structure to settle"
+                    # Still extended: price is >40% above 10-candle-ago close and last candle is red
+                    elif _gain_10 > 40 and _last_move_pct < 0:
+                        _skip_reason = f"parabolic extension +{_gain_10:.0f}% with red last candle — high reversal risk"
+
+                if _skip_reason:
+                    send_reply(cid,
+                        f"⏸ <b>{chosen_sym} — WAIT</b>  {ist_str()}\n\n"
+                        f"Price: <b>${cp:,.6g}</b>  ({candidate['change']:+.2f}%)\n\n"
+                        f"🚫 Pre-filter blocked: {_skip_reason}\n\n"
+                        f"⚠️ <i>Not financial advice — CLEXER V9.0</i>")
+                    return
+
                 # ── Step 5: Claude Opus analysis — trend continuation method ───
                 analysis_prompt = f"""{smc}
 BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
 
-You are CLEXER — elite crypto trader. Analyze {chosen_sym} using this exact method:
+You are CLEXER — elite crypto trader. Analyze {chosen_sym}. DO NOT narrate steps. Go directly to output.
 
-STEP 1 — CONFIRM 4H TREND DIRECTION
-HH+HL = BULLISH. LH+LL = BEARISH. Mixed = NEUTRAL → output WAIT immediately.
+RULES (apply silently):
+1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, mixed=WAIT
+2. 5M pause: last 10 candles must have AT LEAST 3 sideways candles. Only 2 → WAIT
+3. BULLISH entry = lowest low of pause. BEARISH entry = highest high of pause
+4. dist_pct = abs(current_price - entry)/current_price×100. >1% → MARKET entry at current_price
+5. SL: BULLISH = pause low - 0.4%. BEARISH = pause high + 0.4%
+6. TP1 = entry ± sl_dist×2. TP2 = entry ± sl_dist×4
+7. Confidence: HIGH=clear trend+clear pause+dist<0.5%, MED=dist 0.5-1% or MARKET, LOW=unclear
+8. HARD BLOCK — output WAIT if ANY of these: last 4H candle < -6%, structure technically BULLISH but last candle strongly bearish, price dropped >10% in last 2 candles (exhaustion/reversal risk)
 
-STEP 2 — FIND RECENT PAUSE ON 5M (do NOT use old 4H swing points as entry)
-Look at the last 10 x 5M candles provided above.
-A pause = 2-4 consecutive candles moving sideways or slightly against the trend.
-BULLISH: pause = recent cluster where candles have similar lows (consolidation low).
-BEARISH: pause = recent cluster where candles have similar highs (consolidation high).
-If NO pause exists (straight line, no consolidation in last 10 candles) → output WAIT.
-Reasoning must say: "no recent pause — no safe entry reference"
-
-STEP 3 — SET ENTRY FROM THE PAUSE
-BULLISH: entry = lowest low of the pause candles.
-BEARISH: entry = highest high of the pause candles.
-
-Distance check:
-dist_pct = abs(current_price - entry) / current_price × 100
-IF dist_pct > 1.0%: entry is stale — use entry_type MARKET at current_price instead.
-IF dist_pct <= 1.0%: entry_type PULLBACK at that exact level.
-
-STEP 4 — STOP LOSS (tight, based on the pause itself)
-BULLISH: sl = lowest low of pause minus 0.4%
-BEARISH: sl = highest high of pause plus 0.4%
-
-STEP 5 — TAKE PROFIT
-sl_dist = abs(entry - sl)
-TP1 = entry ± sl_dist × 2
-TP2 = entry ± sl_dist × 4
-
-STEP 6 — CONFIDENCE
-HIGH = clear trend + clear pause + dist_pct < 0.5%
-MED  = clear trend + clear pause + dist_pct 0.5-1.0% or MARKET entry used
-LOW  = unclear trend or weak pause
-
-OUTPUT (plain text only, no markdown):
+OUTPUT ONLY (plain text, no markdown, nothing else):
 Signal: BUY / SELL / WAIT
 Entry: [price]
 Entry_Type: MARKET or PULLBACK
@@ -3057,7 +3060,7 @@ TP1: [price]
 TP2: [price]
 R:R: [ratio]
 Confidence: HIGH / MED / LOW
-Reasoning: 3 lines max"""
+Reasoning: [1 line only]"""
 
                 content = []
                 if scan_screenshots:
@@ -3073,7 +3076,7 @@ Reasoning: 3 lines max"""
                 content.append({"type":"text","text":analysis_prompt})
 
                 r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model="claude-opus-4-6", max_tokens=800,
+                    model="claude-opus-4-6", max_tokens=300,
                     messages=[{"role":"user","content":content}])
                 analysis = r2.content[0].text.strip()
 
