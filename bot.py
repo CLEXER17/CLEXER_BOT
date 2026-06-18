@@ -949,7 +949,12 @@ def extract_json_from_response(text: str):
 #  PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_new_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
+# BTC_PROMPT_MODE controls which BTC analysis prompt is used:
+#   "V9"  = CLEXER_V9_CURRENT  — always-new-prompt, CRITICAL JSON header (default)
+#   "V7"  = CLEXER_V7_CLASSIC  — TV/Binance split, no CRITICAL header, session notes
+BTC_PROMPT_MODE = "V9"
+
+def build_new_prompt_v9(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
 CRITICAL: Respond with RAW JSON ONLY. No markdown. No bold. No steps. No explanation. Just the JSON object.
@@ -1097,7 +1102,196 @@ Trade:
 {{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"clear instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"4H swing level and price","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swing high X swing low Y 3)Volume direction X bars ago 4)1H 5)5M 6)Entry at swing 7)SL=ATR_1H×1.5 8)TP=sl×2 and sl×4","trade_valid":null}}"""
 
 
-def build_old_prompt(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
+def build_old_prompt_v9(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
+    return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
+
+You are CLEXER - elite BTC trader (Binance fallback mode).
+Current Price: {price:,.0f}
+Use ONLY the data in the summary. Do not invent levels.
+
+STEP 1 - WEEKLY: closes UP=BULLISH, DOWN=BEARISH.
+STEP 2 - 4H TREND: HH+HL=BULLISH, LH+LL=BEARISH, flat=NEUTRAL.
+  Find LAST 4H SWING HIGH and LAST 4H SWING LOW - these are entry levels.
+STEP 3 - VOLUME: last big GREEN=buy pressure, RED=sell pressure. Confirms only.
+STEP 4 - 1H: same=strong, neutral=ok, opposite=lower confidence (not a block).
+STEP 5 - 5M: higher lows=bullish now, lower highs=bearish now. Conflict=lower confidence only.
+
+SIGNAL:
+LONG:  4H bullish + last big vol GREEN + 1H not bearish + price above last 4H swing low
+SHORT: 4H bearish + last big vol RED  + 1H not bullish + price below last 4H swing high
+
+WAIT only: 4H NEUTRAL | 4H+1H both opposite | no swing within 2000 pts
+DO NOT WAIT for: low vol, 5M conflict, 1H lag, weekly neutral, missing vol candle
+
+ENTRY: LONG=last 4H swing LOW | SHORT=last 4H swing HIGH
+  Within 100 pts = MARKET | else = PULLBACK
+
+SL: sl_dist = ATR_1H × 1.5 | Min 500 | Max 2500
+  LONG SL = entry - sl_dist | SHORT SL = entry + sl_dist | offset round numbers by 50 pts
+
+TP: TP1 = entry ± sl_dist×2 | TP2 = entry ± sl_dist×4
+  LONG: both must be > {price:,.0f} | SHORT: both must be < {price:,.0f}
+
+ACTIVE TRADE: same direction=HOLD | flipped=new signal
+{conf_note}{session_note}
+
+OUTPUT RAW JSON ONLY:
+
+WAIT:  {{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"NEUTRAL","structure_4h":"NEUTRAL","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"exact condition triggered","trade_valid":null}}
+HOLD:  {{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL or NEUTRAL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"why valid with swing prices","trade_valid":true}}
+Trade: {{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"","structure_4h":"HH+HL or LH+LL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swings 3)Volume 4)1H 5)5M 6)Entry 7)SL 8)TP","trade_valid":null}}"""
+
+# ── CLEXER_V7_CLASSIC prompts ─────────────────────────────────────────────────
+# Original V7.0 BTC analysis — TV/Binance split, no CRITICAL header, session notes.
+# Restored via /btcmode on. Switch back with /btcmode off.
+
+def build_new_prompt_v7(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note):
+    return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
+
+You are CLEXER - elite BTC trader using TradingView data.
+Current Price: {price:,.0f}
+
+Use ONLY the data provided in the summary above. Do not invent levels.
+
+═══════════════════════════════════════════════════
+ STEP 1 - WEEKLY DIRECTION
+═══════════════════════════════════════════════════
+From weekly data: closes going UP = BULLISH, DOWN = BEARISH.
+Swing high higher than last = bullish. Lower = bearish.
+This gives background bias only.
+
+═══════════════════════════════════════════════════
+ STEP 2 - 4H TREND (MOST IMPORTANT)
+═══════════════════════════════════════════════════
+HH + HL = 4H BULLISH. LH + LL = 4H BEARISH. Mixed = NEUTRAL.
+Find from swing data:
+  LAST 4H SWING HIGH = most recent resistance (price went up then back down)
+  LAST 4H SWING LOW  = most recent support (price went down then back up)
+These are your entry reference points.
+
+═══════════════════════════════════════════════════
+ STEP 3 - 4H VOLUME CONFIRMATION
+═══════════════════════════════════════════════════
+Last big GREEN candle = buying pressure (confirms LONG).
+Last big RED candle   = selling pressure (confirms SHORT).
+0-5 bars ago = strong | 6-15 = moderate | 15+ = weak.
+Volume CONFIRMS bias - does not create it alone.
+
+═══════════════════════════════════════════════════
+ STEP 4 - 1H CONFIRMATION
+═══════════════════════════════════════════════════
+Same as 4H = strong confirmation. Neutral = acceptable.
+Opposite = lower confidence - NOT a block alone.
+
+═══════════════════════════════════════════════════
+ STEP 5 - 5M TIMING
+═══════════════════════════════════════════════════
+Higher lows = bullish NOW. Lower highs = bearish NOW.
+5M conflict = lower confidence only, NOT a block.
+
+═══════════════════════════════════════════════════
+ STEP 6 - DECIDE DIRECTION
+═══════════════════════════════════════════════════
+LONG requires ALL:
+  ✅ 4H trend = BULLISH (HH+HL)
+  ✅ Last big 4H or 1H vol candle = GREEN
+  ✅ 1H not actively bearish
+  ✅ Price {price:,.0f} is above last 4H swing LOW
+  ✅ Weekly not making new lows this week
+
+SHORT requires ALL:
+  ✅ 4H trend = BEARISH (LH+LL)
+  ✅ Last big 4H or 1H vol candle = RED
+  ✅ 1H not actively bullish
+  ✅ Price {price:,.0f} is below last 4H swing HIGH
+  ✅ Weekly not making new highs this week
+
+WAIT only when:
+  ❌ 4H trend = NEUTRAL (no clear swing pattern)
+  ❌ 4H AND 1H both trending OPPOSITE directions
+  ❌ No 4H swing point within 2000 pts of current price
+  ❌ Last 5 4H candles all flat (total consolidation)
+
+DO NOT WAIT for: low volume, 5M conflict, 1H lag,
+weekly neutral, missing big volume candle.
+
+═══════════════════════════════════════════════════
+ STEP 7 - ENTRY
+═══════════════════════════════════════════════════
+LONG:  entry = last 4H SWING LOW price
+SHORT: entry = last 4H SWING HIGH price
+
+If price {price:,.0f} is within 100 pts of that level:
+  entry_type = MARKET
+Else:
+  entry_type = PULLBACK, entry_note = "wait for pullback/bounce to [price]"
+
+NEVER enter at top/bottom of big momentum candle.
+
+═══════════════════════════════════════════════════
+ CRITICAL ENTRY DISTANCE RULE
+═══════════════════════════════════════════════════
+After finding the entry level, check:
+  distance = abs(current_price - entry)
+
+IF distance > 1500 pts:
+  DO NOT use that swing level as entry.
+
+  For LONG:
+    Find the most recent 4H swing low WITHIN 1000 pts of {price:,.0f}.
+    If no swing low within 1000 pts → use MARKET entry at {price:,.0f}.
+
+  For SHORT:
+    Find the most recent 4H swing high WITHIN 1000 pts of {price:,.0f}.
+    If no swing high within 1000 pts → use MARKET entry at {price:,.0f}.
+
+VERIFY before outputting - if ANY check fails use MARKET entry at {price:,.0f}:
+  BUY:  entry <= {price:,.0f} + 200 | tp1 > {price:,.0f} | tp2 > tp1 | abs(entry - {price:,.0f}) < 1500
+  SELL: entry >= {price:,.0f} - 200 | tp1 < {price:,.0f} | tp2 < tp1 | abs(entry - {price:,.0f}) < 1500
+
+═══════════════════════════════════════════════════
+ STEP 8 - STOP LOSS
+═══════════════════════════════════════════════════
+sl_dist = ATR_1H × 1.5
+Min 500 pts | Max 2500 pts
+LONG  SL = entry - sl_dist (below 4H swing low)
+SHORT SL = entry + sl_dist (above 4H swing high)
+Never at round number - offset by 50 pts.
+Never exactly at wick - offset by 80-100 pts beyond.
+
+═══════════════════════════════════════════════════
+ STEP 9 - TAKE PROFIT
+═══════════════════════════════════════════════════
+TP1 = entry ± (sl_dist × 2)
+TP2 = entry ± (sl_dist × 4)
+LONG:  TP1 and TP2 must be > {price:,.0f}
+SHORT: TP1 and TP2 must be < {price:,.0f}
+If TP wrong side, recalculate from current price.
+
+═══════════════════════════════════════════════════
+ STEP 10 - ACTIVE TRADE VALIDATION
+═══════════════════════════════════════════════════
+Same 4H direction → HOLD (reference swing prices).
+Opposite direction → new signal + reason why flipped.
+Unclear → HOLD with low confidence.
+
+{conf_note}
+
+═══════════════════════════════════════════════════
+ OUTPUT - RAW JSON ONLY. NO MARKDOWN. NO TEXT BEFORE/AFTER.
+═══════════════════════════════════════════════════
+
+WAIT:
+{{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"NEUTRAL","structure_4h":"NEUTRAL","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"Exact WAIT condition triggered with price references from summary.","trade_valid":null}}
+
+HOLD:
+{{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL or NEUTRAL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"Why active trade still valid with swing point prices.","trade_valid":true}}
+
+Trade:
+{{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"clear instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"4H swing level and price","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swing high X swing low Y 3)Volume direction X bars ago 4)1H 5)5M 6)Entry at swing 7)SL=ATR_1H×1.5 8)TP=sl×2 and sl×4","trade_valid":null}}"""
+
+
+def build_old_prompt_v7(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
     return f"""{summary}{validate_ctx}{outcome_ctx}{news_ctx}
 
 You are CLEXER - elite BTC trader (Binance fallback mode).
@@ -1142,8 +1336,11 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     price = ticker["price"]; session = get_session()
     min_conf = required_confidence(); src = get_current_source()
     tv_on = is_tv_online()
-    prompt_mode = "NEW+TV" if tv_on else "NEW+BingX"
-    print(f"  [CLAUDE] Mode:{prompt_mode} | MinConf:{min_conf} | Validate:{validate_trade}")
+    if BTC_PROMPT_MODE == "V7":
+        prompt_mode = "V7+TV" if tv_on else "V7+Binance"
+    else:
+        prompt_mode = "V9+TV" if tv_on else "V9+BingX"
+    print(f"  [CLAUDE] Mode:{prompt_mode} | BTC:{BTC_PROMPT_MODE} | MinConf:{min_conf} | Validate:{validate_trade}")
 
     screenshots = {}
     if tv_on:
@@ -1201,8 +1398,15 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     if session == "NEW_YORK": session_note = "\n\nNY SESSION: 4H primary. Give signal if 4H clear."
     elif session == "LONDON": session_note = "\n\nLONDON SESSION: Strong breakouts. Signal if 4H+weekly agree."
 
-    # Always use NEW prompt — candle data quality is same whether from TV or BingX
-    prompt = build_new_prompt(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
+    if BTC_PROMPT_MODE == "V7":
+        # CLEXER_V7_CLASSIC: TV gets new prompt, Binance gets old prompt with session notes
+        if tv_on:
+            prompt = build_new_prompt_v7(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
+        else:
+            prompt = build_old_prompt_v7(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note)
+    else:
+        # CLEXER_V9_CURRENT: always new prompt regardless of TV status
+        prompt = build_new_prompt_v9(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
 
     content = []
     if screenshots:
@@ -1385,7 +1589,7 @@ import copytrade as ct
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -1394,8 +1598,10 @@ def load_settings():
             CHART_TFS             = d.get("chart_tfs",         CHART_TFS)
             SEND_NEWS             = d.get("send_news",         SEND_NEWS)
             SIGNAL_SCAN_INTERVAL  = d.get("scan_interval",     SIGNAL_SCAN_INTERVAL)
+            BTC_PROMPT_MODE       = d.get("btc_prompt_mode",   BTC_PROMPT_MODE)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
+                  f"btcmode:{BTC_PROMPT_MODE} "
                   f"ch_paused:{channel_paused}")
     except Exception as e:
         print(f"[SETTINGS] Load error: {e}")
@@ -1408,6 +1614,7 @@ def save_settings():
             "chart_tfs":        CHART_TFS,
             "send_news":        SEND_NEWS,
             "scan_interval":    SIGNAL_SCAN_INTERVAL,
+            "btc_prompt_mode":  BTC_PROMPT_MODE,
         }, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
@@ -2033,6 +2240,7 @@ ADMIN_HELP = """<b>CLEXER V9.0 - Admin Commands</b>
 /signal - Force scan now
 /resetsl - Reset SL streak + cooldown
 /setinterval 4 - Set scan interval (hours)
+/btcmode on|off - Switch BTC prompt (V7 Classic / V9 Current)
 
 <b>INFO</b>
 /status - Bot status
@@ -2117,11 +2325,11 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/close","/sltobe","/setsl","/settp1","/settp2","/tvstatus",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
-    "/pausechannel","/resumechannel","/channels",
+    "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv"}
 
 def handle_command(text, chat_id, message=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     is_admin = (str(chat_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
@@ -2310,6 +2518,38 @@ def handle_command(text, chat_id, message=None):
     elif cmd == "/resetsl":
         trade_stats["consecutive_sl"] = 0; trade_stats["cooldown_scans"] = 0
         send_reply(chat_id, "SL streak + cooldown reset.")
+
+    elif cmd == "/btcmode":
+        if len(parts) < 2:
+            mode_label = "V7 CLASSIC" if BTC_PROMPT_MODE == "V7" else "V9 CURRENT"
+            send_reply(chat_id,
+                f"<b>BTC Prompt Mode</b>\n\n"
+                f"Current: <b>{mode_label}</b>\n\n"
+                f"/btcmode on  — switch to V7 Classic\n"
+                f"(original TV/Binance split, no CRITICAL header)\n\n"
+                f"/btcmode off — switch to V9 Current\n"
+                f"(always-new-prompt, CRITICAL JSON header)")
+        elif parts[1].lower() == "on":
+            BTC_PROMPT_MODE = "V7"; save_settings()
+            send_reply(chat_id,
+                f"<b>BTC Mode → V7 CLASSIC</b> ✅\n\n"
+                f"Using CLEXER_V7_CLASSIC prompts:\n"
+                f"• TV online → build_new_prompt_v7 (10-step, no CRITICAL)\n"
+                f"• TV offline → build_old_prompt_v7 (Binance + session notes)\n\n"
+                f"Scan logic: unchanged (6-step pause/consolidation)\n\n"
+                f"<i>- CLEXER V9.0 -</i>")
+        elif parts[1].lower() == "off":
+            BTC_PROMPT_MODE = "V9"; save_settings()
+            send_reply(chat_id,
+                f"<b>BTC Mode → V9 CURRENT</b> ✅\n\n"
+                f"Using CLEXER_V9_CURRENT prompts:\n"
+                f"• Always new prompt (TV or BingX)\n"
+                f"• CRITICAL JSON-only header\n\n"
+                f"Scan logic: unchanged (6-step pause/consolidation)\n\n"
+                f"<i>- CLEXER V9.0 -</i>")
+        else:
+            send_reply(chat_id, "Usage: /btcmode on|off\n\non = V7 Classic\noff = V9 Current (default)")
+
 
     elif cmd == "/setinterval":
         if len(parts)<2: send_reply(chat_id, f"Current: {SIGNAL_SCAN_INTERVAL//3600}h\nUsage: /setinterval 4")
