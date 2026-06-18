@@ -279,6 +279,23 @@
         <div class="metric"><div class="k">Profit Factor</div><div class="v" id="pf">0</div></div>
       </div>
       <div class="card closed"><div class="ttl">Recent Closed</div><div id="closedlist"></div></div>
+
+      <!-- Virtual Calculator -->
+      <div class="card" id="vcalc-card" style="border:1px solid var(--gold-dim);">
+        <div class="ttl" style="color:var(--gold)">⚡ Signal Profit Calculator</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Set your balance & leverage to see potential gain/loss if you follow CLEXER signals</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <div style="flex:1">
+            <div class="k" style="margin-bottom:4px">Virtual Balance (USDT)</div>
+            <input id="vcBalance" value="1000" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="calcVirtual()"/>
+          </div>
+          <div style="flex:1">
+            <div class="k" style="margin-bottom:4px">Leverage</div>
+            <input id="vcLev" value="10" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="calcVirtual()"/>
+          </div>
+        </div>
+        <div id="vcResults"></div>
+      </div>
     </div>
   </section>
 
@@ -363,6 +380,7 @@
           status: t.status,
           entry: parseFloat(t.entry)||0,
           tp: parseFloat(t.tp1)||parseFloat(t.tp)||0,
+          tp2: parseFloat(t.tp2)||0,
           sl: parseFloat(t.sl)||0,
           qty: parseFloat(t.qty)||0,
           lev: t.leverage||10,
@@ -373,6 +391,7 @@
       console.warn("loadTrades error:", e);
     }
     renderTradeCards();
+    calcVirtual();
   }
 
   function renderTradeCards(){
@@ -717,6 +736,83 @@
     document.querySelectorAll("#ptoggle button").forEach(x=>x.classList.remove("on"));
     b.classList.add("on"); haptic("sel"); loadPortfolio(b.dataset.p);
   });
+
+  /* ---------- Virtual Calculator ---------- */
+  function calcVirtual(){
+    const bal  = parseFloat(document.getElementById("vcBalance").value) || 0;
+    const lev  = parseFloat(document.getElementById("vcLev").value)     || 1;
+    const el   = document.getElementById("vcResults");
+    if(!bal || Object.keys(TRADES).length === 0){
+      el.innerHTML = '<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">No active signals yet.</div>';
+      return;
+    }
+    let html = "";
+    let totalTP1 = 0, totalTP2 = 0, totalSL = 0;
+    for(const sym in TRADES){
+      const t = TRADES[sym];
+      const p = prices[sym];
+      const entry  = t.entry || (p ? p.last : 0);
+      if(!entry) continue;
+      const tp1    = t.tp;
+      const tp2    = t.tp2 || tp1;
+      const sl     = t.sl;
+      const isLong = t.side === "LONG";
+      const sign   = isLong ? 1 : -1;
+      // position size = balance (full balance used per trade, user chose leverage)
+      const posSize = bal * lev;           // USDT exposure
+      const qty     = posSize / entry;     // coin qty
+      const pnlTP1  = (tp1 - entry) * qty * sign;
+      const pnlTP2  = (tp2 - entry) * qty * sign;
+      const pnlSL   = (sl  - entry) * qty * sign;
+      const pctTP1  = (pnlTP1 / bal * 100);
+      const pctTP2  = (pnlTP2 / bal * 100);
+      const pctSL   = (pnlSL  / bal * 100);
+      totalTP1 += pnlTP1; totalTP2 += pnlTP2; totalSL += pnlSL;
+      const d = sym==="BTCUSDT"?1:sym==="ETHUSDT"||sym==="BNBUSDT"?2:4;
+      html += `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:13px;font-weight:700">${sym.replace("USDT","").replace("-","")}/USDT</span>
+          <span class="side ${t.side.toLowerCase()}" style="padding:3px 8px;border-radius:5px;font-size:11px">${t.side}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px">
+          <div style="background:var(--bg3);border-radius:7px;padding:8px">
+            <div style="color:var(--muted);margin-bottom:3px">Position Size</div>
+            <div style="font-size:13px;font-weight:600">$${fmt(posSize,0)} <span style="color:var(--muted);font-size:10px">${lev}×</span></div>
+          </div>
+          <div style="background:var(--bg3);border-radius:7px;padding:8px">
+            <div style="color:var(--muted);margin-bottom:3px">Entry</div>
+            <div style="font-size:13px;font-weight:600">${fmt(entry,d)}</div>
+          </div>
+          <div style="background:rgba(0,209,143,.08);border-radius:7px;padding:8px">
+            <div style="color:var(--muted);margin-bottom:3px">TP1 Gain</div>
+            <div class="up" style="font-size:13px;font-weight:700">+$${fmt(pnlTP1,2)}</div>
+            <div class="up" style="font-size:10px">+${pctTP1.toFixed(1)}% on balance</div>
+          </div>
+          <div style="background:rgba(0,209,143,.08);border-radius:7px;padding:8px">
+            <div style="color:var(--muted);margin-bottom:3px">TP2 Gain</div>
+            <div class="up" style="font-size:13px;font-weight:700">+$${fmt(pnlTP2,2)}</div>
+            <div class="up" style="font-size:10px">+${pctTP2.toFixed(1)}% on balance</div>
+          </div>
+          <div style="background:rgba(255,77,94,.08);border-radius:7px;padding:8px;grid-column:1/-1">
+            <div style="color:var(--muted);margin-bottom:3px">SL Loss</div>
+            <div class="down" style="font-size:13px;font-weight:700">-$${fmt(Math.abs(pnlSL),2)} <span style="font-size:10px">(${Math.abs(pctSL).toFixed(1)}% of balance)</span></div>
+          </div>
+        </div>
+      </div>`;
+    }
+    // Summary row if multiple trades
+    if(Object.keys(TRADES).length > 1){
+      html += `<div style="border:1px solid var(--gold-dim);border-radius:10px;padding:12px;background:var(--gold-dim)">
+        <div style="font-family:var(--mono);font-size:12px;color:var(--gold);font-weight:700;margin-bottom:8px">TOTAL — All Signals</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px;text-align:center">
+          <div><div style="color:var(--muted)">Best (TP2)</div><div class="up" style="font-size:14px;font-weight:700">+$${fmt(totalTP2,0)}</div></div>
+          <div><div style="color:var(--muted)">Mid (TP1)</div><div class="up" style="font-size:14px;font-weight:700">+$${fmt(totalTP1,0)}</div></div>
+          <div><div style="color:var(--muted)">Worst (SL)</div><div class="down" style="font-size:14px;font-weight:700">-$${fmt(Math.abs(totalSL),0)}</div></div>
+        </div>
+      </div>`;
+    }
+    el.innerHTML = html;
+  }
 
   /* ---------- boot ---------- */
   async function boot(){
