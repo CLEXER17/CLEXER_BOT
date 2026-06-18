@@ -106,6 +106,8 @@ latest_news_context: list = []
 trade_lock = threading.Lock()
 
 DATA_DIR           = os.getenv("DATA_DIR", ".")
+CLEXER_API_URL     = os.getenv("CLEXER_API_URL", "").rstrip("/")
+PUSH_STATE_SECRET  = os.getenv("PUSH_STATE_SECRET", "")
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
@@ -157,19 +159,26 @@ trade_stats = {
 STATE_FILE = os.path.join(DATA_DIR, "clexer_state.json")
 
 def save_state():
+    state = {
+        "trade":        active_trade,
+        "scan1_trades": scan1_trades,
+        "scan2_trades": scan2_trades,
+        "stats":        trade_stats,
+        "history":      signal_history,
+        "outcomes":     trade_outcomes,
+        "scan_history": scan_history,
+    }
     try:
         with open(STATE_FILE, "w") as f:
-            json.dump({
-                "trade":        active_trade,
-                "scan1_trades": scan1_trades,
-                "scan2_trades": scan2_trades,
-                "stats":        trade_stats,
-                "history":      signal_history,
-                "outcomes":     trade_outcomes,
-                "scan_history": scan_history,
-            }, f, indent=2)
+            json.dump(state, f, indent=2)
     except Exception as e:
         print(f"[STATE] Save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+            requests.post(f"{CLEXER_API_URL}/push_state", json=state, headers=hdrs, timeout=5)
+        except Exception as e:
+            print(f"[STATE] Push error: {e}")
 
 def save_active_trade():
     save_state()
