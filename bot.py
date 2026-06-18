@@ -2094,12 +2094,17 @@ FRIEND_HELP = """<b>CLEXER V9.0 Commands</b>
 <i>Note: 2 uses per command per hour</i>"""
 
 FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session"}
+
+# False = scan uses BingX candles + matplotlib (default, no TV bridge needed)
+# True  = scan uses TV bridge candles + TV screenshots (old behaviour)
+SCAN_USE_TV = False
+
 ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/close","/sltobe","/setsl","/settp1","/settp2","/tvstatus",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies"}
+    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending
@@ -2661,6 +2666,31 @@ def handle_command(text, chat_id, message=None):
         except Exception as e:
             send_reply(chat_id, f"❌ Calc error: {e}")
 
+    elif cmd == "/scantv" and is_admin:
+        global SCAN_USE_TV
+        args = text.strip().split()
+        if len(args) < 2 or args[1].lower() not in ("on","off"):
+            status = "🟢 ON (TV Bridge)" if SCAN_USE_TV else "🔵 OFF (BingX)"
+            send_reply(chat_id,
+                f"📡 <b>Scan TV Mode</b>\n\n"
+                f"Current: <b>{status}</b>\n\n"
+                f"• /scantv on  — scan uses TV bridge (candles + screenshots)\n"
+                f"• /scantv off — scan uses BingX only (default, no TV needed)")
+            return
+        new_val = args[1].lower() == "on"
+        SCAN_USE_TV = new_val
+        if new_val:
+            tv_ok = is_tv_online()
+            send_reply(chat_id,
+                f"✅ <b>Scan TV Mode: ON</b>\n\n"
+                f"Scan will now use TV bridge for candles + screenshots.\n"
+                f"TV Bridge status: {'🟢 Online' if tv_ok else '🔴 Offline — start it before scanning'}")
+        else:
+            send_reply(chat_id,
+                f"✅ <b>Scan TV Mode: OFF</b>\n\n"
+                f"Scan now uses BingX candles directly.\n"
+                f"TV bridge not needed. Works anytime.")
+
     elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
         if cmd == "/scan":
             # Force-run both scan1 and scan2 back-to-back
@@ -2818,64 +2848,64 @@ def handle_command(text, chat_id, message=None):
                         f"Waiting for next auto-scan loop.\n\n<i>- CLEXER V9.0 -</i>")
                     return
 
-                # ── Block if TradingView offline — need TV for reliable analysis ─
-                if not is_tv_online():
+                # ── Block if TV mode ON but bridge offline ────────────────────
+                if SCAN_USE_TV and not is_tv_online():
                     send_reply(cid,
                         f"📴 <b>TradingView Offline — Scan{scan_ver} blocked</b>\n\n"
-                        f"Cannot place new trade without TV chart analysis.\n"
-                        f"Will retry at next auto-scan loop.\n\n<i>- CLEXER V9.0 -</i>")
+                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V9.0 -</i>")
                     return
 
                 conf_note = "" if structured else " (no clean structure — lower confidence)"
-                send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Waiting for TradingView...")
+                mode_label = "TV Bridge" if SCAN_USE_TV else "BingX"
+                send_reply(cid, f"🎯 Chosen: <b>{chosen_sym}</b>{conf_note}\n📡 Fetching candles ({mode_label})...")
 
-                # ── Step 3: Switch TV to chosen coin (serialised — only one scan at a time) ──
+                # ── Step 3: Fetch candles — TV bridge or BingX depending on SCAN_USE_TV ──
                 cp = candidate["price"]
-                _tv_data_source = "BingX"   # track where candles came from for error reporting
+                _tv_data_source = "BingX"
+                scan_screenshots = {}
 
-                with _tv_chart_lock:
-                    # Lock held for ENTIRE sequence: switch → verify → fetch all TFs
-                    # get_candles() / get_ticker() in main loop use non-blocking acquire
-                    # so they fall to BingX while we hold this lock — no race condition
-                    send_reply(cid, f"📡 Switching TradingView to {chosen_sym}...")
-                    tv_sym = f"BINGX:{chosen_base}USDT.P"
-                    tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
-                    print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
+                if SCAN_USE_TV and is_tv_online():
+                    with _tv_chart_lock:
+                        send_reply(cid, f"📡 Switching TradingView to {chosen_sym}...")
+                        tv_sym = f"BINGX:{chosen_base}USDT.P"
+                        tv_switched = tv_set_symbol(tv_sym) or tv_set_symbol(f"{chosen_base}USDT")
+                        print(f"  [SCAN] TV switch: {'OK' if tv_switched else 'FAIL'}")
 
-                    # tv_set_symbol already verified 4H+1H candles loaded for this symbol
-                    # No separate /status check needed — if tv_switched=True, data is ready
-                    if tv_switched and is_tv_online():
-                        # /load_symbol already waited for each TF to populate — fetch immediately
-                        _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
-                        _t1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
-                        _t5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
+                        if tv_switched and is_tv_online():
+                            _t4 = tv_get_candles_for(tv_sym,"4h",60, live_price=cp)
+                            _t1 = tv_get_candles_for(tv_sym,"1h",40, live_price=cp)
+                            _t5 = tv_get_candles_for(tv_sym,"5m",30, live_price=cp)
 
-                        if _t4 is None or _t1 is None:
-                            # TV candles failed — either price mismatch or chart didn't load in time
-                            send_reply(cid,
-                                f"⚠️ <b>TV candles unavailable for {chosen_sym}</b>\n"
-                                f"Chart may not have loaded in time, or price data was from wrong symbol.\n"
-                                f"Using BingX candles instead.\n\n<i>- CLEXER V9.0 -</i>")
+                            if _t4 is None or _t1 is None:
+                                send_reply(cid,
+                                    f"⚠️ <b>TV candles unavailable for {chosen_sym}</b>\n"
+                                    f"Using BingX candles instead.\n\n<i>- CLEXER V9.0 -</i>")
+                                _c4 = candidate.get("df4h")
+                                df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
+                                df_1h = get_klines(chosen_sym,"1h",40)
+                                df_5m = get_klines(chosen_sym,"5m",30)
+                                _tv_data_source = "BingX(TV-fallback)"
+                            else:
+                                df_4h = _t4
+                                df_1h = _t1
+                                df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
+                                scan_screenshots = fetch_tv_screenshots()
+                                _tv_data_source = "TradingView"
+                        else:
                             _c4 = candidate.get("df4h")
                             df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
                             df_1h = get_klines(chosen_sym,"1h",40)
                             df_5m = get_klines(chosen_sym,"5m",30)
-                            scan_screenshots = {}
-                            _tv_data_source = "BingX(fallback-mismatch)"
-                        else:
-                            df_4h = _t4
-                            df_1h = _t1
-                            df_5m = _t5 if _t5 is not None else get_klines(chosen_sym,"5m",30)
-                            scan_screenshots = fetch_tv_screenshots()
-                            _tv_data_source = "TradingView"
-                    else:
-                        _c4 = candidate.get("df4h")
-                        df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
-                        df_1h = get_klines(chosen_sym,"1h",40)
-                        df_5m = get_klines(chosen_sym,"5m",30)
-                        scan_screenshots = {}
+                            _tv_data_source = "BingX(TV-switch-fail)"
 
-                    tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC after scan
+                        tv_set_symbol("BINGX:BTCUSDT.P")  # switch back to BTC after scan
+                else:
+                    # BingX mode — direct fetch, no TV bridge needed
+                    _c4 = candidate.get("df4h")
+                    df_4h = _c4 if _c4 is not None else get_klines(chosen_sym,"4h",60)
+                    df_1h = get_klines(chosen_sym,"1h",40)
+                    df_5m = get_klines(chosen_sym,"5m",30)
+                    _tv_data_source = "BingX"
 
                 print(f"  [SCAN] candle source: {_tv_data_source}")
 
