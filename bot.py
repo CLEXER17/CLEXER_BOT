@@ -641,8 +641,37 @@ def build_indicator_context(data: dict) -> str:
     return "\n".join(lines)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  BINANCE FALLBACK
+#  BINGX BTC FALLBACK  (primary fallback — Binance kept as last resort)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def bingx_get_btc_candles(interval, limit):
+    iv_map = {"weekly": "1w", "4h": "4h", "1h": "1h", "5m": "5m", "1m": "1m"}
+    df = bingx_klines("BTC-USDT", iv_map.get(interval, interval), limit)
+    if df is not None:
+        df = df.rename(columns={"volume": "vol"})
+        print(f"      [BINGX BTC] {interval}: {len(df)} candles")
+        return df
+    return None
+
+def bingx_get_btc_ticker():
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                         params={"symbol": "BTC-USDT"}, timeout=8).json()
+        d = r.get("data", {})
+        if isinstance(d, list): d = d[0] if d else {}
+        price = float(d.get("lastPrice", 0))
+        if price > 0:
+            return {
+                "price":  price,
+                "change": float(d.get("priceChangePercent", 0)),
+                "volume": float(d.get("quoteVolume", 0)),
+                "high24": float(d.get("highPrice", price)),
+                "low24":  float(d.get("lowPrice",  price)),
+                "source": "BINGX",
+            }
+    except Exception as e:
+        print(f"      [BINGX BTC TICKER] {e}")
+    return None
 
 def binance_get_candles(interval, limit):
     iv_map = {"weekly": "1w", "4h": "4h", "1h": "1h", "5m": "5m"}
@@ -675,6 +704,10 @@ def get_candles(interval, limit):
                     _tv_chart_lock.release()
             else:
                 print("  [TV] chart locked by scan — using BingX for candles")
+    # BingX primary fallback
+    df = bingx_get_btc_candles(interval, limit)
+    if df is not None and len(df) >= 2: return df
+    # Binance last resort
     return binance_get_candles(interval, limit)
 
 def get_ticker():
@@ -689,6 +722,10 @@ def get_ticker():
                     _tv_chart_lock.release()
             else:
                 print("  [TV] chart locked by scan — using BingX for ticker")
+    # BingX primary fallback
+    tk = bingx_get_btc_ticker()
+    if tk: return tk
+    # Binance last resort
     return binance_get_ticker()
 
 def get_price_range_since(minutes, since_ts: float = None):
@@ -1346,6 +1383,16 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     if tv_on:
         print("  [CLAUDE] Fetching screenshots...")
         screenshots = fetch_tv_screenshots()
+    if not screenshots:
+        # TV offline or returned nothing — generate charts from BingX candles via matplotlib
+        try:
+            charts = generate_all_charts(data, price)
+            key_map = {"weekly": "W", "4h": "4H", "1h": "1H", "5m": "5"}
+            screenshots = {key_map[k]: v for k, v in charts.items() if k in key_map and v}
+            if screenshots:
+                print(f"  [CLAUDE] Generated {len(screenshots)} matplotlib charts from BingX candles")
+        except Exception as e:
+            print(f"  [CLAUDE] matplotlib chart fallback error: {e}")
 
     indicators = {}
     if tv_on:
@@ -3262,35 +3309,71 @@ def handle_command(text, chat_id, message=None):
                     ]
                     smc += f"\n--- 5M (last 10 candles, newest last) ---\n" + "\n".join(last10_5m) + "\n"
 
-                # ── Step 4b: Pre-filter — block post-pump exhaustion before calling Claude ──
-                _skip_reason = None
-                if df_4h is not None and len(df_4h) >= 10:
-                    _c4v = df_4h["close"].values
-                    _o4v = df_4h["open"].values
-                    # Last candle % move
-                    _last_move_pct = (_c4v[-1] - _o4v[-1]) / _o4v[-1] * 100
-                    # Price gain over last 10 candles
-                    _gain_10 = (_c4v[-1] - _c4v[-10]) / _c4v[-10] * 100
-                    # Last candle is a large rejection after a big rally
-                    if _last_move_pct < -8 and _gain_10 > 30:
-                        _skip_reason = f"post-pump rejection: last 4H candle {_last_move_pct:.1f}% after +{_gain_10:.0f}% rally — unsafe entry"
-                    # Last candle is a large rejection (regardless of rally size)
-                    elif _last_move_pct < -10:
-                        _skip_reason = f"large 4H rejection candle {_last_move_pct:.1f}% — wait for structure to settle"
-                    # Still extended: price is >40% above 10-candle-ago close and last candle is red
-                    elif _gain_10 > 40 and _last_move_pct < 0:
-                        _skip_reason = f"parabolic extension +{_gain_10:.0f}% with red last candle — high reversal risk"
+                # ── Step 4b: Pre-filter — block post-pump exhaustion (V9 only) ──
+                if BTC_PROMPT_MODE != "V7":
+                    _skip_reason = None
+                    if df_4h is not None and len(df_4h) >= 10:
+                        _c4v = df_4h["close"].values
+                        _o4v = df_4h["open"].values
+                        _last_move_pct = (_c4v[-1] - _o4v[-1]) / _o4v[-1] * 100
+                        _gain_10 = (_c4v[-1] - _c4v[-10]) / _c4v[-10] * 100
+                        if _last_move_pct < -8 and _gain_10 > 30:
+                            _skip_reason = f"post-pump rejection: last 4H candle {_last_move_pct:.1f}% after +{_gain_10:.0f}% rally — unsafe entry"
+                        elif _last_move_pct < -10:
+                            _skip_reason = f"large 4H rejection candle {_last_move_pct:.1f}% — wait for structure to settle"
+                        elif _gain_10 > 40 and _last_move_pct < 0:
+                            _skip_reason = f"parabolic extension +{_gain_10:.0f}% with red last candle — high reversal risk"
+                    if _skip_reason:
+                        send_reply(cid,
+                            f"⏸ <b>{chosen_sym} — WAIT</b>  {ist_str()}\n\n"
+                            f"Price: <b>${cp:,.6g}</b>  ({candidate['change']:+.2f}%)\n\n"
+                            f"🚫 Pre-filter blocked: {_skip_reason}\n\n"
+                            f"⚠️ <i>Not financial advice — CLEXER V9.0</i>")
+                        return
 
-                if _skip_reason:
-                    send_reply(cid,
-                        f"⏸ <b>{chosen_sym} — WAIT</b>  {ist_str()}\n\n"
-                        f"Price: <b>${cp:,.6g}</b>  ({candidate['change']:+.2f}%)\n\n"
-                        f"🚫 Pre-filter blocked: {_skip_reason}\n\n"
-                        f"⚠️ <i>Not financial advice — CLEXER V9.0</i>")
-                    return
+                # ── Step 5: Claude Opus analysis ──────────────────────────────
+                if BTC_PROMPT_MODE == "V7":
+                    # CLEXER_V7_CLASSIC scan: narrated steps, 2-candle min pause, no Rule 8
+                    analysis_prompt = f"""{smc}
+BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
 
-                # ── Step 5: Claude Opus analysis — trend continuation method ───
-                analysis_prompt = f"""{smc}
+You are CLEXER — elite crypto trader. Analyze {chosen_sym} using this exact algorithm:
+
+STEP 1 — CONFIRM 4H TREND DIRECTION
+HH+HL = BULLISH, LH+LL = BEARISH
+
+STEP 2 — FIND RECENT PAUSE ON 5M
+Look at last 10 x 5M candles (H/L/C per candle)
+Find cluster of similar highs (bearish) or similar lows (bullish)
+Minimum 2 candles needed to form a pause
+
+STEP 3 — SET ENTRY FROM PAUSE
+Entry = lowest low of pause (BULLISH) or highest high of pause (BEARISH)
+dist_pct = abs(current_price - entry) / current_price × 100
+If dist_pct > 1.0% → Entry_Type: MARKET at current_price
+
+STEP 4 — STOP LOSS
+SL = pause extreme ± 0.4%
+
+STEP 5 — TAKE PROFIT
+sl_dist = abs(entry - SL)
+TP1 = entry ± (sl_dist × 2)
+TP2 = entry ± (sl_dist × 4)
+
+OUTPUT (plain text, no markdown, nothing else):
+Signal: BUY / SELL / WAIT
+Entry: [price]
+Entry_Type: MARKET or PULLBACK
+SL: [price]
+TP1: [price]
+TP2: [price]
+R:R: [ratio]
+Confidence: HIGH / MED / LOW
+Reasoning: 3 lines max"""
+                    _max_tokens = 600
+                else:
+                    # CLEXER_V9_CURRENT scan: no narration, 3-candle min, Rule 8 hard block
+                    analysis_prompt = f"""{smc}
 BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
 
 You are CLEXER — elite crypto trader. Analyze {chosen_sym}. DO NOT narrate steps. Go directly to output.
@@ -3315,6 +3398,7 @@ TP2: [price]
 R:R: [ratio]
 Confidence: HIGH / MED / LOW
 Reasoning: [1 line only]"""
+                    _max_tokens = 300
 
                 content = []
                 if scan_screenshots:
@@ -3330,7 +3414,7 @@ Reasoning: [1 line only]"""
                 content.append({"type":"text","text":analysis_prompt})
 
                 r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model="claude-opus-4-6", max_tokens=300,
+                    model="claude-opus-4-6", max_tokens=_max_tokens,
                     messages=[{"role":"user","content":content}])
                 analysis = r2.content[0].text.strip()
 
