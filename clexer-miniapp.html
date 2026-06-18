@@ -416,10 +416,28 @@
   }
 
   /* ---------- CHART ---------- */
-  function loadChart(){
+  const _symExchange = {}; // cache: BEATUSDT -> "BINGX" or "BINANCE"
+  async function resolveExchange(sym){
+    if(_symExchange[sym]) return _symExchange[sym];
+    // Try Binance first
+    try{
+      const r=await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`,{cache:"no-store"});
+      if(r.ok){const d=await r.json();if(d.price){_symExchange[sym]="BINANCE";return "BINANCE";}}
+    }catch(e){}
+    // Try BingX perpetual
+    try{
+      const r=await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${sym.replace("USDT","-USDT")}`,{cache:"no-store"});
+      if(r.ok){const d=await r.json();if(d.data&&d.data.lastPrice){_symExchange[sym]="BINGX";return "BINGX";}}
+    }catch(e){}
+    // Default fallback
+    _symExchange[sym]="BINGX"; return "BINGX";
+  }
+  async function loadChart(){
     document.getElementById("tv_chart").innerHTML="";
     if(typeof TradingView==="undefined"){document.getElementById("fallback").style.display="flex";return;}
-    new TradingView.widget({container_id:"tv_chart",symbol:"BINANCE:"+symbol,interval:interval,theme:"dark",style:"1",locale:"en",autosize:true,timezone:"Asia/Kolkata",hide_side_toolbar:true,allow_symbol_change:false,backgroundColor:"#0A0D12",gridColor:"rgba(30,36,46,0.6)"});
+    const exch = await resolveExchange(symbol);
+    const tvSym = exch==="BINGX" ? `BINGX:${symbol.replace("USDT","USDT.P")}` : `BINANCE:${symbol}`;
+    new TradingView.widget({container_id:"tv_chart",symbol:tvSym,interval:interval,theme:"dark",style:"1",locale:"en",autosize:true,timezone:"Asia/Kolkata",hide_side_toolbar:true,allow_symbol_change:false,backgroundColor:"#0A0D12",gridColor:"rgba(30,36,46,0.6)"});
     setTimeout(()=>{const f=document.getElementById("tv_chart");document.getElementById("fallback").style.display=f.querySelector("iframe")?"none":"flex";},4500);
   }
   function renderChart(){
