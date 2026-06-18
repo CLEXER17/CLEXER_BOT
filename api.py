@@ -270,10 +270,11 @@ def get_active_trades():
             return
         raw_side = t.get("signal", t.get("direction", "LONG"))
         side = "LONG" if raw_side in ("LONG", "BUY") else "SHORT"
+        entry_hit = bool(t.get("entry_hit") or t.get("entry_type") == "MARKET")
         positions.append({
-            "symbol":  t.get("symbol", "BTC-USDT"),
+            "symbol":  t.get("symbol", "BTCUSDT" if source == "main" else ""),
             "side":    side,
-            "status":  t.get("status", "RUNNING"),
+            "status":  "RUNNING" if entry_hit else "PENDING",
             "entry":   t.get("entry"),
             "tp1":     t.get("tp1"),
             "tp2":     t.get("tp2"),
