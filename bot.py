@@ -2538,35 +2538,58 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, f"❌ Audit error: {e}")
 
     elif cmd == "/tvstudies" and is_admin:
-        # Read RSI/EMA/MACD from TradingView chart legend via tv_bridge studies endpoint
+        # Read RSI/EMA/MACD from TradingView chart legend via tv_bridge indicators endpoint
         if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
             send_reply(chat_id, "❌ TV Bridge is offline."); return
-        send_reply(chat_id, "📡 Reading studies from TV chart legend…")
+        send_reply(chat_id, "📡 Reading indicators from TV chart legend…")
         try:
-            data    = fetch_tv_all_data()
-            studies = data.get("studies", [])
-            ticker  = data.get("ticker", {})
-            price   = ticker.get("price", 0)
+            import requests as _req
+            ticker_r = _req.get(f"{TV_BRIDGE_URL}/ticker", timeout=10).json()
+            price    = ticker_r.get("price", 0)
 
-            msg = f"📊 <b>TV Chart Studies</b>  🕐 {ist_str()}\n"
+            # Try /indicators endpoint — reads raw legend text from chart DOM
+            ind_r = _req.get(f"{TV_BRIDGE_URL}/indicators", timeout=10).json()
+            inds  = ind_r if isinstance(ind_r, list) else ind_r.get("indicators", ind_r.get("data", []))
+
+            # Also get studies for names
+            try:
+                st_r   = _req.get(f"{TV_BRIDGE_URL}/studies", timeout=10).json()
+                studies = st_r if isinstance(st_r, list) else st_r.get("studies", [])
+            except Exception:
+                studies = []
+
+            msg = f"📊 <b>TV Indicators (Chart Legend)</b>  🕐 {ist_str()}\n"
             msg += f"Price: <b>{price:,.2f}</b>\n\n"
 
-            if not studies:
-                msg += "❌ No studies detected from chart legend.\n"
-                msg += "Make sure RSI / EMA / MACD indicators are visible on TradingView."
-            else:
-                msg += f"<b>{len(studies)} indicators detected:</b>\n\n"
+            # Show raw indicator text from legend
+            if inds:
+                msg += f"<b>Raw legend values ({len(inds)} items):</b>\n"
+                for item in inds[:20]:
+                    if isinstance(item, dict):
+                        name = item.get("name", item.get("title", "?"))
+                        val  = item.get("value", item.get("values", item.get("output", "")))
+                        if isinstance(val, list):
+                            val = "  ".join(str(v) for v in val[:5])
+                        msg += f"• <b>{name}</b>: {val}\n"
+                    else:
+                        msg += f"• {item}\n"
+            elif studies:
+                msg += f"<b>{len(studies)} indicators on chart:</b>\n"
                 for s in studies:
                     name = s.get("name", "?")
-                    vals = s.get("values", s.get("value", ""))
+                    vals = s.get("values", s.get("value", "—"))
                     if isinstance(vals, list):
-                        vals = "  ".join(str(v) for v in vals[:4])
-                    msg += f"• <b>{name}</b>\n  {vals}\n\n"
+                        vals = "  ".join(str(v) for v in vals[:5]) or "—"
+                    msg += f"• <b>{name}</b>: {vals}\n"
+                msg += "\n⚠️ <b>Values are empty because RSI/EMA/MACD are not on your chart.</b>\n"
+                msg += "Add RSI, EMA, MACD to TradingView chart for legend readings.\n"
+            else:
+                msg += "❌ No indicators found from TV bridge.\n"
 
-            msg += "\n<i>Run /calcstudies to compare with candle-calculated values.</i>"
+            msg += "\n<i>Run /calcstudies to get RSI/EMA/MACD calculated from BingX candles.</i>"
             send_reply(chat_id, msg)
         except Exception as e:
-            send_reply(chat_id, f"❌ Error reading TV studies: {e}")
+            send_reply(chat_id, f"❌ Error reading TV indicators: {e}")
 
     elif cmd == "/calcstudies" and is_admin:
         # Calculate RSI/EMA/MACD from BingX candles using pure pandas (no extra library)
@@ -2575,23 +2598,19 @@ def handle_command(text, chat_id, message=None):
             import pandas as _pd
 
             def get_df(interval, limit=200):
-                raw = bingx_klines("BTC-USDT", interval, limit)
-                if not raw:
+                # get_candles returns a DataFrame with columns: open, high, low, close, vol
+                df = get_candles(interval, limit)
+                if df is None or len(df) < 10:
                     return None
-                df = _pd.DataFrame(raw)
-                df["close"]  = df["c"].astype(float)
-                df["high"]   = df["h"].astype(float)
-                df["low"]    = df["l"].astype(float)
-                df["volume"] = df["v"].astype(float)
                 return df
 
             def calc(df, label):
                 if df is None or len(df) < 30:
-                    return f"❌ {label}: not enough candles\n"
-                c = df["close"]
-                h = df["high"]
-                l = df["low"]
-                v = df["volume"]
+                    return f"❌ {label}: not enough candles ({len(df) if df is not None else 0})\n"
+                c = df["close"].astype(float)
+                h = df["high"].astype(float)
+                l = df["low"].astype(float)
+                v = df["vol"].astype(float) if "vol" in df.columns else _pd.Series([0]*len(c), index=c.index)
 
                 # RSI 14
                 delta = c.diff()
@@ -2633,9 +2652,9 @@ def handle_command(text, chat_id, message=None):
                 return out
 
             msg = f"🧮 <b>Calculated Studies — BingX Candles</b>  🕐 {ist_str()}\n\n"
-            msg += calc(get_df("1H",  200), "1H Timeframe") + "\n"
-            msg += calc(get_df("4H",  100), "4H Timeframe") + "\n"
-            msg += calc(get_df("5",    50), "5M Timeframe")
+            msg += calc(get_df("1h",  200), "1H Timeframe") + "\n"
+            msg += calc(get_df("4h",  100), "4H Timeframe") + "\n"
+            msg += calc(get_df("5m",   50), "5M Timeframe")
             msg += "\n\n<i>Source: BingX OHLCV — TV bridge not needed.</i>"
             msg += "\n<i>Run /tvstudies to compare with chart legend.</i>"
             send_reply(chat_id, msg)
