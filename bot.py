@@ -2461,6 +2461,12 @@ def handle_command(text, chat_id, message=None):
         src = get_current_source()
         tv_status = ("ONLINE" if (tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
             else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - BingX fallback") if TV_BRIDGE_URL else "Not configured - BingX"
+        scan_lines = ""
+        for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
+            for sc in _lst:
+                scan_lines += (f"\n\n<b>Scan{_ver}:</b> {sc['signal']} {sc['symbol']}\n"
+                    f"Entry:{sc['entry']:,.4g} {'✅' if sc.get('entry_hit') else '⏳'}  "
+                    f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g}")
         send_reply(chat_id,
             f"<b>CLEXER V9.0</b>\n\nBot: {st}\n{cd}"
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
@@ -2470,7 +2476,8 @@ def handle_command(text, chat_id, message=None):
             + f"\nSource: <b>{src}</b>\nMode: <b>{'NEW (TV)' if is_tv_online() else 'OLD (Binance)'}</b>\n"
             + (f"TV: {tv_status}\n" if is_admin else "")
             + (f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | News: {'ON' if SEND_NEWS else 'OFF'}\n\n" if is_admin else "\n")
-            + f"<b>Active Trade:</b>\n{ti}")
+            + f"<b>BTC Trade:</b>\n{ti}"
+            + scan_lines)
 
     elif cmd == "/price":
         try:
