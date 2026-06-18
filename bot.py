@@ -746,9 +746,17 @@ def find_swing_points(df, lookback=5):
 def detect_trend(df):
     h, l = find_swing_points(df, 3)
     if len(h) < 2 or len(l) < 2: return "NEUTRAL"
-    hp = [x["price"] for x in h[-2:]]; lp = [x["price"] for x in l[-2:]]
-    if hp[1] > hp[0] and lp[1] > lp[0]: return "BULLISH"
-    if hp[1] < hp[0] and lp[1] < lp[0]: return "BEARISH"
+    # Use last 3 swing points each — majority of consecutive pairs must agree
+    hp = [x["price"] for x in h[-3:]]; lp = [x["price"] for x in l[-3:]]
+    bull_votes = 0; bear_votes = 0
+    for i in range(len(hp)-1):
+        if hp[i+1] > hp[i]: bull_votes += 1
+        elif hp[i+1] < hp[i]: bear_votes += 1
+    for i in range(len(lp)-1):
+        if lp[i+1] > lp[i]: bull_votes += 1
+        elif lp[i+1] < lp[i]: bear_votes += 1
+    if bull_votes > bear_votes and bull_votes >= 2: return "BULLISH"
+    if bear_votes > bull_votes and bear_votes >= 2: return "BEARISH"
     return "NEUTRAL"
 
 def detect_bos_choch(df):
@@ -1126,7 +1134,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     price = ticker["price"]; session = get_session()
     min_conf = required_confidence(); src = get_current_source()
     tv_on = is_tv_online()
-    prompt_mode = "NEW (TradingView)" if tv_on else "OLD (Binance)"
+    prompt_mode = "NEW+TV" if tv_on else "NEW+BingX"
     print(f"  [CLAUDE] Mode:{prompt_mode} | MinConf:{min_conf} | Validate:{validate_trade}")
 
     screenshots = {}
@@ -1185,10 +1193,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     if session == "NEW_YORK": session_note = "\n\nNY SESSION: 4H primary. Give signal if 4H clear."
     elif session == "LONDON": session_note = "\n\nLONDON SESSION: Strong breakouts. Signal if 4H+weekly agree."
 
-    if tv_on:
-        prompt = build_new_prompt(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
-    else:
-        prompt = build_old_prompt(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note)
+    # Always use NEW prompt — candle data quality is same whether from TV or BingX
+    prompt = build_new_prompt(full_summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note)
 
     content = []
     if screenshots:
