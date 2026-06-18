@@ -207,6 +207,7 @@ def load_active_trade():
                   f"Signals:{trade_stats['total_signals']}")
         else:
             print("[STATE] No state file found — fresh start")
+        save_state()  # push to API on startup
     except Exception as e:
         print(f"[STATE] Load error: {e}")
 
