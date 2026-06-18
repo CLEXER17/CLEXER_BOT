@@ -420,7 +420,7 @@
       const live = p?p.last:t.entry;
       const sign = t.side==="LONG"?1:-1;
       // Determine running from live price vs entry — LONG: running if price >= entry, SHORT: if price <= entry
-      const running = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
+      const running = t.status === "RUNNING";
       const pnl = running?(live-t.entry)*t.qty*sign:0;
       const pnlPct = running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
       if(running) tot+=pnl;
@@ -484,7 +484,7 @@
     const tv="https://www.tradingview.com/chart/?symbol=BINANCE:"+symbol;
     if(!t){box.innerHTML=`<div class="notrade">No active CLEXER trade on ${symbol.replace('USDT',' / USDT')}</div><a class="tvbtn" href="${tv}" target="_blank">OPEN IN TRADINGVIEW ↗</a>`;return;}
     const sign=t.side==="LONG"?1:-1, live=p?p.last:t.entry;
-    const running = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
+    const running = t.status==="RUNNING";
     const tpPct=(t.tp-t.entry)/t.entry*100*sign, slPct=(t.sl-t.entry)/t.entry*100*sign;
     const pnl=running?(live-t.entry)*t.qty*sign:0, pnlPct=running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
     const cls=pnl>=0?"up":"down";
@@ -683,9 +683,8 @@
     for(const s in TRADES){
       const t=TRADES[s];
       const p=prices[s];
-      const entryActive = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
-      if(!entryActive) continue;
-      const live=p.last, sign=t.side==="LONG"?1:-1;
+      if(t.status!=="RUNNING") continue;
+      const live=p?p.last:t.entry, sign=t.side==="LONG"?1:-1;
       tot+=(live-t.entry)*t.qty*sign;
     }
     const u=document.getElementById("unrealP");
@@ -881,7 +880,7 @@
       const sl     = t.sl;
       const isLong = t.side === "LONG";
       const sign   = isLong ? 1 : -1;
-      const isRunning = p ? (isLong ? p.last >= entry : p.last <= entry) : true;
+      const isRunning = t.status === "RUNNING";
       if(!isRunning) continue;
       const posSize = bal * lev;
       const qty     = posSize / entry;
