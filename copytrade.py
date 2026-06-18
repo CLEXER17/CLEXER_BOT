@@ -155,8 +155,9 @@ def has_active_signal() -> bool:
 # ─── BINGX API CLIENT ─────────────────────────────────────────────────────────
 
 def _sign(params: dict, secret: str) -> str:
-    # BingX requires params sorted by key, excluding signature itself
-    query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    # BingX requires URL-encoded query string sorted by key
+    from urllib.parse import urlencode
+    query = urlencode(sorted(params.items()))
     return hmac.new(secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
 
 def _bingx(method: str, path: str, api_key: str, api_secret: str, params: dict = None) -> dict:
