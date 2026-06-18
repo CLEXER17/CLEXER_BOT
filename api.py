@@ -121,7 +121,7 @@ def verify_init_data(init_data: str) -> dict:
 
     # optional: reject if older than 1 hour
     auth_date = int(parsed.get("auth_date", 0))
-    if time.time() - auth_date > 3600:
+    if time.time() - auth_date > 86400:
         raise HTTPException(401, "initData expired")
 
     user_json = parsed.get("user", "{}")
