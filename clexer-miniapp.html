@@ -484,7 +484,8 @@
     const t=TRADES[symbol], box=document.getElementById("ticket");
     const tv="https://www.tradingview.com/chart/?symbol=BINANCE:"+symbol;
     if(!t){box.innerHTML=`<div class="notrade">No active CLEXER trade on ${symbol.replace('USDT',' / USDT')}</div><a class="tvbtn" href="${tv}" target="_blank">OPEN IN TRADINGVIEW ↗</a>`;return;}
-    const sign=t.side==="LONG"?1:-1, live=p?p.last:t.entry, running=t.status==="RUNNING";
+    const sign=t.side==="LONG"?1:-1, live=p?p.last:t.entry;
+    const running = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
     const tpPct=(t.tp-t.entry)/t.entry*100*sign, slPct=(t.sl-t.entry)/t.entry*100*sign;
     const pnl=running?(live-t.entry)*t.qty*sign:0, pnlPct=running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
     const cls=pnl>=0?"up":"down";
@@ -881,9 +882,10 @@
       const sl     = t.sl;
       const isLong = t.side === "LONG";
       const sign   = isLong ? 1 : -1;
-      // position size = balance (full balance used per trade, user chose leverage)
-      const posSize = bal * lev;           // USDT exposure
-      const qty     = posSize / entry;     // coin qty
+      const isRunning = p ? (isLong ? p.last >= entry : p.last <= entry) : true;
+      if(!isRunning) continue;
+      const posSize = bal * lev;
+      const qty     = posSize / entry;
       const pnlTP1  = (tp1 - entry) * qty * sign;
       const pnlTP2  = (tp2 - entry) * qty * sign;
       const pnlSL   = (sl  - entry) * qty * sign;
@@ -891,11 +893,15 @@
       const pctTP2  = (pnlTP2 / bal * 100);
       const pctSL   = (pnlSL  / bal * 100);
       totalTP1 += pnlTP1; totalTP2 += pnlTP2; totalSL += pnlSL;
+      const dispS = sym.replace(/-?USDT$/,'').replace(/-$/,'');
       const d = sym==="BTCUSDT"?1:sym==="ETHUSDT"||sym==="BNBUSDT"?2:4;
-      html += `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+      html += `<div style="border:1px solid ${isRunning?'var(--border)':'rgba(255,176,32,.2)'};border-radius:10px;padding:12px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-family:var(--mono);font-size:13px;font-weight:700">${sym.replace("USDT","").replace("-","")}/USDT</span>
-          <span class="side ${t.side.toLowerCase()}" style="padding:3px 8px;border-radius:5px;font-size:11px">${t.side}</span>
+          <span style="font-family:var(--mono);font-size:13px;font-weight:700">${dispS}/USDT</span>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${!isRunning?'<span style="font-size:10px;color:var(--gold);font-family:var(--mono)">⏳ PENDING</span>':''}
+            <span class="side ${t.side.toLowerCase()}" style="padding:3px 8px;border-radius:5px;font-size:11px">${t.side}</span>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px">
           <div style="background:var(--bg3);border-radius:7px;padding:8px">
@@ -937,9 +943,27 @@
     el.innerHTML = html;
   }
 
+  /* ---------- sleep mode (12:30 AM – 6:30 AM IST) ---------- */
+  function isSleepTime(){
+    const now = new Date();
+    const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    const h = ist.getUTCHours(), m = ist.getUTCMinutes();
+    const mins = h * 60 + m;
+    return mins >= 30 && mins < 390; // 00:30 to 06:30
+  }
+
   /* ---------- boot ---------- */
   async function boot(){
-    vcLoad();  // restore saved balance/leverage
+    vcLoad();
+    if(isSleepTime()){
+      document.body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;color:#6B7480;font-family:ui-monospace,monospace;text-align:center;gap:12px">
+        <div style="font-size:28px">🌙</div>
+        <div style="font-size:14px;letter-spacing:.1em;color:#FFB020">CLEXER</div>
+        <div style="font-size:12px">Sleep mode · 12:30 AM – 6:30 AM IST</div>
+        <div style="font-size:11px;margin-top:4px">Markets resume at 6:30 AM</div>
+      </div>`;
+      return;
+    }
     await loadTrades();
     buildQuick();
     loadChart();
