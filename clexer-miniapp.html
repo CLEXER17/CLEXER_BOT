@@ -353,16 +353,29 @@
   }
   document.getElementById("nav").addEventListener("click",e=>{const t=e.target.closest(".tab");if(t)switchTab(t.dataset.tab);});
 
-  /* ---------- price feed (via API backend — avoids CORS) ---------- */
+  /* ---------- price feed — BingX direct, Railway fallback ---------- */
   async function fetchPrice(sym){
+    const bxSym = sym.includes("-") ? sym : sym.replace("USDT","-USDT");
+    // Try BingX directly first (public endpoint, CORS allowed)
     try{
-      const bxSym = sym.includes("-") ? sym : sym.replace("USDT","-USDT");
+      const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${bxSym}`,{cache:"no-store"});
+      if(!r.ok) throw 0;
+      const j = await r.json();
+      let d = j.data;
+      if(Array.isArray(d)) d = d[0];
+      const price = parseFloat(d?.lastPrice||0);
+      if(price > 0){
+        prices[sym] = {last: price, chg: parseFloat(d?.priceChangePercent||0), sim: false};
+        return;
+      }
+    }catch(e){}
+    // Fallback: Railway API (server-side fetch)
+    try{
       const r = await fetch(`${API}/price?sym=${bxSym}`,{cache:"no-store"});
       if(!r.ok) throw 0;
       const j = await r.json();
       prices[sym] = {last: j.price, chg: j.change, sim: false};
     }catch(e){
-      // last resort: keep previous price or show 0
       if(!prices[sym]) prices[sym] = {last: 0, chg: 0, sim: true};
     }
   }
@@ -406,7 +419,9 @@
       const t=TRADES[s], p=prices[s], d=dec(s);
       const live = p?p.last:t.entry;
       const sign = t.side==="LONG"?1:-1;
-      const running = t.status==="RUNNING";
+      // Determine running from live price vs entry — LONG: running if price >= entry, SHORT: if price <= entry
+      const entryActive = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : (t.status==="RUNNING");
+      const running = entryActive;
       const pnl = running?(live-t.entry)*t.qty*sign:0;
       const pnlPct = running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
       if(running) tot+=pnl;
@@ -666,8 +681,11 @@
   function updateUnreal(){
     let tot=0;
     for(const s in TRADES){
-      const t=TRADES[s]; if(t.status!=="RUNNING") continue;
-      const p=prices[s], live=p?p.last:t.entry, sign=t.side==="LONG"?1:-1;
+      const t=TRADES[s];
+      const p=prices[s];
+      const entryActive = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
+      if(!entryActive) continue;
+      const live=p.last, sign=t.side==="LONG"?1:-1;
       tot+=(live-t.entry)*t.qty*sign;
     }
     const u=document.getElementById("unrealP");
