@@ -704,9 +704,11 @@
     // load closed trades
     try{
       const hist = await api("/trades/history");
-      // sync virtual history and render
-      syncVirtualHistory(hist.history||[]);
-      document.getElementById("vhList").innerHTML = renderVirtualHistory();
+      // sync virtual history (async — loads from CloudStorage first)
+      vhLoadCloud(existing => {
+        const updated = syncVirtualHistory(hist.history||[], existing);
+        document.getElementById("vhList").innerHTML = renderVirtualHistory(updated);
+      });
       updateUnreal();
       document.getElementById("closedlist").innerHTML=(hist.history||[]).slice(0,10).map(c=>{
         const win=c.result==="WIN"||c.pnl>0;
@@ -747,30 +749,58 @@
     b.classList.add("on"); haptic("sel"); loadPortfolio(b.dataset.p);
   });
 
-  /* ---------- Virtual Calculator — localStorage persistence ---------- */
-  const VC_KEY = "clexer_vc";
+  /* ---------- Virtual Calculator — Telegram CloudStorage (persistent) ---------- */
+  const CS = TG && TG.CloudStorage;
+
   function vcSave(){
     const bal = document.getElementById("vcBalance").value;
     const lev = document.getElementById("vcLev").value;
-    try{ localStorage.setItem(VC_KEY, JSON.stringify({bal, lev})); }catch(e){}
+    if(CS) CS.setItem("vc_settings", JSON.stringify({bal, lev}));
+    else try{ localStorage.setItem("clexer_vc", JSON.stringify({bal, lev})); }catch(e){}
   }
   function vcLoad(){
-    try{
-      const d = JSON.parse(localStorage.getItem(VC_KEY)||"{}");
-      if(d.bal) document.getElementById("vcBalance").value = d.bal;
-      if(d.lev) document.getElementById("vcLev").value = d.lev;
-    }catch(e){}
+    if(CS){
+      CS.getItem("vc_settings", (err, val) => {
+        if(!err && val){
+          try{
+            const d = JSON.parse(val);
+            if(d.bal) document.getElementById("vcBalance").value = d.bal;
+            if(d.lev) document.getElementById("vcLev").value = d.lev;
+            calcVirtual();
+          }catch(e){}
+        }
+      });
+    } else {
+      try{
+        const d = JSON.parse(localStorage.getItem("clexer_vc")||"{}");
+        if(d.bal) document.getElementById("vcBalance").value = d.bal;
+        if(d.lev) document.getElementById("vcLev").value = d.lev;
+      }catch(e){}
+    }
   }
 
-  // Virtual trade history — keyed by signal id (symbol+time), stored in localStorage
-  const VH_KEY = "clexer_vh";
-  function vhLoad(){ try{ return JSON.parse(localStorage.getItem(VH_KEY)||"[]"); }catch(e){ return []; } }
-  function vhSave(arr){ try{ localStorage.setItem(VH_KEY, JSON.stringify(arr.slice(-100))); }catch(e){} }
+  // Virtual trade history — CloudStorage with localStorage fallback
+  function vhLoad(){
+    try{ return JSON.parse(localStorage.getItem("clexer_vh")||"[]"); }catch(e){ return []; }
+  }
+  function vhSave(arr){
+    const data = JSON.stringify(arr.slice(-100));
+    if(CS) CS.setItem("vc_history", data);
+    try{ localStorage.setItem("clexer_vh", data); }catch(e){}
+  }
+  function vhLoadCloud(cb){
+    if(CS){
+      CS.getItem("vc_history", (err, val) => {
+        if(!err && val){ try{ cb(JSON.parse(val)); return; }catch(e){} }
+        cb(vhLoad());
+      });
+    } else cb(vhLoad());
+  }
 
-  function syncVirtualHistory(closedTrades){
+  function syncVirtualHistory(closedTrades, existingHist){
     const bal  = parseFloat(document.getElementById("vcBalance").value) || 1000;
     const lev  = parseFloat(document.getElementById("vcLev").value)     || 10;
-    const hist = vhLoad();
+    const hist = existingHist || [];
     const seen = new Set(hist.map(h => h.id));
     let changed = false;
     for(const c of closedTrades){
@@ -792,8 +822,8 @@
     return hist;
   }
 
-  function renderVirtualHistory(){
-    const hist = vhLoad().slice().reverse().slice(0,20);
+  function renderVirtualHistory(hist){
+    hist = (hist || vhLoad()).slice().reverse().slice(0,20);
     if(!hist.length) return '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:8px 0">No closed virtual trades yet.</div>';
     let total = 0;
     let rows = hist.map(h => {
