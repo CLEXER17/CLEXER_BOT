@@ -330,25 +330,17 @@
   }
   document.getElementById("nav").addEventListener("click",e=>{const t=e.target.closest(".tab");if(t)switchTab(t.dataset.tab);});
 
-  /* ---------- price feed (BingX public) ---------- */
+  /* ---------- price feed (via API backend — avoids CORS) ---------- */
   async function fetchPrice(sym){
     try{
-      const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${sym.replace("USDT","-USDT")}`,{cache:"no-store"});
+      const bxSym = sym.includes("-") ? sym : sym.replace("USDT","-USDT");
+      const r = await fetch(`${API}/price?sym=${bxSym}`,{cache:"no-store"});
       if(!r.ok) throw 0;
       const j = await r.json();
-      const d = j.data;
-      prices[sym] = {last: parseFloat(d.lastPrice), chg: parseFloat(d.priceChangePercent), sim: false};
+      prices[sym] = {last: j.price, chg: j.change, sim: false};
     }catch(e){
-      // fallback: Binance
-      try{
-        const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`,{cache:"no-store"});
-        const j = await r.json();
-        prices[sym] = {last: parseFloat(j.lastPrice), chg: parseFloat(j.priceChangePercent), sim: false};
-      }catch(e2){
-        const base = TRADES[sym]?.entry || (prices[sym]?.last||100);
-        const last = (prices[sym]?.last||base)*(1+(Math.random()-0.5)*0.0012);
-        prices[sym] = {last, chg:((last-base)/base)*100, sim:true};
-      }
+      // last resort: keep previous price or show 0
+      if(!prices[sym]) prices[sym] = {last: 0, chg: 0, sim: true};
     }
   }
 
