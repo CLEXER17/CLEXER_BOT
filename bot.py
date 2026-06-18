@@ -91,6 +91,7 @@ scan1_trades = []   # list of active scan1 trade dicts (unlimited slots)
 scan2_trades = []   # list of active scan2 trade dicts (unlimited slots)
 last_scan_tick_time = 0
 signal_history        = []
+scan_history          = []   # closed scan trades — appended on TP/SL/missed
 trade_outcomes        = []
 force_scan            = threading.Event()
 bot_paused            = threading.Event()
@@ -150,6 +151,7 @@ trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
     "total_sl": 0, "total_tp1": 0, "total_tp2": 0,
     "total_signals": 0, "missed_entries": 0, "stop_hunts": 0,
+    "scan_sl": 0, "scan_tp1": 0, "scan_tp2": 0, "scan_signals": 0,
 }
 
 STATE_FILE = os.path.join(DATA_DIR, "clexer_state.json")
@@ -158,12 +160,13 @@ def save_state():
     try:
         with open(STATE_FILE, "w") as f:
             json.dump({
-                "trade":       active_trade,
+                "trade":        active_trade,
                 "scan1_trades": scan1_trades,
                 "scan2_trades": scan2_trades,
-                "stats":       trade_stats,
-                "history":     signal_history,
-                "outcomes":    trade_outcomes,
+                "stats":        trade_stats,
+                "history":      signal_history,
+                "outcomes":     trade_outcomes,
+                "scan_history": scan_history,
             }, f, indent=2)
     except Exception as e:
         print(f"[STATE] Save error: {e}")
@@ -172,7 +175,7 @@ def save_active_trade():
     save_state()
 
 def load_active_trade():
-    global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes
+    global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     try:
         if os.path.exists(path):
@@ -180,6 +183,7 @@ def load_active_trade():
             trade_stats.update(d.get("stats", {}))
             signal_history[:] = d.get("history", [])
             trade_outcomes[:]  = d.get("outcomes", [])
+            scan_history[:]    = d.get("scan_history", [])
             t = d.get("trade", {})
             if t.get("signal"):
                 active_trade = t
@@ -765,7 +769,8 @@ def get_recent_range(minutes: int = 3) -> tuple[float, float]:
         return 0.0, 0.0
 
 def get_current_source():
-    return "TradingView" if (TV_BRIDGE_URL and tv_bridge_state["online"]) else "Binance"
+    if TV_BRIDGE_URL and tv_bridge_state["online"]: return "TradingView"
+    return "BingX"
 
 def is_tv_online():
     return bool(TV_BRIDGE_URL and tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
@@ -1942,6 +1947,23 @@ def _all_active_scan_syms() -> set:
     """Return set of all symbols currently active across both scan lists."""
     return {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
 
+def _log_scan_history(t: dict, result: str, close_price: float):
+    """Append closed scan trade to scan_history (max 30)."""
+    scan_history.append({
+        "time":        ist_str(),
+        "symbol":      t.get("symbol", "?"),
+        "signal":      t.get("signal", "?"),
+        "entry":       t.get("entry", 0),
+        "sl":          t.get("sl", 0),
+        "tp1":         t.get("tp1", 0),
+        "tp2":         t.get("tp2", 0),
+        "result":      result,          # TP1 / TP2 / SL / BE
+        "close_price": close_price,
+        "tp1_hit":     t.get("tp1_hit", False),
+    })
+    if len(scan_history) > 30: scan_history.pop(0)
+    save_state()
+
 def _remove_scan_trade(ver: int, symbol: str):
     """Remove a specific symbol from a scan list and save state."""
     lst = _scan_list(ver)
@@ -2072,6 +2094,8 @@ def _tick_one(ver: int, t: dict) -> bool:
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
         if tp2_hit:
+            trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
+            _log_scan_history(t, "TP2", price)
             send_telegram(fmt_scan_update("TP2_HIT", price, t))
             _remove_scan_trade(ver, sym); return True
 
@@ -2080,12 +2104,16 @@ def _tick_one(ver: int, t: dict) -> bool:
             if tp1_hit:
                 t["tp1_hit"] = True
                 t["sl"] = entry
+                trade_stats["scan_tp1"] += 1
                 send_telegram(fmt_scan_update("TP1_HIT", price, t))
 
         sl_margin = entry * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
                  (sig == "SELL" and check_high > sl + sl_margin)
         if sl_hit:
+            trade_stats["scan_sl"] += 1
+            result = "BE" if t["tp1_hit"] else "SL"
+            _log_scan_history(t, result, price)
             send_telegram(fmt_scan_update("SL_HIT", price, t))
             _remove_scan_trade(ver, sym); return True
 
@@ -2423,7 +2451,7 @@ def handle_command(text, chat_id, message=None):
             ) if t["signal"] else "No active trade"
         src = get_current_source()
         tv_status = ("ONLINE" if (tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
-            else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - Binance") if TV_BRIDGE_URL else "Not configured - Binance"
+            else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - BingX fallback") if TV_BRIDGE_URL else "Not configured - BingX"
         send_reply(chat_id,
             f"<b>CLEXER V9.0</b>\n\nBot: {st}\n{cd}"
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
@@ -2479,20 +2507,45 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "No active trade.")
 
     elif cmd == "/history":
-        if not signal_history: send_reply(chat_id, "No history.")
-        else:
-            lines = ["<b>Last Signals</b>\n"]
+        lines = []
+        if signal_history:
+            lines.append("<b>BTC Signals (last 5)</b>")
             for s in reversed(signal_history[-5:]):
-                lines.append(f"{s['signal']} @ {s['entry']:,.0f}  R:R:{s.get('rr','?')}  {s.get('confidence','?')}\n"
-                    f"   SL:{s['sl']:,.0f}  TP1:{s['tp1']:,.0f}  TP2:{s['tp2']:,.0f}\n   {s['time']}\n")
+                lines.append(f"{'🟢' if s['signal']=='BUY' else '🔴'} {s['signal']} @ {s['entry']:,.0f}  "
+                    f"R:R:{s.get('rr','?')}  {s.get('confidence','?')}\n"
+                    f"   SL:{s['sl']:,.0f}  TP1:{s['tp1']:,.0f}  TP2:{s['tp2']:,.0f}\n"
+                    f"   {s['time']}")
+        if scan_history:
+            lines.append("\n<b>Scan Signals (last 5)</b>")
+            for s in reversed(scan_history[-5:]):
+                res = s.get("result","?")
+                emoji = "🏆" if res=="TP2" else ("💰" if res in ("TP1","BE") else "❌")
+                lines.append(f"{emoji} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
+                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n"
+                    f"   {s['time']}")
+        if lines:
             send_reply(chat_id, "\n".join(lines))
+        else:
+            send_reply(chat_id, "No history yet.")
 
     elif cmd == "/stats":
         ts = trade_stats
-        send_reply(chat_id, f"<b>Statistics</b>\n\nSignals: {ts['total_signals']}\n"
-            f"TP1: {ts['total_tp1']} | TP2: {ts['total_tp2']}\nSL: {ts['total_sl']}\n"
-            f"Stop hunts: {ts['stop_hunts']}\nMissed: {ts['missed_entries']}\n"
-            f"Consec SL: {ts['consecutive_sl']}\nCooldown: {ts['cooldown_scans']}")
+        btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
+        btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
+        sc_total = ts['scan_tp1'] + ts['scan_tp2'] + ts['scan_sl'] or 1
+        sc_wr = (ts['scan_tp1'] + ts['scan_tp2']) / sc_total * 100
+        send_reply(chat_id,
+            f"<b>Statistics</b>\n\n"
+            f"<b>BTC Trades</b>\n"
+            f"Signals: {ts['total_signals']}\n"
+            f"TP1: {ts['total_tp1']} | TP2: {ts['total_tp2']} | SL: {ts['total_sl']}\n"
+            f"Win rate: {btc_wr:.0f}%\n"
+            f"Stop hunts: {ts['stop_hunts']} | Missed: {ts['missed_entries']}\n"
+            f"Consec SL: {ts['consecutive_sl']} | Cooldown: {ts['cooldown_scans']}\n\n"
+            f"<b>Scan Trades</b>\n"
+            f"Signals: {ts['scan_signals']}\n"
+            f"TP1: {ts['scan_tp1']} | TP2: {ts['scan_tp2']} | SL: {ts['scan_sl']}\n"
+            f"Win rate: {sc_wr:.0f}%")
 
     elif cmd == "/session":
         s = get_session()
@@ -2572,18 +2625,22 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id,
                 f"<b>BTC Prompt Mode</b>\n\n"
                 f"Current: <b>{mode_label}</b>\n\n"
-                f"/btcmode on  — switch to V7 Classic\n"
-                f"(original TV/Binance split, no CRITICAL header)\n\n"
-                f"/btcmode off — switch to V9 Current\n"
-                f"(always-new-prompt, CRITICAL JSON header)")
+                f"/btcmode on  — V7 Classic\n"
+                f"  TV/BingX split, no CRITICAL header\n"
+                f"  Scan: narrated, min 2 pause candles, no Rule 8\n\n"
+                f"/btcmode off — V9 Current (default)\n"
+                f"  Always new prompt, CRITICAL JSON header\n"
+                f"  Scan: silent, min 3 pause candles, Rule 8 hard block")
         elif parts[1].lower() == "on":
             BTC_PROMPT_MODE = "V7"; save_settings()
             send_reply(chat_id,
                 f"<b>BTC Mode → V7 CLASSIC</b> ✅\n\n"
                 f"Using CLEXER_V7_CLASSIC prompts:\n"
                 f"• TV online → build_new_prompt_v7 (10-step, no CRITICAL)\n"
-                f"• TV offline → build_old_prompt_v7 (Binance + session notes)\n\n"
-                f"Scan logic: unchanged (6-step pause/consolidation)\n\n"
+                f"• TV offline → build_old_prompt_v7 (BingX + session notes)\n\n"
+                f"Scan logic: V7 mode\n"
+                f"• Narrated 5 steps | min 2 pause candles\n"
+                f"• No Rule 8 hard block | no pre-filter\n\n"
                 f"<i>- CLEXER V9.0 -</i>")
         elif parts[1].lower() == "off":
             BTC_PROMPT_MODE = "V9"; save_settings()
@@ -2592,7 +2649,9 @@ def handle_command(text, chat_id, message=None):
                 f"Using CLEXER_V9_CURRENT prompts:\n"
                 f"• Always new prompt (TV or BingX)\n"
                 f"• CRITICAL JSON-only header\n\n"
-                f"Scan logic: unchanged (6-step pause/consolidation)\n\n"
+                f"Scan logic: V9 mode\n"
+                f"• Silent output | min 3 pause candles\n"
+                f"• Rule 8 hard block | post-pump pre-filter\n\n"
                 f"<i>- CLEXER V9.0 -</i>")
         else:
             send_reply(chat_id, "Usage: /btcmode on|off\n\non = V7 Classic\noff = V9 Current (default)")
@@ -3458,6 +3517,7 @@ Reasoning: [1 line only]"""
                         }
                         # Append to the correct scan list
                         _scan_list(scan_ver).append(slot_data)
+                        trade_stats["scan_signals"] += 1
                         save_state()
                         # Send BTC-style signal to group
                         send_telegram(fmt_scan_signal(slot_data))
@@ -3608,7 +3668,7 @@ _auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran at :24
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :24."""
     lbl = "V1" if scan_ver == 1 else "V2"
-    send_telegram(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V9.0 -</i>")
+    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V9.0 -</i>")
     # Reuse the same _do_scan logic by firing handle_command from within
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
     handle_command(cmd, cid)
