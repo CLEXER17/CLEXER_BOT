@@ -420,8 +420,7 @@
       const live = p?p.last:t.entry;
       const sign = t.side==="LONG"?1:-1;
       // Determine running from live price vs entry — LONG: running if price >= entry, SHORT: if price <= entry
-      const entryActive = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : (t.status==="RUNNING");
-      const running = entryActive;
+      const running = p ? (t.side==="LONG" ? p.last>=t.entry : p.last<=t.entry) : false;
       const pnl = running?(live-t.entry)*t.qty*sign:0;
       const pnlPct = running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
       if(running) tot+=pnl;
