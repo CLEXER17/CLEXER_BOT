@@ -744,19 +744,25 @@ def find_swing_points(df, lookback=5):
     return highs, lows
 
 def detect_trend(df):
-    h, l = find_swing_points(df, 3)
-    if len(h) < 2 or len(l) < 2: return "NEUTRAL"
-    # Use last 3 swing points each — majority of consecutive pairs must agree
-    hp = [x["price"] for x in h[-3:]]; lp = [x["price"] for x in l[-3:]]
-    bull_votes = 0; bear_votes = 0
-    for i in range(len(hp)-1):
-        if hp[i+1] > hp[i]: bull_votes += 1
-        elif hp[i+1] < hp[i]: bear_votes += 1
-    for i in range(len(lp)-1):
-        if lp[i+1] > lp[i]: bull_votes += 1
-        elif lp[i+1] < lp[i]: bear_votes += 1
-    if bull_votes > bear_votes and bull_votes >= 2: return "BULLISH"
-    if bear_votes > bull_votes and bear_votes >= 2: return "BEARISH"
+    # lookback=2 — faster swing confirmation, catches recent moves
+    h, l = find_swing_points(df, 2)
+    if len(h) >= 2 and len(l) >= 2:
+        hp = [x["price"] for x in h[-3:]]; lp = [x["price"] for x in l[-3:]]
+        bull_votes = 0; bear_votes = 0
+        for i in range(len(hp)-1):
+            if hp[i+1] > hp[i]: bull_votes += 1
+            elif hp[i+1] < hp[i]: bear_votes += 1
+        for i in range(len(lp)-1):
+            if lp[i+1] > lp[i]: bull_votes += 1
+            elif lp[i+1] < lp[i]: bear_votes += 1
+        if bull_votes > bear_votes and bull_votes >= 2: return "BULLISH"
+        if bear_votes > bull_votes and bear_votes >= 2: return "BEARISH"
+    # Fallback: price slope over last 10 candles (catches fast moves before swings confirm)
+    if len(df) >= 10:
+        c = df["close"].values
+        slope = (c[-1] - c[-10]) / c[-10] * 100
+        if slope >  2.0: return "BULLISH"
+        if slope < -2.0: return "BEARISH"
     return "NEUTRAL"
 
 def detect_bos_choch(df):
