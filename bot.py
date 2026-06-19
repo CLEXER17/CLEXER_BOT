@@ -326,8 +326,15 @@ def take_miniapp_screenshots():
     try:
         with sync_playwright() as p:
             try:
-                browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+                print("  [CHARTS] launching Chromium...")
+                browser = p.chromium.launch(
+                    headless=True,
+                    timeout=30000,
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                          "--disable-setuid-sandbox","--single-process","--no-zygote"])
+                print("  [CHARTS] Chromium launched OK")
             except Exception as e:
+                print(f"  [CHARTS] Chromium launch failed: {e}")
                 return [("ERROR", f"Chromium launch failed: {e}")]
             for label, iv in tf_map:
                 try:
