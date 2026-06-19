@@ -171,27 +171,23 @@ def has_active_signal() -> bool:
 
 # ─── BINGX API CLIENT ─────────────────────────────────────────────────────────
 
-def _sign(params: dict, secret: str) -> str:
-    # BingX requires URL-encoded query string sorted by key
-    from urllib.parse import urlencode
-    query = urlencode(sorted(params.items()))
-    return hmac.new(secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
 
 def _bingx(method: str, path: str, api_key: str, api_secret: str, params: dict = None) -> dict:
+    from urllib.parse import urlencode
     params = dict(params or {})
     params["timestamp"] = int(time.time() * 1000)
-    sig = _sign(params, api_secret.strip())
-    params["signature"] = sig
+    # Build query string the same way for both signing and URL — avoids requests re-encoding mismatch
+    query = urlencode(sorted(params.items()))
+    sig = hmac.new(api_secret.strip().encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+    url = f"{BINGX_BASE}{path}?{query}&signature={sig}"
     headers = {"X-BX-APIKEY": api_key.strip()}
-    print(f"[CT] _bingx {method} {path} key={api_key.strip()[:8]}... secret_len={len(api_secret.strip())} sig={sig[:16]}...")
-    url = BINGX_BASE + path
     try:
         if method == "GET":
-            r = requests.get(url, params=params, headers=headers, timeout=15)
+            r = requests.get(url, headers=headers, timeout=15)
         elif method == "POST":
-            r = requests.post(url, params=params, headers=headers, timeout=15)
+            r = requests.post(url, headers=headers, timeout=15)
         elif method == "DELETE":
-            r = requests.delete(url, params=params, headers=headers, timeout=15)
+            r = requests.delete(url, headers=headers, timeout=15)
         else:
             return {"code": -1, "msg": "unknown method"}
         return r.json()
