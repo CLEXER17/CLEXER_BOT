@@ -2,7 +2,17 @@
 CLEXER Signal Bot V9.0
 """
 
-import os, time, json, base64, requests, anthropic, threading, re
+import os, time, json, base64, requests, anthropic, threading, re, subprocess
+
+# Auto-install Playwright Chromium at startup if missing
+try:
+    from playwright.sync_api import sync_playwright as _pw
+    with _pw() as _p:
+        _p.chromium.executable_path  # just check it exists
+except Exception:
+    print("[STARTUP] Installing Playwright Chromium...")
+    subprocess.run(["playwright", "install", "chromium"], check=False)
+    print("[STARTUP] Playwright Chromium install done")
 
 # Global TradingView chart lock — held by scan while switching symbol + fetching all TFs.
 # All other TV access (price/candle checks) must NOT switch the chart; they use non-blocking
