@@ -695,9 +695,21 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                     params["stopPrice"] = round(sp, 6)
                 return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
 
-            # Set leverage for alt symbol
-            _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
-                   {"symbol": symbol, "side": trade_ps, "leverage": lev})
+            # Set leverage — if BingX rejects (symbol max < lev), binary search down to find max allowed
+            lev_r = _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                           {"symbol": symbol, "side": trade_ps, "leverage": lev})
+            if lev_r.get("code") != 0:
+                # BingX rejected leverage — find max supported by trying lower values
+                for try_lev in [100, 75, 50, 25, 20, 10, 5, 2, 1]:
+                    if try_lev >= lev: continue
+                    r2 = _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                                {"symbol": symbol, "side": trade_ps, "leverage": try_lev})
+                    if r2.get("code") == 0:
+                        lev = try_lev
+                        qty = _calc_qty(user["size_usdt"], price, lev)
+                        half_qty = max(round(qty / 2, 4), 0.001)
+                        print(f"[CT] {cid} {symbol} leverage capped at {lev}x")
+                        break
 
             if entry_type == "MARKET":
                 r = _place_alt(side, "MARKET", qty)
@@ -712,7 +724,7 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                     while time.time() < deadline:
                         attempt += 1
                         if not sl_ok:
-                            sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, ps=trade_ps)
+                            sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, cp=True, ps=trade_ps)
                             sl_ok = sl_r.get("code") == 0
                             if not sl_ok:
                                 print(f"  [CT] @{uname} SL attempt {attempt} FAIL: {sl_r.get('msg','')}")
@@ -884,11 +896,11 @@ def _clear_scan_state(cid: str, user: dict):
 
 
 def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float):
-    """Place a new SL order for an alt-coin symbol (moves SL to BE after TP1)."""
+    """Place new BE SL order for alt-coin after TP1 hit — closes full remaining position."""
     close_side = "SELL" if pos_side == "LONG" else "BUY"
     _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
            {"symbol": symbol, "side": close_side, "positionSide": pos_side,
-            "type": "STOP_MARKET", "quantity": 0.001,
+            "type": "STOP_MARKET", "closePosition": "true",
             "stopPrice": round(sl_price, 6)})
 
 
@@ -1488,6 +1500,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
             for st in targets_scan:
                 sym     = st["symbol"]
+                # Skip if user already has an open position for this symbol
+                if user.get("scan_symbol") == sym:
+                    results.append(f"⏭ {sym} — already in position, skipping"); continue
                 side    = st["signal"]
                 entry   = float(st["entry"])
                 sl      = float(st["sl"])
@@ -1500,25 +1515,59 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     qty = _calc_qty(user["size_usdt"], entry, lev)
                     half = max(round(qty / 2, 4), 0.001)
 
-                    _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
-                           {"symbol": sym, "side": trade_ps, "leverage": lev})
+                    lev_r = _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                                   {"symbol": sym, "side": trade_ps, "leverage": lev})
+                    if lev_r.get("code") != 0:
+                        for try_lev in [100, 75, 50, 25, 20, 10, 5, 2, 1]:
+                            if try_lev >= lev: continue
+                            if _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                                      {"symbol": sym, "side": trade_ps, "leverage": try_lev}).get("code") == 0:
+                                lev = try_lev; qty = _calc_qty(user["size_usdt"], entry, lev)
+                                half = max(round(qty / 2, 4), 0.001); break
 
-                    def _alt(s, ot, q, sp=0, ps=""):
+                    def _alt(s, ot, q, sp=0, ps="", close_all=False):
                         ps = ps or trade_ps
-                        p = {"symbol": sym, "side": s, "positionSide": ps, "type": ot, "quantity": round(q, 4)}
+                        p = {"symbol": sym, "side": s, "positionSide": ps, "type": ot}
+                        if close_all:
+                            p["closePosition"] = "true"
+                        else:
+                            p["quantity"] = round(q, 4)
                         if sp and ot in ("STOP_MARKET","TAKE_PROFIT_MARKET"): p["stopPrice"] = round(sp, 6)
                         return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, p)
 
                     r = _alt(side, "MARKET", qty)
                     if r.get("code") == 0:
-                        _alt(close_side, "STOP_MARKET",         qty,  sp=sl)
-                        if tp1: _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1)
-                        if tp2: _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2)
+                        # Retry loop — position may not be confirmed immediately
+                        sl_ok = tp1_ok = tp2_ok = False
+                        deadline = time.time() + 60
+                        attempt = 0
+                        while time.time() < deadline:
+                            attempt += 1
+                            if not sl_ok:
+                                sl_r = _alt(close_side, "STOP_MARKET", qty, sp=sl, close_all=True)
+                                sl_ok = sl_r.get("code") == 0
+                                if not sl_ok: print(f"  [CT] scan retry SL attempt {attempt}: {sl_r.get('msg','')}")
+                            if tp1 and not tp1_ok:
+                                tp1_ok = _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1).get("code") == 0
+                            if tp2 and not tp2_ok:
+                                tp2_ok = _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2).get("code") == 0
+                            if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
+                                break
+                            time.sleep(6)
+
+                        if not sl_ok:
+                            # SL failed — close position to protect user
+                            _bingx("POST", "/openApi/swap/v2/trade/closePosition",
+                                   api_key, api_secret, {"symbol": sym, "positionSide": trade_ps})
+                            results.append(f"🚨 {sym} — SL failed after 60s, position auto-closed")
+                            continue
+
                         user["scan_symbol"] = sym; user["scan_side"] = side
                         user["scan_entry"] = entry; user["scan_sl"] = sl
                         user["scan_tp1"] = tp1; user["scan_tp2"] = tp2; user["scan_qty"] = qty
                         _set(target, user)
-                        results.append(f"✅ {sym} {side} {qty:.4f} lev={lev}x")
+                        warn = ("" if tp1_ok else " ⚠️TP1 failed") + ("" if tp2_ok else " ⚠️TP2 failed")
+                        results.append(f"✅ {sym} {side} {qty:.4f} lev={lev}x{warn}")
                     else:
                         results.append(f"❌ {sym}: {r.get('msg','?')}")
                 except Exception as e:
