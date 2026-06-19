@@ -1134,8 +1134,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Usage: /setsize 50"); return
         try:
             size = float(parts[1])
-            if size < 5 or size > 10000:
-                send_reply_fn(chat_id, "Size must be $5–$10,000 USDT"); return
+            if size < 0.5 or size > 10000:
+                send_reply_fn(chat_id, "Size must be $0.50–$10,000 USDT"); return
             user = _get(cid) or _default_user(username)
             user["size_usdt"] = size; _set(cid, user)
             send_reply_fn(chat_id,
