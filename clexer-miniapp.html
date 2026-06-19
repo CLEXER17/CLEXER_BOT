@@ -236,16 +236,22 @@
         <div class="field" style="margin-bottom:0"><label id="sizeLabel">Amount per trade (USDT)</label><input id="sizeVal" value="50" inputmode="decimal"/></div>
       </div>
       <div class="card">
-        <div class="ttl">Leverage</div>
-        <div class="field" style="margin-bottom:0"><label>Leverage · <span id="levVal" style="color:var(--gold)">10×</span></label><input type="range" id="lev" min="1" max="50" value="10"/></div>
-      </div>
-      <div class="card">
-        <div class="ttl">Max Risk Per Trade</div>
-        <div class="field"><div class="seg" id="riskMode"><button class="on" data-m="pct">% of Balance</button><button data-m="usdt">Fixed USDT</button></div></div>
-        <div class="field" style="margin-bottom:0">
-          <label id="riskLabel">Risk amount (%)</label>
-          <input id="riskVal" value="2" inputmode="decimal"/>
-          <div class="help" id="riskHelp">Caps the loss if SL is hit, as a % of your account balance.</div>
+        <div class="ttl">Leverage Mode</div>
+        <div class="field"><div class="seg" id="levMode"><button class="on" data-m="auto">Auto (by Risk $)</button><button data-m="manual">Manual</button></div></div>
+        <!-- AUTO mode -->
+        <div id="levAutoWrap">
+          <div class="field" style="margin-bottom:4px">
+            <label>Max loss per trade (USDT)</label>
+            <input id="riskVal" value="2" inputmode="decimal" placeholder="e.g. 2"/>
+          </div>
+          <div class="help" id="levAutoHelp" style="margin-bottom:0">Leverage is auto-set each trade so you never lose more than this amount at SL.</div>
+        </div>
+        <!-- MANUAL mode -->
+        <div id="levManualWrap" style="display:none">
+          <div class="field" style="margin-bottom:0">
+            <label>Leverage · <span id="levVal" style="color:var(--gold)">10×</span></label>
+            <input type="range" id="lev" min="1" max="125" value="10"/>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -346,8 +352,8 @@
   let TRADES = {};   // keyed by symbol, filled from API
   const QUICK = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"];
   const prices = {};
-  const copyState = { connected: false, key: "", mirrored: {}, sizeMode: "fixed", riskMode: "pct" };
-  let symbol = "BTCUSDT", interval = "5", curTab = "chart";
+  const copyState = { connected: false, key: "", mirrored: {}, sizeMode: "fixed", levMode: "auto" };
+  let symbol = "BTCUSDT", interval = new URLSearchParams(location.search).get("interval") || "5", curTab = "chart";
   const CIRC = 2 * Math.PI * 44;
   let curP = "30D";
 
@@ -582,15 +588,14 @@
     try{
       const s = await api("/copy/settings");
       copyState.sizeMode = s.size_mode||"fixed";
-      copyState.riskMode = s.risk_mode||"pct";
+      copyState.levMode  = s.lev_mode||(s.risk_usdt ? "auto" : "manual");
       document.getElementById("sizeVal").value = s.size_val||50;
       document.getElementById("lev").value = s.leverage||10;
       document.getElementById("levVal").textContent = (s.leverage||10)+"×";
-      document.getElementById("riskVal").value = s.risk_val||2;
+      document.getElementById("riskVal").value = s.risk_usdt||2;
       document.getElementById("auto").checked = s.auto_copy||false;
-      // sync seg buttons
       document.querySelectorAll("#sizeMode button").forEach(b=>b.classList.toggle("on",b.dataset.m===copyState.sizeMode));
-      document.querySelectorAll("#riskMode button").forEach(b=>b.classList.toggle("on",b.dataset.m===copyState.riskMode));
+      applyLevMode(copyState.levMode);
     }catch(e){}
     renderAcct();
     renderCopySignals();
@@ -624,13 +629,14 @@
 
   async function saveCopySettings(){
     try{
+      const isAuto = copyState.levMode === "auto";
       await api("/copy/settings",{method:"POST",body:JSON.stringify({
         auto_copy: document.getElementById("auto").checked,
         size_mode: copyState.sizeMode,
         size_val: parseFloat(document.getElementById("sizeVal").value)||50,
-        leverage: parseInt(document.getElementById("lev").value)||10,
-        risk_mode: copyState.riskMode,
-        risk_val: parseFloat(document.getElementById("riskVal").value)||2
+        lev_mode: copyState.levMode,
+        leverage: isAuto ? null : (parseInt(document.getElementById("lev").value)||10),
+        risk_usdt: isAuto ? (parseFloat(document.getElementById("riskVal").value)||2) : null,
       })});
     }catch(e){ console.warn("saveCopySettings:", e); }
   }
@@ -649,12 +655,16 @@
     if(!copyState.connected){alert("Connect your BingX account first.");return;}
     const t=TRADES[s];
     const sizeVal=parseFloat(document.getElementById("sizeVal").value)||50;
-    const lev=parseInt(document.getElementById("lev").value)||10;
+    const isAuto=copyState.levMode==="auto";
+    const body={
+      symbol:s, side:t.side, entry:t.entry, tp:t.tp, sl:t.sl,
+      size_usdt: sizeVal,
+      lev_mode: copyState.levMode,
+      leverage: isAuto ? null : (parseInt(document.getElementById("lev").value)||10),
+      risk_usdt: isAuto ? (parseFloat(document.getElementById("riskVal").value)||2) : null,
+    };
     try{
-      await api("/copy/mirror",{method:"POST",body:JSON.stringify({
-        symbol:s, side:t.side, entry:t.entry, tp:t.tp, sl:t.sl,
-        size_usdt: copyState.sizeMode==="fixed"?sizeVal:sizeVal, leverage:lev
-      })});
+      await api("/copy/mirror",{method:"POST",body:JSON.stringify(body)});
       copyState.mirrored[s]={};
       renderCopySignals(); haptic("sel");
     }catch(e){ alert("Mirror failed: "+e.message); }
@@ -668,24 +678,20 @@
     document.getElementById("sizeVal").value=b.dataset.m==="fixed"?"50":"5";
     haptic("sel");
   });
-  document.getElementById("lev").addEventListener("input",e=>document.getElementById("levVal").textContent=e.target.value+"×");
-  document.getElementById("riskMode").addEventListener("click",e=>{
+  function applyLevMode(mode){
+    copyState.levMode = mode;
+    document.querySelectorAll("#levMode button").forEach(b=>b.classList.toggle("on", b.dataset.m===mode));
+    document.getElementById("levAutoWrap").style.display   = mode==="auto"   ? "" : "none";
+    document.getElementById("levManualWrap").style.display = mode==="manual" ? "" : "none";
+  }
+  document.getElementById("levMode").addEventListener("click",e=>{
     const b=e.target.closest("button"); if(!b)return;
-    document.querySelectorAll("#riskMode button").forEach(x=>x.classList.remove("on"));
-    b.classList.add("on"); copyState.riskMode=b.dataset.m;
-    if(b.dataset.m==="pct"){
-      document.getElementById("riskLabel").textContent="Risk amount (%)";
-      document.getElementById("riskVal").value="2";
-      document.getElementById("riskHelp").textContent="Caps the loss if SL is hit, as a % of your account balance.";
-    }else{
-      document.getElementById("riskLabel").textContent="Risk amount (USDT)";
-      document.getElementById("riskVal").value="25";
-      document.getElementById("riskHelp").textContent="Caps the loss if SL is hit, as a fixed USDT amount.";
-    }
-    haptic("sel");
+    applyLevMode(b.dataset.m); haptic("sel"); saveCopySettings();
   });
+  document.getElementById("lev").addEventListener("input",e=>document.getElementById("levVal").textContent=e.target.value+"×");
   document.getElementById("auto").addEventListener("change", saveCopySettings);
   document.getElementById("lev").addEventListener("change", saveCopySettings);
+  document.getElementById("riskVal").addEventListener("change", saveCopySettings);
 
   /* ---------- PORTFOLIO ---------- */
   function countUp(el,to,prefix="",d=0,ms=800){
