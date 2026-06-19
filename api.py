@@ -207,6 +207,23 @@ def startup():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
+# ── maintenance mode ──────────────────────────────────────────────────────────
+_maintenance = {"on": False, "msg": "Under Maintenance"}
+
+@app.get("/maintenance")
+def get_maintenance():
+    return _maintenance
+
+@app.post("/maintenance")
+async def set_maintenance(request: Request):
+    if PUSH_STATE_SECRET:
+        if request.headers.get("X-Push-Secret","") != PUSH_STATE_SECRET:
+            raise HTTPException(403, "Forbidden")
+    body = await request.json()
+    _maintenance["on"]  = bool(body.get("on", False))
+    _maintenance["msg"] = body.get("msg", "Under Maintenance")
+    return _maintenance
+
 # ── price (server-side BingX fetch — avoids browser CORS block) ───────────────
 @app.get("/price")
 def get_price(sym: str = "BTC-USDT"):
@@ -281,6 +298,7 @@ def get_active_trades():
             "sl":      t.get("sl"),
             "qty":     t.get("qty"),
             "leverage":t.get("leverage", 10),
+            "tp1_hit": bool(t.get("tp1_hit", False)),
             "source":  source,
             "opened_at": t.get("opened_at"),
         })
