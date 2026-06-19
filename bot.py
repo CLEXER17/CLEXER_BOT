@@ -2500,6 +2500,7 @@ ADMIN_HELP = """<b>CLEXER V9.0 - Admin Commands</b>
 /stats - Win/loss stats
 /session - Current session
 /tvstatus - TV connection
+/force_reload - Clear TV bridge cache + 5min warmup (bridge only)
 
 <b>TRADE CONTROL</b>
 /close - Close BTC bot trade
@@ -2511,9 +2512,13 @@ ADMIN_HELP = """<b>CLEXER V9.0 - Admin Commands</b>
 /settp1 63000
 /settp2 65000
 
-<b>COIN RESEARCH</b>
-/scan - Best coins to trade now (Claude AI)
-/coin ETHUSDT - Analyze any coin
+<b>COIN RESEARCH &amp; SCAN</b>
+/scan - Force-run Scan1 + Scan2 (best coins now)
+/scan1 - Run Scan1 only (big movers)
+/scan2 - Run Scan2 only (fresh momentum)
+/closescan - Clear all active scan trades
+/coin ETHUSDT - Analyze any coin (Claude AI)
+/compare - Run V9+B1 × BingX+TV side-by-side
 
 <b>CHANNELS</b>
 /channels - show status
@@ -2523,10 +2528,17 @@ ADMIN_HELP = """<b>CLEXER V9.0 - Admin Commands</b>
 <b>CHARTS (off by default)</b>
 /images on|off
 /setimages weekly,4h,1h,5m
+/charts - Send all TF screenshots to DM
+/chartson - Enable /charts feature
+/chartsoff - Disable /charts (saves credits)
 
 <b>NEWS (off by default)</b>
 /news on|off
 /latestnews
+
+<b>MINI APP</b>
+/miniapp pause [msg] - Put mini app in maintenance
+/miniapp resume - Bring mini app back live
 
 <b>COPY TRADE (ADMIN)</b>
 /users - Copy trade users list
@@ -2577,7 +2589,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE
@@ -2618,6 +2630,16 @@ def handle_command(text, chat_id, message=None):
 
     elif cmd == "/tvstatus":
         cmd_tvstatus(chat_id)
+
+    elif cmd == "/force_reload":
+        if TV_BRIDGE_URL:
+            try:
+                r = requests.post(f"{TV_BRIDGE_URL}/reload", timeout=10)
+                send_reply(chat_id, f"✅ Bridge reload triggered.\n\nTV bridge will reconnect + warm up candles (~5 min).\nUse /tvstatus to check progress.")
+            except Exception as e:
+                send_reply(chat_id, f"❌ Bridge unreachable: {e}\n\nMake sure ngrok tunnel is running.")
+        else:
+            send_reply(chat_id, "❌ TV_BRIDGE_URL not set — bridge not configured.")
 
     elif cmd == "/status":
         t = active_trade; st = "PAUSED (/go to start)" if bot_paused.is_set() else "RUNNING"
