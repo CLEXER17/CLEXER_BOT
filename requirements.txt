@@ -12,5 +12,5 @@ cryptography
 fastapi
 uvicorn
 psycopg2-binary
-cryptography
 pydantic
+playwright
