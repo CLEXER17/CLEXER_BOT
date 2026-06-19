@@ -6,7 +6,7 @@ import os, time, json, base64, requests, anthropic, threading, re, subprocess
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
-subprocess.run(["playwright", "install", "chromium"], check=False, capture_output=False)
+subprocess.run(["playwright", "install", "--with-deps", "chromium"], check=False, capture_output=False)
 print("[STARTUP] Playwright Chromium ready")
 
 # Global TradingView chart lock — held by scan while switching symbol + fetching all TFs.
