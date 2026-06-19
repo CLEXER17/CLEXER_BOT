@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>CLEXER</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="https://s3.tradingview.com/tv.js"></script>
 <style>
   :root{
     --bg:#0A0D12;--bg2:#12161D;--bg3:#171C25;--border:#1E242E;
@@ -31,6 +30,7 @@
   .live{display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.12em;color:var(--muted);font-family:var(--mono);}
   .live .pulse{width:7px;height:7px;border-radius:50%;background:var(--long);animation:pulse 1.6s infinite;}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(0,209,143,.5);}70%{box-shadow:0 0 0 7px rgba(0,209,143,0);}100%{box-shadow:0 0 0 0 rgba(0,209,143,0);}}
+  @keyframes spin{to{transform:rotate(360deg);}}
   .eyebrow{font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin-top:11px;}
 
   /* CHART */
@@ -73,17 +73,30 @@
   .sumcard{display:flex;justify-content:space-between;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;}
   .sumcard .k{font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;}
   .sumcard .v{font-family:var(--mono);font-size:20px;font-weight:700;margin-top:4px;}
-  .tcard{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:13px;margin-bottom:11px;}
-  .tcard .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;}
-  .tcard .coin{display:flex;align-items:center;gap:9px;}
-  .tcard .cname{font-family:var(--mono);font-size:15px;font-weight:700;}
-  .tcard .pnlbig{font-family:var(--mono);font-size:16px;font-weight:700;text-align:right;}
-  .tcard .pnlpct{font-family:var(--mono);font-size:11px;}
-  .levels{display:flex;gap:14px;margin-top:4px;}
-  .levels div{font-family:var(--mono);font-size:11px;color:var(--muted);}
-  .levels b{font-weight:600;}
-  .prog{height:6px;border-radius:3px;background:var(--bg3);margin-top:11px;position:relative;overflow:hidden;}
+
+  /* BingX-style trade card */
+  .tcard{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px 15px;margin-bottom:12px;}
+  .tc-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}
+  .tc-sym{font-family:var(--mono);font-size:16px;font-weight:800;letter-spacing:.02em;}
+  .tc-badges{display:flex;gap:6px;margin-top:5px;align-items:center;}
+  .tc-lev{font-family:var(--mono);font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--muted);}
+  .tc-pnl{text-align:right;}
+  .tc-pnl-label{font-size:9px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:3px;}
+  .tc-pnl-val{font-family:var(--mono);font-size:20px;font-weight:700;}
+  .tc-pnl-pct{font-family:var(--mono);font-size:12px;margin-top:1px;}
+  .tc-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border-radius:10px;overflow:hidden;margin-bottom:10px;}
+  .tc-cell{background:var(--bg3);padding:9px 10px;}
+  .tc-cell .k{font-size:9px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin-bottom:4px;}
+  .tc-cell .v{font-family:var(--mono);font-size:13px;font-weight:600;}
+  .tc-cell .v.up{color:var(--long);}
+  .tc-cell .v.down{color:var(--short);}
+  .tc-tpsl{display:flex;gap:8px;margin-top:2px;}
+  .tc-tpsl-box{flex:1;background:var(--bg3);border-radius:9px;padding:9px 11px;display:flex;justify-content:space-between;align-items:center;}
+  .tc-tpsl-box .k{font-size:10px;color:var(--muted);}
+  .tc-tpsl-box .v{font-family:var(--mono);font-size:13px;font-weight:600;}
+  .prog{height:5px;border-radius:3px;background:var(--bg3);margin-top:10px;position:relative;overflow:hidden;}
   .prog i{position:absolute;top:0;bottom:0;left:0;border-radius:3px;}
+  .tc-pending{text-align:center;padding:8px 0 2px;font-family:var(--mono);font-size:11px;color:var(--gold);letter-spacing:.06em;}
 
   /* COPY */
   .card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;}
@@ -401,6 +414,7 @@
           tp: parseFloat(t.tp1)||parseFloat(t.tp)||0,
           tp2: parseFloat(t.tp2)||0,
           sl: parseFloat(t.sl)||0,
+          tp1_hit: t.tp1_hit||false,
           qty: parseFloat(t.qty)||0,
           lev: t.leverage||10,
           source: t.source
@@ -419,25 +433,63 @@
       const t=TRADES[s], p=prices[s], d=dec(s);
       const live = p?p.last:t.entry;
       const sign = t.side==="LONG"?1:-1;
-      // Determine running from live price vs entry — LONG: running if price >= entry, SHORT: if price <= entry
-      const running = t.status === "RUNNING";
-      const pnl = running?(live-t.entry)*t.qty*sign:0;
+      const running = t.status==="RUNNING";
+      const pnl = running&&t.qty?(live-t.entry)*t.qty*sign:0;
       const pnlPct = running?((live-t.entry)/t.entry*100*sign)*t.lev:0;
       if(running) tot+=pnl;
       n++;
-      const cls = pnl>=0?"up":"down";
+      const cls = pnlPct>=0?"up":"down";
+      const dispSym = s.replace(/-?USDT$/,'').replace(/-$/,'');
+      // Margin & position
+      const margin = t.qty ? fmt(t.qty*t.entry/t.lev,2) : '--';
+      const pos    = t.qty ? t.qty.toFixed(4) : '--';
+      // Risk % = distance to SL / margin
+      const riskPct = t.entry&&t.sl ? (Math.abs(t.entry-t.sl)/t.entry*t.lev*100).toFixed(1)+'%' : '--';
+      // Est liq price (simplified: entry ± 90% of 1/lev move)
+      const liqDist = t.entry / t.lev * 0.9;
+      const liq = t.side==="LONG" ? fmt(t.entry-liqDist,d) : fmt(t.entry+liqDist,d);
+      // Progress bar
       let prog=50, col="var(--gold)";
       if(running){
         const span=Math.abs(t.tp-t.sl);
-        prog=Math.max(0,Math.min(100,((live-t.sl)/span)*100));
-        if(t.side==="SHORT") prog=100-prog;
-        col=pnl>=0?"var(--long)":"var(--short)";
+        if(span>0){
+          prog=Math.max(0,Math.min(100,((live-t.sl)/span)*100));
+          if(t.side==="SHORT") prog=100-prog;
+        }
+        col=pnlPct>=0?"var(--long)":"var(--short)";
       }
-      const dispSym = s.replace(/-?USDT$/,'').replace(/-$/,'');
-      html+=`<div class="tcard"><div class="top"><div class="coin"><span class="side ${t.side.toLowerCase()}">${t.side}</span><div><div class="cname">${dispSym}/USDT</div><div style="font-family:var(--mono);font-size:10px;color:var(--muted)">${running?'● RUNNING':'○ PENDING'} · ${t.lev}×</div></div></div>
-      <div><div class="pnlbig ${running?cls:''}" ${!running?'style="color:var(--muted)"':''}>${running?(pnl>=0?'+':'')+'$'+fmt(Math.abs(pnl),2):'pending'}</div>${running?`<div class="pnlpct ${cls}">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%</div>`:''}</div></div>
-      <div class="levels"><div>Entry <b style="color:var(--text)">${fmt(t.entry,d)}</b></div><div>TP <b class="up">${fmt(t.tp,d)}</b></div><div>SL <b class="down">${fmt(t.sl,d)}</b></div></div>
-      ${running?`<div class="prog"><i style="width:${prog}%;background:${col}"></i></div>`:''}</div>`;
+      html+=`<div class="tcard">
+        <div class="tc-head">
+          <div>
+            <div class="tc-sym">${dispSym}/USDT</div>
+            <div class="tc-badges">
+              <span class="side ${t.side.toLowerCase()}">${t.side}</span>
+              <span style="font-family:var(--mono);font-size:10px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--muted)">Isolated</span>
+              <span style="font-family:var(--mono);font-size:10px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--muted)">${t.lev}X</span>
+            </div>
+          </div>
+          <div class="tc-pnl">
+            <div class="tc-pnl-label">Unrealized PnL (USDT)</div>
+            <div class="tc-pnl-val ${running?cls:''}"> ${running?(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%':'--'}</div>
+            ${running?`<div class="tc-pnl-pct ${cls}">(${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%)</div>`:''}
+          </div>
+        </div>
+        ${!running?`<div class="tc-pending">⏳ Waiting for entry fill at ${fmt(t.entry,d)}</div>`:''}
+        <div class="tc-grid" style="margin-top:${running?'0':'8px'}">
+          <div class="tc-cell"><div class="k">Position</div><div class="v">${pos}</div></div>
+          <div class="tc-cell"><div class="k">Margin (USDT)</div><div class="v">${margin}</div></div>
+          <div class="tc-cell"><div class="k">Risk</div><div class="v ${parseFloat(riskPct)>50?'down':''}">${riskPct}</div></div>
+          <div class="tc-cell"><div class="k">Avg Open</div><div class="v">${fmt(t.entry,d)}</div></div>
+          <div class="tc-cell"><div class="k">Mark Price</div><div class="v">${p?fmt(live,d):'--'}</div></div>
+          <div class="tc-cell"><div class="k">Est. Liq.</div><div class="v down">${liq}</div></div>
+        </div>
+        <div class="tc-tpsl">
+          <div class="tc-tpsl-box"><span class="k">TP1 ${t.tp1_hit?'✅':''}</span><span class="v up">${t.tp?fmt(t.tp,d):'--'}</span></div>
+          <div class="tc-tpsl-box"><span class="k">TP2</span><span class="v up">${t.tp2?fmt(t.tp2,d):'--'}</span></div>
+          <div class="tc-tpsl-box"><span class="k">SL</span><span class="v down">${t.sl?fmt(t.sl,d):'--'}</span></div>
+        </div>
+        ${running?`<div class="prog"><i style="width:${prog}%;background:${col}"></i></div>`:''}
+      </div>`;
     }
     if(!html) html=`<div class="notrade">No active trades</div>`;
     document.getElementById("tradeList").innerHTML=html;
@@ -464,13 +516,22 @@
     // Default fallback
     _symExchange[sym]="BINGX"; return "BINGX";
   }
+  function loadTVScript(cb){
+    if(typeof TradingView!=="undefined"){cb();return;}
+    const s=document.createElement("script");
+    s.src="https://s3.tradingview.com/tv.js";
+    s.onload=cb; s.onerror=()=>cb();
+    document.head.appendChild(s);
+  }
   async function loadChart(){
-    document.getElementById("tv_chart").innerHTML="";
-    if(typeof TradingView==="undefined"){document.getElementById("fallback").style.display="flex";return;}
-    const exch = await resolveExchange(symbol);
-    const tvSym = exch==="BINGX" ? `BINGX:${symbol.replace("USDT","USDT.P")}` : `BINANCE:${symbol}`;
-    new TradingView.widget({container_id:"tv_chart",symbol:tvSym,interval:interval,theme:"dark",style:"1",locale:"en",autosize:true,timezone:"Asia/Kolkata",hide_side_toolbar:true,allow_symbol_change:false,backgroundColor:"#0A0D12",gridColor:"rgba(30,36,46,0.6)"});
-    setTimeout(()=>{const f=document.getElementById("tv_chart");document.getElementById("fallback").style.display=f.querySelector("iframe")?"none":"flex";},4500);
+    document.getElementById("tv_chart").innerHTML=`<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:12px;letter-spacing:.08em;font-family:var(--mono)"><div style="width:28px;height:28px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 0.8s linear infinite"></div>Loading chart…</div>`;
+    loadTVScript(async()=>{
+      if(typeof TradingView==="undefined"){document.getElementById("fallback").style.display="flex";return;}
+      const exch = await resolveExchange(symbol);
+      const tvSym = exch==="BINGX" ? `BINGX:${symbol.replace("USDT","USDT.P")}` : `BINANCE:${symbol}`;
+      new TradingView.widget({container_id:"tv_chart",symbol:tvSym,interval:interval,theme:"dark",style:"1",locale:"en",autosize:true,timezone:"Asia/Kolkata",hide_side_toolbar:true,allow_symbol_change:false,backgroundColor:"#0A0D12",gridColor:"rgba(30,36,46,0.6)"});
+      setTimeout(()=>{const f=document.getElementById("tv_chart");document.getElementById("fallback").style.display=f.querySelector("iframe")?"none":"flex";},4500);
+    });
   }
   function renderChart(){
     const p=prices[symbol], d=dec(symbol);
@@ -962,13 +1023,23 @@
       </div>`;
       return;
     }
-    await loadTrades();
     buildQuick();
     loadChart();
     loadCopy();
     refresh();
+    loadTrades();
     setInterval(refresh, 5000);
     setInterval(loadTrades, 15000);
+    // Maintenance check after UI loads (non-blocking)
+    fetch(`${API}/maintenance`,{cache:"no-store"})
+      .then(r=>r.json()).then(m=>{
+        if(m.on) document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;font-family:ui-monospace,monospace;text-align:center;gap:12px">
+          <div style="font-size:32px">🔧</div>
+          <div style="font-size:15px;letter-spacing:.1em;color:#FFB020;font-weight:700">CLEXER</div>
+          <div style="font-size:13px;color:#E6EAF0;margin-top:4px">${m.msg}</div>
+          <div style="font-size:11px;color:#6B7480;margin-top:6px">Please check back later</div>
+        </div>`;
+      }).catch(()=>{});
   }
   boot();
 </script>
