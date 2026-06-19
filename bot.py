@@ -1615,9 +1615,12 @@ def b1_analyze(ticker, data, use_tv=False):
 
     try:
         msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-            model="claude-opus-4-6", max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}])
-        raw = msg.content[0].text.strip() if msg.content else ""
+            model="claude-opus-4-6", max_tokens=1500,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "{"},
+            ])
+        raw = ("{" + msg.content[0].text.strip()) if msg.content else ""
     except Exception as e:
         print(f"  [B1 CLAUDE] {e}"); return None, label
 
@@ -2760,7 +2763,8 @@ def handle_command(text, chat_id, message=None):
                     tk = bingx_get_btc_ticker() or binance_get_ticker()
                     d = {}
                     for key, lim, lb in [("weekly",52,5),("4h",200,5),("1h",100,5),("5m",50,3)]:
-                        df = bingx_get_btc_candles(key, lim) or binance_get_candles(key, lim)
+                        df = bingx_get_btc_candles(key, lim)
+                        if df is None or len(df) < 2: df = binance_get_candles(key, lim)
                         d[key] = (df, lb)
                     # Temporarily spoof source for build_smc_summary
                     tk["source"] = "BingX"
@@ -2782,7 +2786,8 @@ def handle_command(text, chat_id, message=None):
                     tk = tv_get_ticker() or bingx_get_btc_ticker()
                     d = {}
                     for key, lim, lb in [("weekly",52,5),("4h",200,5),("1h",100,5),("5m",50,3)]:
-                        df = tv_get_candles(key, lim) or bingx_get_btc_candles(key, lim)
+                        df = tv_get_candles(key, lim)
+                        if df is None or len(df) < 2: df = bingx_get_btc_candles(key, lim)
                         d[key] = (df, lb)
                     price = tk["price"]; session = get_session()
                     indicators = fetch_tv_indicators()
