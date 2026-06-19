@@ -2265,6 +2265,14 @@ def _tick_one(ver: int, t: dict) -> bool:
                 if sig == "SELL" and price < entry * 0.985:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
                     _remove_scan_trade(ver, sym); return True
+            # Entry missed: price blew past TP1 without ever reaching pullback entry
+            if t.get("entry_type") == "PULLBACK":
+                entry_missed = (sig == "BUY"  and check_high >= tp1) or \
+                               (sig == "SELL" and check_low  <= tp1)
+                if entry_missed:
+                    print(f"  [SCAN{ver} {sym}] ENTRY_MISSED — price blew past TP1 without pullback to entry")
+                    send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
+                    _remove_scan_trade(ver, sym); return True
             return False
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
@@ -2517,6 +2525,7 @@ ADMIN_HELP = """<b>CLEXER V9.0 - Admin Commands</b>
 /scan1 - Run Scan1 only (big movers)
 /scan2 - Run Scan2 only (fresh momentum)
 /closescan - Clear all active scan trades
+/scantv on|off - Scan uses TV bridge (on) or BingX (off)
 /coin ETHUSDT - Analyze any coin (Claude AI)
 /compare - Run V9+B1 × BingX+TV side-by-side
 
@@ -2569,8 +2578,9 @@ FRIEND_HELP = """<b>CLEXER V9.0 Commands</b>
 /connect KEY SECRET - Link BingX
 /disconnect - Remove keys
 /copytrade on|off - Auto-copy
-/setsize 50 - Trade size (USDT)
-/setleverage 10 - Leverage
+/setsize 50 - Margin per trade (USDT)
+/setrisk 2 - Auto-leverage: max $2 loss per trade ⭐
+/setleverage 10 - Manual leverage (overrides /setrisk)
 /mytrade - Your open position
 /mysize - Your settings
 /myhistory - Trade history
