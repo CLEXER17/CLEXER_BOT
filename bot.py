@@ -339,9 +339,31 @@ def take_miniapp_screenshots():
                     page = browser.new_page(viewport={"width": 480, "height": 700})
                     url = f"{MINI_APP_URL}?interval={iv}"
                     print(f"  [CHARTS] {label} opening {url}")
+                    # Mock Telegram WebApp so mini app initializes without Telegram
+                    page.add_init_script("""
+                        window.Telegram = {
+                            WebApp: {
+                                initData: '', initDataUnsafe: {},
+                                version: '6.0', platform: 'web',
+                                colorScheme: 'dark', themeParams: {},
+                                isExpanded: true, viewportHeight: 700,
+                                viewportStableHeight: 700,
+                                ready: function(){}, expand: function(){},
+                                onEvent: function(){}, offEvent: function(){},
+                                sendData: function(){}, close: function(){}
+                            }
+                        };
+                    """)
                     resp = page.goto(url, timeout=30000)
                     print(f"  [CHARTS] {label} status: {resp.status if resp else 'no response'}")
-                    page.wait_for_timeout(8000)
+                    # Wait for TradingView iframe to appear
+                    try:
+                        page.wait_for_selector("#tv_chart iframe", timeout=20000)
+                        print(f"  [CHARTS] {label} TV iframe loaded")
+                        page.wait_for_timeout(5000)  # extra wait for chart to render
+                    except Exception:
+                        print(f"  [CHARTS] {label} TV iframe not found — waiting 12s")
+                        page.wait_for_timeout(12000)
                     chart = page.query_selector("#tv_chart")
                     if chart:
                         buf = BytesIO(chart.screenshot())
