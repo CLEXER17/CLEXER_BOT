@@ -311,37 +311,47 @@ def tv_get_candles(interval, limit):
 
 def take_miniapp_screenshots():
     """Use Playwright headless Chrome to screenshot all 4 TFs from mini app.
-    Returns list of (label, BytesIO) tuples. Empty list if disabled or failed."""
+    Returns list of (label, BytesIO) or (label, str_error) tuples."""
     global CHART_SNAP_ENABLED
     if not CHART_SNAP_ENABLED or not MINI_APP_URL:
         return []
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("  [CHARTS] playwright not installed"); return []
+        return [("ERROR", "Playwright not installed — check Railway build command")]
     results = []
     tf_map = [("W", "W"), ("4H", "240"), ("1H", "60"), ("5m", "5")]
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+            try:
+                browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+            except Exception as e:
+                return [("ERROR", f"Chromium launch failed: {e}")]
             for label, iv in tf_map:
                 try:
                     page = browser.new_page(viewport={"width": 480, "height": 700})
-                    page.goto(f"{MINI_APP_URL}?interval={iv}", timeout=30000)
-                    page.wait_for_timeout(6000)   # wait for TV chart to render
+                    url = f"{MINI_APP_URL}?interval={iv}"
+                    print(f"  [CHARTS] opening {url}")
+                    resp = page.goto(url, timeout=30000)
+                    print(f"  [CHARTS] {label} page status: {resp.status if resp else 'no response'}")
+                    page.wait_for_timeout(8000)
+                    # Try chart div first, fallback to full page
                     chart = page.query_selector("#tv_chart")
                     if chart:
                         buf = BytesIO(chart.screenshot())
-                        results.append((label, buf))
-                        print(f"  [CHARTS] {label} screenshot OK")
+                        print(f"  [CHARTS] {label} #tv_chart screenshot OK")
                     else:
-                        print(f"  [CHARTS] {label} #tv_chart not found")
+                        print(f"  [CHARTS] {label} #tv_chart not found — screenshotting full page")
+                        buf = BytesIO(page.screenshot(full_page=False))
+                    results.append((label, buf))
                     page.close()
                 except Exception as e:
                     print(f"  [CHARTS] {label} error: {e}")
+                    results.append((label, f"Error: {e}"))
             browser.close()
     except Exception as e:
         print(f"  [CHARTS] playwright error: {e}")
+        return [("ERROR", f"Playwright error: {e}")]
     return results
 
 def tv_get_ticker():
@@ -2880,15 +2890,16 @@ def handle_command(text, chat_id, message=None):
         def _do_charts(cid=chat_id):
             shots = take_miniapp_screenshots()
             if not shots:
-                send_reply(cid, "❌ Failed — TradingView may have blocked headless browser, or Playwright not installed.")
-                return
-            for label, buf in shots:
+                send_reply(cid, "❌ Failed — check Railway logs for details."); return
+            for label, result in shots:
+                if isinstance(result, str):
+                    send_reply(cid, f"❌ [{label}] {result}"); continue
                 try:
-                    buf.seek(0)
+                    result.seek(0)
                     requests.post(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                         data={"chat_id": cid, "caption": f"📊 BTC {label}"},
-                        files={"photo": (f"btc_{label}.png", buf, "image/png")},
+                        files={"photo": (f"btc_{label}.png", result, "image/png")},
                         timeout=30)
                 except Exception as e:
                     print(f"  [CHARTS] send {label} error: {e}")
