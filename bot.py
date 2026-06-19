@@ -287,9 +287,11 @@ def tv_update_state():
 def tv_get_candles(interval, limit):
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
     tv_map = {"weekly": "W", "4h": "4H", "1h": "1H", "5m": "5", "1m": "1"}
+    iv = tv_map.get(interval, interval)
+    if iv not in ("W", "4H", "1H", "5"): return None  # bridge only caches these 4 TFs
     try:
         r = requests.get(f"{TV_BRIDGE_URL}/candles",
-            params={"symbol": SYMBOL, "interval": tv_map.get(interval, interval), "limit": limit},
+            params={"symbol": SYMBOL, "interval": iv, "limit": limit},
             timeout=15)
         if r.status_code != 200: return None
         data = r.json()
@@ -1563,6 +1565,94 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         print(f"  [CLAUDE PARSE ERROR] {e}"); import traceback; traceback.print_exc(); return None
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  B1 ANALYZER  — V7 prompts + BingX only (no SpacemanBTC, no TV indicators)
+#  Used by /compare to test V7 logic against V9 side-by-side.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def b1_fetch_data(use_tv=False):
+    """Fetch candle data for B1. use_tv=True reads from TV bridge, else BingX direct."""
+    data = {}
+    for key, lim, lb in [("weekly", 52, 5), ("4h", 200, 5), ("1h", 100, 5), ("5m", 50, 3)]:
+        try:
+            if use_tv and tv_bridge_state["online"]:
+                df = tv_get_candles(key, lim)
+                if df is not None and len(df) >= 2:
+                    data[key] = (df, lb); continue
+            df = bingx_get_btc_candles(key, lim)
+            if df is None:
+                df = binance_get_candles(key, lim)
+            data[key] = (df, lb)
+        except Exception as e:
+            print(f"  [B1 DATA] {key}: {e}")
+    return data
+
+def b1_get_ticker(use_tv=False):
+    if use_tv and tv_bridge_state["online"]:
+        tk = tv_get_ticker()
+        if tk: return tk
+    tk = bingx_get_btc_ticker()
+    if tk: return tk
+    return binance_get_ticker()
+
+def b1_analyze(ticker, data, use_tv=False):
+    """B1 = V7 prompt logic + BingX data. No SpacemanBTC, no confidence filter, no channel posts."""
+    price = ticker["price"]; session = get_session()
+    src = "TradingView" if use_tv else "BingX"
+    label = f"B1+{'TV' if use_tv else 'BingX'}"
+    print(f"  [B1] {label} | price:{price:,.0f}")
+
+    summary = build_smc_summary(data, ticker)
+
+    session_note = ""
+    if session == "NEW_YORK": session_note = "\n\nNY SESSION: 4H primary. Give signal if 4H clear."
+    elif session == "LONDON": session_note = "\n\nLONDON SESSION: Strong breakouts. Signal if 4H+weekly agree."
+
+    if use_tv:
+        prompt = build_new_prompt_v7(summary, price, session, "", "", "", "")
+    else:
+        prompt = build_old_prompt_v7(summary, price, session, "", "", "", "", session_note)
+
+    try:
+        msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+            model="claude-opus-4-6", max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}])
+        raw = msg.content[0].text.strip() if msg.content else ""
+    except Exception as e:
+        print(f"  [B1 CLAUDE] {e}"); return None, label
+
+    signal = extract_json_from_response(raw)
+    if not signal:
+        return {"signal": "ERROR", "raw": raw[:200]}, label
+
+    signal["data_source"] = src
+    signal["prompt_mode"] = label
+    return signal, label
+
+def _fmt_compare_result(sig, label):
+    """Format one analysis result into a short text block."""
+    if sig is None:
+        return f"<b>[{label}]</b> — API error / no response"
+    s = sig.get("signal", "?")
+    if s == "ERROR":
+        return f"<b>[{label}]</b> ❓ Parse error\n<code>{sig.get('raw','')[:120]}</code>"
+    if s == "WAIT":
+        return (f"<b>[{label}]</b> ⏸ WAIT\n"
+                f"Bias: {sig.get('bias','?')} | Conf: {sig.get('confidence','?')}\n"
+                f"<i>{sig.get('reasoning','')[:120]}</i>")
+    if s == "HOLD":
+        return (f"<b>[{label}]</b> 🔒 HOLD\n"
+                f"4H: {sig.get('structure_4h','?')} | Conf: {sig.get('confidence','?')}\n"
+                f"<i>{sig.get('reasoning','')[:120]}</i>")
+    e = "🟢" if s == "BUY" else "🔴"
+    entry = float(sig.get("entry", 0)); sl = float(sig.get("sl", 0)); tp1 = float(sig.get("tp1", 0)); tp2 = float(sig.get("tp2", 0))
+    return (f"<b>[{label}]</b> {e} <b>{s}</b>\n"
+            f"Entry: <b>{entry:,.0f}</b> ({sig.get('entry_type','?')})\n"
+            f"SL: {sl:,.0f} | TP1: {tp1:,.0f} | TP2: {tp2:,.0f}\n"
+            f"R:R: {sig.get('rr','?')} | Conf: {sig.get('confidence','?')}\n"
+            f"4H: {sig.get('structure_4h','?')}\n"
+            f"<i>{sig.get('reasoning','')[:150]}</i>")
+
 # --- PRICE / DETECTION HELPERS ------------------------------------------------
 def price_only_advice(price):
     t = active_trade; sig = t["signal"]; entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
@@ -2411,7 +2501,8 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv"}
+    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
+    "/compare"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE
@@ -2573,6 +2664,28 @@ def handle_command(text, chat_id, message=None):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
 
+    elif cmd == "/miniapp":
+        if not is_admin: return
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
+        if sub in ("pause", "off", "maintenance"):
+            on = True
+        elif sub in ("resume", "on", "live"):
+            on = False
+            msg = "Live"
+        else:
+            send_reply(chat_id, "Usage:\n/miniapp pause [message]\n/miniapp resume")
+            return
+        if CLEXER_API_URL:
+            try:
+                hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
+                r = requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": on, "msg": msg}, headers=hdrs, timeout=5)
+                send_reply(chat_id, f"🔧 Mini App {'PAUSED ⏸' if on else 'RESUMED ▶️'}\nMessage: {msg}")
+            except Exception as e:
+                send_reply(chat_id, f"Error: {e}")
+        else:
+            send_reply(chat_id, "CLEXER_API_URL not set")
+
     elif cmd == "/close":
         t = active_trade
         if not t["signal"]: send_reply(chat_id, "No active trade.")
@@ -2631,6 +2744,91 @@ def handle_command(text, chat_id, message=None):
             else:
                 last_force_scan_time = now
                 send_reply(chat_id, "Forcing scan (~15-30s)..."); force_scan.set()
+
+    elif cmd == "/compare":
+        tv_live = is_tv_online()
+        send_reply(chat_id,
+            f"🔬 <b>Compare: 4 BTC Analyses Running in Parallel</b>\n\n"
+            f"1️⃣ V9 + BingX\n2️⃣ V9 + TV {'✅' if tv_live else '❌ offline'}\n"
+            f"3️⃣ B1 + BingX\n4️⃣ B1 + TV {'✅' if tv_live else '❌ offline'}\n\n"
+            f"Results in ~30-60s...")
+        def _run_compare(cid=chat_id):
+            results = [None, None, None, None]
+            errors  = ["", "", "", ""]
+            def _r1():  # V9 + BingX
+                try:
+                    tk = bingx_get_btc_ticker() or binance_get_ticker()
+                    d = {}
+                    for key, lim, lb in [("weekly",52,5),("4h",200,5),("1h",100,5),("5m",50,3)]:
+                        df = bingx_get_btc_candles(key, lim) or binance_get_candles(key, lim)
+                        d[key] = (df, lb)
+                    # Temporarily spoof source for build_smc_summary
+                    tk["source"] = "BingX"
+                    # Build prompt using V9 prompt directly
+                    price = tk["price"]; session = get_session()
+                    summary = build_smc_summary(d, tk)
+                    prompt = build_new_prompt_v9(summary, price, session, "", "", "", "")
+                    msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                        model="claude-opus-4-6", max_tokens=1000,
+                        messages=[{"role":"user","content":prompt}])
+                    raw = msg.content[0].text.strip()
+                    sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
+                    if sig: sig["data_source"] = "BingX"; sig["prompt_mode"] = "V9+BingX"
+                    results[0] = sig
+                except Exception as e: errors[0] = str(e)
+            def _r2():  # V9 + TV
+                try:
+                    if not tv_live: results[1] = {"signal":"SKIP","reason":"TV offline"}; return
+                    tk = tv_get_ticker() or bingx_get_btc_ticker()
+                    d = {}
+                    for key, lim, lb in [("weekly",52,5),("4h",200,5),("1h",100,5),("5m",50,3)]:
+                        df = tv_get_candles(key, lim) or bingx_get_btc_candles(key, lim)
+                        d[key] = (df, lb)
+                    price = tk["price"]; session = get_session()
+                    indicators = fetch_tv_indicators()
+                    summary = build_smc_summary(d, tk) + build_indicator_context(indicators)
+                    prompt = build_new_prompt_v9(summary, price, session, "", "", "", "")
+                    msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                        model="claude-opus-4-6", max_tokens=1000,
+                        messages=[{"role":"user","content":prompt}])
+                    raw = msg.content[0].text.strip()
+                    sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
+                    if sig: sig["data_source"] = "TV"; sig["prompt_mode"] = "V9+TV"
+                    results[1] = sig
+                except Exception as e: errors[1] = str(e)
+            def _r3():  # B1 + BingX
+                try:
+                    tk = bingx_get_btc_ticker() or binance_get_ticker()
+                    d = b1_fetch_data(use_tv=False)
+                    sig, lbl = b1_analyze(tk, d, use_tv=False)
+                    results[2] = sig
+                except Exception as e: errors[2] = str(e)
+            def _r4():  # B1 + TV
+                try:
+                    if not tv_live: results[3] = {"signal":"SKIP","reason":"TV offline"}; return
+                    tk = tv_get_ticker() or bingx_get_btc_ticker()
+                    d = b1_fetch_data(use_tv=True)
+                    sig, lbl = b1_analyze(tk, d, use_tv=True)
+                    results[3] = sig
+                except Exception as e: errors[3] = str(e)
+
+            threads = [threading.Thread(target=f, daemon=True) for f in [_r1,_r2,_r3,_r4]]
+            for t in threads: t.start()
+            for t in threads: t.join(timeout=90)
+
+            try: price_now = (bingx_get_btc_ticker() or binance_get_ticker())["price"]
+            except: price_now = 0
+
+            labels = ["V9+BingX", "V9+TV", "B1+BingX", "B1+TV"]
+            lines = [f"🔬 <b>BTC Compare Results</b>  {ist_str()}\n"
+                     f"Price: <b>{price_now:,.2f}</b>\n{'─'*30}"]
+            for i, (sig, lbl) in enumerate(zip(results, labels)):
+                if errors[i]: lines.append(f"<b>[{lbl}]</b> ❌ {errors[i][:100]}")
+                elif sig and sig.get("signal") == "SKIP": lines.append(f"<b>[{lbl}]</b> ⏭ TV offline")
+                else: lines.append(_fmt_compare_result(sig, lbl))
+                lines.append("─"*30)
+            send_reply(cid, "\n".join(lines) + "\n\n<i>⚠️ For testing only — not financial advice</i>")
+        threading.Thread(target=_run_compare, daemon=True).start()
 
     elif cmd == "/resetsl":
         trade_stats["consecutive_sl"] = 0; trade_stats["cooldown_scans"] = 0
