@@ -108,6 +108,7 @@ def _default_user(username: str = "?") -> dict:
         "copy_on":        False,
         "size_usdt":      50.0,
         "leverage":       10,
+        "risk_usdt":      None,   # if set, auto-calculates leverage per trade based on SL distance
         "sl_order_id":    "",    # BingX order ID of current SL order
         "tp_order_id":    "",    # BingX order ID of current TP2 order
         "limit_order_id": "",    # BingX order ID of pending limit entry
@@ -119,6 +120,22 @@ def _default_user(username: str = "?") -> dict:
         "paused_by_admin": False,
         "joined":         _now_ist(),
     }
+
+
+def _calc_auto_leverage(size_usdt: float, risk_usdt: float, entry: float, sl: float) -> int:
+    """
+    Auto-calculate leverage so that max loss at SL = risk_usdt.
+    Formula: leverage = risk_usdt / (size_usdt × sl_pct)
+    Clamped to 1–125x. Rounded down for safety.
+    """
+    if entry <= 0 or sl <= 0 or size_usdt <= 0 or risk_usdt <= 0:
+        return 10  # safe fallback
+    sl_pct = abs(entry - sl) / entry
+    if sl_pct <= 0:
+        return 10
+    lev = risk_usdt / (size_usdt * sl_pct)
+    lev = max(1, min(125, int(lev)))  # clamp 1–125, round down
+    return lev
 
 def load():
     global _db
@@ -325,7 +342,12 @@ def on_signal(signal: dict, price: float) -> list[str]:
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
-            lev = user.get("leverage", 10)
+            risk = user.get("risk_usdt")
+            if risk:
+                lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl)
+                print(f"[CT] {cid} auto-leverage: risk=${risk} size=${user['size_usdt']} SL%={abs(entry-sl)/entry*100:.2f}% → {lev}x")
+            else:
+                lev = user.get("leverage", 10)
             qty = _calc_qty(user["size_usdt"], price, lev)
             _set_leverage(api_key, api_secret, side, lev)
 
@@ -656,7 +678,12 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
-            lev = user.get("leverage", 10)
+            risk = user.get("risk_usdt")
+            if risk:
+                lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl)
+                print(f"[CT] {cid} scan auto-leverage: risk=${risk} size=${user['size_usdt']} SL%={abs(entry-sl)/entry*100:.2f}% → {lev}x")
+            else:
+                lev = user.get("leverage", 10)
             qty = _calc_qty(user["size_usdt"], price, lev)
 
             def _place_alt(s, ot, q, pr=0, sp=0, cp=False, ps=""):
@@ -920,7 +947,7 @@ def on_update_sl(new_sl: float):
 
 # ─── COMMAND HANDLERS ─────────────────────────────────────────────────────────
 
-CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage",
+CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage", "/setrisk",
                      "/copytrade", "/mytrade", "/mysize", "/myhistory"}
 CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
                      "/ctretry", "/ctstatus", "/ctclose"}
@@ -958,11 +985,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id,
             "<b>BingX Connected!</b>\n\n"
             "✅ API verified\n\n"
-            f"Size: <b>${user['size_usdt']} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
-            f"Exposure per trade: <b>${user['size_usdt']*user['leverage']:.0f}</b>\n\n"
+            f"Margin per trade: <b>${user['size_usdt']} USDT</b>\n"
+            f"Leverage: <b>{user['leverage']}x</b> (manual)\n\n"
             "/copytrade on — enable auto-copy\n"
-            "/setsize 50 — change trade size\n"
-            "/setleverage 10 — change leverage\n\n"
+            "/setsize 50 — change margin per trade\n"
+            "/setrisk 2 — auto-leverage (max $2 loss per trade) ⭐\n"
+            "/setleverage 10 — manual leverage\n\n"
             "<i>— CLEXER V9.0 —</i>")
 
     elif cmd == "/disconnect":
@@ -1001,19 +1029,76 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user = _get(cid) or {}
             send_reply_fn(chat_id,
                 f"Current leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                f"Usage: /setleverage 10"); return
+                f"Usage: /setleverage 10\n\n"
+                f"<i>Tip: Use /setrisk to auto-set leverage by max loss per trade instead.</i>"); return
         try:
             lev = int(parts[1])
             if lev < 1 or lev > 125:
                 send_reply_fn(chat_id, "Leverage must be 1–125x"); return
             user = _get(cid) or _default_user(username)
-            user["leverage"] = lev; _set(cid, user)
+            user["leverage"] = lev
+            user["risk_usdt"] = None  # disable auto-leverage mode when manual leverage is set
+            _set(cid, user)
             send_reply_fn(chat_id,
-                f"<b>Leverage Set</b>\n\n"
+                f"<b>Leverage Set (Manual)</b>\n\n"
                 f"Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
                 f"Exposure per trade: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
+                f"<i>Auto-risk mode disabled. Use /setrisk to enable it.</i>\n\n"
                 f"<i>— CLEXER V9.0 —</i>")
         except: send_reply_fn(chat_id, "Usage: /setleverage 10")
+
+    elif cmd == "/setrisk":
+        if len(parts) < 2:
+            user = _get(cid) or {}
+            risk = user.get("risk_usdt")
+            size = user.get("size_usdt", 50)
+            if risk:
+                send_reply_fn(chat_id,
+                    f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
+                    f"Max loss per trade: <b>${risk} USDT</b>\n"
+                    f"Margin per trade: <b>${size} USDT</b>\n\n"
+                    f"Leverage is auto-calculated each trade based on SL distance.\n\n"
+                    f"Usage: /setrisk 2  — set max $2 loss per trade\n"
+                    f"/setrisk off — disable, use manual leverage\n\n"
+                    f"<i>— CLEXER V9.0 —</i>")
+            else:
+                send_reply_fn(chat_id,
+                    f"<b>Auto-Risk Mode: OFF</b>\n\n"
+                    f"Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
+                    f"Usage: /setrisk 2  — auto-set leverage so max loss = $2 per trade\n"
+                    f"Range: $1 – $50\n\n"
+                    f"<i>— CLEXER V9.0 —</i>")
+            return
+        arg = parts[1].lower()
+        if arg == "off":
+            user = _get(cid) or _default_user(username)
+            user["risk_usdt"] = None
+            _set(cid, user)
+            send_reply_fn(chat_id,
+                f"<b>Auto-Risk Mode: OFF</b>\n\n"
+                f"Using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
+                f"<i>— CLEXER V9.0 —</i>")
+            return
+        try:
+            risk = float(arg)
+            if risk < 0.5 or risk > 50:
+                send_reply_fn(chat_id, "Risk must be $0.50 – $50 per trade"); return
+            user = _get(cid) or _default_user(username)
+            size = user.get("size_usdt", 50)
+            user["risk_usdt"] = risk
+            _set(cid, user)
+            # Show example with a typical 2% SL
+            example_lev = _calc_auto_leverage(size, risk, 100, 98)  # 2% SL example
+            send_reply_fn(chat_id,
+                f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
+                f"Max loss per trade: <b>${risk} USDT</b>\n"
+                f"Margin per trade: <b>${size} USDT</b>\n\n"
+                f"<b>How it works:</b>\n"
+                f"Leverage is auto-calculated per trade based on SL distance.\n"
+                f"Example (2% SL): leverage = {example_lev}x → max loss ≈ ${size * example_lev * 0.02:.2f}\n\n"
+                f"<i>Closer SL = higher leverage | Wider SL = lower leverage</i>\n\n"
+                f"<i>— CLEXER V9.0 —</i>")
+        except: send_reply_fn(chat_id, "Usage: /setrisk 2")
 
     elif cmd == "/copytrade":
         if len(parts) < 2:
@@ -1074,13 +1159,25 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/mysize":
         user = _get(cid) or {}
+        size = user.get("size_usdt", 50)
+        risk = user.get("risk_usdt")
+        lev  = user.get("leverage", 10)
+        if risk:
+            lev_line = f"Leverage: <b>Auto (max ${risk} loss/trade)</b>"
+            exp_line = f"Max loss per trade: <b>${risk} USDT</b>"
+        else:
+            lev_line = f"Leverage: <b>{lev}x</b>"
+            exp_line = f"Exposure per trade: <b>${size * lev:.0f}</b>"
         send_reply_fn(chat_id,
             f"<b>Your Settings</b>\n\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: <b>{'ON' if user.get('copy_on') else 'OFF'}</b>\n"
-            f"Size: <b>${user.get('size_usdt',50)} USDT</b>\n"
-            f"Leverage: <b>{user.get('leverage',10)}x</b>\n"
-            f"Exposure per trade: <b>${user.get('size_usdt',50)*user.get('leverage',10):.0f}</b>\n\n"
+            f"Margin per trade: <b>${size} USDT</b>\n"
+            f"{lev_line}\n"
+            f"{exp_line}\n\n"
+            f"<i>/setrisk 2 — auto leverage by max loss\n"
+            f"/setleverage 10 — manual leverage\n"
+            f"/setsize 50 — change margin</i>\n\n"
             f"<i>— CLEXER V9.0 —</i>")
 
     elif cmd == "/myhistory":
@@ -1263,7 +1360,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             tp2        = _last_signal["tp2"]
             close_side = "SELL" if side == "BUY" else "BUY"
             trade_ps   = "LONG" if side == "BUY" else "SHORT"
-            lev        = user.get("leverage", 10)
+            risk = user.get("risk_usdt")
+            if risk:
+                lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl)
+            else:
+                lev = user.get("leverage", 10)
 
             # Get live price for accurate qty calculation
             import requests as _req
