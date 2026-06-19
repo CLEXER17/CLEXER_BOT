@@ -742,6 +742,7 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                     # Store scan trade details for monitor loop
                     user["scan_symbol"] = symbol
                     user["scan_side"]   = side
+                    user["scan_entry"]  = entry
                     user["scan_sl"]     = sl
                     user["scan_tp1"]    = tp1
                     user["scan_tp2"]    = tp2
@@ -773,6 +774,126 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
         results = ["No copy users connected"]
     print(f"[CT] on_scan_signal {symbol}: {results}")
     return results
+
+
+def on_scan_tp1(symbol: str):
+    """Scan TP1 hit — cancel open orders, close 50% at market, move SL to BE."""
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if user.get("scan_symbol") != symbol: continue
+        try:
+            side        = user["scan_side"]
+            entry_price = float(user.get("scan_entry", 0))
+            close_side  = "SELL" if side == "BUY" else "BUY"
+            trade_ps    = "LONG" if side == "BUY" else "SHORT"
+            qty         = float(user.get("scan_qty", 0))
+            half_qty    = max(round(qty / 2, 4), 0.001)
+
+            # Cancel all open orders for this symbol first
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                oid = str(o.get("orderId", ""))
+                if oid:
+                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": oid})
+
+            # Close 50% at market
+            params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                      "type": "MARKET", "quantity": round(half_qty, 4)}
+            _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
+
+            # Move SL to BE (entry price)
+            _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price)
+
+            # Re-place TP2 for remaining half
+            tp2 = float(user.get("scan_tp2", 0))
+            if tp2:
+                params2 = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                           "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
+                           "stopPrice": round(tp2, 6)}
+                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
+
+            user["scan_qty"] = half_qty
+            _set(cid, user)
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: closed {half_qty} SL→BE@{entry_price}")
+        except Exception as e:
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
+
+
+def on_scan_tp2(symbol: str):
+    """Scan TP2 hit — cancel remaining orders, force-close position, clear scan state."""
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if user.get("scan_symbol") != symbol: continue
+        try:
+            trade_ps = "LONG" if user["scan_side"] == "BUY" else "SHORT"
+
+            # Cancel all open orders for symbol
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                oid = str(o.get("orderId", ""))
+                if oid:
+                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": oid})
+
+            # Force-close any remaining position
+            _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                   {"symbol": symbol, "positionSide": trade_ps})
+
+            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed")
+        except Exception as e:
+            print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
+        _clear_scan_state(cid, user)
+
+
+def on_scan_sl(symbol: str):
+    """Scan SL hit — cancel all orders, force-close position, clear scan state."""
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if user.get("scan_symbol") != symbol: continue
+        try:
+            trade_ps = "LONG" if user["scan_side"] == "BUY" else "SHORT"
+
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                oid = str(o.get("orderId", ""))
+                if oid:
+                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": oid})
+
+            _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                   {"symbol": symbol, "positionSide": trade_ps})
+
+            print(f"[CT] on_scan_sl {cid} {symbol}: closed")
+        except Exception as e:
+            print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
+        _clear_scan_state(cid, user)
+
+
+def on_scan_entry_missed(symbol: str):
+    """Scan PULLBACK entry missed — cancel limit orders for this symbol, clear scan state."""
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if user.get("scan_symbol") != symbol: continue
+        try:
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                oid = str(o.get("orderId", ""))
+                if oid:
+                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": oid})
+            print(f"[CT] on_scan_entry_missed {cid} {symbol}: limit cancelled")
+        except Exception as e:
+            print(f"[CT] on_scan_entry_missed {cid} {symbol}: {e}")
+        _clear_scan_state(cid, user)
+
+
+def _clear_scan_state(cid: str, user: dict):
+    user["scan_symbol"] = ""; user["scan_side"] = ""
+    user["scan_entry"] = 0; user["scan_sl"] = 0; user["scan_tp1"] = 0
+    user["scan_tp2"] = 0; user["scan_qty"] = 0
+    _set(cid, user)
+
+
+def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float):
+    """Place a new SL order for an alt-coin symbol (moves SL to BE after TP1)."""
+    close_side = "SELL" if pos_side == "LONG" else "BUY"
+    _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+           {"symbol": symbol, "side": close_side, "positionSide": pos_side,
+            "type": "STOP_MARKET", "quantity": 0.001,
+            "stopPrice": round(sl_price, 6)})
 
 
 def _get_open_orders(api_key: str, api_secret: str, symbol: str) -> list:
