@@ -36,6 +36,7 @@ TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
+MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 10    # price check every 10s when trade active
@@ -46,6 +47,7 @@ BINANCE_BASE         = "https://api1.binance.com/api/v3"
 IST                  = timedelta(hours=5, minutes=30)
 
 SEND_CHARTS       = False   # OFF by default - /images on to enable
+CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
 MAX_NEWS_AGE      = 4
@@ -306,6 +308,41 @@ def tv_get_candles(interval, limit):
         return df
     except Exception as e:
         print(f"      [TV] {interval} error: {e}"); return None
+
+def take_miniapp_screenshots():
+    """Use Playwright headless Chrome to screenshot all 4 TFs from mini app.
+    Returns list of (label, BytesIO) tuples. Empty list if disabled or failed."""
+    global CHART_SNAP_ENABLED
+    if not CHART_SNAP_ENABLED or not MINI_APP_URL:
+        return []
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  [CHARTS] playwright not installed"); return []
+    results = []
+    tf_map = [("W", "W"), ("4H", "240"), ("1H", "60"), ("5m", "5")]
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+            for label, iv in tf_map:
+                try:
+                    page = browser.new_page(viewport={"width": 480, "height": 700})
+                    page.goto(f"{MINI_APP_URL}?interval={iv}", timeout=30000)
+                    page.wait_for_timeout(6000)   # wait for TV chart to render
+                    chart = page.query_selector("#tv_chart")
+                    if chart:
+                        buf = BytesIO(chart.screenshot())
+                        results.append((label, buf))
+                        print(f"  [CHARTS] {label} screenshot OK")
+                    else:
+                        print(f"  [CHARTS] {label} #tv_chart not found")
+                    page.close()
+                except Exception as e:
+                    print(f"  [CHARTS] {label} error: {e}")
+            browser.close()
+    except Exception as e:
+        print(f"  [CHARTS] playwright error: {e}")
+    return results
 
 def tv_get_ticker():
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
@@ -2503,7 +2540,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare"}
+    "/compare","/charts","/chartson","/chartsoff"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE
@@ -2832,6 +2869,38 @@ def handle_command(text, chat_id, message=None):
                 lines.append("─"*30)
             send_reply(cid, "\n".join(lines) + "\n\n<i>⚠️ For testing only — not financial advice</i>")
         threading.Thread(target=_run_compare, daemon=True).start()
+
+    elif cmd == "/charts":
+        global CHART_SNAP_ENABLED
+        if not MINI_APP_URL:
+            send_reply(chat_id, "❌ MINI_APP_URL not set in Railway env vars."); return
+        if not CHART_SNAP_ENABLED:
+            send_reply(chat_id, "📵 Chart snapshots are OFF. Send /chartson to enable."); return
+        send_reply(chat_id, "📸 Taking chart screenshots (W, 4H, 1H, 5m)...\nThis takes ~30s")
+        def _do_charts(cid=chat_id):
+            shots = take_miniapp_screenshots()
+            if not shots:
+                send_reply(cid, "❌ Failed — TradingView may have blocked headless browser, or Playwright not installed.")
+                return
+            for label, buf in shots:
+                try:
+                    buf.seek(0)
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                        data={"chat_id": cid, "caption": f"📊 BTC {label}"},
+                        files={"photo": (f"btc_{label}.png", buf, "image/png")},
+                        timeout=30)
+                except Exception as e:
+                    print(f"  [CHARTS] send {label} error: {e}")
+        threading.Thread(target=_do_charts, daemon=True).start()
+
+    elif cmd == "/chartson":
+        CHART_SNAP_ENABLED = True
+        send_reply(chat_id, "✅ Chart snapshots ON — /charts will work.")
+
+    elif cmd == "/chartsoff":
+        CHART_SNAP_ENABLED = False
+        send_reply(chat_id, "📵 Chart snapshots OFF — /charts disabled (saves credits).")
 
     elif cmd == "/resetsl":
         trade_stats["consecutive_sl"] = 0; trade_stats["cooldown_scans"] = 0
