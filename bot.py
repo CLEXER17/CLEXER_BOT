@@ -2274,6 +2274,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 if entry_missed:
                     print(f"  [SCAN{ver} {sym}] ENTRY_MISSED — price blew past TP1 without pullback to entry")
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
+                    ct.on_scan_entry_missed(sym)
                     _remove_scan_trade(ver, sym); return True
             return False
 
@@ -2282,6 +2283,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
             _log_scan_history(t, "TP2", price)
             send_telegram(fmt_scan_update("TP2_HIT", price, t))
+            ct.on_scan_tp2(sym)
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
@@ -2291,6 +2293,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 t["sl"] = entry
                 trade_stats["scan_tp1"] += 1
                 send_telegram(fmt_scan_update("TP1_HIT", price, t))
+                ct.on_scan_tp1(sym)
 
         sl_margin = entry * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
@@ -2300,6 +2303,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
             send_telegram(fmt_scan_update("SL_HIT", price, t))
+            ct.on_scan_sl(sym)
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
