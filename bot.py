@@ -102,6 +102,7 @@ scan_history          = []   # closed scan trades — appended on TP/SL/missed
 trade_outcomes        = []
 force_scan            = threading.Event()
 bot_paused            = threading.Event()
+btc_analysis_enabled  = True   # toggle via /btcanalysis on|off or inline button
 last_update_id        = 0
 last_force_scan_time  = 0
 last_signal_scan_time = 0
@@ -1871,11 +1872,14 @@ def send_admin(text):
                   "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
-def send_reply(chat_id, text):
+def send_reply(chat_id, text, reply_markup=None):
     try:
+        payload = {"chat_id": chat_id, "text": text,
+                   "parse_mode": "HTML", "disable_web_page_preview": True}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": text,
-                  "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            json=payload, timeout=10)
     except Exception as e: print(f"  [REPLY ERROR] {e}")
 
 def send_to_user(chat_id, text, file_id=None, file_type=None):
@@ -2605,7 +2609,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE
@@ -2624,7 +2628,7 @@ def handle_command(text, chat_id, message=None):
     # -- Copy trade commands (user + admin) -----------------------------------
     if ct.is_ct_command(cmd, is_admin):
         uname = (message.get("from",{}).get("username","?") if message else "?")
-        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
+        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
         return
 
     if cmd in ("/start","/help"):
@@ -2643,6 +2647,20 @@ def handle_command(text, chat_id, message=None):
     elif cmd == "/pause":
         bot_paused.set()
         send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>- CLEXER V9.0 -</i>")
+
+    elif cmd == "/btcanalysis":
+        global btc_analysis_enabled
+        arg = parts[1].lower() if len(parts) > 1 else ("off" if btc_analysis_enabled else "on")
+        btc_analysis_enabled = (arg == "on")
+        status = "✅ ON" if btc_analysis_enabled else "⏸ OFF"
+        send_reply(chat_id,
+            f"<b>BTC Analysis {status}</b>\n\n"
+            f"Scheduled scans: {'7:21, 11:21, 15:21, 19:21, 23:21 IST' if btc_analysis_enabled else 'paused'}\n"
+            f"/signal still forces immediate scan.\n\n<i>- CLEXER V9.0 -</i>",
+            reply_markup={"inline_keyboard": [[
+                {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
+                {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}
+            ]]})
 
     elif cmd == "/tvstatus":
         cmd_tvstatus(chat_id)
@@ -2775,7 +2793,7 @@ def handle_command(text, chat_id, message=None):
 
     elif cmd == "/users":
         uname = (message.get("from",{}).get("username","?") if message else "?")
-        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
+        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
 
     elif cmd == "/miniapp":
         if not is_admin: return
@@ -3097,7 +3115,7 @@ def handle_command(text, chat_id, message=None):
 
     elif cmd == "/ctclose" and is_admin:
         uname = (message.get("from",{}).get("username","?") if message else "?")
-        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin)
+        ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
 
     elif cmd == "/closetrade" and is_admin:
         if len(parts) < 2:
@@ -4009,11 +4027,34 @@ def command_listener():
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query"]}, timeout=25)
             data = r.json()
             if not data.get("ok"): time.sleep(5); continue
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
+
+                # Handle inline button callbacks
+                cb = upd.get("callback_query")
+                if cb:
+                    cb_data = cb.get("data",""); cb_cid = cb["from"]["id"]
+                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                  json={"callback_query_id": cb["id"]}, timeout=5)
+                    if str(cb_cid) == str(ADMIN_CHAT_ID):
+                        global btc_analysis_enabled
+                        if cb_data == "btca_on":
+                            btc_analysis_enabled = True
+                            send_reply(cb_cid, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V9.0 -</i>",
+                                reply_markup={"inline_keyboard": [[
+                                    {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
+                                    {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
+                        elif cb_data == "btca_off":
+                            btc_analysis_enabled = False
+                            send_reply(cb_cid, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V9.0 -</i>",
+                                reply_markup={"inline_keyboard": [[
+                                    {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
+                                    {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
+                    continue
+
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 if not cid: continue
@@ -4161,7 +4202,7 @@ def main():
                 _btc_ist.hour in _btc_scan_hours and
                 last_signal_scan_time < (now - 3600)  # once per window (don't re-run same minute)
             )
-            if not forced and not _btc_scan_due:
+            if not forced and (not _btc_scan_due or not btc_analysis_enabled):
                 time.sleep(MAIN_TICK); continue
 
             # Cooldown
