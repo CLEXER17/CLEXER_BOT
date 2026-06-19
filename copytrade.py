@@ -1478,6 +1478,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             api_key    = _decrypt(user["api_key_enc"])
             api_secret = _decrypt(user["api_secret_enc"])
             side       = _last_signal["side"]
+            entry      = float(_last_signal.get("entry", _last_signal.get("price", 0)))
             sl         = _last_signal["sl"]
             tp2        = _last_signal["tp2"]
             close_side = "SELL" if side == "BUY" else "BUY"
