@@ -180,9 +180,10 @@ def _sign(params: dict, secret: str) -> str:
 def _bingx(method: str, path: str, api_key: str, api_secret: str, params: dict = None) -> dict:
     params = dict(params or {})
     params["timestamp"] = int(time.time() * 1000)
-    sig = _sign(params, api_secret.strip())  # strip() prevents whitespace in secret breaking sig
+    sig = _sign(params, api_secret.strip())
     params["signature"] = sig
     headers = {"X-BX-APIKEY": api_key.strip()}
+    print(f"[CT] _bingx {method} {path} key={api_key.strip()[:8]}... secret_len={len(api_secret.strip())} sig={sig[:16]}...")
     url = BINGX_BASE + path
     try:
         if method == "GET":
