@@ -803,13 +803,22 @@ def on_scan_tp1(symbol: str):
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
 
+            if not entry_price:
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: scan_entry=0, cannot set BE SL")
+                continue
+
             # Close 50% at market
             params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
                       "type": "MARKET", "quantity": round(half_qty, 4)}
-            _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
+            close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: close50% code={close_r.get('code')} msg={close_r.get('msg','')}")
+
+            # Wait for position to update before placing new SL
+            time.sleep(3)
 
             # Move SL to BE (entry price)
-            _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price)
+            sl_r = _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price)
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{entry_price} code={sl_r.get('code') if sl_r else '?'} msg={sl_r.get('msg','') if sl_r else ''}")
 
             # Re-place TP2 for remaining half
             tp2 = float(user.get("scan_tp2", 0))
@@ -817,11 +826,12 @@ def on_scan_tp1(symbol: str):
                 params2 = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
                            "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
                            "stopPrice": round(tp2, 6)}
-                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
+                tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
             user["scan_qty"] = half_qty
             _set(cid, user)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: closed {half_qty} SL→BE@{entry_price}")
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — closed {half_qty} SL→BE@{entry_price}")
         except Exception as e:
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
@@ -898,10 +908,10 @@ def _clear_scan_state(cid: str, user: dict):
 def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float):
     """Place new BE SL order for alt-coin after TP1 hit — closes full remaining position."""
     close_side = "SELL" if pos_side == "LONG" else "BUY"
-    _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
-           {"symbol": symbol, "side": close_side, "positionSide": pos_side,
-            "type": "STOP_MARKET", "closePosition": "true",
-            "stopPrice": round(sl_price, 6)})
+    return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                  {"symbol": symbol, "side": close_side, "positionSide": pos_side,
+                   "type": "STOP_MARKET", "closePosition": "true",
+                   "stopPrice": round(sl_price, 6)})
 
 
 def _get_open_orders(api_key: str, api_secret: str, symbol: str) -> list:
