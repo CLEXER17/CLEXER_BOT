@@ -1075,9 +1075,10 @@ def is_ct_command(cmd: str, is_admin: bool) -> bool:
     return False
 
 def handle(cmd: str, parts: list, chat_id, username: str,
-           send_reply_fn, is_admin: bool):
+           send_reply_fn, is_admin: bool, scan_trades: list = None):
     """Route a copy-trade command. Call this from bot.py handle_command()."""
     cid = str(chat_id)
+    scan_trades = scan_trades or []
 
     # ── USER COMMANDS ─────────────────────────────────────────────────────────
 
@@ -1445,20 +1446,18 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id, "\n".join(lines) + sig_info + "\n\n<i>— CLEXER V9.0 —</i>")
 
     elif cmd == "/ctretry" and is_admin:
-        """Retry copy trade for a specific user who failed."""
+        """Retry copy trade for a specific user.
+        /ctretry USER_ID          → retry BTC trade
+        /ctretry USER_ID SOL      → retry SOL-USDT scan trade
+        /ctretry USER_ID all      → retry ALL active scan trades
+        """
         if len(parts) < 2:
             send_reply_fn(chat_id,
                 "<b>Retry Copy Trade</b>\n\n"
-                "Usage: <code>/ctretry TELEGRAM_ID</code>\n\n"
-                "Only works while signal is still active (before SL/TP hit).\n"
+                "<code>/ctretry USER_ID</code> — retry BTC trade\n"
+                "<code>/ctretry USER_ID SOL</code> — retry SOL scan trade\n"
+                "<code>/ctretry USER_ID all</code> — retry all active scan trades\n\n"
                 "Use /ctstatus to see failed users."); return
-
-        if not _last_signal:
-            send_reply_fn(chat_id,
-                "<b>Retry Blocked</b>\n\n"
-                "No active signal — trade already closed (SL/TP hit) or no signal yet.\n"
-                "Cannot retry a dead trade.\n\n"
-                "<i>— CLEXER V9.0 —</i>"); return
 
         target = str(parts[1])
         user = _db.get(target)
@@ -1466,8 +1465,78 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, f"User <code>{target}</code> not found."); return
         if not user.get("connected"):
             send_reply_fn(chat_id, f"@{user.get('username','?')} has no BingX connected."); return
+
+        # Determine mode: btc / specific coin / all scan trades
+        mode = parts[2].upper() if len(parts) > 2 else "BTC"
+
+        # ── SCAN COIN RETRY ────────────────────────────────────────────────────
+        if mode != "BTC":
+            targets_scan = []
+            if mode == "ALL":
+                targets_scan = scan_trades  # all active scan trades
+            else:
+                sym = mode if "-USDT" in mode else f"{mode}-USDT"
+                targets_scan = [t for t in scan_trades if t.get("symbol") == sym]
+                if not targets_scan:
+                    send_reply_fn(chat_id, f"No active scan trade found for {sym}."); return
+
+            results = []
+            api_key    = _decrypt(user["api_key_enc"])
+            api_secret = _decrypt(user["api_secret_enc"])
+            uname      = user.get("username", "?")
+            risk       = user.get("risk_usdt")
+
+            for st in targets_scan:
+                sym     = st["symbol"]
+                side    = st["signal"]
+                entry   = float(st["entry"])
+                sl      = float(st["sl"])
+                tp1     = float(st.get("tp1", 0))
+                tp2     = float(st.get("tp2", 0))
+                trade_ps = "LONG" if side == "BUY" else "SHORT"
+                close_side = "SELL" if side == "BUY" else "BUY"
+                try:
+                    lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl) if risk else user.get("leverage", 10)
+                    qty = _calc_qty(user["size_usdt"], entry, lev)
+                    half = max(round(qty / 2, 4), 0.001)
+
+                    _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
+                           {"symbol": sym, "side": trade_ps, "leverage": lev})
+
+                    def _alt(s, ot, q, sp=0, ps=""):
+                        ps = ps or trade_ps
+                        p = {"symbol": sym, "side": s, "positionSide": ps, "type": ot, "quantity": round(q, 4)}
+                        if sp and ot in ("STOP_MARKET","TAKE_PROFIT_MARKET"): p["stopPrice"] = round(sp, 6)
+                        return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, p)
+
+                    r = _alt(side, "MARKET", qty)
+                    if r.get("code") == 0:
+                        _alt(close_side, "STOP_MARKET",         qty,  sp=sl)
+                        if tp1: _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1)
+                        if tp2: _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2)
+                        user["scan_symbol"] = sym; user["scan_side"] = side
+                        user["scan_entry"] = entry; user["scan_sl"] = sl
+                        user["scan_tp1"] = tp1; user["scan_tp2"] = tp2; user["scan_qty"] = qty
+                        _set(target, user)
+                        results.append(f"✅ {sym} {side} {qty:.4f} lev={lev}x")
+                    else:
+                        results.append(f"❌ {sym}: {r.get('msg','?')}")
+                except Exception as e:
+                    results.append(f"❌ {sym}: {e}")
+
+            send_reply_fn(chat_id,
+                f"<b>Scan Retry — @{uname}</b>\n\n" + "\n".join(results) + "\n\n<i>— CLEXER V9.0 —</i>")
+            return
+
+        # ── BTC RETRY (existing logic below) ──────────────────────────────────
+        if not _last_signal:
+            send_reply_fn(chat_id,
+                "<b>Retry Blocked</b>\n\n"
+                "No active BTC signal — trade already closed or no signal yet.\n\n"
+                "<i>— CLEXER V9.0 —</i>"); return
+
         if user.get("in_position"):
-            send_reply_fn(chat_id, f"@{user.get('username','?')} already in position — no retry needed."); return
+            send_reply_fn(chat_id, f"@{user.get('username','?')} already in BTC position — no retry needed."); return
 
         try:
             api_key    = _decrypt(user["api_key_enc"])
@@ -1497,26 +1566,30 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             half_qty = max(round(qty / 2, 4), 0.001)
             _set_leverage(api_key, api_secret, side, lev)
 
+            tp1 = float(_last_signal.get("tp1", 0))
             r = _place_order(api_key, api_secret, side, "MARKET", qty)
             if r.get("code") == 0:
-                sl_r  = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                     qty, stop_price=sl, position_side=trade_ps)
-                # TP2 for 50% only — matches on_signal behaviour
-                tp_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                     half_qty, stop_price=tp2, position_side=trade_ps)
+                sl_r   = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                      qty, stop_price=sl, position_side=trade_ps)
+                tp1_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                      half_qty, stop_price=tp1, position_side=trade_ps) if tp1 else {}
+                tp2_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                      half_qty, stop_price=tp2, position_side=trade_ps)
                 user["in_position"]    = True
                 user["pos_side"]       = side
                 user["pos_qty"]        = qty
                 user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-                user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                user["tp1_order_id"]   = str((tp1_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                user["tp_order_id"]    = str((tp2_r.get("data") or {}).get("order", {}).get("orderId", ""))
                 user["limit_order_id"] = ""
                 user["failed_copy"]    = False
                 _set(target, user)
                 send_reply_fn(chat_id,
                     f"<b>Retry Successful!</b>\n\n"
                     f"✅ @{user.get('username','?')} entered {side} {qty} BTC\n\n"
-                    f"SL placed: {sl:,.0f}\n"
-                    f"TP2 placed (50%): {tp2:,.0f}\n\n"
+                    f"SL:  {sl:,.0f} (100%)\n"
+                    f"TP1: {tp1:,.0f} (50%)\n"
+                    f"TP2: {tp2:,.0f} (50%)\n\n"
                     f"<i>— CLEXER V9.0 —</i>")
             else:
                 err = r.get("msg", "unknown error")
