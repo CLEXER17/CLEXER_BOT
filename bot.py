@@ -1615,12 +1615,10 @@ def b1_analyze(ticker, data, use_tv=False):
 
     try:
         msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-            model="claude-opus-4-6", max_tokens=1500,
-            messages=[
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "{"},
-            ])
-        raw = ("{" + msg.content[0].text.strip()) if msg.content else ""
+            model="claude-opus-4-6", max_tokens=2000,
+            system="You are a trading signal bot. Respond with ONLY a JSON object. No reasoning, no steps, no text before or after the JSON.",
+            messages=[{"role": "user", "content": prompt}])
+        raw = msg.content[0].text.strip() if msg.content else ""
     except Exception as e:
         print(f"  [B1 CLAUDE] {e}"); return None, label
 
