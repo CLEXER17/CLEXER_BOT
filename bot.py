@@ -329,40 +329,31 @@ def take_miniapp_screenshots():
     results = []
     tf_map = [("W", "W"), ("4H", "240"), ("1H", "60"), ("5m", "5")]
     try:
-        with sync_playwright() as p:
+        launch_args = ["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                       "--disable-setuid-sandbox","--single-process","--no-zygote"]
+        for label, iv in tf_map:
             try:
-                print("  [CHARTS] launching Chromium...")
-                browser = p.chromium.launch(
-                    headless=True,
-                    timeout=30000,
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                          "--disable-setuid-sandbox","--single-process","--no-zygote"])
-                print("  [CHARTS] Chromium launched OK")
-            except Exception as e:
-                print(f"  [CHARTS] Chromium launch failed: {e}")
-                return [("ERROR", f"Chromium launch failed: {e}")]
-            for label, iv in tf_map:
-                try:
+                with sync_playwright() as p:
+                    print(f"  [CHARTS] {label} launching browser...")
+                    browser = p.chromium.launch(headless=True, timeout=30000, args=launch_args)
                     page = browser.new_page(viewport={"width": 480, "height": 700})
                     url = f"{MINI_APP_URL}?interval={iv}"
-                    print(f"  [CHARTS] opening {url}")
+                    print(f"  [CHARTS] {label} opening {url}")
                     resp = page.goto(url, timeout=30000)
-                    print(f"  [CHARTS] {label} page status: {resp.status if resp else 'no response'}")
+                    print(f"  [CHARTS] {label} status: {resp.status if resp else 'no response'}")
                     page.wait_for_timeout(8000)
-                    # Try chart div first, fallback to full page
                     chart = page.query_selector("#tv_chart")
                     if chart:
                         buf = BytesIO(chart.screenshot())
-                        print(f"  [CHARTS] {label} #tv_chart screenshot OK")
+                        print(f"  [CHARTS] {label} OK")
                     else:
-                        print(f"  [CHARTS] {label} #tv_chart not found — screenshotting full page")
+                        print(f"  [CHARTS] {label} no #tv_chart — full page")
                         buf = BytesIO(page.screenshot(full_page=False))
                     results.append((label, buf))
-                    page.close()
-                except Exception as e:
-                    print(f"  [CHARTS] {label} error: {e}")
-                    results.append((label, f"Error: {e}"))
-            browser.close()
+                    browser.close()
+            except Exception as e:
+                print(f"  [CHARTS] {label} error: {e}")
+                results.append((label, f"Error: {e}"))
     except Exception as e:
         print(f"  [CHARTS] playwright error: {e}")
         return [("ERROR", f"Playwright error: {e}")]
