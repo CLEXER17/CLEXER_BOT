@@ -568,8 +568,7 @@ def on_entry_hit(entry: float, sl: float, tp2: float):
 
             # Place SL for full qty
             sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                qty, stop_price=sl, close_position=True,
-                                position_side=pos_side)
+                                qty, stop_price=sl, position_side=pos_side)
             # Place TP2 for 50% — TP1 will close the other half
             tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
                                 half_qty, stop_price=tp2, position_side=pos_side)
@@ -1501,8 +1500,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             r = _place_order(api_key, api_secret, side, "MARKET", qty)
             if r.get("code") == 0:
                 sl_r  = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                     qty, stop_price=sl, close_position=True,
-                                     position_side=trade_ps)
+                                     qty, stop_price=sl, position_side=trade_ps)
                 # TP2 for 50% only — matches on_signal behaviour
                 tp_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
                                      half_qty, stop_price=tp2, position_side=trade_ps)
