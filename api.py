@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
+from typing import Optional
 import psycopg2
 import psycopg2.extras
 from cryptography.fernet import Fernet
@@ -76,9 +77,9 @@ def init_db():
                     auto_copy   BOOLEAN DEFAULT FALSE,
                     size_mode   TEXT DEFAULT 'fixed',
                     size_val    NUMERIC DEFAULT 50,
+                    lev_mode    TEXT DEFAULT 'manual',
                     leverage    INT DEFAULT 10,
-                    risk_mode   TEXT DEFAULT 'pct',
-                    risk_val    NUMERIC DEFAULT 2,
+                    risk_usdt   NUMERIC,
                     updated_at  TIMESTAMPTZ DEFAULT NOW()
                 );
 
@@ -99,6 +100,17 @@ def init_db():
                     pnl_usdt    NUMERIC
                 );
             """)
+            # Migrations — safe to run repeatedly (IF NOT EXISTS / DO NOTHING)
+            for sql in [
+                "ALTER TABLE copy_settings ADD COLUMN IF NOT EXISTS lev_mode TEXT DEFAULT 'manual'",
+                "ALTER TABLE copy_settings ADD COLUMN IF NOT EXISTS risk_usdt NUMERIC",
+                "ALTER TABLE copy_settings DROP COLUMN IF EXISTS risk_mode",
+                "ALTER TABLE copy_settings DROP COLUMN IF EXISTS risk_val",
+            ]:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    pass
         conn.commit()
 
 # ── initData auth ─────────────────────────────────────────────────────────────
@@ -391,12 +403,12 @@ def bingx_status(user: dict = Depends(get_current_user)):
 # ═════════════════════════════════════════════════════════════════════════════
 
 class CopySettings(BaseModel):
-    auto_copy:  bool    = False
-    size_mode:  str     = "fixed"
-    size_val:   float   = 50.0
-    leverage:   int     = 10
-    risk_mode:  str     = "pct"
-    risk_val:   float   = 2.0
+    auto_copy:  bool            = False
+    size_mode:  str             = "fixed"
+    size_val:   float           = 50.0
+    lev_mode:   str             = "manual"
+    leverage:   Optional[int]   = 10
+    risk_usdt:  Optional[float] = None
 
 @app.get("/copy/settings")
 def get_copy_settings(user: dict = Depends(get_current_user)):
@@ -416,18 +428,18 @@ def save_copy_settings(body: CopySettings, user: dict = Depends(get_current_user
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO copy_settings (tg_id, auto_copy, size_mode, size_val, leverage, risk_mode, risk_val)
+                INSERT INTO copy_settings (tg_id, auto_copy, size_mode, size_val, lev_mode, leverage, risk_usdt)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (tg_id) DO UPDATE
                   SET auto_copy  = EXCLUDED.auto_copy,
                       size_mode  = EXCLUDED.size_mode,
                       size_val   = EXCLUDED.size_val,
+                      lev_mode   = EXCLUDED.lev_mode,
                       leverage   = EXCLUDED.leverage,
-                      risk_mode  = EXCLUDED.risk_mode,
-                      risk_val   = EXCLUDED.risk_val,
+                      risk_usdt  = EXCLUDED.risk_usdt,
                       updated_at = NOW()
             """, (user["id"], body.auto_copy, body.size_mode, body.size_val,
-                  body.leverage, body.risk_mode, body.risk_val))
+                  body.lev_mode, body.leverage, body.risk_usdt))
         conn.commit()
     return {"saved": True}
 
@@ -442,7 +454,9 @@ class MirrorRequest(BaseModel):
     tp:        float
     sl:        float
     size_usdt: float
-    leverage:  int
+    lev_mode:  str             = "manual"
+    leverage:  Optional[int]   = 10
+    risk_usdt: Optional[float] = None
 
 @app.post("/copy/mirror")
 def mirror_trade(body: MirrorRequest, user: dict = Depends(get_current_user)):
