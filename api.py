@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import psycopg2
 import psycopg2.extras
@@ -203,6 +203,10 @@ def startup():
     init_db()
 
 # ── health ────────────────────────────────────────────────────────────────────
+@app.get("/app")
+def serve_miniapp():
+    return FileResponse("clexer-miniapp.html", media_type="text/html")
+
 @app.get("/health")
 def health():
     return {"ok": True, "ts": int(time.time())}
