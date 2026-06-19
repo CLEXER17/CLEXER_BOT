@@ -317,8 +317,10 @@ def take_miniapp_screenshots():
         return []
     try:
         from playwright.sync_api import sync_playwright
-    except ImportError:
-        return [("ERROR", "Playwright not installed — check Railway build command")]
+        print("  [CHARTS] playwright import OK")
+    except ImportError as e:
+        print(f"  [CHARTS] playwright import failed: {e}")
+        return [("ERROR", f"Playwright not installed: {e}")]
     results = []
     tf_map = [("W", "W"), ("4H", "240"), ("1H", "60"), ("5m", "5")]
     try:
@@ -2888,9 +2890,12 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "📵 Chart snapshots are OFF. Send /chartson to enable."); return
         send_reply(chat_id, "📸 Taking chart screenshots (W, 4H, 1H, 5m)...\nThis takes ~30s")
         def _do_charts(cid=chat_id):
-            shots = take_miniapp_screenshots()
+            try:
+                shots = take_miniapp_screenshots()
+            except Exception as e:
+                send_reply(cid, f"❌ Screenshot crashed: {e}"); return
             if not shots:
-                send_reply(cid, "❌ Failed — check Railway logs for details."); return
+                send_reply(cid, "❌ No screenshots returned — check Railway logs."); return
             for label, result in shots:
                 if isinstance(result, str):
                     send_reply(cid, f"❌ [{label}] {result}"); continue
