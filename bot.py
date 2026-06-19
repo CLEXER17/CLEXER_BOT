@@ -1908,15 +1908,14 @@ def fmt_signal(s):
     e   = "🟢" if s["signal"]=="BUY" else "🔴"
     arr = "📈" if s["signal"]=="BUY" else "📉"
     ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
-    el  = f"🎯 Entry    <b>{s['entry']:,.0f}</b>"
+    el  = f"🎯 Entry:  <b>{s['entry']:,.0f}</b>"
     if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
         el += f"\n   <i>{s['entry_note']}</i>"
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
     src = s.get("data_source", get_current_source()); mode = s.get("prompt_mode","?")
     return (f"{e} <b>{s['signal']} - {SYMBOL}</b>  {arr}  {ci}\n"
-        f"🕐 {ist_str()}  |  🌍 {s.get('session',get_session())}\n"
-        f"📡 Source: <b>{src}</b> | Mode: {mode}\n\n"
+        f"🕐 {ist_str()}  |  🌍 {s.get('session',get_session())}\n\n"
         f"{el}\n"
         f"🛡️ SL       <b>{s['sl']:,.0f}</b>\n"
         f"💰 TP1     <b>{s['tp1']:,.0f}</b>\n"
@@ -1925,7 +1924,6 @@ def fmt_signal(s):
         + (f"🌐 Weekly: <i>{wk}</i>\n" if wk else "")
         + (f"📊 4H:     <i>{s4h}</i>\n" if s4h else "")
         + (f"📍 Zone:   <i>{ez}</i>\n"  if ez else "")
-        + (f"\n💡 <i>{rs}</i>\n"        if rs else "")
         + f"\n✨ <i>- CLEXER V9.0 -</i>\n⚠️ <i>Not financial advice</i>")
 
 def fmt_update(status, price=None):
@@ -2171,8 +2169,12 @@ def fmt_scan_signal(t: dict) -> str:
     et   = t.get("entry_type","MARKET")
     sl_pct = abs(entry - sl) / entry * 100 if entry else 0
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
+    coin = sym.replace("-USDT","").replace("USDT","")
     return (
-        f"📣 <b>{sym} SCAN SIGNAL</b>  🕐 {ist_str()}\n\n"
+        f"<b>📣 {coin}-USDT</b>\n"
+        f"<b>{'─'*22}</b>\n\n"
+        f" SCAN SIGNAL\n"
+        f"  🕐 {ist_str()}\n\n"
         f"{arrow} — <b>{'MARKET' if et=='MARKET' else 'PULLBACK'} ENTRY</b>\n\n"
         f"🎯 Entry: <b>{entry:,.4g}</b>\n"
         f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
@@ -2372,7 +2374,7 @@ def run_price_check():
         elif status == "WAITING_ENTRY":
             active_trade["scan_count"] += 1; send_telegram(fmt_update("WAITING_ENTRY", price))
         elif status == "RUNNING":
-            active_trade["scan_count"] += 1; send_telegram(price_only_advice(price))
+            active_trade["scan_count"] += 1  # trade running, no message needed
     except Exception as e: print(f"  [1H ERROR] {e}")
     return False
 
@@ -4110,12 +4112,14 @@ def main():
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── Auto-scan at IST :24 every hour — runs both V1 and V2 ──────────
+            # ── Auto-scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST ──────────────
             global _auto_scan_last_hour
             _ist_now = now_ist()
-            if _ist_now.minute == 24 and _auto_scan_last_hour != _ist_now.hour and not is_ist_sleep():
+            _scan_hours = {7, 11, 15, 19, 23}
+            if (_ist_now.minute == 21 and _ist_now.hour in _scan_hours
+                    and _auto_scan_last_hour != _ist_now.hour):
                 _auto_scan_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN] Triggered at {_ist_now.strftime('%H:24 IST')} — running scan1 + scan2")
+                print(f"  [AUTO-SCAN] Triggered at {_ist_now.strftime('%H:21 IST')} — running scan1 + scan2")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
@@ -4144,13 +4148,16 @@ def main():
                 if run_price_check():
                     forced = True; last_signal_scan_time = 0
 
-            # Scan due?
-            if not forced and (now-last_signal_scan_time) < SIGNAL_SCAN_INTERVAL:
-                time.sleep(MAIN_TICK); continue
-
-            # Session check
-            if not forced and not is_trading_hours() and not active_trade["signal"]:
-                print(f"  [WAIT] {get_session()} - not London/NY")
+            # BTC scan due? — fixed times: 7:21, 11:21, 15:21, 19:21, 23:21 IST only
+            # (or forced via /signal)
+            _btc_scan_hours = {7, 11, 15, 19, 23}
+            _btc_ist = now_ist()
+            _btc_scan_due = (
+                _btc_ist.minute == 21 and
+                _btc_ist.hour in _btc_scan_hours and
+                last_signal_scan_time < (now - 3600)  # once per window (don't re-run same minute)
+            )
+            if not forced and not _btc_scan_due:
                 time.sleep(MAIN_TICK); continue
 
             # Cooldown
@@ -4168,7 +4175,7 @@ def main():
 
             if active_trade["signal"]:
                 t = active_trade
-                send_telegram(
+                send_admin(
                     f"<b>4H Scan - Active Trade</b>  {ist_str()}\n\n"
                     f"{t['signal']} @ {t['entry']:,.0f}\n"
                     f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n"
@@ -4216,7 +4223,7 @@ def main():
                             f"{t['signal']} @ {t['entry']:,.0f}\nStructure intact.\n"
                             f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>- CLEXER V9.0 -</i>")
                 elif signal.get("_hold"):
-                    send_telegram(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
+                    send_admin(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
                         f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>- CLEXER V9.0 -</i>")
