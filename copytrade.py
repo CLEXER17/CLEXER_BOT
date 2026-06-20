@@ -444,8 +444,9 @@ def on_tp1(entry: float, tp1: float = 0):
             full_qty   = user.get("pos_qty", 0.001)
             half_qty   = max(round(full_qty / 2, 4), 0.001)
 
-            # Cancel the TP1 order (so BingX doesn't auto-close again)
+            # Cancel TP1 order and OLD SL order
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
+            _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
 
             # Close 50% at market
             _place_order(api_key, api_secret, close_side, "MARKET", half_qty,
@@ -457,11 +458,16 @@ def on_tp1(entry: float, tp1: float = 0):
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # Move position SL to breakeven (entry price) for the remaining 50%
-            _set_position_sl(api_key, api_secret, pos_side, entry)
+            # Place new SL at breakeven (entry) for remaining half
+            be_sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                   half_qty, stop_price=entry, position_side=pos_side)
+            be_sl_ok = be_sl_r.get("code") == 0
+            be_sl_oid = str((be_sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            print(f"[CT] on_tp1 {cid}: BE SL@{entry:,.0f} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','')}")
 
             user["tp1_order_id"] = ""
-            user["pos_qty"]      = half_qty   # remaining quantity
+            user["sl_order_id"]  = be_sl_oid
+            user["pos_qty"]      = half_qty
             _set(cid, user)
             print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
         except Exception as e:
