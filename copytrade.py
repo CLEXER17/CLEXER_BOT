@@ -502,7 +502,9 @@ def on_tp2(entry: float = 0, tp2: float = 0):
     global _last_signal
     _last_signal = {}
     _save_last_signal()
+    print(f"[CT] on_tp2: users_with_copy={len(_users_with_copy())}")
     for cid, user, api_key, api_secret in _users_with_copy():
+        print(f"[CT] on_tp2 {cid}: in_position={user.get('in_position')} pos_side={user.get('pos_side')}")
         if not user.get("in_position"): continue
         try:
             # Cancel any leftover TP1/SL orders
@@ -528,7 +530,9 @@ def on_sl(entry: float = 0, sl: float = 0):
     global _last_signal
     _last_signal = {}
     _save_last_signal()
+    print(f"[CT] on_sl: users_with_copy={len(_users_with_copy())}")
     for cid, user, api_key, api_secret in _users_with_copy():
+        print(f"[CT] on_sl {cid}: in_position={user.get('in_position')} pos_side={user.get('pos_side')}")
         if not user.get("in_position"): continue
         try:
             pos_side = "LONG" if user["pos_side"] == "BUY" else "SHORT"
@@ -613,16 +617,23 @@ def on_entry_hit(entry: float, sl: float, tp2: float):
 
 def on_close_all():
     """Admin /close or structure flip — close all positions + cancel all orders."""
+    results = []
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
+            uname = user.get("username","?")
             if user.get("in_position") and user.get("pos_side"):
-                _close_position(api_key, api_secret, user["pos_side"])
-            _cancel_all_orders(api_key, api_secret)
+                r = _close_position(api_key, api_secret, user["pos_side"])
+                results.append(f"{'✅' if r.get('code')==0 else '❌'} @{uname} closed: {r.get('msg','') or 'ok'}")
+            else:
+                _cancel_all_orders(api_key, api_secret)
+                results.append(f"✅ @{uname} orders cancelled (no open position)")
             user["in_position"] = False; user["pos_side"] = ""
             user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
             _set(cid, user)
         except Exception as e:
+            results.append(f"❌ {cid}: {e}")
             print(f"[CT] on_close_all {cid}: {e}")
+    return results or ["No copy users active."]
 
 
 def close_coin_all(coin: str) -> list[str]:
@@ -1080,20 +1091,26 @@ def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
 
 
 def on_sl_to_be(entry: float):
-    """Admin /sltobe — move SL to breakeven without closing 50% (manual override)."""
+    """Admin /sltobe — move SL to a new price for all users in position."""
+    results = []
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
+            uname      = user.get("username","?")
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             remaining  = user.get("pos_qty", 0.001)
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
             r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
                              remaining, stop_price=entry, position_side=pos_side)
+            ok = r.get("code") == 0
             user["sl_order_id"] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
             _set(cid, user)
+            results.append(f"{'✅' if ok else '❌'} @{uname} SL→{entry:,.0f}: {r.get('msg','') or 'ok'}")
         except Exception as e:
+            results.append(f"❌ {cid}: {e}")
             print(f"[CT] on_sl_to_be {cid}: {e}")
+    return results or ["No users in position."]
 
 
 def on_update_sl(new_sl: float):
