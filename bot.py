@@ -2591,30 +2591,41 @@ def handle_command(text, chat_id, message=None):
         """
         raw = " ".join(parts[1:]).lower()
         try:
-            if raw in ("tp1",):
-                sig = ct._last_signal
-                if not sig: send_reply(chat_id, "No active demo signal."); return
-                results = ct.on_tp1(sig.get("entry",0), sig.get("tp1",0))
-                send_reply(chat_id, f"<b>DEMO TP1</b>\nSL→BE fired\n\n" + "\n".join(str(r) for r in (results or [])))
+            def _fmt(results):
+                lines = []
+                for r in (results or []):
+                    lines.append(str(r))
+                return "\n".join(lines) if lines else "No copy users active."
 
-            elif raw in ("tp2",):
+            if raw.split()[0] == "tp1":
                 sig = ct._last_signal
-                results = ct.on_tp2(sig.get("entry",0), sig.get("tp2",0))
-                send_reply(chat_id, f"<b>DEMO TP2</b>\nClose all fired\n\n" + "\n".join(str(r) for r in (results or [])))
+                if not sig: send_reply(chat_id, "❌ No active demo signal. Open one first with /demo btc buy ..."); return
+                ct.on_tp1(sig.get("entry",0), sig.get("tp1",0))
+                send_reply(chat_id, f"<b>DEMO TP1 HIT</b>\nCheck Railway logs for SL placement result.")
 
-            elif raw in ("sl",):
+            elif raw.split()[0] == "tp2":
                 sig = ct._last_signal
-                results = ct.on_sl(sig.get("entry",0), sig.get("sl",0))
-                send_reply(chat_id, f"<b>DEMO SL</b>\nClose all fired\n\n" + "\n".join(str(r) for r in (results or [])))
+                if not sig: send_reply(chat_id, "❌ No active demo signal."); return
+                ct.on_tp2(sig.get("entry",0), sig.get("tp2",0))
+                send_reply(chat_id, "<b>DEMO TP2 HIT</b>\nClose all fired. Check logs.")
+
+            elif raw in ("sl", "sl hit"):
+                sig = ct._last_signal
+                if not sig: send_reply(chat_id, "❌ No active demo signal."); return
+                ct.on_sl(sig.get("entry",0), sig.get("sl",0))
+                send_reply(chat_id, "<b>DEMO SL HIT</b>\nClose all fired. Check logs.")
 
             elif raw == "btc close":
-                ct.on_close_all()
-                send_reply(chat_id, "<b>DEMO CLOSE</b>\nAll positions closed.")
+                results = ct.on_close_all()
+                send_reply(chat_id, f"<b>DEMO CLOSE</b>\n{_fmt(results)}")
 
             elif raw.startswith("btc sl "):
-                new_sl = float(raw.split()[-1])
-                ct.on_sl_to_be(new_sl)
-                send_reply(chat_id, f"<b>DEMO SL MOVE</b>\nSL moved to {new_sl:,.0f}")
+                try:
+                    new_sl = float(raw.split()[-1])
+                    results = ct.on_sl_to_be(new_sl)
+                    send_reply(chat_id, f"<b>DEMO SL MOVE → {new_sl:,.0f}</b>\n{_fmt(results)}")
+                except Exception as e:
+                    send_reply(chat_id, f"❌ btc sl error: {e}")
 
             elif raw.startswith("btc "):
                 # Parse: btc buy/sell [entry X | market] sl X tp1 X tp2 X
