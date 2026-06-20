@@ -236,13 +236,33 @@ def _sl_json(sl: float) -> str:
     })
 
 def _set_position_sl(api_key: str, api_secret: str, pos_side: str, sl: float) -> dict:
-    """Update position SL after TP1 (move to breakeven) via order with stopLoss param."""
+    """Set position-level SL via BingX positionTPSL endpoint (does not affect TP2 order)."""
     import json as _json
-    # Place a tiny MARKET order with stopLoss — BingX attaches it to the position
-    # Workaround: use STOP_MARKET order with explicit qty since positionTPSL endpoint doesn't exist
-    close_side = "SELL" if pos_side == "LONG" else "BUY"
-    return _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                        0.001, stop_price=sl, position_side=pos_side)
+    from urllib.parse import urlencode, quote
+    sl_payload = _json.dumps({
+        "type": "MARK_PRICE",
+        "stopPrice": str(round(sl, 2)),
+        "price": "0",
+        "workingType": "MARK_PRICE",
+    }, separators=(",", ":"))
+    # Sign only the non-nested params, then append stopLoss url-encoded separately
+    base_params = {
+        "symbol":       BINGX_SYMBOL,
+        "positionSide": pos_side,
+        "timestamp":    int(time.time() * 1000),
+    }
+    query = urlencode(sorted(base_params.items()))
+    # Include stopLoss in signature string as-is
+    sign_str = query + "&stopLoss=" + sl_payload
+    sig = hmac.new(api_secret.strip().encode("utf-8"), sign_str.encode("utf-8"), hashlib.sha256).hexdigest()
+    url = (f"{BINGX_BASE}/openApi/swap/v2/trade/positionTPSL"
+           f"?{query}&stopLoss={quote(sl_payload)}&signature={sig}")
+    headers = {"X-BX-APIKEY": api_key.strip()}
+    try:
+        r = requests.post(url, headers=headers, timeout=15)
+        return r.json()
+    except Exception as e:
+        return {"code": -1, "msg": str(e)}
 
 def _cancel_order(api_key: str, api_secret: str, order_id: str) -> dict:
     if not order_id:
@@ -458,15 +478,12 @@ def on_tp1(entry: float, tp1: float = 0):
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # Place new SL at breakeven (entry) for remaining half
-            be_sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                   half_qty, stop_price=entry, position_side=pos_side)
-            be_sl_ok = be_sl_r.get("code") == 0
-            be_sl_oid = str((be_sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-            print(f"[CT] on_tp1 {cid}: BE SL@{entry:,.0f} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','')}")
+            # Set position-level SL at breakeven — separate from TP2 order, won't cancel it
+            be_sl_r = _set_position_sl(api_key, api_secret, pos_side, entry)
+            print(f"[CT] on_tp1 {cid}: pos BE SL@{entry:,.0f} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','')}")
 
             user["tp1_order_id"] = ""
-            user["sl_order_id"]  = be_sl_oid
+            user["sl_order_id"]  = ""   # position-level SL has no order ID
             user["pos_qty"]      = half_qty
             _set(cid, user)
             print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
