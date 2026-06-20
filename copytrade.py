@@ -478,12 +478,15 @@ def on_tp1(entry: float, tp1: float = 0):
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # Set position-level SL at breakeven — separate from TP2 order, won't cancel it
-            be_sl_r = _set_position_sl(api_key, api_secret, pos_side, entry)
-            print(f"[CT] on_tp1 {cid}: pos BE SL@{entry:,.0f} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','')}")
+            # Place new STOP_MARKET at breakeven for remaining half
+            be_sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                   half_qty, stop_price=entry, position_side=pos_side)
+            be_sl_ok  = be_sl_r.get("code") == 0
+            be_sl_oid = str((be_sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            print(f"[CT] on_tp1 {cid}: BE SL@{entry:,.0f} qty={half_qty} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','?')} oid={be_sl_oid}")
 
             user["tp1_order_id"] = ""
-            user["sl_order_id"]  = ""   # position-level SL has no order ID
+            user["sl_order_id"]  = be_sl_oid
             user["pos_qty"]      = half_qty
             _set(cid, user)
             print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
