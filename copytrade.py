@@ -536,9 +536,16 @@ def on_sl(entry: float = 0, sl: float = 0):
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("tp_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
-            # Force-close the position at market (in case position SL didn't fire)
+            # Force-close via closePosition endpoint
             close_r = _close_position(api_key, api_secret, user["pos_side"])
-            print(f"[CT] on_sl {cid}: close_position={close_r.get('code')} msg={close_r.get('msg','')}")
+            print(f"[CT] on_sl {cid}: closePosition code={close_r.get('code')} msg={close_r.get('msg','')}")
+            # Fallback: if closePosition fails, place market order for remaining qty
+            if close_r.get("code") != 0:
+                close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+                pos_side_str = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+                remaining = user.get("pos_qty", 0.001)
+                fb_r = _place_order(api_key, api_secret, close_side, "MARKET", remaining, position_side=pos_side_str)
+                print(f"[CT] on_sl {cid}: fallback MARKET close qty={remaining} code={fb_r.get('code')} msg={fb_r.get('msg','')}")
         except Exception as e:
             print(f"[CT] on_sl {cid} close error: {e}")
         # Record PnL
