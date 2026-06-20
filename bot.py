@@ -2605,14 +2605,14 @@ def handle_command(text, chat_id, message=None):
             elif raw.split()[0] == "tp2":
                 sig = ct._last_signal
                 if not sig: send_reply(chat_id, "❌ No active demo signal."); return
-                ct.on_tp2(sig.get("entry",0), sig.get("tp2",0))
-                send_reply(chat_id, "<b>DEMO TP2 HIT</b>\nClose all fired. Check logs.")
+                results = ct.on_tp2(sig.get("entry",0), sig.get("tp2",0))
+                send_reply(chat_id, f"<b>DEMO TP2 HIT</b>\n{_fmt(results)}")
 
             elif raw in ("sl", "sl hit"):
                 sig = ct._last_signal
                 if not sig: send_reply(chat_id, "❌ No active demo signal."); return
-                ct.on_sl(sig.get("entry",0), sig.get("sl",0))
-                send_reply(chat_id, "<b>DEMO SL HIT</b>\nClose all fired. Check logs.")
+                results = ct.on_sl(sig.get("entry",0), sig.get("sl",0))
+                send_reply(chat_id, f"<b>DEMO SL HIT</b>\n{_fmt(results)}")
 
             elif raw == "btc close":
                 results = ct.on_close_all()
