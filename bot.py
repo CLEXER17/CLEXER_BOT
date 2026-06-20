@@ -2592,10 +2592,9 @@ def handle_command(text, chat_id, message=None):
         raw = " ".join(parts[1:]).lower()
         try:
             def _fmt(results):
-                lines = []
-                for r in (results or []):
-                    lines.append(str(r))
-                return "\n".join(lines) if lines else "No copy users active."
+                if results is None: return "Done."
+                lines = [str(r) for r in results]
+                return "\n".join(lines) if lines else "Done."
 
             if raw.split()[0] == "tp1":
                 sig = ct._last_signal
