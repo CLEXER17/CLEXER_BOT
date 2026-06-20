@@ -349,9 +349,6 @@ def on_signal(signal: dict, price: float) -> list[str]:
             _set_leverage(api_key, api_secret, side, lev)
 
             if entry_type == "MARKET":
-                # Embed stopLoss in the MARKET order — BingX attaches it to the position
-                # This is the "Position TP/SL" visible in the Positions tab
-                import json as _json
                 pos_side_entry = "LONG" if side == "BUY" else "SHORT"
                 r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
                     "symbol":       BINGX_SYMBOL,
@@ -359,22 +356,27 @@ def on_signal(signal: dict, price: float) -> list[str]:
                     "positionSide": pos_side_entry,
                     "type":         "MARKET",
                     "quantity":     round(qty, 4),
-                    "stopLoss":     _sl_json(sl),
                 })
                 if r.get("code") == 0:
-                    import time as _t
                     uname = user.get("username", "?")
                     warnings = []
-                    sl_ok = True   # stopLoss embedded in order = position SL set
+                    half_qty = max(round(qty / 2, 4), 0.001)
+
+                    # ── SL order — full qty STOP_MARKET ──
+                    sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
+                                        qty, stop_price=sl, position_side=trade_ps)
+                    sl_ok  = sl_r.get("code") == 0
+                    sl_oid = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    if not sl_ok:
+                        warnings.append(f"⚠️ SL FAILED @{uname}: {sl_r.get('msg','?')}")
 
                     # ── TP1 order — 50% qty at tp1 price ──
-                    half_qty = max(round(qty / 2, 4), 0.001)
                     tp1_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
                                           half_qty, stop_price=tp1, position_side=trade_ps)
                     tp1_ok = tp1_r.get("code") == 0
                     tp1_oid = str((tp1_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     if not tp1_ok:
-                        warnings.append(f"⚠️ TP1 ORDER FAILED @{uname}: {tp1_r.get('msg','?')}")
+                        warnings.append(f"⚠️ TP1 FAILED @{uname}: {tp1_r.get('msg','?')}")
 
                     # ── TP2 order — remaining 50% qty at tp2 price ──
                     tp2_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
@@ -382,19 +384,19 @@ def on_signal(signal: dict, price: float) -> list[str]:
                     tp2_ok = tp2_r.get("code") == 0
                     tp2_oid = str((tp2_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     if not tp2_ok:
-                        warnings.append(f"⚠️ TP2 ORDER FAILED @{uname}: {tp2_r.get('msg','?')}")
+                        warnings.append(f"⚠️ TP2 FAILED @{uname}: {tp2_r.get('msg','?')}")
 
                     user["in_position"]    = True
                     user["pos_side"]       = side
                     user["pos_qty"]        = qty
-                    user["sl_order_id"]    = ""          # SL is position-level, no order ID
-                    user["tp_order_id"]    = tp2_oid     # TP2 order ID (for cancellation on TP1 hit)
+                    user["sl_order_id"]    = sl_oid
+                    user["tp_order_id"]    = tp2_oid
                     user["tp1_order_id"]   = tp1_oid
                     user["limit_order_id"] = ""
                     user["failed_copy"]    = False
                     _set(cid, user)
 
-                    status = f"PosSL:{'✅' if sl_ok else '❌'} TP1:{'✅' if tp1_ok else '❌'} TP2:{'✅' if tp2_ok else '❌'}"
+                    status = f"SL:{'✅' if sl_ok else '❌'} TP1:{'✅' if tp1_ok else '❌'} TP2:{'✅' if tp2_ok else '❌'}"
                     results.append(f"✅ @{uname} {side} {qty} BTC | {status}")
                     for w in warnings:
                         results.append(w)
