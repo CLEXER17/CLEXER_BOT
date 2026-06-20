@@ -478,13 +478,15 @@ def on_tp1(entry: float, tp1: float = 0):
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # BE SL slightly inside entry so BingX accepts it (price must be below current for LONG)
+            # Remaining qty after closing half (use actual remainder, not half_qty again)
+            remaining_qty = max(round(full_qty - half_qty, 4), 0.0001)
+            # BE SL slightly inside entry so BingX accepts (SL must be < current price for LONG)
             be_sl_price = round(entry * 0.999, 2) if user["pos_side"] == "BUY" else round(entry * 1.001, 2)
             be_sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
-                                   half_qty, stop_price=be_sl_price, position_side=pos_side)
+                                   remaining_qty, stop_price=be_sl_price, position_side=pos_side)
             be_sl_ok  = be_sl_r.get("code") == 0
             be_sl_oid = str((be_sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-            print(f"[CT] on_tp1 {cid}: BE SL@{be_sl_price:,.2f} qty={half_qty} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','?')} oid={be_sl_oid}")
+            print(f"[CT] on_tp1 {cid}: BE SL@{be_sl_price:,.2f} qty={remaining_qty} code={be_sl_r.get('code')} msg={be_sl_r.get('msg','?')} oid={be_sl_oid}")
 
             user["tp1_order_id"] = ""
             user["sl_order_id"]  = be_sl_oid
