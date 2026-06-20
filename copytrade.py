@@ -500,68 +500,77 @@ def on_tp1(entry: float, tp1: float = 0):
 def on_tp2(entry: float = 0, tp2: float = 0):
     """TP2 hit — cancel remaining orders, force-close if needed, update records."""
     global _last_signal
-    _last_signal = {}
-    _save_last_signal()
-    print(f"[CT] on_tp2: users_with_copy={len(_users_with_copy())}")
+    results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        print(f"[CT] on_tp2 {cid}: in_position={user.get('in_position')} pos_side={user.get('pos_side')}")
         if not user.get("in_position"): continue
+        uname = user.get("username", "?")
         try:
-            # Cancel any leftover TP1/SL orders
+            close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
-            # Force-close remaining position (TP2 order auto-closes 50%, this closes any remainder)
-            _close_position(api_key, api_secret, user["pos_side"])
+            close_r = _close_position(api_key, api_secret, user["pos_side"])
+            print(f"[CT] on_tp2 {cid}: closePosition code={close_r.get('code')} msg={close_r.get('msg','')}")
+            if close_r.get("code") != 0:
+                remaining = user.get("pos_qty", 0.001)
+                close_r = _place_order(api_key, api_secret, close_side, "MARKET", remaining, position_side=pos_side)
+                print(f"[CT] on_tp2 {cid}: fallback MARKET code={close_r.get('code')} msg={close_r.get('msg','')}")
+            ok = close_r.get("code") == 0
+            results.append(f"{'✅' if ok else '❌'} @{uname} closed: {close_r.get('msg','') or 'ok'}")
         except Exception as e:
-            print(f"[CT] on_tp2 {cid} close error: {e}")
+            results.append(f"❌ @{uname}: {e}")
+            print(f"[CT] on_tp2 {cid}: {e}")
         if entry > 0 and tp2 > 0:
             pnl = _calc_pnl(user["pos_side"], entry, tp2, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl)
-            print(f"[CT] on_tp2 {cid}: pnl={pnl:+.2f}")
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["profit"] += 1
         _set(cid, user)
+    _last_signal = {}
+    _save_last_signal()
+    return results or ["No users in position."]
 
 
 def on_sl(entry: float = 0, sl: float = 0):
     """SL hit — force-close position on BingX, cancel open TP orders, update records."""
     global _last_signal
-    _last_signal = {}
-    _save_last_signal()
-    print(f"[CT] on_sl: users_with_copy={len(_users_with_copy())}")
+    results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        print(f"[CT] on_sl {cid}: in_position={user.get('in_position')} pos_side={user.get('pos_side')}")
         if not user.get("in_position"): continue
+        uname = user.get("username", "?")
         try:
-            pos_side = "LONG" if user["pos_side"] == "BUY" else "SHORT"
-            # Cancel open TP1/TP2 orders first so they don't fire after close
+            close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+            # Cancel all open orders first
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("tp_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
-            # Force-close via closePosition endpoint
+            # Try closePosition endpoint
             close_r = _close_position(api_key, api_secret, user["pos_side"])
             print(f"[CT] on_sl {cid}: closePosition code={close_r.get('code')} msg={close_r.get('msg','')}")
-            # Fallback: if closePosition fails, place market order for remaining qty
             if close_r.get("code") != 0:
-                close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
-                pos_side_str = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+                # Fallback: explicit market order
                 remaining = user.get("pos_qty", 0.001)
-                fb_r = _place_order(api_key, api_secret, close_side, "MARKET", remaining, position_side=pos_side_str)
-                print(f"[CT] on_sl {cid}: fallback MARKET close qty={remaining} code={fb_r.get('code')} msg={fb_r.get('msg','')}")
+                close_r = _place_order(api_key, api_secret, close_side, "MARKET", remaining, position_side=pos_side)
+                print(f"[CT] on_sl {cid}: fallback MARKET code={close_r.get('code')} msg={close_r.get('msg','')}")
+            ok = close_r.get("code") == 0
+            results.append(f"{'✅' if ok else '❌'} @{uname} closed: {close_r.get('msg','') or 'ok'}")
         except Exception as e:
-            print(f"[CT] on_sl {cid} close error: {e}")
-        # Record PnL
+            results.append(f"❌ @{uname}: {e}")
+            print(f"[CT] on_sl {cid}: {e}")
         if entry > 0 and sl > 0:
             pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl)
-            print(f"[CT] on_sl {cid}: pnl={pnl:+.2f}")
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
         user["history"]["total"] += 1; user["history"]["loss"] += 1
         _set(cid, user)
+    _last_signal = {}
+    _save_last_signal()
+    return results or ["No users in position."]
 
 
 def on_cancel_limits():
