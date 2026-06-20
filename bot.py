@@ -6,7 +6,6 @@ import os, time, json, base64, requests, anthropic, threading, re, subprocess
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
-subprocess.run(["playwright", "install", "--with-deps", "chromium"], check=False, capture_output=False)
 print("[STARTUP] Playwright Chromium ready")
 
 # Global TradingView chart lock — held by scan while switching symbol + fetching all TFs.
@@ -316,71 +315,7 @@ def tv_get_candles(interval, limit):
         print(f"      [TV] {interval} error: {e}"); return None
 
 def take_miniapp_screenshots():
-    """Use Playwright headless Chrome to screenshot all 4 TFs from mini app.
-    Returns list of (label, BytesIO) or (label, str_error) tuples."""
-    global CHART_SNAP_ENABLED
-    if not CHART_SNAP_ENABLED or not MINI_APP_URL:
-        return []
-    try:
-        from playwright.sync_api import sync_playwright
-        print("  [CHARTS] playwright import OK")
-    except ImportError as e:
-        print(f"  [CHARTS] playwright import failed: {e}")
-        return [("ERROR", f"Playwright not installed: {e}")]
-    results = []
-    tf_map = [("W", "W"), ("4H", "240"), ("1H", "60"), ("5m", "5")]
-    try:
-        launch_args = ["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
-                       "--disable-setuid-sandbox","--single-process","--no-zygote"]
-        for label, iv in tf_map:
-            try:
-                with sync_playwright() as p:
-                    print(f"  [CHARTS] {label} launching browser...")
-                    browser = p.chromium.launch(headless=True, timeout=30000, args=launch_args)
-                    page = browser.new_page(viewport={"width": 480, "height": 700})
-                    url = f"{MINI_APP_URL}?interval={iv}"
-                    print(f"  [CHARTS] {label} opening {url}")
-                    # Mock Telegram WebApp so mini app initializes without Telegram
-                    page.add_init_script("""
-                        window.Telegram = {
-                            WebApp: {
-                                initData: '', initDataUnsafe: {},
-                                version: '6.0', platform: 'web',
-                                colorScheme: 'dark', themeParams: {},
-                                isExpanded: true, viewportHeight: 700,
-                                viewportStableHeight: 700,
-                                ready: function(){}, expand: function(){},
-                                onEvent: function(){}, offEvent: function(){},
-                                sendData: function(){}, close: function(){}
-                            }
-                        };
-                    """)
-                    resp = page.goto(url, timeout=30000)
-                    print(f"  [CHARTS] {label} status: {resp.status if resp else 'no response'}")
-                    # Wait for TradingView iframe to appear
-                    try:
-                        page.wait_for_selector("#tv_chart iframe", timeout=20000)
-                        print(f"  [CHARTS] {label} TV iframe loaded")
-                        page.wait_for_timeout(5000)  # extra wait for chart to render
-                    except Exception:
-                        print(f"  [CHARTS] {label} TV iframe not found — waiting 12s")
-                        page.wait_for_timeout(12000)
-                    chart = page.query_selector("#tv_chart")
-                    if chart:
-                        buf = BytesIO(chart.screenshot())
-                        print(f"  [CHARTS] {label} OK")
-                    else:
-                        print(f"  [CHARTS] {label} no #tv_chart — full page")
-                        buf = BytesIO(page.screenshot(full_page=False))
-                    results.append((label, buf))
-                    browser.close()
-            except Exception as e:
-                print(f"  [CHARTS] {label} error: {e}")
-                results.append((label, f"Error: {e}"))
-    except Exception as e:
-        print(f"  [CHARTS] playwright error: {e}")
-        return [("ERROR", f"Playwright error: {e}")]
-    return results
+    return []  # Chromium/Playwright removed
 
 def tv_get_ticker():
     if not TV_BRIDGE_URL or not tv_bridge_state["online"]: return None
@@ -2682,17 +2617,29 @@ def handle_command(text, chat_id, message=None):
                 send_reply(chat_id, f"<b>DEMO SL MOVE</b>\nSL moved to {new_sl:,.0f}")
 
             elif raw.startswith("btc "):
-                # Parse: btc buy/sell entry X tp1 X tp2 X sl X
+                # Parse: btc buy/sell [entry X | market] sl X tp1 X tp2 X
                 p = raw.split()
                 side = p[1].upper()  # BUY or SELL
                 vals = {}
                 i = 2
-                while i < len(p)-1:
-                    vals[p[i]] = float(p[i+1]); i += 2
-                entry = vals.get("entry", 0); sl = vals.get("sl", 0)
-                tp1   = vals.get("tp1", 0);   tp2 = vals.get("tp2", 0)
+                while i < len(p):
+                    if p[i] in ("entry","sl","tp1","tp2") and i+1 < len(p):
+                        try: vals[p[i]] = float(p[i+1]); i += 2
+                        except: i += 1
+                    elif p[i] == "market":
+                        vals["market"] = True; i += 1
+                    else:
+                        i += 1
+                sl  = vals.get("sl", 0); tp1 = vals.get("tp1", 0); tp2 = vals.get("tp2", 0)
+                # entry: use provided value or fetch live price for market
+                if "entry" in vals:
+                    entry = vals["entry"]
+                elif vals.get("market"):
+                    ticker = get_ticker(); entry = ticker["price"]
+                else:
+                    entry = 0
                 if not all([entry, sl, tp1, tp2]):
-                    send_reply(chat_id, "Usage: /demo btc buy entry 66000 tp1 67000 tp2 68000 sl 65500"); return
+                    send_reply(chat_id, "Usage: /demo btc buy market sl 64000 tp1 67000 tp2 67500"); return
                 fake_signal = {"side": side, "signal": side, "entry": entry, "sl": sl,
                                "tp1": tp1, "tp2": tp2, "price": entry,
                                "rr": f"1:{abs(tp2-entry)/abs(sl-entry):.1f}"}
