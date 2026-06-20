@@ -864,9 +864,15 @@ def on_scan_tp1(symbol: str):
             # Wait for position to update before placing new SL
             time.sleep(3)
 
-            # Move SL to BE (entry price) — use remaining half qty
-            sl_r = _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price, qty=half_qty)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{entry_price} code={sl_r.get('code') if sl_r else '?'} msg={sl_r.get('msg','') if sl_r else ''}")
+            # Remaining qty after close
+            remaining_qty = max(round(qty - half_qty, 4), 0.0001)
+            # BE SL with 0.1% buffer so BingX accepts (SL must be < current price for LONG)
+            be_sl_price = round(entry_price * 0.999, 6) if side == "BUY" else round(entry_price * 1.001, 6)
+            sl_params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                         "type": "STOP_MARKET", "quantity": round(remaining_qty, 4),
+                         "stopPrice": be_sl_price}
+            sl_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, sl_params)
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={remaining_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
 
             # Re-place TP2 for remaining half
             tp2 = float(user.get("scan_tp2", 0))
@@ -899,10 +905,15 @@ def on_scan_tp2(symbol: str):
                            {"symbol": symbol, "orderId": oid})
 
             # Force-close any remaining position
-            _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
-                   {"symbol": symbol, "positionSide": trade_ps})
-
-            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed")
+            close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                              {"symbol": symbol, "positionSide": trade_ps})
+            if close_r.get("code") != 0:
+                rem = float(user.get("scan_qty", 0.001))
+                close_side = "SELL" if user["scan_side"] == "BUY" else "BUY"
+                close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                                  {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                                   "type": "MARKET", "quantity": round(rem, 4)})
+            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')} msg={close_r.get('msg','')}")
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
         _clear_scan_state(cid, user)
@@ -921,10 +932,15 @@ def on_scan_sl(symbol: str):
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
 
-            _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
-                   {"symbol": symbol, "positionSide": trade_ps})
-
-            print(f"[CT] on_scan_sl {cid} {symbol}: closed")
+            close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                              {"symbol": symbol, "positionSide": trade_ps})
+            if close_r.get("code") != 0:
+                rem = float(user.get("scan_qty", 0.001))
+                close_side = "SELL" if user["scan_side"] == "BUY" else "BUY"
+                close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                                  {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                                   "type": "MARKET", "quantity": round(rem, 4)})
+            print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')} msg={close_r.get('msg','')}")
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
         _clear_scan_state(cid, user)
