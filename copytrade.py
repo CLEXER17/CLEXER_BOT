@@ -724,7 +724,7 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                     while time.time() < deadline:
                         attempt += 1
                         if not sl_ok:
-                            sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, cp=True, ps=trade_ps)
+                            sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, ps=trade_ps)
                             sl_ok = sl_r.get("code") == 0
                             if not sl_ok:
                                 print(f"  [CT] @{uname} SL attempt {attempt} FAIL: {sl_r.get('msg','')}")
@@ -816,8 +816,8 @@ def on_scan_tp1(symbol: str):
             # Wait for position to update before placing new SL
             time.sleep(3)
 
-            # Move SL to BE (entry price)
-            sl_r = _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price)
+            # Move SL to BE (entry price) — use remaining half qty
+            sl_r = _set_position_sl_sym(api_key, api_secret, symbol, trade_ps, entry_price, qty=half_qty)
             print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{entry_price} code={sl_r.get('code') if sl_r else '?'} msg={sl_r.get('msg','') if sl_r else ''}")
 
             # Re-place TP2 for remaining half
@@ -905,12 +905,13 @@ def _clear_scan_state(cid: str, user: dict):
     _set(cid, user)
 
 
-def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float):
-    """Place new BE SL order for alt-coin after TP1 hit — closes full remaining position."""
+def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float, qty: float = 0):
+    """Place new BE SL order for alt-coin after TP1 hit."""
     close_side = "SELL" if pos_side == "LONG" else "BUY"
+    q = max(round(qty, 4), 0.001) if qty > 0 else 0.001
     return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
                   {"symbol": symbol, "side": close_side, "positionSide": pos_side,
-                   "type": "STOP_MARKET", "closePosition": "true",
+                   "type": "STOP_MARKET", "quantity": q,
                    "stopPrice": round(sl_price, 6)})
 
 
@@ -1514,10 +1515,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 if user.get("scan_symbol") == sym:
                     results.append(f"⏭ {sym} — already in position, skipping"); continue
                 side    = st["signal"]
-                entry   = float(st["entry"])
-                sl      = float(st["sl"])
-                tp1     = float(st.get("tp1", 0))
-                tp2     = float(st.get("tp2", 0))
+                entry    = float(st["entry"])
+                sl       = float(st["sl"])   # already = entry if tp1_hit
+                tp1      = float(st.get("tp1", 0))
+                tp2      = float(st.get("tp2", 0))
+                tp1_hit  = bool(st.get("tp1_hit", False))
                 trade_ps = "LONG" if side == "BUY" else "SHORT"
                 close_side = "SELL" if side == "BUY" else "BUY"
                 try:
@@ -1535,13 +1537,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                                 lev = try_lev; qty = _calc_qty(user["size_usdt"], entry, lev)
                                 half = max(round(qty / 2, 4), 0.001); break
 
-                    def _alt(s, ot, q, sp=0, ps="", close_all=False):
+                    def _alt(s, ot, q, sp=0, ps=""):
                         ps = ps or trade_ps
-                        p = {"symbol": sym, "side": s, "positionSide": ps, "type": ot}
-                        if close_all:
-                            p["closePosition"] = "true"
-                        else:
-                            p["quantity"] = round(q, 4)
+                        p = {"symbol": sym, "side": s, "positionSide": ps, "type": ot,
+                             "quantity": round(q, 4)}
                         if sp and ot in ("STOP_MARKET","TAKE_PROFIT_MARKET"): p["stopPrice"] = round(sp, 6)
                         return _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, p)
 
@@ -1554,7 +1553,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                         while time.time() < deadline:
                             attempt += 1
                             if not sl_ok:
-                                sl_r = _alt(close_side, "STOP_MARKET", qty, sp=sl, close_all=True)
+                                sl_r = _alt(close_side, "STOP_MARKET", qty, sp=sl)
                                 sl_ok = sl_r.get("code") == 0
                                 if not sl_ok: print(f"  [CT] scan retry SL attempt {attempt}: {sl_r.get('msg','')}")
                             if tp1 and not tp1_ok:
@@ -1574,7 +1573,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
                         user["scan_symbol"] = sym; user["scan_side"] = side
                         user["scan_entry"] = entry; user["scan_sl"] = sl
-                        user["scan_tp1"] = tp1; user["scan_tp2"] = tp2; user["scan_qty"] = qty
+                        user["scan_tp1"] = tp1; user["scan_tp2"] = tp2
+                        user["scan_qty"] = half if tp1_hit else qty  # if TP1 already hit, only 50% remains
                         _set(target, user)
                         warn = ("" if tp1_ok else " ⚠️TP1 failed") + ("" if tp2_ok else " ⚠️TP2 failed")
                         results.append(f"✅ {sym} {side} {qty:.4f} lev={lev}x{warn}")
