@@ -74,6 +74,100 @@ def _decrypt(enc: str) -> str:
         print(f"[CT] Decrypt error: {e}")
         return ""
 
+# ─── CLAUDE AI HELPER ────────────────────────────────────────────────────────
+
+def _ask_claude_action(situation: str) -> dict:
+    """
+    Ask Claude for a structured action to execute immediately.
+    Returns dict like:
+      {"action": "place_sl", "sl_price": 63000}
+      {"action": "place_sl_tp", "sl_price": 63000, "tp1_price": 67000, "tp2_price": 68000}
+      {"action": "close_position"}
+      {"action": "hold", "reason": "position looks safe"}
+    """
+    try:
+        import anthropic, os, json as _json
+        key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not key:
+            return {"action": "hold", "reason": "no API key"}
+        client = anthropic.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are an autonomous crypto risk manager for a BingX perpetual futures bot. "
+                    "Respond ONLY with a JSON object — no explanation, no markdown.\n\n"
+                    "Available actions:\n"
+                    '{"action":"place_sl","sl_price":<number>}  — place stop loss at price\n'
+                    '{"action":"place_sl_tp","sl_price":<n>,"tp1_price":<n>,"tp2_price":<n>}  — place SL + TPs\n'
+                    '{"action":"close_position"}  — market close immediately\n'
+                    '{"action":"hold","reason":"<short reason>"}  — do nothing\n\n'
+                    f"Situation: {situation}"
+                )
+            }]
+        )
+        text = msg.content[0].text.strip()
+        # Extract JSON from response
+        import re as _re
+        m = _re.search(r'\{.*\}', text, _re.DOTALL)
+        if m:
+            return _json.loads(m.group())
+        return {"action": "hold", "reason": f"could not parse: {text[:80]}"}
+    except Exception as e:
+        return {"action": "hold", "reason": f"Claude error: {e}"}
+
+
+def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
+                            pos_side: str, pos_amt: float, notify_fn=None, uname: str = "?"):
+    """Execute the action Claude recommended."""
+    close_side = "SELL" if pos_side == "LONG" else "BUY"
+    act = action.get("action", "hold")
+    result = ""
+
+    if act == "close_position":
+        r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
+                   {"symbol": sym, "positionSide": pos_side})
+        if r.get("code") != 0:
+            # fallback market order
+            r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                "symbol": sym, "side": close_side, "positionSide": pos_side,
+                "type": "MARKET", "quantity": round(pos_amt, 4)
+            })
+        ok = r.get("code") == 0
+        result = f"{'✅' if ok else '❌'} CLOSED {sym} @{uname}: {r.get('msg','') or 'ok'}"
+
+    elif act in ("place_sl", "place_sl_tp"):
+        sl_price = float(action.get("sl_price", 0))
+        if sl_price:
+            r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                "symbol": sym, "side": close_side, "positionSide": pos_side,
+                "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
+                "stopPrice": round(sl_price, 6),
+            })
+            ok = r.get("code") == 0
+            result += f"{'✅' if ok else '❌'} SL@{sl_price} {r.get('msg','') or 'ok'} "
+        half = max(round(pos_amt / 2, 4), 0.0001)
+        for tp_key, tp_type in [("tp1_price","TP1"), ("tp2_price","TP2")]:
+            tp_price = float(action.get(tp_key, 0))
+            if tp_price:
+                r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                    "symbol": sym, "side": close_side, "positionSide": pos_side,
+                    "type": "TAKE_PROFIT_MARKET", "quantity": half,
+                    "stopPrice": round(tp_price, 6),
+                })
+                ok = r.get("code") == 0
+                result += f"{'✅' if ok else '❌'} {tp_type}@{tp_price} "
+
+    elif act == "hold":
+        result = f"⏸ HOLD: {action.get('reason','')}"
+
+    print(f"[CT] Claude action on {sym}: {act} → {result}")
+    if notify_fn and result:
+        notify_fn(f"🤖 <b>Claude acted on {sym} @{uname}</b>\n{result}")
+
+
 # ─── USER DATABASE ────────────────────────────────────────────────────────────
 
 _db: dict = {}        # str(chat_id) → user_dict
@@ -728,7 +822,8 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                 print(f"[CT] {cid} scan auto-leverage: risk=${risk} size=${user['size_usdt']} SL%={abs(entry-sl)/entry*100:.2f}% → {lev}x")
             else:
                 lev = user.get("leverage", 10)
-            qty = _calc_qty(user["size_usdt"], price, lev)
+            # Use entry price for qty calc (not current price) so margin = size_usdt exactly
+            qty = _calc_qty(user["size_usdt"], entry, lev)
 
             def _place_alt(s, ot, q, pr=0, sp=0, cp=False, ps=""):
                 ps = ps or ("LONG" if s == "BUY" else "SHORT")
@@ -754,7 +849,7 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                                 {"symbol": symbol, "side": trade_ps, "leverage": try_lev})
                     if r2.get("code") == 0:
                         lev = try_lev
-                        qty = _calc_qty(user["size_usdt"], price, lev)
+                        qty = _calc_qty(user["size_usdt"], entry, lev)
                         half_qty = max(round(qty / 2, 4), 0.001)
                         print(f"[CT] {cid} {symbol} leverage capped at {lev}x")
                         break
@@ -818,7 +913,19 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
             else:
                 r = _place_alt(side, "LIMIT", qty, pr=entry)
                 if r.get("code") == 0:
-                    results.append(f"✅ @{user.get('username','?')} {symbol} LIMIT {side} {qty:.4f} @ {entry}")
+                    limit_oid = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
+                    uname = user.get("username", "?")
+                    # Save scan state so entry_missed can cancel and entry_hit can place SL/TP
+                    user["scan_symbol"]     = symbol
+                    user["scan_side"]       = side
+                    user["scan_entry"]      = entry
+                    user["scan_sl"]         = sl
+                    user["scan_tp1"]        = tp1
+                    user["scan_tp2"]        = tp2
+                    user["scan_qty"]        = qty
+                    user["scan_limit_oid"]  = limit_oid
+                    _set(cid, user)
+                    results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid}")
                 else:
                     results.append(f"❌ @{user.get('username','?')} {symbol}: {r.get('msg','?')}")
 
@@ -997,122 +1104,241 @@ def _get_all_positions(api_key: str, api_secret: str) -> list:
 
 def monitor_sl_tp(notify_fn=None):
     """
-    Check every connected user's open positions and verify SL + TP orders exist.
-    Re-places any missing ones. Call this every hour from bot main loop.
-    notify_fn(text) — optional callback to send admin alert.
+    Runs every minute. For every connected user:
+    1. Fetches all real BingX positions
+    2. If position exists but bot has no state → adopt it (sync state + place SL/TP from stored signal)
+    3. If bot thinks position open but BingX shows nothing → clear ghost state
+    4. If position exists with known state → verify SL+TP orders, re-place any missing
     """
     fixes = []
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
         try:
-            ak  = _decrypt(user["api_key_enc"])
-            ask = _decrypt(user["api_secret_enc"])
+            ak    = _decrypt(user["api_key_enc"])
+            ask   = _decrypt(user["api_secret_enc"])
             uname = user.get("username", cid)
 
-            positions = _get_all_positions(ak, ask)
-            if not positions:
-                continue
+            positions  = _get_all_positions(ak, ask)
+            pos_by_sym = {p.get("symbol",""): p for p in positions if abs(float(p.get("positionAmt",0))) > 0}
 
-            for pos in positions:
-                sym        = pos.get("symbol", "")
-                pos_side   = pos.get("positionSide", "")   # LONG or SHORT
-                pos_amt    = abs(float(pos.get("positionAmt", 0)))
-                if pos_amt <= 0 or not sym or not pos_side: continue
+            # ── Ghost state: bot thinks BTC open but BingX has nothing ──
+            if user.get("in_position") and BINGX_SYMBOL not in pos_by_sym:
+                user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0
+                user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
+                _set(cid, user)
+                msg = f"👻 @{uname} BTC ghost state cleared (BingX has no position)"
+                fixes.append(msg); print(f"[CT] {msg}")
+                if notify_fn: notify_fn(f"⚠️ {msg}")
 
+            # ── Ghost state: bot thinks scan open but BingX has nothing ──
+            scan_sym = user.get("scan_symbol","")
+            if scan_sym and scan_sym not in pos_by_sym:
+                _clear_scan_state(cid, user)
+                msg = f"👻 @{uname} {scan_sym} ghost state cleared (BingX has no position)"
+                fixes.append(msg); print(f"[CT] {msg}")
+                if notify_fn: notify_fn(f"⚠️ {msg}")
+
+            # ── Check every real BingX position ──
+            for sym, pos in pos_by_sym.items():
+                pos_side  = pos.get("positionSide","")
+                pos_amt   = abs(float(pos.get("positionAmt", 0)))
+                avg_price = float(pos.get("avgPrice", 0))
                 close_side = "SELL" if pos_side == "LONG" else "BUY"
+                trade_side = "BUY" if pos_side == "LONG" else "SELL"
 
-                # Get expected SL/TP from stored state
                 is_btc  = (sym == BINGX_SYMBOL)
-                is_scan = (sym == user.get("scan_symbol", ""))
+                is_scan = (sym == user.get("scan_symbol",""))
+                is_known = is_btc or is_scan
 
-                if is_btc:
-                    sl_price  = user.get("scan_sl", 0)   # fallback
-                    tp1_price = 0
-                    tp2_price = 0
-                    # BTC SL/TP tracked by order IDs — just check existence
-                elif is_scan:
+                # ── Orphan: BingX has position, bot has no state → adopt it ──
+                if not is_known:
                     sl_price  = float(user.get("scan_sl",  0))
                     tp1_price = float(user.get("scan_tp1", 0))
                     tp2_price = float(user.get("scan_tp2", 0))
-                else:
-                    continue  # unknown position, skip
+                    user["scan_symbol"] = sym
+                    user["scan_side"]   = trade_side
+                    user["scan_entry"]  = avg_price
+                    user["scan_qty"]    = pos_amt
+                    _set(cid, user)
+                    msg = f"🔄 @{uname} ADOPTED orphan {sym} {trade_side} {pos_amt} @ {avg_price}"
+                    fixes.append(msg); print(f"[CT] {msg}")
+                    # If no stored SL/TP at all, ask Claude what to do
+                    if not sl_price and not tp1_price:
+                        pnl = float(pos.get("unrealizedProfit", 0))
+                        action = _ask_claude_action(
+                            f"Orphan {sym} {trade_side} position. Size={pos_amt}, "
+                            f"avg_entry={avg_price}, PnL={pnl:+.2f} USDT, no SL or TP stored. "
+                            f"Decide: place emergency SL/TP or close position."
+                        )
+                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname)
+                        fixes.append(f"🤖 Claude acted on orphan {sym}: {action.get('action')}")
+                    else:
+                        if notify_fn: notify_fn(f"⚠️ {msg}")
+                    is_scan = True
 
-                # Fetch open orders for this symbol
+                # ── Get SL/TP prices from state ──
+                if is_btc:
+                    # BTC uses order IDs — just check orders exist
+                    open_orders = _get_open_orders(ak, ask, sym)
+                    has_sl  = any(o.get("type")=="STOP_MARKET"        and o.get("positionSide")==pos_side for o in open_orders)
+                    has_tp  = any(o.get("type")=="TAKE_PROFIT_MARKET" and o.get("positionSide")==pos_side for o in open_orders)
+                    if not has_sl:
+                        emergency_sl = avg_price * (0.98 if pos_side=="LONG" else 1.02)
+                        r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                            "symbol": sym, "side": close_side, "positionSide": pos_side,
+                            "type": "STOP_MARKET", "quantity": round(pos_amt,4),
+                            "stopPrice": round(emergency_sl, 2),
+                        })
+                        ok = r.get("code") == 0
+                        msg = f"{'🔧' if ok else '❌'} @{uname} BTC SL {'restored @'+str(round(emergency_sl,2)) if ok else 'FAILED:'+r.get('msg','')[:40]}"
+                        fixes.append(msg); print(f"[CT] {msg}")
+                        if not ok:
+                            pnl = float(pos.get("unrealizedProfit",0))
+                            action = _ask_claude_action(f"BTC {trade_side} size={pos_amt} avg={avg_price} PnL={pnl:+.2f}. SL placement failed: {r.get('msg','')}. Protect this position.")
+                            _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname)
+                        elif ok and notify_fn:
+                            notify_fn(f"✅ {msg}")
+                    if not has_tp:
+                        pnl = float(pos.get("unrealizedProfit",0))
+                        action = _ask_claude_action(f"BTC {trade_side} size={pos_amt} avg={avg_price} PnL={pnl:+.2f} has NO TP orders. Place TP1 and TP2 or hold?")
+                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname)
+                        fixes.append(f"🤖 Claude acted on BTC no-TP: {action.get('action')}")
+                    continue
+
+                # ── Scan: verify/place SL + TP ──
+                sl_price  = float(user.get("scan_sl",  0))
+                tp1_price = float(user.get("scan_tp1", 0))
+                tp2_price = float(user.get("scan_tp2", 0))
+
+                # Emergency SL if no stored price (2% from avg entry)
+                if not sl_price:
+                    sl_price = round(avg_price * (0.98 if pos_side=="LONG" else 1.02), 6)
+                    user["scan_sl"] = sl_price; _set(cid, user)
+
                 open_orders = _get_open_orders(ak, ask, sym)
-                has_sl  = any(o.get("type") == "STOP_MARKET"        and o.get("positionSide") == pos_side for o in open_orders)
-                has_tp1 = any(o.get("type") == "TAKE_PROFIT_MARKET" and o.get("positionSide") == pos_side for o in open_orders)
-                tp_orders = [o for o in open_orders if o.get("type") == "TAKE_PROFIT_MARKET" and o.get("positionSide") == pos_side]
-                has_tp2 = len(tp_orders) >= 2
-
+                has_sl  = any(o.get("type")=="STOP_MARKET"        and o.get("positionSide")==pos_side for o in open_orders)
+                tp_ords = [o for o in open_orders if o.get("type")=="TAKE_PROFIT_MARKET" and o.get("positionSide")==pos_side]
+                has_tp1 = len(tp_ords) >= 1
+                has_tp2 = len(tp_ords) >= 2
+                half = max(round(pos_amt / 2, 4), 0.0001)
                 placed = []
 
-                if not has_sl and sl_price > 0:
+                if not has_sl:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
                         "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
                         "stopPrice": round(sl_price, 6),
                     })
-                    if r.get("code") == 0:
-                        placed.append("SL fixed")
-                    else:
-                        placed.append(f"SL fix FAIL:{r.get('msg','')[:30]}")
+                    placed.append(f"SL {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
 
-                half = max(round(pos_amt / 2, 4), 0.001)
-
-                if not has_tp1 and tp1_price > 0:
+                if not has_tp1 and tp1_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
                         "type": "TAKE_PROFIT_MARKET", "quantity": half,
                         "stopPrice": round(tp1_price, 6),
                     })
-                    if r.get("code") == 0:
-                        placed.append("TP1 fixed")
-                    else:
-                        placed.append(f"TP1 fix FAIL:{r.get('msg','')[:30]}")
+                    placed.append(f"TP1 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
 
-                if not has_tp2 and tp2_price > 0:
+                if not has_tp2 and tp2_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
                         "type": "TAKE_PROFIT_MARKET", "quantity": half,
                         "stopPrice": round(tp2_price, 6),
                     })
-                    if r.get("code") == 0:
-                        placed.append("TP2 fixed")
-                    else:
-                        placed.append(f"TP2 fix FAIL:{r.get('msg','')[:30]}")
+                    placed.append(f"TP2 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
 
                 if placed:
-                    msg = f"🔧 [Monitor] @{uname} {sym}: {', '.join(placed)}"
-                    fixes.append(msg)
-                    print(f"[CT] {msg}")
+                    msg = f"🔧 @{uname} {sym}: {', '.join(placed)}"
+                    fixes.append(msg); print(f"[CT] {msg}")
+                    failed = [p for p in placed if "❌" in p]
+                    if failed:
+                        pnl = float(pos.get("unrealizedProfit",0))
+                        action = _ask_claude_action(
+                            f"Scan {sym} {trade_side} size={pos_amt} avg={avg_price} PnL={pnl:+.2f}. "
+                            f"Failed orders: {', '.join(failed)}. SL={sl_price} TP1={tp1_price} TP2={tp2_price}. "
+                            f"Protect this position."
+                        )
+                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname)
+                        fixes.append(f"🤖 Claude acted on {sym} failed orders: {action.get('action')}")
+                    elif notify_fn:
+                        notify_fn(f"🔧 <b>Auto-fixed {sym}</b>\n@{uname}: {', '.join(placed)}")
                 else:
-                    print(f"[CT] [Monitor] @{uname} {sym}: SL+TP OK")
+                    print(f"[CT] [Monitor] @{uname} {sym}: SL+TP OK ✅")
 
         except Exception as e:
             print(f"[CT] monitor {cid}: {e}")
 
-    if fixes and notify_fn:
-        notify_fn("🔧 <b>SL/TP Monitor fixed:</b>\n" + "\n".join(fixes))
-    elif not fixes:
-        print("[CT] [Monitor] All positions have SL+TP ✅")
-
     return fixes
 
 
+def sync_check() -> list[str]:
+    """
+    Compare actual BingX positions vs bot state for every connected user.
+    Returns list of status lines for admin.
+    Detects: orphan positions (BingX open but bot thinks closed) and ghost state (bot thinks open but BingX closed).
+    """
+    lines = []
+    for cid, user in list(_db.items()):
+        if not user.get("connected"): continue
+        try:
+            ak   = _decrypt(user["api_key_enc"])
+            ask  = _decrypt(user["api_secret_enc"])
+            uname = user.get("username", cid)
+            positions = _get_all_positions(ak, ask)
+            pos_symbols = {p.get("symbol","") for p in positions}
+
+            # ── BTC ──
+            if user.get("in_position"):
+                if BINGX_SYMBOL not in pos_symbols:
+                    lines.append(f"⚠️ @{uname} GHOST STATE: bot thinks BTC position open but BingX shows NONE")
+                    lines.append(f"   → Run /ctsync to reset or /ctretry to re-enter")
+                else:
+                    lines.append(f"✅ @{uname} BTC position confirmed on BingX")
+            else:
+                if BINGX_SYMBOL in pos_symbols:
+                    btc_pos = next(p for p in positions if p.get("symbol") == BINGX_SYMBOL)
+                    amt = float(btc_pos.get("positionAmt", 0))
+                    pnl = float(btc_pos.get("unrealizedProfit", 0))
+                    lines.append(f"🚨 @{uname} ORPHAN BTC POSITION: {amt} BTC PnL={pnl:+.2f} USDT — bot state says NO TRADE")
+                    lines.append(f"   → Use /close to close it or /ctsync to adopt it")
+
+            # ── Scan ──
+            scan_sym = user.get("scan_symbol", "")
+            if scan_sym:
+                if scan_sym not in pos_symbols:
+                    lines.append(f"⚠️ @{uname} GHOST SCAN: bot thinks {scan_sym} open but BingX shows NONE")
+                else:
+                    lines.append(f"✅ @{uname} {scan_sym} scan position confirmed on BingX")
+            # Orphan scan positions (BingX open, bot doesn't know)
+            for sym in pos_symbols:
+                if sym == BINGX_SYMBOL: continue
+                if sym != scan_sym:
+                    orphan = next(p for p in positions if p.get("symbol") == sym)
+                    amt = float(orphan.get("positionAmt", 0))
+                    pnl = float(orphan.get("unrealizedProfit", 0))
+                    lines.append(f"🚨 @{uname} ORPHAN SCAN: {sym} {amt} PnL={pnl:+.2f} USDT — bot has NO record")
+                    lines.append(f"   → Use /ctretry {cid} {sym.replace('-USDT','')} to adopt, or close manually")
+
+        except Exception as e:
+            lines.append(f"❌ {cid}: {e}")
+
+    return lines or ["✅ All users in sync — no orphan positions found"]
+
+
 def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
-    """Start background thread that runs monitor_sl_tp every interval_hours."""
+    """Start background thread that runs monitor_sl_tp every 2 minutes."""
     import threading as _th
     def _loop():
+        time.sleep(30)  # initial delay to let bot fully start
         while True:
-            time.sleep(interval_hours * 3600)
-            print(f"[CT] Running SL/TP monitor check...")
             try:
                 monitor_sl_tp(notify_fn)
             except Exception as e:
                 print(f"[CT] monitor loop error: {e}")
+            time.sleep(120)  # check every 2 minutes
     t = _th.Thread(target=_loop, daemon=True)
     t.start()
-    print(f"[CT] SL/TP monitor started — checks every {interval_hours}h")
+    print(f"[CT] SL/TP monitor started — checks every 2 minutes")
 
 
 def on_sl_to_be(entry: float):
