@@ -43,7 +43,7 @@ TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
 
 SYMBOL               = "BTCUSDT"
-TICK_INTERVAL        = 10    # price check every 10s when trade active
+TICK_INTERVAL        = 5     # price check every 5s when trade active
 PRICE_CHECK_INTERVAL = 3600
 SIGNAL_SCAN_INTERVAL = 14400
 NEWS_CHECK_INTERVAL  = 1800
@@ -2205,6 +2205,14 @@ def _tick_one(ver: int, t: dict) -> bool:
             if entry_touched:
                 t["entry_hit"] = True
                 send_telegram(fmt_scan_update("ENTRY_HIT", price, t))
+                # For LIMIT orders: LIMIT already placed, now place SL+TP via copytrade
+                if t.get("entry_type") == "LIMIT":
+                    threading.Thread(
+                        target=lambda: ct.on_scan_limit_filled(
+                            sym, t.get("signal","BUY"), t.get("entry",0),
+                            t.get("sl",0), t.get("tp1",0), t.get("tp2",0)
+                        ), daemon=True
+                    ).start()
                 if sig == "BUY"  and price > entry * 1.015:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
                     _remove_scan_trade(ver, sym); return True
