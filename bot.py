@@ -2550,7 +2550,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled
@@ -2570,6 +2570,12 @@ def handle_command(text, chat_id, message=None):
     if ct.is_ct_command(cmd, is_admin):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
+        return
+
+    if cmd == "/synccheck" and is_admin:
+        send_reply(chat_id, "🔍 Checking BingX vs bot state...")
+        lines = ct.sync_check()
+        send_reply(chat_id, "<b>Sync Check Result</b>\n\n" + "\n".join(lines))
         return
 
     if cmd in ("/start","/help"):
@@ -4148,6 +4154,15 @@ def main():
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
+
+    # Startup sync check — alert admin if any orphan positions exist
+    def _startup_sync():
+        time.sleep(10)  # wait for db to load
+        lines = ct.sync_check()
+        has_orphan = any("ORPHAN" in l or "GHOST" in l for l in lines)
+        if has_orphan:
+            send_admin("🚨 <b>STARTUP SYNC ALERT</b>\n\n" + "\n".join(lines) + "\n\nUse /synccheck anytime to recheck.")
+    threading.Thread(target=_startup_sync, daemon=True).start()
 
     # Startup message → admin DM only
     tv_line = ""
