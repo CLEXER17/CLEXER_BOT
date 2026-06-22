@@ -1224,8 +1224,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Usage: /setsize 50"); return
         try:
             size = float(parts[1])
-            if size < 0.5 or size > 10000:
-                send_reply_fn(chat_id, "Size must be $0.50–$10,000 USDT"); return
+            if size < 0.25 or size > 10000:
+                send_reply_fn(chat_id, "Size must be $0.25–$10,000 USDT"); return
             user = _get(cid) or _default_user(username)
             user["size_usdt"] = size; _set(cid, user)
             send_reply_fn(chat_id,
@@ -1292,8 +1292,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             return
         try:
             risk = float(arg)
-            if risk < 0.5 or risk > 50:
-                send_reply_fn(chat_id, "Risk must be $0.50 – $50 per trade"); return
+            if risk < 0.25 or risk > 50:
+                send_reply_fn(chat_id, "Risk must be $0.25 – $50 per trade"); return
             user = _get(cid) or _default_user(username)
             size = user.get("size_usdt", 50)
             user["risk_usdt"] = risk
