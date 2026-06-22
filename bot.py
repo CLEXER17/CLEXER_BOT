@@ -2585,13 +2585,14 @@ def handle_command(text, chat_id, message=None):
         bot_paused.clear()
         _go_ist = now_ist()
         _go_scan_hrs = {7, 11, 15, 19, 23}
-        _go_next = next((f"{h}:21" for h in sorted(_go_scan_hrs) if h > _go_ist.hour), "07:21 tomorrow")
+        _go_next_alt = f"{_go_ist.hour}:24" if _go_ist.minute < 24 else f"{_go_ist.hour+1}:24"
         send_reply(chat_id,
             f"<b>CLEXER Started</b>\n\n"
             f"✅ Bot is RUNNING\n"
             f"📡 BTC Scan: {'ON' if btc_analysis_enabled else 'OFF (use /btcanalysis on)'}\n"
             f"📊 Alt Scan: ON\n"
-            f"⏰ Next auto-scan: <b>{_go_next} IST</b>\n\n"
+            f"⏰ Next BTC scan: <b>{next((f'{h}:21' for h in sorted({7,11,15,19,23}) if h > _go_ist.hour or (h == _go_ist.hour and _go_ist.minute < 21)), '07:21 tomorrow')} IST</b>\n"
+            f"⏰ Next Alt scan: <b>{_go_next_alt} IST</b>\n\n"
             f"Tick: {TICK_INTERVAL}s | Source: {get_current_source()}\n\n"
             f"<i>- CLEXER V9.0 -</i>")
 
@@ -2733,7 +2734,8 @@ def handle_command(text, chat_id, message=None):
                     f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g}")
         _ist_now = now_ist()
         _scan_hrs = {7, 11, 15, 19, 23}
-        _next_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour), "07:21 tomorrow")
+        _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
+        _next_alt_scan = f"{_ist_now.hour}:24" if _ist_now.minute < 24 else f"{_ist_now.hour+1}:24"
         _scan_status = "🟢 ON" if not bot_paused.is_set() and btc_analysis_enabled else "🔴 OFF"
         _alt_scan_status = "🟢 ON" if not bot_paused.is_set() else "🔴 OFF (bot paused)"
         send_reply(chat_id,
@@ -2741,7 +2743,7 @@ def handle_command(text, chat_id, message=None):
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
             f"IST: {ist_str()}\n"
             f"BTC Scan: {_scan_status} | Alt Scan: {_alt_scan_status}\n"
-            f"Next scan: <b>{_next_scan} IST</b>\n"
+            f"Next BTC scan: <b>{_next_btc_scan} IST</b> | Alt scan: <b>{_next_alt_scan} IST</b>\n"
             f"MinConf: {required_confidence()} | Consec SL: {trade_stats['consecutive_sl']}\n"
             + (f"Users: {len(registered_users)}\n" if is_admin else "")
             + f"\nSource: <b>{src}</b>\nMode: <b>{'NEW (TV)' if is_tv_online() else 'OLD (Binance)'}</b>\n"
@@ -4214,14 +4216,14 @@ def main():
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── Auto-scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST ──────────────
+            # ── BTC scan at :21, Alt scan at :24 — every hour ────────────────
             global _auto_scan_last_hour
             _ist_now = now_ist()
-            _scan_hours = {7, 11, 15, 19, 23}
-            if (_ist_now.minute == 21 and _ist_now.hour in _scan_hours
-                    and _auto_scan_last_hour != _ist_now.hour):
+            _btc_fixed_hours = {7, 11, 15, 19, 23}
+            # Alt scan: every hour at :24
+            if (_ist_now.minute == 24 and _auto_scan_last_hour != _ist_now.hour):
                 _auto_scan_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN] Triggered at {_ist_now.strftime('%H:21 IST')} — running scan1 + scan2")
+                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime('%H:24 IST')}")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
