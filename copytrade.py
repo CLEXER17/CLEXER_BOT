@@ -835,6 +835,7 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
     entry_type = signal_dict.get("entry_type", "MARKET")
     close_side = "SELL" if side == "BUY" else "BUY"
     trade_ps   = "LONG" if side == "BUY" else "SHORT"
+    trade_side = side
     results    = []
 
     for cid, user, api_key, api_secret in _users_with_copy():
