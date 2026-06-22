@@ -1871,13 +1871,14 @@ def fmt_update(status, price=None):
         "SL_HIT":         (
             f"🚨 <b>TRADE CLOSED — SL HIT</b> 🚨\n\n"
             f"❌ Loss taken on {t.get('signal','?')} @ {t.get('entry',0):,.0f}\n\n"
+            f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
             f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-            f"⛔ <b>This is NOT a new signal</b>\n\n"
             f"🔍 Waiting for next valid setup...\n\n"
             f"<i>- CLEXER V9.0 -</i>"
         ),
         "TP1_HIT":        (
             f"💰 <b>TP1 HIT — 50% CLOSED!</b> 🎉\n\n"
+            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
             f"✅ Half position closed at <b>{t.get('tp1',0):,.0f}</b> — profit secured!\n"
             f"🛡️ SL moved to Breakeven: <b>{entry:,.0f}</b>\n"
             f"🚀 Remaining 50% riding to TP2: <b>{t.get('tp2',0):,.0f}</b>\n\n"
@@ -1885,6 +1886,7 @@ def fmt_update(status, price=None):
         ),
         "TP2_HIT":        (
             f"🏆 <b>TRADE CLOSED — TP2 HIT!</b> 🎊💵\n\n"
+            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
             f"✅ Full profit taken on {t.get('signal','?')} @ {t.get('tp2',0):,.0f}\n\n"
             f"⛔ <b>This is NOT a new signal — trade is fully closed</b>\n"
             f"🔍 Waiting for next valid setup..."
@@ -2138,6 +2140,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "TP1_HIT": (
             f"💰 <b>TP1 HIT — {sym}!</b> 🎉  🕐 {ist_str()}\n\n"
+            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
             f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
             f"✅ TP1: <b>{tp1:,.4g}</b>\n"
             f"🛡️ SL moved to BE: <b>{entry:,.4g}</b>\n"
@@ -2145,6 +2148,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "TP2_HIT": (
             f"🏆 <b>TP2 HIT — {sym}!</b> 🎊💵  🕐 {ist_str()}\n\n"
+            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
             f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
             f"✅ Full profit @ TP2: <b>{tp2:,.4g}</b>\n\n✨ <i>- CLEXER V9.0 -</i>"
         ),
@@ -2157,6 +2161,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
                 f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V9.0 -</i>"
             ) if t.get("tp1_hit") else (
                 f"🚨 <b>SL HIT — {sym}</b> 🚨  🕐 {ist_str()}\n\n"
+                f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
                 f"❌ Loss on {sig} @ {entry:,.4g}\n\n"
                 f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                 f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V9.0 -</i>"
@@ -2572,12 +2577,16 @@ def handle_command(text, chat_id, message=None):
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear()
+        _go_ist = now_ist()
+        _go_scan_hrs = {7, 11, 15, 19, 23}
+        _go_next = next((f"{h}:21" for h in sorted(_go_scan_hrs) if h > _go_ist.hour), "07:21 tomorrow")
         send_reply(chat_id,
             f"<b>CLEXER Started</b>\n\n"
-            f"✅ Scanning active\n"
-            f"Tick: {TICK_INTERVAL}s | Price: {PRICE_CHECK_INTERVAL//60}m | Signal: {SIGNAL_SCAN_INTERVAL//3600}h\n"
-            f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | News: {'ON' if SEND_NEWS else 'OFF'}\n"
-            f"Source: {get_current_source()}\n\n"
+            f"✅ Bot is RUNNING\n"
+            f"📡 BTC Scan: {'ON' if btc_analysis_enabled else 'OFF (use /btcanalysis on)'}\n"
+            f"📊 Alt Scan: ON\n"
+            f"⏰ Next auto-scan: <b>{_go_next} IST</b>\n\n"
+            f"Tick: {TICK_INTERVAL}s | Source: {get_current_source()}\n\n"
             f"<i>- CLEXER V9.0 -</i>")
 
     elif cmd == "/demo" and is_admin:
@@ -2717,11 +2726,18 @@ def handle_command(text, chat_id, message=None):
                 scan_lines += (f"\n\n<b>Scan{_ver}:</b> {sc['signal']} {sc['symbol']}\n"
                     f"Entry:{sc['entry']:,.4g} {'✅' if sc.get('entry_hit') else '⏳'}  "
                     f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g}")
+        _ist_now = now_ist()
+        _scan_hrs = {7, 11, 15, 19, 23}
+        _next_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour), "07:21 tomorrow")
+        _scan_status = "🟢 ON" if not bot_paused.is_set() and btc_analysis_enabled else "🔴 OFF"
+        _alt_scan_status = "🟢 ON" if not bot_paused.is_set() else "🔴 OFF (bot paused)"
         send_reply(chat_id,
             f"<b>CLEXER V9.0</b>\n\nBot: {st}\n{cd}"
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
-            f"IST: {ist_str()}\nScan: {SIGNAL_SCAN_INTERVAL//3600}h | MinConf: {required_confidence()}\n"
-            f"Consec SL: {trade_stats['consecutive_sl']}\n"
+            f"IST: {ist_str()}\n"
+            f"BTC Scan: {_scan_status} | Alt Scan: {_alt_scan_status}\n"
+            f"Next scan: <b>{_next_scan} IST</b>\n"
+            f"MinConf: {required_confidence()} | Consec SL: {trade_stats['consecutive_sl']}\n"
             + (f"Users: {len(registered_users)}\n" if is_admin else "")
             + f"\nSource: <b>{src}</b>\nMode: <b>{'NEW (TV)' if is_tv_online() else 'OLD (Binance)'}</b>\n"
             + (f"TV: {tv_status}\n" if is_admin else "")
