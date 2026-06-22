@@ -1097,8 +1097,11 @@ def _get_all_positions(api_key: str, api_secret: str) -> list:
     """Fetch all open positions (all symbols)."""
     r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {})
     if r.get("code") == 0:
-        return [p for p in (r.get("data") or {}).get("positions", [])
-                if abs(float(p.get("positionAmt", 0))) > 0]
+        data = r.get("data") or []
+        # BingX returns data as list directly or as {"positions": [...]}
+        if isinstance(data, dict):
+            data = data.get("positions", [])
+        return [p for p in data if abs(float(p.get("positionAmt", 0))) > 0]
     return []
 
 
