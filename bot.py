@@ -4202,8 +4202,10 @@ def main():
                 _auto_scan_last_hour = _ist_now.hour
                 print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime(f'%H:{ALT_SCAN_MINUTE:02d} IST')}")
                 if ADMIN_CHAT_ID:
-                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
-                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
+                    def _run_both_scans(cid):
+                        _run_auto_scan(cid, scan_ver=1)   # scan1 first — fully completes
+                        _run_auto_scan(cid, scan_ver=2)   # then scan2
+                    threading.Thread(target=lambda: _run_both_scans(ADMIN_CHAT_ID), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
