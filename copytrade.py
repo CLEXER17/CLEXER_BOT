@@ -136,6 +136,7 @@ def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
     stored_tp1 = tp1 or float(user.get("scan_tp1", 0) if user else 0) or float(user.get("tp1", 0) if user else 0)
     stored_tp2 = tp2 or float(user.get("scan_tp2", 0) if user else 0) or float(user.get("tp2", 0) if user else 0)
 
+
     # Only use risk-based SL if NO stored SL at all (orphan with zero signal data)
     def _fallback_sl() -> float:
         if not avg_price or not user: return 0
@@ -930,8 +931,6 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 lev = 1; qty = _calc_qty(user["size_usdt"], entry, lev)
                 print(f"[CT] {cid} {symbol}: leverage forced to 1x by Claude advice")
 
-            half = max(round(qty / 2, 4), 0.0001)
-
             # ── Step 2: Place entry order with 3-min retry ──────────────────
             ENTRY_DEADLINE = 180  # 3 minutes
             entry_ok = False
@@ -973,26 +972,23 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})")
                 continue  # SL/TP placed when limit fills via on_scan_limit_filled
 
-            # ── Save state immediately after entry fills so monitor has correct prices ──
-            user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
-            user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
-            user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
-            user[f"{p}qty"]    = qty;    user[f"{p}tp1_hit"] = False
-            _set(cid, user)
+            # Use actual filled qty from BingX (avoids rounding mismatch with very small-price coins)
+            filled_qty = float(((entry_r.get("data") or {}).get("order") or {}).get("executedQty") or qty)
+            if filled_qty > 0:
+                qty = round(filled_qty, 4)
+            half = max(round(qty / 2, 4), 0.0001)
 
-            # ── Step 3: MARKET filled — place SL+TP with 3-min retry ────────
+            # ── Step 3: MARKET filled — place SL+TP (60s retry, backup logic) ───
             sl_ok = tp1_ok = tp2_ok = False
-            sl_deadline = time.time() + ENTRY_DEADLINE
+            deadline = time.time() + 60
             sl_attempt = 0
-            last_sl_err = ""
-            while time.time() < sl_deadline:
+            while time.time() < deadline:
                 sl_attempt += 1
                 if not sl_ok:
                     sl_r = _place_alt(close_side, "STOP_MARKET", qty, sp=sl, ps=trade_ps)
                     sl_ok = sl_r.get("code") == 0
                     if not sl_ok:
-                        last_sl_err = sl_r.get("msg", "")
-                        print(f"  [CT] @{uname} SL attempt {sl_attempt} FAIL: {last_sl_err}")
+                        print(f"  [CT] @{uname} SL attempt {sl_attempt} FAIL: {sl_r.get('msg','')}")
                 if not tp1_ok and tp1:
                     tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1, ps=trade_ps)
                     tp1_ok = tp1_r.get("code") == 0
@@ -1001,29 +997,22 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                     tp2_ok = tp2_r.get("code") == 0
                 if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
                     break
-                time.sleep(10)
+                time.sleep(6)
 
             if not sl_ok:
-                # Ask Claude — position is open with no SL
-                advice = _ask_claude_action(
-                    f"{symbol} {trade_side} entry filled but SL failed after 3min ({sl_attempt} tries). "
-                    f"Error: {last_sl_err}. Position open: qty={qty} entry={entry} SL target={sl}. "
-                    f"Close position or try different SL price?"
-                )
-                if advice.get("action") != "hold":
-                    # Pass local sl/tp1/tp2 explicitly — do NOT read from user state
-                    # (user state may have been overwritten by a concurrent scan signal)
-                    _execute_claude_action(advice, api_key, api_secret, symbol, trade_ps,
-                                           qty, None, uname, avg_price=entry,
-                                           sl=sl, tp1=tp1, tp2=tp2)
                 _bingx("POST", "/openApi/swap/v2/trade/closePosition",
                        api_key, api_secret, {"symbol": symbol, "positionSide": trade_ps})
                 results.append(
-                    f"🚨 @{uname} {symbol} — SL failed 3min ({sl_attempt} tries) "
-                    f"— CLOSED. Claude: {advice.get('action','close')}")
+                    f"🚨 @{uname} {symbol} — SL failed after 60s ({sl_attempt} attempts)"
+                    f" — POSITION AUTO-CLOSED for safety")
                 continue
 
-            # State already saved after entry fill — nothing to do here
+            # ── Save state only after SL placed successfully ─────────────────
+            user[f"{p}symbol"]  = symbol; user[f"{p}side"]    = side
+            user[f"{p}entry"]   = entry;  user[f"{p}sl"]      = sl
+            user[f"{p}tp1"]     = tp1;    user[f"{p}tp2"]     = tp2
+            user[f"{p}qty"]     = qty;    user[f"{p}tp1_hit"] = False
+            _set(cid, user)
 
             tp_warn = ""
             if tp1 and not tp1_ok: tp_warn += " ⚠️TP1 failed"
