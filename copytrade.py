@@ -1007,7 +1007,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                     # Pass local sl/tp1/tp2 explicitly — do NOT read from user state
                     # (user state may have been overwritten by a concurrent scan signal)
                     _local_user = dict(user)
-                    _local_user["scan_sl"] = sl; _local_user["scan_tp1"] = tp1; _local_user["scan_tp2"] = tp2
+                    # Always use local variables — never stale user state
+                    _local_user["scan_sl"]  = sl;  _local_user["s1_sl"]  = sl
+                    _local_user["scan_tp1"] = tp1; _local_user["s1_tp1"] = tp1
+                    _local_user["scan_tp2"] = tp2; _local_user["s1_tp2"] = tp2
                     _execute_claude_action(advice, api_key, api_secret, symbol, trade_ps,
                                            qty, None, uname, avg_price=entry, user=_local_user)
                 _bingx("POST", "/openApi/swap/v2/trade/closePosition",
