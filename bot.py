@@ -3896,7 +3896,7 @@ Reasoning: [one line]"""
                         f"⏸ <b>No signal found</b>  {ist_str()}\n\n"
                         f"Tried {len(tried)} coin(s): <b>{tried_str}</b>\n\n"
                         f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
-                        f"Next auto-scan runs at :21 IST.\n\n"
+                        f"Next auto-scan runs at :02 IST.\n\n"
                         f"<i>- CLEXER V10.0 -</i>")
 
             except Exception as e:
@@ -4154,14 +4154,14 @@ def main():
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── BTC scan at :21, Alt scan at :24 — every hour ────────────────
+            # ── BTC scan at :21, Alt scan at :02 — every hour ────────────────
             global _auto_scan_last_hour
             _ist_now = now_ist()
             _btc_fixed_hours = {7, 11, 15, 19, 23}
-            # Alt scan: every hour at :24
-            if (_ist_now.minute == 24 and _auto_scan_last_hour != _ist_now.hour):
+            # Alt scan: every hour at :02
+            if (_ist_now.minute == 2 and _auto_scan_last_hour != _ist_now.hour):
                 _auto_scan_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime('%H:24 IST')}")
+                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime('%H:02 IST')}")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
