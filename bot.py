@@ -3858,8 +3858,9 @@ Reasoning: [one line]"""
                     analysis = r2.content[0].text.strip()
 
                     import re as _re
+                    _analysis_clean = analysis.replace(",", "")  # strip thousand-sep commas before parsing
                     def _parse(label):
-                        m = _re.search(rf"{label}[:\s]+([0-9.]+)", analysis, _re.IGNORECASE)
+                        m = _re.search(rf"{label}[:\s]+([0-9.]+)", _analysis_clean, _re.IGNORECASE)
                         return float(m.group(1)) if m else 0.0
                     sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
                     scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
@@ -3905,7 +3906,7 @@ Reasoning: [one line]"""
                         trade_stats["scan_signals"] += 1
                         save_state()
                         send_telegram(fmt_scan_signal(slot_data))
-                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
+                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp, ver=scan_ver)
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
                         signal_placed = True
                     else:
