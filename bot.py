@@ -3877,6 +3877,13 @@ Reasoning: [one line]"""
                         print(f"  [SCAN] {chosen_sym} → WAIT — trying next coin")
                         continue   # try next candidate
 
+                    # ── Dedup: skip if other scan version already signaled this coin this cycle ──
+                    with _scan_cycle_lock:
+                        if chosen_sym in _scan_cycle_placed:
+                            print(f"  [SCAN] {chosen_sym} already signaled by other scan this cycle — skipping")
+                            continue
+                        _scan_cycle_placed.add(chosen_sym)
+
                     # ── BUY or SELL — place trade ──────────────────────────────
                     scan_entry = cp   # always live price
                     scan_sl    = _parse("SL")
@@ -4085,12 +4092,18 @@ def command_listener():
 # --- MAIN ---------------------------------------------------------------------
 _auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran
 ALT_SCAN_MINUTE = 2         # minute of each hour when alt scan fires — changeable via /alt MM
+_scan_cycle_placed = set()  # coins signaled this cycle — prevents scan1+scan2 picking same coin
+_scan_cycle_lock   = __import__("threading").Lock()
 
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
+    global _scan_cycle_placed
     lbl = "V1" if scan_ver == 1 else "V2"
     send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V17.8.5 -</i>")
-    # Reuse the same _do_scan logic by firing handle_command from within
+    # Clear cycle dedup set when scan1 starts (scan1 always starts first)
+    if scan_ver == 1:
+        with _scan_cycle_lock:
+            _scan_cycle_placed.clear()
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
     handle_command(cmd, cid)
 
