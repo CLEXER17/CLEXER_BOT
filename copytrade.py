@@ -199,6 +199,7 @@ def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
 
 _db: dict = {}        # str(chat_id) → user_dict
 _lock = threading.Lock()
+_scan_signal_lock = threading.Lock()   # one scan trade placed at a time — prevents race condition
 _last_signal: dict = {}   # last active signal — cleared on SL/TP/cancel
 _SIGNAL_FILE = os.path.join(_DATA_DIR, "ct_last_signal.json")
 
@@ -831,6 +832,12 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
     if not SCAN_CT_ENABLED:
         return ["[CT] scan copy trade is OFF (/scancopy on to enable)"]
 
+    with _scan_signal_lock:   # serialize — prevents race condition when 2 scans fire simultaneously
+        return _on_scan_signal_inner(signal_dict, symbol, price)
+
+
+def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[str]:
+
     side       = signal_dict["signal"]           # BUY or SELL
     entry      = float(signal_dict["entry"])
     sl         = float(signal_dict["sl"])
@@ -980,8 +987,12 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
                     f"Close position or try different SL price?"
                 )
                 if advice.get("action") != "hold":
+                    # Pass local sl/tp1/tp2 explicitly — do NOT read from user state
+                    # (user state may have been overwritten by a concurrent scan signal)
+                    _local_user = dict(user)
+                    _local_user["scan_sl"] = sl; _local_user["scan_tp1"] = tp1; _local_user["scan_tp2"] = tp2
                     _execute_claude_action(advice, api_key, api_secret, symbol, trade_ps,
-                                           qty, None, uname, avg_price=entry, user=user)
+                                           qty, None, uname, avg_price=entry, user=_local_user)
                 _bingx("POST", "/openApi/swap/v2/trade/closePosition",
                        api_key, api_secret, {"symbol": symbol, "positionSide": trade_ps})
                 results.append(
@@ -1016,7 +1027,8 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
 
 
 def on_scan_tp1(symbol: str):
-    """Scan TP1 hit — cancel open orders, close 50% at market, move SL to BE."""
+    """Scan TP1 hit — BingX already auto-closed 50% via TP1 order.
+    We only need to: cancel old SL, place BE SL for remaining 50%, keep/re-place TP2."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if user.get("scan_symbol") != symbol: continue
         try:
@@ -1027,39 +1039,40 @@ def on_scan_tp1(symbol: str):
             qty         = float(user.get("scan_qty", 0))
             half_qty    = max(round(qty / 2, 4), 0.001)
 
-            # Cancel all open orders for this symbol first
-            for o in _get_open_orders(api_key, api_secret, symbol):
-                oid = str(o.get("orderId", ""))
-                if oid:
-                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                           {"symbol": symbol, "orderId": oid})
-
             if not entry_price:
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: scan_entry=0, cannot set BE SL")
                 continue
 
-            # Close 50% at market
-            params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                      "type": "MARKET", "quantity": round(half_qty, 4)}
-            close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: close50% code={close_r.get('code')} msg={close_r.get('msg','')}")
+            # BingX already closed 50% via the TP1 TAKE_PROFIT_MARKET order placed at signal time.
+            # DO NOT close more — just cancel the old SL (full-qty) and replace with BE SL (half-qty).
+            tp2 = float(user.get("scan_tp2", 0))
+            tp2_still_active = False
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                oid  = str(o.get("orderId", ""))
+                otyp = o.get("type", "")
+                sp   = float(o.get("stopPrice", 0) or 0)
+                if not oid: continue
+                # Keep TP2 order if it's already there — cancel everything else (old SL, old TP1 if partial)
+                if otyp == "TAKE_PROFIT_MARKET" and tp2 and abs(sp - tp2) / tp2 < 0.01:
+                    tp2_still_active = True
+                    print(f"[CT] on_scan_tp1 {cid} {symbol}: keeping existing TP2@{sp}")
+                else:
+                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": oid})
 
-            # Wait for position to update before placing new SL
-            time.sleep(3)
+            # Wait for BingX to settle the partial close
+            time.sleep(2)
 
-            # Remaining qty after close
-            remaining_qty = max(round(qty - half_qty, 4), 0.0001)
-            # BE SL with 0.1% buffer so BingX accepts (SL must be < current price for LONG)
+            # BE SL for remaining 50%
             be_sl_price = round(entry_price * 0.999, 6) if side == "BUY" else round(entry_price * 1.001, 6)
             sl_params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                         "type": "STOP_MARKET", "quantity": round(remaining_qty, 4),
+                         "type": "STOP_MARKET", "quantity": round(half_qty, 4),
                          "stopPrice": be_sl_price}
             sl_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, sl_params)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={remaining_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={half_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
 
-            # Re-place TP2 for remaining half
-            tp2 = float(user.get("scan_tp2", 0))
-            if tp2:
+            # Re-place TP2 only if it wasn't already active on exchange
+            if tp2 and not tp2_still_active:
                 params2 = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
                            "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
                            "stopPrice": round(tp2, 6)}
@@ -1070,7 +1083,7 @@ def on_scan_tp1(symbol: str):
             user["scan_sl"]       = be_sl_price
             user["scan_tp1_hit"]  = True   # flag: only 50% remains, don't ghost-close on qty drop
             _set(cid, user)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — closed {half_qty} SL→BE@{be_sl_price}")
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — BE SL@{be_sl_price} half={half_qty} TP2={'kept' if tp2_still_active else 're-placed'}")
         except Exception as e:
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
