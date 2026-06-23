@@ -2220,10 +2220,12 @@ def _tick_one(ver: int, t: dict) -> bool:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
                     _remove_scan_trade(ver, sym); return True
             # Entry missed: price blew past TP1 without ever reaching pullback entry
+            # Grace period: wait at least 60s after signal before declaring missed
             if t.get("entry_type") == "PULLBACK":
+                signal_age = time.time() - t.get("created_at", time.time())
                 entry_missed = (sig == "BUY"  and check_high >= tp1) or \
                                (sig == "SELL" and check_low  <= tp1)
-                if entry_missed:
+                if entry_missed and signal_age >= 60:
                     print(f"  [SCAN{ver} {sym}] ENTRY_MISSED — price blew past TP1 without pullback to entry")
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
                     ct.on_scan_entry_missed(sym)
@@ -3956,6 +3958,7 @@ Reasoning: [1 line only]"""
                             "tp1": scan_tp1, "tp2": scan_tp2,
                             "entry_type": entry_type, "tp1_hit": False,
                             "entry_hit": entry_type == "MARKET",
+                            "created_at": time.time(),
                         }
                         # Append to the correct scan list
                         _scan_list(scan_ver).append(slot_data)
