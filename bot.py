@@ -2219,17 +2219,26 @@ def _tick_one(ver: int, t: dict) -> bool:
                 if sig == "SELL" and price < entry * 0.985:
                     send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
                     _remove_scan_trade(ver, sym); return True
-            # Entry missed: price blew past TP1 without ever reaching pullback entry
-            # Grace period: wait at least 60s after signal before declaring missed
+            # Entry missed: price blew PAST TP1 without ever pulling back to entry
+            # Grace period: wait 2 min after signal before checking — avoids firing on
+            # the existing candle high that was already there when signal was generated.
+            # Also require price to be MOVING AWAY from entry (not toward it).
             if t.get("entry_type") == "PULLBACK":
-                signal_age = time.time() - t.get("created_at", time.time())
-                entry_missed = (sig == "BUY"  and check_high >= tp1) or \
-                               (sig == "SELL" and check_low  <= tp1)
-                if entry_missed and signal_age >= 60:
-                    print(f"  [SCAN{ver} {sym}] ENTRY_MISSED — price blew past TP1 without pullback to entry")
-                    send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
-                    ct.on_scan_entry_missed(sym)
-                    _remove_scan_trade(ver, sym); return True
+                age_secs = time.time() - t.get("created_at", time.time())
+                if age_secs >= 120:  # at least 2 minutes old
+                    # BUY pullback: missed if price shot UP past TP1 (away from entry below)
+                    # SELL pullback: missed if price dropped DOWN past TP1 (away from entry above)
+                    moving_away = (sig == "BUY"  and price > entry * 1.005) or \
+                                  (sig == "SELL" and price < entry * 0.995)
+                    entry_missed = moving_away and (
+                        (sig == "BUY"  and check_high >= tp1) or
+                        (sig == "SELL" and check_low  <= tp1)
+                    )
+                    if entry_missed:
+                        print(f"  [SCAN{ver} {sym}] ENTRY_MISSED — price blew past TP1 without pullback to entry")
+                        send_telegram(fmt_scan_update("ENTRY_MISSED", price, t))
+                        ct.on_scan_entry_missed(sym)
+                        _remove_scan_trade(ver, sym); return True
             return False
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
@@ -3854,9 +3863,11 @@ STEP 3 — SET ENTRY FROM PAUSE
 Entry = lowest low of pause (BULLISH) or highest high of pause (BEARISH)
 dist_pct = abs(current_price - entry) / current_price × 100
 If dist_pct > 1.0% → Entry_Type: MARKET at current_price
+If dist_pct > 2.0% → output WAIT (too far from entry, risky chase)
+If current_price >= TP1 (BUY) or current_price <= TP1 (SELL) → output WAIT (price already past TP1)
 
 STEP 4 — STOP LOSS
-SL = pause extreme ± 0.4%
+SL = pause extreme ± 0.8%. Minimum SL distance = 1% of entry price.
 
 STEP 5 — TAKE PROFIT
 sl_dist = abs(entry - SL)
@@ -3885,11 +3896,12 @@ RULES (apply silently):
 1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, mixed=WAIT
 2. 5M pause: last 10 candles must have AT LEAST 3 sideways candles. Only 2 → WAIT
 3. BULLISH entry = lowest low of pause. BEARISH entry = highest high of pause
-4. dist_pct = abs(current_price - entry)/current_price×100. >1% → MARKET entry at current_price
-5. SL: BULLISH = pause low - 0.4%. BEARISH = pause high + 0.4%
+4. dist_pct = abs(current_price - entry)/current_price×100. >1% → MARKET entry at current_price. If dist_pct > 2% → output WAIT (too far, risky chase)
+5. SL: BULLISH = pause low - 0.8%. BEARISH = pause high + 0.8%. Minimum SL distance = 1% of entry price.
 6. TP1 = entry ± sl_dist×2. TP2 = entry ± sl_dist×4
 7. Confidence: HIGH=clear trend+clear pause+dist<0.5%, MED=dist 0.5-1% or MARKET, LOW=unclear
 8. HARD BLOCK — output WAIT if ANY of these: last 4H candle < -6%, structure technically BULLISH but last candle strongly bearish, price dropped >10% in last 2 candles (exhaustion/reversal risk)
+9. HARD BLOCK — output WAIT if current_price already past TP1 (BUY: current_price >= TP1, SELL: current_price <= TP1). Never give PULLBACK when price already at TP1 or beyond.
 
 OUTPUT ONLY (plain text, no markdown, nothing else):
 Signal: BUY / SELL / WAIT
