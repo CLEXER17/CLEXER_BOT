@@ -124,23 +124,31 @@ def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
                             uname: str = "?", avg_price: float = 0, user: dict = None):
     """
     Execute the action Claude recommended.
-    SL price is always calculated from user's risk_usdt setting (not Claude's guess)
-    to ensure max loss = risk_usdt regardless of what Claude suggests.
+    Uses signal's stored SL/TP first. Only falls back to risk-based calc if nothing stored.
+    Claude decides the ACTION (place/close/hold), not the prices.
     """
     close_side = "SELL" if pos_side == "LONG" else "BUY"
     act = action.get("action", "hold")
     result = ""
 
-    # Calculate risk-based SL price from user settings (ignores Claude's price guess)
-    def _risk_sl_price(entry: float) -> float:
-        if not entry or not user: return 0
-        risk  = float(user.get("risk_usdt", 0.5))
-        # loss_at_sl = qty * |entry - sl| → sl_dist = risk / qty
-        sl_dist = risk / pos_amt if pos_amt else entry * 0.02
+    # Use stored signal SL/TP from user state if available
+    stored_sl  = float(user.get("scan_sl",  0) if user else 0) or float(user.get("sl", 0) if user else 0)
+    stored_tp1 = float(user.get("scan_tp1", 0) if user else 0) or float(user.get("tp1", 0) if user else 0)
+    stored_tp2 = float(user.get("scan_tp2", 0) if user else 0) or float(user.get("tp2", 0) if user else 0)
+
+    # Only use risk-based SL if NO stored SL at all (orphan with zero signal data)
+    def _fallback_sl() -> float:
+        if not avg_price or not user: return 0
+        risk = float(user.get("risk_usdt", 0.5))
+        sl_dist = risk / pos_amt if pos_amt else avg_price * 0.02
+        return round(avg_price - sl_dist, 6) if pos_side == "LONG" else round(avg_price + sl_dist, 6)
+
+    def _fallback_tp(sl_price: float) -> tuple:
+        if not avg_price or not sl_price: return 0, 0
+        d = abs(avg_price - sl_price)
         if pos_side == "LONG":
-            return round(entry - sl_dist, 6)
-        else:
-            return round(entry + sl_dist, 6)
+            return round(avg_price + 2*d, 6), round(avg_price + 4*d, 6)
+        return round(avg_price - 2*d, 6), round(avg_price - 4*d, 6)
 
     if act == "close_position":
         r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
@@ -154,8 +162,8 @@ def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
         result = f"{'✅' if ok else '❌'} CLOSED {sym} @{uname}: {r.get('msg','') or 'ok'}"
 
     elif act in ("place_sl", "place_sl_tp"):
-        entry = avg_price or float(action.get("sl_price", 0))
-        sl_price = _risk_sl_price(avg_price) if avg_price else float(action.get("sl_price", 0))
+        # Priority: stored signal SL → fallback risk-based
+        sl_price = stored_sl or _fallback_sl()
         if sl_price:
             r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                 "symbol": sym, "side": close_side, "positionSide": pos_side,
@@ -164,16 +172,12 @@ def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
             })
             ok = r.get("code") == 0
             result += f"{'✅' if ok else '❌'} SL@{sl_price} {r.get('msg','') or 'ok'} "
-        # TP: use 2:1 and 4:1 RR if not provided, based on SL distance
+
         half = max(round(pos_amt / 2, 4), 0.0001)
-        if avg_price and sl_price:
-            sl_dist = abs(avg_price - sl_price)
-            tp1_auto = round(avg_price + 2*sl_dist, 6) if pos_side=="LONG" else round(avg_price - 2*sl_dist, 6)
-            tp2_auto = round(avg_price + 4*sl_dist, 6) if pos_side=="LONG" else round(avg_price - 4*sl_dist, 6)
-        else:
-            tp1_auto = tp2_auto = 0
-        for tp_price, tp_type in [(float(action.get("tp1_price", 0)) or tp1_auto, "TP1"),
-                                   (float(action.get("tp2_price", 0)) or tp2_auto, "TP2")]:
+        fb_tp1, fb_tp2 = _fallback_tp(sl_price)
+        tp1_price = stored_tp1 or fb_tp1
+        tp2_price = stored_tp2 or fb_tp2
+        for tp_price, tp_type in [(tp1_price, "TP1"), (tp2_price, "TP2")]:
             if tp_price:
                 r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                     "symbol": sym, "side": close_side, "positionSide": pos_side,
@@ -1177,16 +1181,27 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
 
 
 def on_scan_entry_missed(symbol: str):
-    """Scan PULLBACK entry missed — cancel limit orders for this symbol, clear scan state."""
+    """Scan PULLBACK entry missed — cancel ALL open orders for this symbol, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        if user.get("scan_symbol") != symbol: continue
+        if user.get("scan_symbol") != symbol:
+            # Also try users where scan_symbol might not match but have a limit order for this symbol
+            if not user.get("scan_limit_oid"): continue
         try:
+            cancelled = []
+            # Cancel by stored limit order ID first
+            stored_oid = str(user.get("scan_limit_oid", ""))
+            if stored_oid:
+                r = _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "orderId": stored_oid})
+                cancelled.append(f"oid={stored_oid} code={r.get('code')}")
+            # Also cancel all open orders for this symbol (catches any extras)
             for o in _get_open_orders(api_key, api_secret, symbol):
                 oid = str(o.get("orderId", ""))
-                if oid:
-                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                           {"symbol": symbol, "orderId": oid})
-            print(f"[CT] on_scan_entry_missed {cid} {symbol}: limit cancelled")
+                if oid and oid != stored_oid:
+                    r = _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "orderId": oid})
+                    cancelled.append(f"oid={oid} code={r.get('code')}")
+            print(f"[CT] on_scan_entry_missed {cid} {symbol}: cancelled {cancelled}")
         except Exception as e:
             print(f"[CT] on_scan_entry_missed {cid} {symbol}: {e}")
         _clear_scan_state(cid, user)
