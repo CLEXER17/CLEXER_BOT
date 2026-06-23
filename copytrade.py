@@ -1066,8 +1066,9 @@ def on_scan_tp1(symbol: str):
                 tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
-            user["scan_qty"] = half_qty
-            user["scan_sl"]  = be_sl_price  # update stored SL to BE so monitor/bot detect hit
+            user["scan_qty"]      = half_qty
+            user["scan_sl"]       = be_sl_price
+            user["scan_tp1_hit"]  = True   # flag: only 50% remains, don't ghost-close on qty drop
             _set(cid, user)
             print(f"[CT] on_scan_tp1 {cid} {symbol}: done — closed {half_qty} SL→BE@{be_sl_price}")
         except Exception as e:
@@ -1211,7 +1212,7 @@ def _clear_scan_state(cid: str, user: dict, symbol: str = ""):
     sym = symbol or user.get("scan_symbol", "")
     user["scan_symbol"] = ""; user["scan_side"] = ""
     user["scan_entry"] = 0; user["scan_sl"] = 0; user["scan_tp1"] = 0
-    user["scan_tp2"] = 0; user["scan_qty"] = 0
+    user["scan_tp2"] = 0; user["scan_qty"] = 0; user["scan_tp1_hit"] = False
     # Remove from adopted_symbols if present
     adopted = user.get("adopted_symbols", {})
     if sym in adopted:
@@ -1311,7 +1312,10 @@ def monitor_sl_tp(notify_fn=None):
 
             # ── Ghost state: bot thinks scan open but BingX has nothing ──
             scan_sym = user.get("scan_symbol","")
-            if scan_sym and scan_sym not in pos_by_sym:
+            _scan_pos_qty = abs(float((pos_by_sym.get(scan_sym) or {}).get("positionAmt", 0)))
+            _scan_tp1_hit = user.get("scan_tp1_hit", False)
+            # After TP1 hit, 50% remains — only treat as closed if qty is truly gone
+            if scan_sym and _scan_pos_qty < 0.0001:
                 entry = float(user.get("scan_entry", 0))
                 sl    = float(user.get("scan_sl", 0))
                 tp1   = float(user.get("scan_tp1", 0))
