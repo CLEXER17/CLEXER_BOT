@@ -2536,7 +2536,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck"}
 
 def handle_command(text, chat_id, message=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     is_admin = (str(chat_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
@@ -3198,10 +3198,11 @@ def handle_command(text, chat_id, message=None):
     elif cmd == "/alt" and is_admin:
         if len(parts) < 2:
             send_reply(chat_id,
-                f"⏰ <b>Alt Scan Time</b>\n\n"
-                f"Current: every hour at <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
-                f"Usage: <code>/alt 02</code> or <code>/alt 24</code>\n"
-                f"Sets the minute (0–59) when alt scan fires each hour.\n\n"
+                f"⏰ <b>Alt Scan Times</b>\n\n"
+                f"Scan1: every hour at <b>:{ALT_SCAN_MINUTE:02d}</b>\n"
+                f"Scan2: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
+                f"Usage: <code>/alt 02</code> — change scan1 minute\n"
+                f"       <code>/alt2 24</code> — change scan2 minute\n\n"
                 f"<i>- CLEXER V17.8.5 -</i>"); return
         try:
             new_min = int(parts[1])
@@ -3211,11 +3212,30 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "❌ Invalid minute. Use 0–59. Example: <code>/alt 02</code>"); return
         old_min = ALT_SCAN_MINUTE
         ALT_SCAN_MINUTE = new_min
-        _auto_scan_last_hour = -1   # reset so it doesn't skip next trigger
+        _auto_scan1_last_hour = -1
         send_reply(chat_id,
-            f"✅ <b>Alt Scan Time Updated</b>\n\n"
-            f"Was: every hour at :{old_min:02d}\n"
-            f"Now: every hour at <b>:{new_min:02d}</b>\n\n"
+            f"✅ <b>Scan1 Time Updated</b>\n\n"
+            f"Was: :{old_min:02d} | Now: <b>:{new_min:02d}</b>\n"
+            f"Scan2 still at: <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>"); return
+
+    elif cmd == "/alt2" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"⏰ <b>Scan2 Time</b>\n\nCurrent: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
+                f"Usage: <code>/alt2 24</code>\n\n<i>- CLEXER V17.8.5 -</i>"); return
+        try:
+            new_min = int(parts[1])
+            if not (0 <= new_min <= 59): raise ValueError
+        except ValueError:
+            send_reply(chat_id, "❌ Invalid minute. Use 0–59. Example: <code>/alt2 24</code>"); return
+        old_min = ALT_SCAN2_MINUTE
+        ALT_SCAN2_MINUTE = new_min
+        _auto_scan2_last_hour = -1
+        send_reply(chat_id,
+            f"✅ <b>Scan2 Time Updated</b>\n\n"
+            f"Was: :{old_min:02d} | Now: <b>:{new_min:02d}</b>\n"
+            f"Scan1 still at: <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
             f"<i>- CLEXER V17.8.5 -</i>"); return
 
     elif cmd == "/scancopy" and is_admin:
@@ -4090,8 +4110,11 @@ def command_listener():
         time.sleep(2)
 
 # --- MAIN ---------------------------------------------------------------------
-_auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran
-ALT_SCAN_MINUTE = 2         # minute of each hour when alt scan fires — changeable via /alt MM
+_auto_scan1_last_hour = -1  # tracks last IST hour scan1 ran
+_auto_scan2_last_hour = -1  # tracks last IST hour scan2 ran
+_auto_scan_last_hour  = -1  # legacy
+ALT_SCAN_MINUTE  = 2        # scan1 trigger minute — /alt MM
+ALT_SCAN2_MINUTE = 24       # scan2 trigger minute — /alt2 MM
 _scan_cycle_placed = set()  # coins signaled this cycle — prevents scan1+scan2 picking same coin
 _scan_cycle_lock   = __import__("threading").Lock()
 
@@ -4193,19 +4216,22 @@ def main():
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── BTC scan at :21, Alt scan at ALT_SCAN_MINUTE — every hour ─────
-            global _auto_scan_last_hour
+            # ── BTC scan at :21, Scan1 at ALT_SCAN_MINUTE, Scan2 at ALT_SCAN2_MINUTE ─
+            global _auto_scan1_last_hour, _auto_scan2_last_hour
             _ist_now = now_ist()
             _btc_fixed_hours = {7, 11, 15, 19, 23}
-            # Alt scan: every hour at ALT_SCAN_MINUTE
-            if (_ist_now.minute == ALT_SCAN_MINUTE and _auto_scan_last_hour != _ist_now.hour):
-                _auto_scan_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime(f'%H:{ALT_SCAN_MINUTE:02d} IST')}")
+            # Scan1: every hour at ALT_SCAN_MINUTE
+            if (_ist_now.minute == ALT_SCAN_MINUTE and _auto_scan1_last_hour != _ist_now.hour):
+                _auto_scan1_last_hour = _ist_now.hour
+                print(f"  [AUTO-SCAN1] Scan1 at {_ist_now.strftime('%H')}:{ALT_SCAN_MINUTE:02d} IST")
                 if ADMIN_CHAT_ID:
-                    def _run_both_scans(cid):
-                        _run_auto_scan(cid, scan_ver=1)   # scan1 first — fully completes
-                        _run_auto_scan(cid, scan_ver=2)   # then scan2
-                    threading.Thread(target=lambda: _run_both_scans(ADMIN_CHAT_ID), daemon=True).start()
+                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
+            # Scan2: every hour at ALT_SCAN2_MINUTE
+            if (_ist_now.minute == ALT_SCAN2_MINUTE and _auto_scan2_last_hour != _ist_now.hour):
+                _auto_scan2_last_hour = _ist_now.hour
+                print(f"  [AUTO-SCAN2] Scan2 at {_ist_now.strftime('%H')}:{ALT_SCAN2_MINUTE:02d} IST")
+                if ADMIN_CHAT_ID:
+                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
