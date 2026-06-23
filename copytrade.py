@@ -807,7 +807,7 @@ def close_coin_all(coin: str) -> list[str]:
                 user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
                 user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
                 _set(cid, user)
-            elif user.get("scan_symbol") == symbol:
+            elif _ver_for_symbol(user, symbol):
                 _clear_scan_state(cid, user, symbol)
             results.append(f"✅ @{user.get('username','?')} {symbol} closed")
         except Exception as e:
@@ -842,20 +842,19 @@ def set_scan_ct(enabled: bool):
 def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
     """
     Place a scan-sourced trade (alt coin) for all copy users.
-    symbol = "ETH-USDT" / "SOL-USDT" etc
-    signal_dict = {"signal":"BUY"/"SELL", "entry":float, "sl":float,
-                   "tp1":float, "tp2":float, "entry_type":"MARKET"/"LIMIT"}
+    ver is passed inside signal_dict["ver"]: 1→s1_* slot, 2→scan_* slot
     """
     if not SCAN_CT_ENABLED:
         return ["[CT] scan copy trade is OFF (/scancopy on to enable)"]
 
-    with _scan_signal_lock:   # serialize — prevents race condition when 2 scans fire simultaneously
+    with _scan_signal_lock:
         return _on_scan_signal_inner(signal_dict, symbol, price)
 
 
 def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[str]:
 
-    side       = signal_dict["signal"]           # BUY or SELL
+    ver        = int(signal_dict.get("ver", 2))   # 1=scan1 slot, 2=scan2 slot
+    side       = signal_dict["signal"]
     entry      = float(signal_dict["entry"])
     sl         = float(signal_dict["sl"])
     tp1        = float(signal_dict.get("tp1", 0))
@@ -868,10 +867,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
-            # Skip if user already has ANY open scan position
-            existing = user.get("scan_symbol", "")
-            if existing:
-                results.append(f"⏭ @{user.get('username','?')} already in {existing} — skipping {symbol}")
+            # Skip only if this scan slot already has this exact symbol open
+            p = _pfx(ver)
+            if user.get(f"{p}symbol") == symbol:
+                results.append(f"⏭ @{user.get('username','?')} already in {symbol} (scan{ver}) — skipping duplicate")
                 continue
             risk = user.get("risk_usdt")
             if risk:
@@ -966,10 +965,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
             if entry_type == "LIMIT":
                 limit_oid = str((entry_r.get("data") or {}).get("order", {}).get("orderId", ""))
-                user["scan_symbol"] = symbol; user["scan_side"] = side
-                user["scan_entry"]  = entry;  user["scan_sl"]   = sl
-                user["scan_tp1"]    = tp1;    user["scan_tp2"]  = tp2
-                user["scan_qty"]    = qty;    user["scan_limit_oid"] = limit_oid
+                user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
+                user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
+                user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
+                user[f"{p}qty"]    = qty;    user[f"{p}limit_oid"] = limit_oid
                 _set(cid, user)
                 results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})")
                 continue  # SL/TP placed when limit fills via on_scan_limit_filled
@@ -1019,10 +1018,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 continue
 
             # ── All good — save state ────────────────────────────────────────
-            user["scan_symbol"] = symbol; user["scan_side"] = side
-            user["scan_entry"]  = entry;  user["scan_sl"]   = sl
-            user["scan_tp1"]    = tp1;    user["scan_tp2"]  = tp2
-            user["scan_qty"]    = qty
+            user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
+            user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
+            user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
+            user[f"{p}qty"]    = qty;    user[f"{p}tp1_hit"] = False
             _set(cid, user)
 
             tp_warn = ""
@@ -1048,22 +1047,24 @@ def on_scan_tp1(symbol: str):
     """Scan TP1 hit — BingX already auto-closed 50% via TP1 order.
     We only need to: cancel old SL, place BE SL for remaining 50%, keep/re-place TP2."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        if user.get("scan_symbol") != symbol: continue
+        ver = _ver_for_symbol(user, symbol)
+        if not ver: continue
+        p = _pfx(ver)
         try:
-            side        = user["scan_side"]
-            entry_price = float(user.get("scan_entry", 0))
+            side        = user[f"{p}side"]
+            entry_price = float(user.get(f"{p}entry", 0))
             close_side  = "SELL" if side == "BUY" else "BUY"
             trade_ps    = "LONG" if side == "BUY" else "SHORT"
-            qty         = float(user.get("scan_qty", 0))
+            qty         = float(user.get(f"{p}qty", 0))
             half_qty    = max(round(qty / 2, 4), 0.001)
 
             if not entry_price:
-                print(f"[CT] on_scan_tp1 {cid} {symbol}: scan_entry=0, cannot set BE SL")
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: entry=0, cannot set BE SL")
                 continue
 
             # BingX already closed 50% via the TP1 TAKE_PROFIT_MARKET order placed at signal time.
             # DO NOT close more — just cancel the old SL (full-qty) and replace with BE SL (half-qty).
-            tp2 = float(user.get("scan_tp2", 0))
+            tp2 = float(user.get(f"{p}tp2", 0))
             tp2_still_active = False
             for o in _get_open_orders(api_key, api_secret, symbol):
                 oid  = str(o.get("orderId", ""))
@@ -1097,9 +1098,9 @@ def on_scan_tp1(symbol: str):
                 tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
-            user["scan_qty"]      = half_qty
-            user["scan_sl"]       = be_sl_price
-            user["scan_tp1_hit"]  = True   # flag: only 50% remains, don't ghost-close on qty drop
+            user[f"{p}qty"]      = half_qty
+            user[f"{p}sl"]       = be_sl_price
+            user[f"{p}tp1_hit"]  = True
             _set(cid, user)
             print(f"[CT] on_scan_tp1 {cid} {symbol}: done — BE SL@{be_sl_price} half={half_qty} TP2={'kept' if tp2_still_active else 're-placed'}")
         except Exception as e:
@@ -1109,57 +1110,55 @@ def on_scan_tp1(symbol: str):
 def on_scan_tp2(symbol: str):
     """Scan TP2 hit — cancel remaining orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        if user.get("scan_symbol") != symbol: continue
+        ver = _ver_for_symbol(user, symbol)
+        if not ver: continue
+        p = _pfx(ver)
         try:
-            trade_ps = "LONG" if user["scan_side"] == "BUY" else "SHORT"
-
-            # Cancel all open orders for symbol
+            trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
             for o in _get_open_orders(api_key, api_secret, symbol):
                 oid = str(o.get("orderId", ""))
                 if oid:
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
-
-            # Force-close any remaining position
             close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
                               {"symbol": symbol, "positionSide": trade_ps})
             if close_r.get("code") != 0:
-                rem = float(user.get("scan_qty", 0.001))
-                close_side = "SELL" if user["scan_side"] == "BUY" else "BUY"
-                close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                                  {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                                   "type": "MARKET", "quantity": round(rem, 4)})
-            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')} msg={close_r.get('msg','')}")
+                rem = float(user.get(f"{p}qty", 0.001))
+                close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                       {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                        "type": "MARKET", "quantity": round(rem, 4)})
+            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
-        _clear_scan_state(cid, user)
+        _clear_scan_state(cid, user, symbol, ver)
 
 
 def on_scan_sl(symbol: str):
     """Scan SL hit — cancel all orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        if user.get("scan_symbol") != symbol: continue
+        ver = _ver_for_symbol(user, symbol)
+        if not ver: continue
+        p = _pfx(ver)
         try:
-            trade_ps = "LONG" if user["scan_side"] == "BUY" else "SHORT"
-
+            trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
             for o in _get_open_orders(api_key, api_secret, symbol):
                 oid = str(o.get("orderId", ""))
                 if oid:
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
-
             close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
                               {"symbol": symbol, "positionSide": trade_ps})
             if close_r.get("code") != 0:
-                rem = float(user.get("scan_qty", 0.001))
-                close_side = "SELL" if user["scan_side"] == "BUY" else "BUY"
-                close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                                  {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                                   "type": "MARKET", "quantity": round(rem, 4)})
-            print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')} msg={close_r.get('msg','')}")
+                rem = float(user.get(f"{p}qty", 0.001))
+                close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                       {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                        "type": "MARKET", "quantity": round(rem, 4)})
+            print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
-        _clear_scan_state(cid, user)
+        _clear_scan_state(cid, user, symbol, ver)
 
 
 def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: float, tp2: float):
@@ -1239,16 +1238,27 @@ def on_scan_entry_missed(symbol: str):
         _clear_scan_state(cid, user)
 
 
-def _clear_scan_state(cid: str, user: dict, symbol: str = ""):
-    sym = symbol or user.get("scan_symbol", "")
-    user["scan_symbol"] = ""; user["scan_side"] = ""
-    user["scan_entry"] = 0; user["scan_sl"] = 0; user["scan_tp1"] = 0
-    user["scan_tp2"] = 0; user["scan_qty"] = 0; user["scan_tp1_hit"] = False
-    # Remove from adopted_symbols if present
+def _pfx(ver: int) -> str:
+    """Return state key prefix for scan version. scan1→'s1_', scan2→'scan_'."""
+    return "s1_" if ver == 1 else "scan_"
+
+def _ver_for_symbol(user: dict, symbol: str) -> int:
+    """Find which scan version owns this symbol (1 or 2). Returns 0 if not found."""
+    if user.get("s1_symbol") == symbol:    return 1
+    if user.get("scan_symbol") == symbol:  return 2
+    return 0
+
+def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):
+    if not ver:
+        ver = _ver_for_symbol(user, symbol) or 2
+    p = _pfx(ver)
+    sym = symbol or user.get(f"{p}symbol", "")
+    user[f"{p}symbol"] = ""; user[f"{p}side"] = ""
+    user[f"{p}entry"] = 0; user[f"{p}sl"] = 0; user[f"{p}tp1"] = 0
+    user[f"{p}tp2"] = 0; user[f"{p}qty"] = 0; user[f"{p}tp1_hit"] = False
     adopted = user.get("adopted_symbols", {})
     if sym in adopted:
-        del adopted[sym]
-        user["adopted_symbols"] = adopted
+        del adopted[sym]; user["adopted_symbols"] = adopted
     _set(cid, user)
 
 
@@ -1342,20 +1352,21 @@ def monitor_sl_tp(notify_fn=None):
                 if notify_fn: notify_fn(f"📊 <b>BTC trade closed @{uname}</b>\n{reason}")
 
             # ── Ghost state: bot thinks scan open but BingX has nothing ──
-            scan_sym = user.get("scan_symbol","")
-            _scan_pos_qty = abs(float((pos_by_sym.get(scan_sym) or {}).get("positionAmt", 0)))
-            _scan_tp1_hit = user.get("scan_tp1_hit", False)
-            # After TP1 hit, 50% remains — only treat as closed if qty is truly gone
-            if scan_sym and _scan_pos_qty < 0.0001:
-                entry = float(user.get("scan_entry", 0))
-                sl    = float(user.get("scan_sl", 0))
-                tp1   = float(user.get("scan_tp1", 0))
-                tp2   = float(user.get("scan_tp2", 0))
-                reason = _detect_close_reason(scan_sym, entry, sl, tp1, tp2)
-                _clear_scan_state(cid, user)
-                msg = f"🔔 @{uname} {scan_sym} trade {reason}"
-                fixes.append(msg); print(f"[CT] {msg}")
-                if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
+            for _gver in (1, 2):
+                _gp = _pfx(_gver)
+                scan_sym = user.get(f"{_gp}symbol", "")
+                if not scan_sym: continue
+                _scan_pos_qty = abs(float((pos_by_sym.get(scan_sym) or {}).get("positionAmt", 0)))
+                if _scan_pos_qty < 0.0001:
+                    entry = float(user.get(f"{_gp}entry", 0))
+                    sl    = float(user.get(f"{_gp}sl", 0))
+                    tp1   = float(user.get(f"{_gp}tp1", 0))
+                    tp2   = float(user.get(f"{_gp}tp2", 0))
+                    reason = _detect_close_reason(scan_sym, entry, sl, tp1, tp2)
+                    _clear_scan_state(cid, user, scan_sym, _gver)
+                    msg = f"🔔 @{uname} {scan_sym} (scan{_gver}) {reason}"
+                    fixes.append(msg); print(f"[CT] {msg}")
+                    if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
 
             # ── Check every real BingX position ──
             for sym, pos in pos_by_sym.items():
