@@ -121,20 +121,20 @@ def _ask_claude_action(situation: str) -> dict:
 
 def _execute_claude_action(action: dict, ak: str, ask: str, sym: str,
                             pos_side: str, pos_amt: float, notify_fn=None,
-                            uname: str = "?", avg_price: float = 0, user: dict = None):
+                            uname: str = "?", avg_price: float = 0, user: dict = None,
+                            sl: float = 0, tp1: float = 0, tp2: float = 0):
     """
     Execute the action Claude recommended.
-    Uses signal's stored SL/TP first. Only falls back to risk-based calc if nothing stored.
-    Claude decides the ACTION (place/close/hold), not the prices.
+    Pass sl/tp1/tp2 directly — do NOT rely on user state (can be stale from other signals).
     """
     close_side = "SELL" if pos_side == "LONG" else "BUY"
     act = action.get("action", "hold")
     result = ""
 
-    # Use stored signal SL/TP from user state if available
-    stored_sl  = float(user.get("scan_sl",  0) if user else 0) or float(user.get("sl", 0) if user else 0)
-    stored_tp1 = float(user.get("scan_tp1", 0) if user else 0) or float(user.get("tp1", 0) if user else 0)
-    stored_tp2 = float(user.get("scan_tp2", 0) if user else 0) or float(user.get("tp2", 0) if user else 0)
+    # Use explicitly passed prices first, fall back to user state only if not provided
+    stored_sl  = sl  or float(user.get("scan_sl",  0) if user else 0) or float(user.get("sl",  0) if user else 0)
+    stored_tp1 = tp1 or float(user.get("scan_tp1", 0) if user else 0) or float(user.get("tp1", 0) if user else 0)
+    stored_tp2 = tp2 or float(user.get("scan_tp2", 0) if user else 0) or float(user.get("tp2", 0) if user else 0)
 
     # Only use risk-based SL if NO stored SL at all (orphan with zero signal data)
     def _fallback_sl() -> float:
@@ -973,6 +973,13 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})")
                 continue  # SL/TP placed when limit fills via on_scan_limit_filled
 
+            # ── Save state immediately after entry fills so monitor has correct prices ──
+            user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
+            user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
+            user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
+            user[f"{p}qty"]    = qty;    user[f"{p}tp1_hit"] = False
+            _set(cid, user)
+
             # ── Step 3: MARKET filled — place SL+TP with 3-min retry ────────
             sl_ok = tp1_ok = tp2_ok = False
             sl_deadline = time.time() + ENTRY_DEADLINE
@@ -1006,13 +1013,9 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 if advice.get("action") != "hold":
                     # Pass local sl/tp1/tp2 explicitly — do NOT read from user state
                     # (user state may have been overwritten by a concurrent scan signal)
-                    _local_user = dict(user)
-                    # Always use local variables — never stale user state
-                    _local_user["scan_sl"]  = sl;  _local_user["s1_sl"]  = sl
-                    _local_user["scan_tp1"] = tp1; _local_user["s1_tp1"] = tp1
-                    _local_user["scan_tp2"] = tp2; _local_user["s1_tp2"] = tp2
                     _execute_claude_action(advice, api_key, api_secret, symbol, trade_ps,
-                                           qty, None, uname, avg_price=entry, user=_local_user)
+                                           qty, None, uname, avg_price=entry,
+                                           sl=sl, tp1=tp1, tp2=tp2)
                 _bingx("POST", "/openApi/swap/v2/trade/closePosition",
                        api_key, api_secret, {"symbol": symbol, "positionSide": trade_ps})
                 results.append(
@@ -1020,12 +1023,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                     f"— CLOSED. Claude: {advice.get('action','close')}")
                 continue
 
-            # ── All good — save state ────────────────────────────────────────
-            user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
-            user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
-            user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
-            user[f"{p}qty"]    = qty;    user[f"{p}tp1_hit"] = False
-            _set(cid, user)
+            # State already saved after entry fill — nothing to do here
 
             tp_warn = ""
             if tp1 and not tp1_ok: tp_warn += " ⚠️TP1 failed"
@@ -1438,14 +1436,17 @@ def monitor_sl_tp(notify_fn=None):
                     continue
 
                 # ── Scan: verify/place SL + TP ──
-                sl_price  = float(user.get("scan_sl",  0))
-                tp1_price = float(user.get("scan_tp1", 0))
-                tp2_price = float(user.get("scan_tp2", 0))
+                # Find which slot owns this symbol
+                _sv = _ver_for_symbol(user, sym)
+                _sp = _pfx(_sv) if _sv else "scan_"
+                sl_price  = float(user.get(f"{_sp}sl",  0))
+                tp1_price = float(user.get(f"{_sp}tp1", 0))
+                tp2_price = float(user.get(f"{_sp}tp2", 0))
 
                 # Emergency SL if no stored price (2% from avg entry)
                 if not sl_price:
                     sl_price = round(avg_price * (0.98 if pos_side=="LONG" else 1.02), 6)
-                    user["scan_sl"] = sl_price; _set(cid, user)
+                    user[f"{_sp}sl"] = sl_price; _set(cid, user)
 
                 open_orders = _get_open_orders(ak, ask, sym)
                 has_sl  = any(o.get("type")=="STOP_MARKET"        and o.get("positionSide")==pos_side for o in open_orders)
@@ -1490,7 +1491,7 @@ def monitor_sl_tp(notify_fn=None):
                             f"Failed orders: {', '.join(failed)}. SL={sl_price} TP1={tp1_price} TP2={tp2_price}. "
                             f"Protect this position."
                         )
-                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname, avg_price=avg_price, user=user)
+                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname, avg_price=avg_price, sl=sl_price, tp1=tp1_price, tp2=tp2_price)
                         fixes.append(f"🤖 Claude acted on {sym} failed orders: {action.get('action')}")
                     elif notify_fn:
                         notify_fn(f"🔧 <b>Auto-fixed {sym}</b>\n@{uname}: {', '.join(placed)}")
