@@ -1034,8 +1034,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
 
 def on_scan_tp1(symbol: str):
-    """Scan TP1 hit — BingX already auto-closed 50% via TP1 order.
-    We only need to: cancel old SL, place BE SL for remaining 50%, keep/re-place TP2."""
+    """Scan TP1 hit — cancel all orders, close 50% at market, move SL to BE, re-place TP2."""
     for cid, user, api_key, api_secret in _users_with_copy():
         ver = _ver_for_symbol(user, symbol)
         if not ver: continue
@@ -1052,47 +1051,48 @@ def on_scan_tp1(symbol: str):
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: entry=0, cannot set BE SL")
                 continue
 
-            # BingX already closed 50% via the TP1 TAKE_PROFIT_MARKET order placed at signal time.
-            # DO NOT close more — just cancel the old SL (full-qty) and replace with BE SL (half-qty).
-            tp2 = float(user.get(f"{p}tp2", 0))
-            tp2_still_active = False
+            # Cancel ALL open orders for this symbol
             for o in _get_open_orders(api_key, api_secret, symbol):
-                oid  = str(o.get("orderId", ""))
-                otyp = o.get("type", "")
-                sp   = float(o.get("stopPrice", 0) or 0)
-                if not oid: continue
-                # Keep TP2 order if it's already there — cancel everything else (old SL, old TP1 if partial)
-                if otyp == "TAKE_PROFIT_MARKET" and tp2 and abs(sp - tp2) / tp2 < 0.01:
-                    tp2_still_active = True
-                    print(f"[CT] on_scan_tp1 {cid} {symbol}: keeping existing TP2@{sp}")
-                else:
+                oid = str(o.get("orderId", ""))
+                if oid:
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
 
-            # Wait for BingX to settle the partial close
-            time.sleep(2)
+            # Close 50% at market
+            close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
+                "symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                "type": "MARKET", "quantity": round(half_qty, 4)
+            })
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: close50% code={close_r.get('code')} msg={close_r.get('msg','')}")
 
-            # BE SL for remaining 50%
+            # Wait for position to update
+            time.sleep(3)
+
+            # BE SL for remaining 50% with 0.1% buffer so BingX accepts
+            remaining_qty = max(round(qty - half_qty, 4), 0.0001)
             be_sl_price = round(entry_price * 0.999, 6) if side == "BUY" else round(entry_price * 1.001, 6)
-            sl_params = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                         "type": "STOP_MARKET", "quantity": round(half_qty, 4),
-                         "stopPrice": be_sl_price}
-            sl_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, sl_params)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={half_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
+            sl_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
+                "symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                "type": "STOP_MARKET", "quantity": round(remaining_qty, 4),
+                "stopPrice": be_sl_price
+            })
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={remaining_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
 
-            # Re-place TP2 only if it wasn't already active on exchange
-            if tp2 and not tp2_still_active:
-                params2 = {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                           "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
-                           "stopPrice": round(tp2, 6)}
-                tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, params2)
+            # Re-place TP2 for remaining half
+            tp2 = float(user.get(f"{p}tp2", 0))
+            if tp2:
+                tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
+                    "symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                    "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
+                    "stopPrice": round(tp2, 6)
+                })
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
-            user[f"{p}qty"]      = half_qty
-            user[f"{p}sl"]       = be_sl_price
-            user[f"{p}tp1_hit"]  = True
+            user[f"{p}qty"]     = half_qty
+            user[f"{p}sl"]      = be_sl_price
+            user[f"{p}tp1_hit"] = True
             _set(cid, user)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — BE SL@{be_sl_price} half={half_qty} TP2={'kept' if tp2_still_active else 're-placed'}")
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — closed {half_qty} SL→BE@{be_sl_price}")
         except Exception as e:
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
@@ -1431,6 +1431,18 @@ def monitor_sl_tp(notify_fn=None):
                 sl_price  = float(user.get(f"{_sp}sl",  0))
                 tp1_price = float(user.get(f"{_sp}tp1", 0))
                 tp2_price = float(user.get(f"{_sp}tp2", 0))
+                stored_qty = float(user.get(f"{_sp}qty", 0))
+                tp1_already_hit = bool(user.get(f"{_sp}tp1_hit", False))
+
+                # ── TP1 detection: position dropped to ~50% of stored qty ──
+                if (not tp1_already_hit and stored_qty > 0
+                        and pos_amt < stored_qty * 0.65
+                        and pos_amt > stored_qty * 0.05):
+                    print(f"[CT] [Monitor] @{uname} {sym}: TP1 detected (pos={pos_amt} stored={stored_qty}) — triggering on_scan_tp1")
+                    if notify_fn:
+                        notify_fn(f"🎯 [Monitor] @{uname} {sym}: TP1 detected → placing BE SL")
+                    on_scan_tp1(sym)
+                    continue  # on_scan_tp1 handles SL/TP2 — skip normal check
 
                 # Emergency SL if no stored price (2% from avg entry)
                 if not sl_price:
@@ -1557,7 +1569,7 @@ def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
                 monitor_sl_tp(notify_fn)
             except Exception as e:
                 print(f"[CT] monitor loop error: {e}")
-            time.sleep(120)  # check every 2 minutes
+            time.sleep(30)   # check every 30 seconds for fast TP1 detection
     t = _th.Thread(target=_loop, daemon=True)
     t.start()
     print(f"[CT] SL/TP monitor started — checks every 2 minutes")
