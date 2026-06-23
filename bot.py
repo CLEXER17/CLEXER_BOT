@@ -1,5 +1,5 @@
 """
-CLEXER Signal Bot V10.0
+CLEXER Signal Bot V17.8.5
 """
 
 import os, time, json, base64, requests, anthropic, threading, re, subprocess
@@ -1538,7 +1538,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 f"Source: {src} ({prompt_mode})\n"
                 f"<i>{reason[:250]}</i>\n\n"
                 f"Next scan in {SIGNAL_SCAN_INTERVAL//3600}h. /signal to force.\n\n"
-                f"{ist_str()}\n<i>- CLEXER V10.0 -</i>")
+                f"{ist_str()}\n<i>- CLEXER V17.8.5 -</i>")
             return None
         if sig_type not in ("BUY", "SELL"): return None
 
@@ -1563,7 +1563,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             send_telegram(f"<b>Signal filtered - low confidence</b>\n\n"
                 f"Claude found: <b>{sig_type}</b> @ {entry:,.0f}\n"
                 f"Confidence: <b>{conf}</b> (required: {min_conf})\n\n"
-                f"<i>/resetsl to lower bar. - CLEXER V10.0 -</i>")
+                f"<i>/resetsl to lower bar. - CLEXER V17.8.5 -</i>")
             return None
 
         tp2_dist = abs(entry-float(signal["tp2"]))
@@ -1685,7 +1685,7 @@ def price_only_advice(price):
         f"TP1:      <b>{tp1:,.0f}</b>  {tp1_status}\n"
         f"TP2:      <b>{tp2:,.0f}</b>  ({abs(dist_to_tp2):.0f} pts)\n"
         f"Progress: <b>{max(0,pct):.1f}%</b> to TP2\nAdvice:   <b>{advice}</b>\n"
-        f"Source:   <b>{get_current_source()}</b>\n\n<i>- CLEXER V10.0 -</i>")
+        f"Source:   <b>{get_current_source()}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
 
 def required_confidence():
     n = trade_stats["consecutive_sl"]
@@ -1840,7 +1840,7 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None):
         if send_to_user(cid, text, file_id, file_type): ok += 1
         else: fail += 1
         time.sleep(0.05)
-    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed\n\n<i>- CLEXER V10.0 -</i>")
+    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed\n\n<i>- CLEXER V17.8.5 -</i>")
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
@@ -1863,7 +1863,7 @@ def fmt_signal(s):
         + (f"🌐 Weekly: <i>{wk}</i>\n" if wk else "")
         + (f"📊 4H:     <i>{s4h}</i>\n" if s4h else "")
         + (f"📍 Zone:   <i>{ez}</i>\n"  if ez else "")
-        + f"\n✨ <i>- CLEXER V10.0 -</i>\n⚠️ <i>Not financial advice</i>")
+        + f"\n✨ <i>- CLEXER V17.8.5 -</i>\n⚠️ <i>Not financial advice</i>")
 
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
@@ -1874,7 +1874,7 @@ def fmt_update(status, price=None):
             f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
             f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
             f"🔍 Waiting for next valid setup...\n\n"
-            f"<i>- CLEXER V10.0 -</i>"
+            f"<i>- CLEXER V17.8.5 -</i>"
         ),
         "TP1_HIT":        (
             f"💰 <b>TP1 HIT — 50% CLOSED!</b> 🎉\n\n"
@@ -1929,7 +1929,7 @@ def fmt_update(status, price=None):
             + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")
         ),
     }
-    return f"📣 <b>{SYMBOL} UPDATE</b>  🕐 {ist_str()}\n\n{msgs.get(status,'✅ Trade running')}\n\n✨ <i>- CLEXER V10.0 -</i>"
+    return f"📣 <b>{SYMBOL} UPDATE</b>  🕐 {ist_str()}\n\n{msgs.get(status,'✅ Trade running')}\n\n✨ <i>- CLEXER V17.8.5 -</i>"
 
 # --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
@@ -1968,7 +1968,7 @@ def run_tick_check():
                     f"💰 TP1:   <b>{tp1:,.0f}</b>\n"
                     f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
                     f"⚠️ <b>Trade is now LIVE — SL and TP active</b>\n\n"
-                    f"✨ <i>- CLEXER V10.0 -</i>\n⚠️ <i>Not financial advice</i>")
+                    f"✨ <i>- CLEXER V17.8.5 -</i>\n⚠️ <i>Not financial advice</i>")
             return False
 
         # TP2 — use candle high/low to catch spike
@@ -1978,7 +1978,7 @@ def run_tick_check():
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             send_telegram(f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
-                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V10.0 -</i>")
+                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>")
             ct.on_tp2(entry, tp2); reset_trade(); return True
 
         # TP1 — use candle high/low
@@ -1992,7 +1992,7 @@ def run_tick_check():
                 send_telegram(f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
-                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>- CLEXER V10.0 -</i>")
+                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>- CLEXER V17.8.5 -</i>")
 
         # SL — use candle low/high to catch wick SL hits
         sl_margin = 80
@@ -2009,7 +2009,7 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V10.0 -</i>")
+                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V17.8.5 -</i>")
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 send_telegram(
@@ -2017,7 +2017,7 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V10.0 -</i>")
+                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V17.8.5 -</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(entry, sl); reset_trade(); return True
@@ -2121,7 +2121,7 @@ def fmt_scan_signal(t: dict) -> str:
         f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
         f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
         f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
-        f"✨ <i>- CLEXER V10.0 -</i>\n⚠️ <i>Not financial advice</i>"
+        f"✨ <i>- CLEXER V17.8.5 -</i>\n⚠️ <i>Not financial advice</i>"
     )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
@@ -2136,7 +2136,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
             f"🛑 SL:    <b>{t.get('sl',0):,.4g}</b>\n"
             f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
             f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
-            f"⚠️ <b>Trade is now LIVE</b>\n\n✨ <i>- CLEXER V10.0 -</i>"
+            f"⚠️ <b>Trade is now LIVE</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>"
         ),
         "TP1_HIT": (
             f"💰 <b>TP1 HIT — {sym}!</b> 🎉  🕐 {ist_str()}\n\n"
@@ -2144,13 +2144,13 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
             f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
             f"✅ TP1: <b>{tp1:,.4g}</b>\n"
             f"🛡️ SL moved to BE: <b>{entry:,.4g}</b>\n"
-            f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n\n✨ <i>- CLEXER V10.0 -</i>"
+            f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n\n✨ <i>- CLEXER V17.8.5 -</i>"
         ),
         "TP2_HIT": (
             f"🏆 <b>TP2 HIT — {sym}!</b> 🎊💵  🕐 {ist_str()}\n\n"
             f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
             f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
-            f"✅ Full profit @ TP2: <b>{tp2:,.4g}</b>\n\n✨ <i>- CLEXER V10.0 -</i>"
+            f"✅ Full profit @ TP2: <b>{tp2:,.4g}</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>"
         ),
         "SL_HIT": (
             (
@@ -2158,19 +2158,19 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
                 f"✅ TP1 already hit — closed at entry <b>{entry:,.4g}</b>\n"
                 f"📊 Result: <b>Breakeven</b> (no loss)\n\n"
-                f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V10.0 -</i>"
+                f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V17.8.5 -</i>"
             ) if t.get("tp1_hit") else (
                 f"🚨 <b>SL HIT — {sym}</b> 🚨  🕐 {ist_str()}\n\n"
                 f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
                 f"❌ Loss on {sig} @ {entry:,.4g}\n\n"
                 f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V10.0 -</i>"
+                f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V17.8.5 -</i>"
             )
         ),
         "ENTRY_MISSED": (
             f"😔 <b>ENTRY MISSED — {sym}</b>  🕐 {ist_str()}\n\n"
             f"Price bypassed entry zone <b>{entry:,.4g}</b> without filling.\n"
-            f"⛔ <b>DO NOT CHASE</b>\n\n✨ <i>- CLEXER V10.0 -</i>"
+            f"⛔ <b>DO NOT CHASE</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>"
         ),
         "WAITING_ENTRY": (
             f"⏳ <b>Waiting Entry — {sym}</b>\n"
@@ -2281,7 +2281,7 @@ def run_price_check():
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V10.0 -</i>")
+                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V17.8.5 -</i>")
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 send_telegram(
@@ -2289,7 +2289,7 @@ def run_price_check():
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V10.0 -</i>")
+                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V17.8.5 -</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0)); reset_trade(); return True
@@ -2378,7 +2378,7 @@ def check_news(force=False):
         impact = item.get("impact","NEUTRAL"); emoji = "🟢" if impact=="BULLISH" else ("🔴" if impact=="BEARISH" else "⚪")
         msg_text = (f"<b>MARKET NEWS</b>\n\n{emoji} <b>{impact}</b> for BTC\n"
             f"<b>{item['title'][:120]}</b>\n\n<i>{item.get('reason','')}</i>\n\n"
-            f"{item['source']}\n<a href='{item['link']}'>Read article</a>\n\n<i>- CLEXER V10.0 · {ist_str()} -</i>")
+            f"{item['source']}\n<a href='{item['link']}'>Read article</a>\n\n<i>- CLEXER V17.8.5 · {ist_str()} -</i>")
         try:
             img_bytes = get_article_image(item["entry"])
             if img_bytes and len(img_bytes)>2000:
@@ -2396,13 +2396,13 @@ def check_news(force=False):
 # --- /tvstatus ----------------------------------------------------------------
 def cmd_tvstatus(chat_id):
     if not TV_BRIDGE_URL:
-        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>.\n\n<i>- CLEXER V10.0 -</i>"); return
+        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>.\n\n<i>- CLEXER V17.8.5 -</i>"); return
     send_reply(chat_id, f"Checking...\n<code>{TV_BRIDGE_URL}</code>")
     now = time.time(); health = tv_ping()
     if not health:
         ls = tv_bridge_state.get("last_seen",0)
         since = f"{int((now-ls)//60)}m ago" if ls else "never"
-        send_reply(chat_id, f"<b>TV Status</b>\n\n🔴 Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>\n\n<i>- CLEXER V10.0 -</i>"); return
+        send_reply(chat_id, f"<b>TV Status</b>\n\n🔴 Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>\n\n<i>- CLEXER V17.8.5 -</i>"); return
     tv_bridge_state.update({"online":True,"last_seen":now,"cdp_ok":health.get("cdp_connected",False),
         "tv_version":health.get("tv_version",""),"cached_intervals":health.get("cached_intervals",[])})
     cdp_ok = health.get("cdp_connected",False); tv_version = health.get("tv_version","?")
@@ -2419,10 +2419,10 @@ def cmd_tvstatus(chat_id):
         f"{tick(candles_ok)} Candles" + (f" ({len(df)} bars 1H)" if candles_ok else "") + "\n\n"
         f"Cached: {', '.join(cached_ivs) if cached_ivs else 'none'}\n"
         f"TV: <code>{tv_version}</code> | Symbol: <code>{tv_symbol}</code>\n"
-        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}\n<i>- CLEXER V10.0 -</i>")
+        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}\n<i>- CLEXER V17.8.5 -</i>")
 
 # --- COMMANDS -----------------------------------------------------------------
-ADMIN_HELP = """<b>CLEXER V10.0 - Admin Commands</b>
+ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 --------------------
 
 <b>BOT CONTROL</b>
@@ -2498,7 +2498,7 @@ ADMIN_HELP = """<b>CLEXER V10.0 - Admin Commands</b>
 /broadcast - Send to all
 /help"""
 
-FRIEND_HELP = """<b>CLEXER V10.0 Commands</b>
+FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 --------------------
 /status - Bot status
 /price - Live BTC price
@@ -2568,7 +2568,7 @@ def handle_command(text, chat_id, message=None):
         bot_paused.clear()
         _go_ist = now_ist()
         _go_scan_hrs = {7, 11, 15, 19, 23}
-        _go_next_alt = f"{_go_ist.hour}:02" if _go_ist.minute < 2 else f"{(_go_ist.hour+1)%24}:02"
+        _go_next_alt = f"{_go_ist.hour}:{ALT_SCAN_MINUTE:02d}" if _go_ist.minute < ALT_SCAN_MINUTE else f"{(_go_ist.hour+1)%24}:{ALT_SCAN_MINUTE:02d}"
         send_reply(chat_id,
             f"<b>CLEXER Started</b>\n\n"
             f"✅ Bot is RUNNING\n"
@@ -2577,7 +2577,7 @@ def handle_command(text, chat_id, message=None):
             f"⏰ Next BTC scan: <b>{next((f'{h}:21' for h in sorted({7,11,15,19,23}) if h > _go_ist.hour or (h == _go_ist.hour and _go_ist.minute < 21)), '07:21 tomorrow')} IST</b>\n"
             f"⏰ Next Alt scan: <b>{_go_next_alt} IST</b>\n\n"
             f"Tick: {TICK_INTERVAL}s | Source: {get_current_source()}\n\n"
-            f"<i>- CLEXER V10.0 -</i>")
+            f"<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/demo" and is_admin:
         """
@@ -2666,13 +2666,13 @@ def handle_command(text, chat_id, message=None):
                     "<code>/demo sl</code>  — SL hit → close all\n"
                     "<code>/demo btc sl 67000</code> — move SL\n"
                     "<code>/demo btc close</code> — force close\n\n"
-                    "<i>- CLEXER V10.0 -</i>")
+                    "<i>- CLEXER V17.8.5 -</i>")
         except Exception as e:
             send_reply(chat_id, f"❌ Demo error: {e}")
 
     elif cmd == "/pause":
         bot_paused.set()
-        send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>- CLEXER V10.0 -</i>")
+        send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/btcanalysis":
         arg = parts[1].lower() if len(parts) > 1 else ("off" if btc_analysis_enabled else "on")
@@ -2681,7 +2681,7 @@ def handle_command(text, chat_id, message=None):
         send_reply(chat_id,
             f"<b>BTC Analysis {status}</b>\n\n"
             f"Scheduled scans: {'7:21, 11:21, 15:21, 19:21, 23:21 IST' if btc_analysis_enabled else 'paused'}\n"
-            f"/signal still forces immediate scan.\n\n<i>- CLEXER V10.0 -</i>",
+            f"/signal still forces immediate scan.\n\n<i>- CLEXER V17.8.5 -</i>",
             reply_markup={"inline_keyboard": [[
                 {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                 {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}
@@ -2718,11 +2718,11 @@ def handle_command(text, chat_id, message=None):
         _ist_now = now_ist()
         _scan_hrs = {7, 11, 15, 19, 23}
         _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
-        _next_alt_scan = f"{_ist_now.hour}:02" if _ist_now.minute < 2 else f"{(_ist_now.hour+1)%24}:02"
+        _next_alt_scan = f"{_ist_now.hour}:{ALT_SCAN_MINUTE:02d}" if _ist_now.minute < ALT_SCAN_MINUTE else f"{(_ist_now.hour+1)%24}:{ALT_SCAN_MINUTE:02d}"
         _scan_status = "🟢 ON" if not bot_paused.is_set() and btc_analysis_enabled else "🔴 OFF"
         _alt_scan_status = "🟢 ON" if not bot_paused.is_set() else "🔴 OFF (bot paused)"
         send_reply(chat_id,
-            f"<b>CLEXER V10.0</b>\n\nBot: {st}\n{cd}"
+            f"<b>CLEXER V17.8.5</b>\n\nBot: {st}\n{cd}"
             f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
             f"IST: {ist_str()}\n"
             f"BTC Scan: {_scan_status} | Alt Scan: {_alt_scan_status}\n"
@@ -2857,7 +2857,7 @@ def handle_command(text, chat_id, message=None):
             info = f"{t['signal']} @ {t['entry']:,.0f}"
             log_trade_outcome("MANUAL_CLOSE", f"closed by admin")
             ct.on_close_all()
-            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}\n\n<i>- CLEXER V10.0 -</i>")
+            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}\n\n<i>- CLEXER V17.8.5 -</i>")
             send_reply(chat_id, f"Closed: {info}"); force_scan.set()
 
     elif cmd == "/sltobe":
@@ -2865,7 +2865,7 @@ def handle_command(text, chat_id, message=None):
         else:
             old = active_trade["sl"]; active_trade["sl"] = active_trade["entry"]
             ct.on_sl_to_be(active_trade["entry"])
-            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>\n\n<i>- CLEXER V10.0 -</i>")
+            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
             send_reply(chat_id, f"SL -> {active_trade['entry']:,.0f}")
 
     elif cmd == "/setsl":
@@ -2876,7 +2876,7 @@ def handle_command(text, chat_id, message=None):
                 v = float(parts[1].replace(",","")); old = active_trade["sl"]
                 active_trade["sl"] = v
                 ct.on_update_sl(v)
-                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>- CLEXER V10.0 -</i>")
+                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
                 send_reply(chat_id, f"SL = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /setsl 61500")
 
@@ -2886,7 +2886,7 @@ def handle_command(text, chat_id, message=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp1"] = v
-                send_telegram(f"<b>TP1 -> {v:,.0f}</b>\n\n<i>- CLEXER V10.0 -</i>")
+                send_telegram(f"<b>TP1 -> {v:,.0f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
                 send_reply(chat_id, f"TP1 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp1 63000")
 
@@ -2896,7 +2896,7 @@ def handle_command(text, chat_id, message=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp2"] = v
-                send_telegram(f"<b>TP2 -> {v:,.0f}</b>\n\n<i>- CLEXER V10.0 -</i>")
+                send_telegram(f"<b>TP2 -> {v:,.0f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
                 send_reply(chat_id, f"TP2 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp2 65000")
 
@@ -3058,7 +3058,7 @@ def handle_command(text, chat_id, message=None):
                 f"Scan logic: V7 mode\n"
                 f"• Narrated 5 steps | min 2 pause candles\n"
                 f"• No Rule 8 hard block | no pre-filter\n\n"
-                f"<i>- CLEXER V10.0 -</i>")
+                f"<i>- CLEXER V17.8.5 -</i>")
         elif parts[1].lower() == "off":
             BTC_PROMPT_MODE = "V9"; save_settings()
             send_reply(chat_id,
@@ -3069,7 +3069,7 @@ def handle_command(text, chat_id, message=None):
                 f"Scan logic: V9 mode\n"
                 f"• Silent output | min 3 pause candles\n"
                 f"• Rule 8 hard block | post-pump pre-filter\n\n"
-                f"<i>- CLEXER V10.0 -</i>")
+                f"<i>- CLEXER V17.8.5 -</i>")
         else:
             send_reply(chat_id, "Usage: /btcmode on|off\n\non = V7 Classic\noff = V9 Current (default)")
 
@@ -3159,7 +3159,7 @@ def handle_command(text, chat_id, message=None):
                 "<code>/closetrade ETH</code> — close ETH-USDT for all copy users\n"
                 "<code>/closetrade SOL</code> — close SOL-USDT for all copy users\n"
                 "<code>/closetrade all</code> — close ALL positions (every coin)\n\n"
-                "<i>- CLEXER V10.0 -</i>"); return
+                "<i>- CLEXER V17.8.5 -</i>"); return
         coin = parts[1].upper()
         if coin == "ALL":
             # Close every position on every symbol
@@ -3177,7 +3177,7 @@ def handle_command(text, chat_id, message=None):
                 f"🔴 <b>ALL TRADES CLOSED</b>  {ist_str()}\n\n"
                 f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                 f"⛔ <b>This is NOT a new signal</b>\n\n"
-                f"Admin closed all positions.\n\n<i>- CLEXER V10.0 -</i>")
+                f"Admin closed all positions.\n\n<i>- CLEXER V17.8.5 -</i>")
             send_reply(chat_id, f"✅ All positions closed.\nBTC trade reset + Scan1 ({scan1_count}) + Scan2 ({scan2_count}) trades cleared.")
         else:
             results = ct.close_coin_all(coin)
@@ -3186,14 +3186,38 @@ def handle_command(text, chat_id, message=None):
                 log_trade_outcome("MANUAL_CLOSE", f"admin /closetrade {coin}")
                 reset_trade()
             reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
-            send_reply(chat_id, reply + "\n\n<i>- CLEXER V10.0 -</i>")
+            send_reply(chat_id, reply + "\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/closescan" and is_admin:
         s1 = len(scan1_trades); s2 = len(scan2_trades)
         scan1_trades.clear(); scan2_trades.clear(); save_state()
         send_reply(chat_id,
             f"✅ <b>Scan trades cleared</b>\n\n"
-            f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V10.0 -</i>")
+            f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V17.8.5 -</i>")
+
+    elif cmd == "/alt" and is_admin:
+        global ALT_SCAN_MINUTE
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"⏰ <b>Alt Scan Time</b>\n\n"
+                f"Current: every hour at <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
+                f"Usage: <code>/alt 02</code> or <code>/alt 24</code>\n"
+                f"Sets the minute (0–59) when alt scan fires each hour.\n\n"
+                f"<i>- CLEXER V17.8.5 -</i>"); return
+        try:
+            new_min = int(parts[1])
+            if not (0 <= new_min <= 59):
+                raise ValueError
+        except ValueError:
+            send_reply(chat_id, "❌ Invalid minute. Use 0–59. Example: <code>/alt 02</code>"); return
+        old_min = ALT_SCAN_MINUTE
+        ALT_SCAN_MINUTE = new_min
+        _auto_scan_last_hour = -1   # reset so it doesn't skip next trigger
+        send_reply(chat_id,
+            f"✅ <b>Alt Scan Time Updated</b>\n\n"
+            f"Was: every hour at :{old_min:02d}\n"
+            f"Now: every hour at <b>:{new_min:02d}</b>\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>"); return
 
     elif cmd == "/scancopy" and is_admin:
         if len(parts) < 2 or parts[1].lower() not in ("on","off"):
@@ -3203,10 +3227,10 @@ def handle_command(text, chat_id, message=None):
                 "Usage: <code>/scancopy on</code> or <code>/scancopy off</code>\n\n"
                 "When ON — /scan will auto-place trades on copy users for the chosen alt coin.\n"
                 "When OFF — /scan gives analysis only, no trade placed.\n\n"
-                "<i>- CLEXER V10.0 -</i>"); return
+                "<i>- CLEXER V17.8.5 -</i>"); return
         ct.set_scan_ct(parts[1].lower() == "on")
         state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
-        send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V10.0 -</i>")
+        send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd in ("/readindicators", "/checktvdata") and is_admin:
         if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
@@ -3606,7 +3630,7 @@ def handle_command(text, chat_id, message=None):
                 if SCAN_USE_TV and not is_tv_online():
                     send_reply(cid,
                         f"📴 <b>TradingView Offline — Scan{scan_ver} blocked</b>\n\n"
-                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V10.0 -</i>")
+                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V17.8.5 -</i>")
                     return
 
                 # ── Remind about running trades ───────────────────────────────
@@ -3847,7 +3871,7 @@ Reasoning: [one line]"""
                         f"{emoji} <b>{chosen_sym}</b> #{len(tried)}  {ist_str()}\n\n"
                         f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
                         f"<pre>{analysis[:900]}</pre>\n\n"
-                        f"⚠️ <i>Not financial advice — CLEXER V10.0</i>")
+                        f"⚠️ <i>Not financial advice — CLEXER V17.8.5</i>")
 
                     if scan_signal_val == "WAIT":
                         print(f"  [SCAN] {chosen_sym} → WAIT — trying next coin")
@@ -3896,8 +3920,8 @@ Reasoning: [one line]"""
                         f"⏸ <b>No signal found</b>  {ist_str()}\n\n"
                         f"Tried {len(tried)} coin(s): <b>{tried_str}</b>\n\n"
                         f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
-                        f"Next auto-scan runs at :02 IST.\n\n"
-                        f"<i>- CLEXER V10.0 -</i>")
+                        f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.\n\n"
+                        f"<i>- CLEXER V17.8.5 -</i>")
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -3910,7 +3934,7 @@ Reasoning: [one line]"""
                 "<b>Coin Lookup</b>\n\n"
                 "Usage: <code>/coin ETH</code> or <code>/coin ETHUSDT</code>\n\n"
                 "Searches BingX, shows matches, then analyzes the coin you pick.\n\n"
-                "<i>- CLEXER V10.0 -</i>"); return
+                "<i>- CLEXER V17.8.5 -</i>"); return
         query = parts[1].upper().strip()
         send_reply(chat_id, f"🔍 Searching for <b>{query}</b> on BingX...")
         def _do_coin(cid=chat_id, q=query):
@@ -3936,7 +3960,7 @@ Reasoning: [one line]"""
                     send_reply(cid,
                         f"❌ <b>{q}</b> not found on BingX perpetuals.\n\n"
                         f"Try: /coin ETH  /coin SOL  /coin BNB\n\n"
-                        f"<i>- CLEXER V10.0 -</i>"); return
+                        f"<i>- CLEXER V17.8.5 -</i>"); return
 
                 if len(matches) > 1:
                     # Multiple matches — fetch prices and show list
@@ -3949,7 +3973,7 @@ Reasoning: [one line]"""
                             lines.append(f"• <code>/coin {sym.replace('-','')}</code>  ${p:,.4f}")
                         except:
                             lines.append(f"• <code>/coin {sym.replace('-','')}</code>")
-                    send_reply(cid, "\n".join(lines) + "\n\n<i>- CLEXER V10.0 -</i>"); return
+                    send_reply(cid, "\n".join(lines) + "\n\n<i>- CLEXER V17.8.5 -</i>"); return
 
                 # Exact match — fetch ticker then analyze
                 sym = matches[0]   # e.g. "ETH-USDT"
@@ -3987,7 +4011,7 @@ Reasoning: [one line]"""
                     f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
                     f"Vol:   ${vol/1e6:.1f}M\n\n"
                     f"<b>Claude Analysis:</b>\n<i>{analysis[:900]}</i>\n\n"
-                    f"⚠️ Not financial advice\n<i>- CLEXER V10.0 -</i>")
+                    f"⚠️ Not financial advice\n<i>- CLEXER V17.8.5 -</i>")
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()
@@ -4031,13 +4055,13 @@ def command_listener():
                         global btc_analysis_enabled
                         if cb_data == "btca_on":
                             btc_analysis_enabled = True
-                            send_reply(cb_cid, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V10.0 -</i>",
+                            send_reply(cb_cid, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V17.8.5 -</i>",
                                 reply_markup={"inline_keyboard": [[
                                     {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                                     {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
                         elif cb_data == "btca_off":
                             btc_analysis_enabled = False
-                            send_reply(cb_cid, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V10.0 -</i>",
+                            send_reply(cb_cid, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V17.8.5 -</i>",
                                 reply_markup={"inline_keyboard": [[
                                     {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                                     {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
@@ -4058,12 +4082,13 @@ def command_listener():
         time.sleep(2)
 
 # --- MAIN ---------------------------------------------------------------------
-_auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran at :02
+_auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran
+ALT_SCAN_MINUTE = 2         # minute of each hour when alt scan fires — changeable via /alt MM
 
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
     lbl = "V1" if scan_ver == 1 else "V2"
-    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V10.0 -</i>")
+    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V17.8.5 -</i>")
     # Reuse the same _do_scan logic by firing handle_command from within
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
     handle_command(cmd, cid)
@@ -4071,7 +4096,7 @@ def _run_auto_scan(cid, scan_ver=2):
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time, last_scan_tick_time
 
-    print(f"[CLEXER V10.0] Starting | {SYMBOL}")
+    print(f"[CLEXER V17.8.5] Starting | {SYMBOL}")
     print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET - Binance-only'}")
     print(f"  Starting PAUSED - send /go to start scanning")
     load_users()
@@ -4114,7 +4139,7 @@ def main():
         tv_line = "TV: Not configured - Binance-only\n"
 
     send_admin(
-        f"<b>CLEXER V10.0 Deployed</b>\n"
+        f"<b>CLEXER V17.8.5 Deployed</b>\n"
         f"---------------------\n"
         f"{tv_line}"
         f"Charts: {'ON' if SEND_CHARTS else 'OFF (default)'}\n"
@@ -4122,7 +4147,7 @@ def main():
         f"⚠️ <b>Bot is PAUSED</b>\n"
         f"Send /go to start scanning.\n"
         f"---------------------\n"
-        f"<i>- CLEXER V10.0 -</i>")
+        f"<i>- CLEXER V17.8.5 -</i>")
 
     MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
@@ -4144,24 +4169,24 @@ def main():
                 if was_online and not is_online:
                     print("  TV OFFLINE - Binance fallback")
                     # Admin DM only - not channel
-                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).\n\n<i>- CLEXER V10.0 -</i>")
+                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).\n\n<i>- CLEXER V17.8.5 -</i>")
                 elif not was_online and is_online:
                     print("  TV back ONLINE")
-                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>- CLEXER V10.0 -</i>")
+                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>- CLEXER V17.8.5 -</i>")
 
             # News
             if (now-last_news_check_time) >= NEWS_CHECK_INTERVAL and SEND_NEWS:
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── BTC scan at :21, Alt scan at :02 — every hour ────────────────
+            # ── BTC scan at :21, Alt scan at ALT_SCAN_MINUTE — every hour ─────
             global _auto_scan_last_hour
             _ist_now = now_ist()
             _btc_fixed_hours = {7, 11, 15, 19, 23}
-            # Alt scan: every hour at :02
-            if (_ist_now.minute == 2 and _auto_scan_last_hour != _ist_now.hour):
+            # Alt scan: every hour at ALT_SCAN_MINUTE
+            if (_ist_now.minute == ALT_SCAN_MINUTE and _auto_scan_last_hour != _ist_now.hour):
                 _auto_scan_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime('%H:02 IST')}")
+                print(f"  [AUTO-SCAN] Alt scan at {_ist_now.strftime(f'%H:{ALT_SCAN_MINUTE:02d} IST')}")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
@@ -4206,7 +4231,7 @@ def main():
             if trade_stats["cooldown_scans"] > 0 and not forced:
                 trade_stats["cooldown_scans"] -= 1
                 if trade_stats["cooldown_scans"] == 0:
-                    send_telegram("✅ <b>Cooldown over - scanning now!</b> 🔍\n\n✨ <i>- CLEXER V10.0 -</i>")
+                    send_telegram("✅ <b>Cooldown over - scanning now!</b> 🔍\n\n✨ <i>- CLEXER V17.8.5 -</i>")
                 last_signal_scan_time = now; time.sleep(MAIN_TICK); continue
 
             # -- FULL CLAUDE SCAN ----------------------------------------------
@@ -4223,7 +4248,7 @@ def main():
                     f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n"
                     f"Current: {price:,.2f}\n"
                     f"Entry: {'YES' if t['entry_hit'] else 'pending'} | TP1: {'YES' if t['tp1_hit'] else 'no'}\n\n"
-                    f"Analyzing...\n<i>- CLEXER V10.0 -</i>")
+                    f"Analyzing...\n<i>- CLEXER V17.8.5 -</i>")
 
             data = fetch_all_data()
 
@@ -4241,7 +4266,7 @@ def main():
                             f"🛑 SL:    <b>{signal['sl']:,.0f}</b>\n"
                             f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
                             f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>\n\n"
-                            f"✨ <i>- CLEXER V10.0 -</i>"
+                            f"✨ <i>- CLEXER V17.8.5 -</i>"
                         )
                     active = ct.active_count()
                     if active == 0:
@@ -4263,24 +4288,24 @@ def main():
                     if forced:
                         send_telegram(f"<b>Trade Status: HOLD</b>  {ist_str()}\n\n"
                             f"{t['signal']} @ {t['entry']:,.0f}\nStructure intact.\n"
-                            f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>- CLEXER V10.0 -</i>")
+                            f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
                 elif signal.get("_hold"):
                     send_admin(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
-                        f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>- CLEXER V10.0 -</i>")
+                        f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>- CLEXER V17.8.5 -</i>")
                 elif signal["signal"] != t["signal"]:
                     # Only flip if entry has already been hit — never flip a pending trade
                     if not t["entry_hit"]:
                         print(f"  [FLIP BLOCKED] Entry not hit yet — holding {t['signal']} @ {t['entry']:,.0f}")
-                        send_admin(f"<b>Flip Blocked</b>\n\nClaude wanted to flip {t['signal']} -> {signal['signal']} but entry not hit yet.\nHolding original trade.\n\n<i>- CLEXER V10.0 -</i>")
+                        send_admin(f"<b>Flip Blocked</b>\n\nClaude wanted to flip {t['signal']} -> {signal['signal']} but entry not hit yet.\nHolding original trade.\n\n<i>- CLEXER V17.8.5 -</i>")
                     else:
                         flip_reason = signal.get("reasoning","Structure flipped")
                         log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
                         send_telegram(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{flip_reason[:200]}</i>\n\n"
-                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>- CLEXER V10.0 -</i>")
+                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>")
                         ct.on_close_all()
                         reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
                         ct.on_signal(signal, price)
@@ -4289,7 +4314,7 @@ def main():
                         send_telegram(f"<b>Trade Update</b>  {ist_str()}\n\n"
                             f"Old: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"New: {signal['signal']} @ {signal['entry']:,.0f}\n"
-                            f"Bias confirmed.\n\n<i>- CLEXER V10.0 -</i>")
+                            f"Bias confirmed.\n\n<i>- CLEXER V17.8.5 -</i>")
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
                     reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
@@ -4300,7 +4325,7 @@ def main():
 
         except KeyboardInterrupt:
             print("\n[BOT] Stopped.")
-            send_telegram("<b>CLEXER V10.0 Stopped</b>\n\n<i>- CLEXER -</i>"); break
+            send_telegram("<b>CLEXER V17.8.5 Stopped</b>\n\n<i>- CLEXER -</i>"); break
         except Exception as e:
             print(f"  [MAIN ERROR] {e}"); import traceback; traceback.print_exc()
 
