@@ -783,15 +783,32 @@ def close_coin_all(coin: str) -> list[str]:
             # Cancel all open orders on this symbol
             _bingx("DELETE", "/openApi/swap/v2/trade/allOpenOrders", ak, ask,
                    {"symbol": symbol})
-            # Close any open position
+            # Close any open position — try both sides, also try MARKET order as fallback
+            closed_any = False
             for ps in ("LONG", "SHORT"):
-                _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
-                       {"symbol": symbol, "positionSide": ps})
-            # Clear local state only if it matches this coin (BINGX_SYMBOL is BTC-USDT)
+                r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
+                           {"symbol": symbol, "positionSide": ps})
+                if r.get("code") == 0:
+                    closed_any = True
+            # Fallback: place market close for both sides
+            if not closed_any:
+                pos_r = _bingx("GET", "/openApi/swap/v2/user/positions", ak, ask, {"symbol": symbol})
+                positions = (pos_r.get("data") or [])
+                for pos in positions:
+                    pos_amt = abs(float(pos.get("positionAmt", 0)))
+                    ps = pos.get("positionSide", "LONG")
+                    if pos_amt > 0:
+                        close_side = "SELL" if ps == "LONG" else "BUY"
+                        _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask,
+                               {"symbol": symbol, "side": close_side, "positionSide": ps,
+                                "type": "MARKET", "quantity": round(pos_amt, 4)})
+            # Clear bot state for this symbol
             if symbol == BINGX_SYMBOL:
                 user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
                 user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
                 _set(cid, user)
+            elif user.get("scan_symbol") == symbol:
+                _clear_scan_state(cid, user, symbol)
             results.append(f"✅ @{user.get('username','?')} {symbol} closed")
         except Exception as e:
             results.append(f"❌ @{user.get('username','?')}: {e}")
@@ -851,9 +868,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
-            # Skip if user already has an open position in this symbol
-            if user.get("scan_symbol") == symbol:
-                results.append(f"⏭ @{user.get('username','?')} already in {symbol} — skipping duplicate signal")
+            # Skip if user already has ANY open scan position
+            existing = user.get("scan_symbol", "")
+            if existing:
+                results.append(f"⏭ @{user.get('username','?')} already in {existing} — skipping {symbol}")
                 continue
             risk = user.get("risk_usdt")
             if risk:
