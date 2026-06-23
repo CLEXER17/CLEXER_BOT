@@ -1381,16 +1381,16 @@ def monitor_sl_tp(notify_fn=None):
                     adopted[sym] = {"side": trade_side, "entry": avg_price, "qty": pos_amt}
                     user["adopted_symbols"] = adopted
                     _set(cid, user)
-                    msg = f"🔄 @{uname} ADOPTED orphan {sym} {trade_side} {pos_amt} @ {avg_price}"
+                    msg = f"🔄 @{uname} ADOPTED orphan {sym} {trade_side} {pos_amt} @ {avg_price} — placing 2% emergency SL"
                     fixes.append(msg); print(f"[CT] {msg}")
-                    pnl = float(pos.get("unrealizedProfit", 0))
-                    action = _ask_claude_action(
-                        f"Orphan {sym} {trade_side} position. Size={pos_amt}, "
-                        f"avg_entry={avg_price}, PnL={pnl:+.2f} USDT, no SL or TP stored. "
-                        f"Decide: place emergency SL/TP or close position."
-                    )
-                    _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname, avg_price=avg_price, user=user)
-                    fixes.append(f"🤖 Claude acted on orphan {sym}: {action.get('action')}")
+                    # Place emergency 2% SL — no Claude involved
+                    emergency_sl = round(avg_price * (0.98 if pos_side=="LONG" else 1.02), 6)
+                    user[f"scan_sl"] = emergency_sl; _set(cid, user)
+                    _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                        "symbol": sym, "side": close_side, "positionSide": pos_side,
+                        "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
+                        "stopPrice": emergency_sl,
+                    })
                     is_scan = True
                 elif sym in adopted:
                     is_scan = True  # already adopted, treat as known
@@ -1484,17 +1484,7 @@ def monitor_sl_tp(notify_fn=None):
                 if placed:
                     msg = f"🔧 @{uname} {sym}: {', '.join(placed)}"
                     fixes.append(msg); print(f"[CT] {msg}")
-                    failed = [p for p in placed if "❌" in p]
-                    if failed:
-                        pnl = float(pos.get("unrealizedProfit",0))
-                        action = _ask_claude_action(
-                            f"Scan {sym} {trade_side} size={pos_amt} avg={avg_price} PnL={pnl:+.2f}. "
-                            f"Failed orders: {', '.join(failed)}. SL={sl_price} TP1={tp1_price} TP2={tp2_price}. "
-                            f"Protect this position."
-                        )
-                        _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname, avg_price=avg_price, sl=sl_price, tp1=tp1_price, tp2=tp2_price)
-                        fixes.append(f"🤖 Claude acted on {sym} failed orders: {action.get('action')}")
-                    elif notify_fn:
+                    if notify_fn:
                         notify_fn(f"🔧 <b>Auto-fixed {sym}</b>\n@{uname}: {', '.join(placed)}")
                 else:
                     print(f"[CT] [Monitor] @{uname} {sym}: SL+TP OK ✅")
