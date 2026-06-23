@@ -2568,7 +2568,7 @@ def handle_command(text, chat_id, message=None):
         bot_paused.clear()
         _go_ist = now_ist()
         _go_scan_hrs = {7, 11, 15, 19, 23}
-        _go_next_alt = f"{_go_ist.hour}:24" if _go_ist.minute < 24 else f"{_go_ist.hour+1}:24"
+        _go_next_alt = f"{_go_ist.hour}:02" if _go_ist.minute < 2 else f"{(_go_ist.hour+1)%24}:02"
         send_reply(chat_id,
             f"<b>CLEXER Started</b>\n\n"
             f"✅ Bot is RUNNING\n"
@@ -2718,7 +2718,7 @@ def handle_command(text, chat_id, message=None):
         _ist_now = now_ist()
         _scan_hrs = {7, 11, 15, 19, 23}
         _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
-        _next_alt_scan = f"{_ist_now.hour}:24" if _ist_now.minute < 24 else f"{_ist_now.hour+1}:24"
+        _next_alt_scan = f"{_ist_now.hour}:02" if _ist_now.minute < 2 else f"{(_ist_now.hour+1)%24}:02"
         _scan_status = "🟢 ON" if not bot_paused.is_set() and btc_analysis_enabled else "🔴 OFF"
         _alt_scan_status = "🟢 ON" if not bot_paused.is_set() else "🔴 OFF (bot paused)"
         send_reply(chat_id,
@@ -4058,10 +4058,10 @@ def command_listener():
         time.sleep(2)
 
 # --- MAIN ---------------------------------------------------------------------
-_auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran at :24
+_auto_scan_last_hour = -1   # tracks last IST hour auto-scan ran at :02
 
 def _run_auto_scan(cid, scan_ver=2):
-    """Auto-scan entry point — called from main loop at IST :24."""
+    """Auto-scan entry point — called from main loop at IST :02."""
     lbl = "V1" if scan_ver == 1 else "V2"
     send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>- CLEXER V10.0 -</i>")
     # Reuse the same _do_scan logic by firing handle_command from within
