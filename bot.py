@@ -3906,7 +3906,8 @@ Reasoning: [one line]"""
                         trade_stats["scan_signals"] += 1
                         save_state()
                         send_telegram(fmt_scan_signal(slot_data))
-                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp, ver=scan_ver)
+                        sd["ver"] = scan_ver
+                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
                         signal_placed = True
                     else:
