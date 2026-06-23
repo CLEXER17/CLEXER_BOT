@@ -3872,10 +3872,20 @@ Reasoning: [one line]"""
                             content.append({"type":"image","source":{"type":"base64","media_type":"image/png","data":img_b64}})
                     content.append({"type":"text","text":analysis_prompt})
 
-                    r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=_max_tokens,
-                        messages=[{"role":"user","content":content}])
-                    analysis = r2.content[0].text.strip()
+                    analysis = ""
+                    for _attempt in range(3):
+                        try:
+                            r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                                model="claude-opus-4-8", max_tokens=_max_tokens,
+                                messages=[{"role":"user","content":content}])
+                            analysis = r2.content[0].text.strip()
+                            break
+                        except Exception as _ce:
+                            if _attempt < 2:
+                                print(f"  [SCAN] Claude attempt {_attempt+1} failed: {_ce} — retrying in 10s")
+                                time.sleep(10)
+                            else:
+                                raise
 
                     import re as _re
                     _analysis_clean = analysis.replace(",", "")  # strip thousand-sep commas before parsing
