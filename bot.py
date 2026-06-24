@@ -1023,147 +1023,126 @@ def build_new_prompt_v9(summary, price, session, validate_ctx, news_ctx, outcome
 
 CRITICAL: Respond with RAW JSON ONLY. No markdown. No bold. No steps. No explanation. Just the JSON object.
 
-You are CLEXER - elite BTC trader.
+You are CLEXER - elite BTC futures trader.
 Current Price: {price:,.0f}
-
 Use ONLY the data provided in the summary above. Do not invent levels.
 
 ═══════════════════════════════════════════════════
- STEP 1 - WEEKLY DIRECTION
+ STEP 1 — CHECK CURRENT PRICE
 ═══════════════════════════════════════════════════
-From weekly data: closes going UP = BULLISH, DOWN = BEARISH.
-Swing high higher than last = bullish. Lower = bearish.
-This gives background bias only.
+Current price is {price:,.0f}. Know this before analyzing any timeframe.
 
 ═══════════════════════════════════════════════════
- STEP 2 - 4H TREND (MOST IMPORTANT)
+ STEP 2 — WEEKLY (background bias only)
 ═══════════════════════════════════════════════════
-HH + HL = 4H BULLISH. LH + LL = 4H BEARISH. Mixed = NEUTRAL.
-Find from swing data:
-  LAST 4H SWING HIGH = most recent resistance (price went up then back down)
-  LAST 4H SWING LOW  = most recent support (price went down then back up)
-These are your entry reference points.
+Last 3-5 weekly closes:
+  all going up   = BULLISH background
+  all going down = BEARISH background
+Context only — not a hard rule.
 
 ═══════════════════════════════════════════════════
- STEP 3 - 4H VOLUME CONFIRMATION
+ STEP 3 — 4H TREND (most important)
 ═══════════════════════════════════════════════════
-Last big GREEN candle = buying pressure (confirms LONG).
-Last big RED candle   = selling pressure (confirms SHORT).
-0-5 bars ago = strong | 6-15 = moderate | 15+ = weak.
-Volume CONFIRMS bias - does not create it alone.
+Look at last 15-20 4H candles. Find swing highs and swing lows:
+  HH + HL = BULLISH structure → look for LONG
+  LH + LL = BEARISH structure → look for SHORT
+  Mixed    = NEUTRAL → WAIT (hard stop)
 
-═══════════════════════════════════════════════════
- STEP 4 - 1H CONFIRMATION
-═══════════════════════════════════════════════════
-Same as 4H = strong confirmation. Neutral = acceptable.
-Opposite = lower confidence - NOT a block alone.
-
-═══════════════════════════════════════════════════
- STEP 5 - 5M TIMING
-═══════════════════════════════════════════════════
-Higher lows = bullish NOW. Lower highs = bearish NOW.
-5M conflict = lower confidence only, NOT a block.
+Find these two exact prices:
+  LAST 4H SWING HIGH = most recent peak
+  LAST 4H SWING LOW  = most recent trough
+These are your key reference levels.
 
 ═══════════════════════════════════════════════════
- STEP 6 - DECIDE DIRECTION
+ STEP 4 — 4H VOLUME CHECK
 ═══════════════════════════════════════════════════
-LONG requires ALL:
-  ✅ 4H trend = BULLISH (HH+HL)
-  ✅ Last big 4H or 1H vol candle = GREEN
-  ✅ 1H not actively bearish
-  ✅ Price {price:,.0f} is above last 4H swing LOW
-  ✅ Weekly not making new lows this week
-
-SHORT requires ALL:
-  ✅ 4H trend = BEARISH (LH+LL)
-  ✅ Last big 4H or 1H vol candle = RED
-  ✅ 1H not actively bullish
-  ✅ Price {price:,.0f} is below last 4H swing HIGH
-  ✅ Weekly not making new highs this week
-
-WAIT only when:
-  ❌ 4H trend = NEUTRAL (no clear swing pattern)
-  ❌ 4H AND 1H both trending OPPOSITE directions
-  ❌ No 4H swing point within 2000 pts of current price
-  ❌ Last 5 4H candles all flat (total consolidation)
-
-DO NOT WAIT for: low volume, 5M conflict, 1H lag,
-weekly neutral, missing big volume candle.
+Last big volume candle:
+  GREEN = buyers in control → confirms LONG (HIGH confidence)
+  RED   = sellers in control → confirms SHORT (HIGH confidence)
+Volume opposes 4H structure → MEDIUM confidence (still trade, not WAIT).
+Volume absent/unclear → LOW confidence (still trade).
+Only 4H structure NEUTRAL is a hard WAIT.
 
 ═══════════════════════════════════════════════════
- STEP 7 - ENTRY
+ STEP 5 — 1H CONFIRMATION
 ═══════════════════════════════════════════════════
-LONG:  entry = last 4H SWING LOW price
-SHORT: entry = last 4H SWING HIGH price
-
-If price {price:,.0f} is within 100 pts of that level:
-  entry_type = MARKET
-Else:
-  entry_type = PULLBACK, entry_note = "wait for pullback/bounce to [price]"
-
-NEVER enter at top/bottom of big momentum candle.
+1H same as 4H → proceed with confidence
+1H neutral    → acceptable, proceed
+1H opposite   → lower confidence, proceed cautiously
+Nothing else needed on 1H.
 
 ═══════════════════════════════════════════════════
- CRITICAL ENTRY DISTANCE RULE
+ STEP 6 — 5M ENTRY TIMING
 ═══════════════════════════════════════════════════
-After finding the entry level, check:
-  distance = abs(current_price - entry)
+Look at last 10-15 5M candles.
 
-IF distance > 1500 pts:
-  DO NOT use that swing level as entry.
+For LONG (4H bullish):
+  Find most recent small pause — 3-4 consecutive 5M candles moving
+  SIDEWAYS or slightly down (small bodies) after a move up.
+  LOW of that pause cluster = entry price.
+  If price already PAST the pause and moving up → MARKET entry at {price:,.0f}.
 
-  For LONG:
-    Find the most recent 4H swing low WITHIN 1000 pts of {price:,.0f}.
-    If no swing low within 1000 pts → use MARKET entry at {price:,.0f}.
-
-  For SHORT:
-    Find the most recent 4H swing high WITHIN 1000 pts of {price:,.0f}.
-    If no swing high within 1000 pts → use MARKET entry at {price:,.0f}.
-
-VERIFY before outputting - if ANY check fails use MARKET entry at {price:,.0f}:
-  BUY:  entry <= {price:,.0f} + 200 | tp1 > {price:,.0f} | tp2 > tp1 | abs(entry - {price:,.0f}) < 1500
-  SELL: entry >= {price:,.0f} - 200 | tp1 < {price:,.0f} | tp2 < tp1 | abs(entry - {price:,.0f}) < 1500
+For SHORT (4H bearish):
+  Find most recent small pause — 3-4 consecutive 5M candles moving
+  SIDEWAYS or slightly up (small bodies) after a move down.
+  HIGH of that pause cluster = entry price.
+  If price already PAST the pause and moving down → MARKET entry at {price:,.0f}.
 
 ═══════════════════════════════════════════════════
- STEP 8 - STOP LOSS
+ STEP 7 — DISTANCE CHECK
 ═══════════════════════════════════════════════════
-sl_dist = ATR_1H × 1.5
-Min 500 pts | Max 2500 pts
-LONG  SL = entry - sl_dist (below 4H swing low)
-SHORT SL = entry + sl_dist (above 4H swing high)
-Never at round number - offset by 50 pts.
-Never exactly at wick - offset by 80-100 pts beyond.
+distance = abs({price:,.0f} - entry) / {price:,.0f} × 100
+
+IF distance > 1%  → entry stale → use MARKET at {price:,.0f}
+IF distance ≤ 0.3% → MARKET at {price:,.0f}
+IF 0.3% < distance ≤ 1% → PULLBACK, wait for price to reach entry
 
 ═══════════════════════════════════════════════════
- STEP 9 - TAKE PROFIT
+ STEP 8 — STOP LOSS (based on pause cluster, NOT ATR)
 ═══════════════════════════════════════════════════
+For LONG: SL = lowest low of pause cluster − 0.3% buffer
+For SHORT: SL = highest high of pause cluster + 0.3% buffer
+
+Minimum SL distance: 0.5% of entry
+Maximum SL distance: 2.5% of entry
+If pause SL tighter than 0.5% → expand to 0.5% minimum.
+
+═══════════════════════════════════════════════════
+ STEP 9 — TAKE PROFIT
+═══════════════════════════════════════════════════
+sl_dist = abs(entry - sl)
 TP1 = entry ± (sl_dist × 2)
 TP2 = entry ± (sl_dist × 4)
-LONG:  TP1 and TP2 must be > {price:,.0f}
-SHORT: TP1 and TP2 must be < {price:,.0f}
-If TP wrong side, recalculate from current price.
+
+LONG:  TP1 and TP2 must be ABOVE {price:,.0f}
+SHORT: TP1 and TP2 must be BELOW {price:,.0f}
+If wrong side → recalculate from {price:,.0f} instead.
 
 ═══════════════════════════════════════════════════
- STEP 10 - ACTIVE TRADE VALIDATION
+ STEP 10 — FINAL CHECKS
 ═══════════════════════════════════════════════════
-Same 4H direction → HOLD (reference swing prices).
-Opposite direction → new signal + reason why flipped.
-Unclear → HOLD with low confidence.
+✅ 4H structure clear (not neutral)?
+✅ Entry distance within 1%?
+✅ SL at least 0.5% from entry?
+✅ TP1 and TP2 on correct side of {price:,.0f}?
+✅ Pause has at least 3 candles?
+✅ 4H volume checked (confidence level set)?
+If ALL pass → trade. If 4H NEUTRAL → WAIT. All other fails → adjust, don't WAIT.
 
 {conf_note}
 
 ═══════════════════════════════════════════════════
- OUTPUT - RAW JSON ONLY. NO MARKDOWN. NO TEXT BEFORE/AFTER.
+ OUTPUT — RAW JSON ONLY. NO MARKDOWN. NO TEXT BEFORE/AFTER.
 ═══════════════════════════════════════════════════
 
 WAIT:
-{{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"NEUTRAL","structure_4h":"NEUTRAL","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"Exact WAIT condition triggered with price references from summary.","trade_valid":null}}
+{{"signal":"WAIT","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"NEUTRAL","structure_4h":"NEUTRAL","entry_zone":"","confidence":"LOW","session":"{session}","reasoning":"4H structure is NEUTRAL — no clear HH+HL or LH+LL.","trade_valid":null}}
 
 HOLD:
-{{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL or NEUTRAL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"Why active trade still valid with swing point prices.","trade_valid":true}}
+{{"signal":"HOLD","entry":0,"sl":0,"tp1":0,"tp2":0,"rr":"none","entry_type":"PULLBACK","entry_note":"","bias":"NEUTRAL","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL or NEUTRAL","entry_zone":"","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"Why active trade still valid.","trade_valid":true}}
 
 Trade:
-{{"signal":"BUY or SELL","entry":<4H swing price>,"sl":<price>,"tp1":<price>,"tp2":<price>,"rr":"1:4.0","entry_type":"MARKET or PULLBACK","entry_note":"clear instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"4H swing level and price","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly 2)4H swing high X swing low Y 3)Volume direction X bars ago 4)1H 5)5M 6)Entry at swing 7)SL=ATR_1H×1.5 8)TP=sl×2 and sl×4","trade_valid":null}}"""
+{{"signal":"BUY or SELL","entry":<5M pause low/high or market>,"sl":<pause extreme ± buffer>,"tp1":<price>,"tp2":<price>,"rr":"1:2.0","entry_type":"MARKET or PULLBACK","entry_note":"instruction with price","bias":"BULLISH or BEARISH","weekly_trend":"BULLISH or BEARISH or NEUTRAL","structure_4h":"HH+HL or LH+LL","entry_zone":"5M pause cluster description","confidence":"HIGH or MEDIUM or LOW","session":"{session}","reasoning":"1)Weekly bias 2)4H structure HH/HL or LH/LL 3)Volume HIGH/MEDIUM/LOW confidence 4)1H confirmation 5)5M pause cluster entry 6)SL=pause extreme±0.3% 7)TP=sl×2 and sl×4","trade_valid":null}}"""
 
 
 def build_old_prompt_v9(summary, price, session, validate_ctx, news_ctx, outcome_ctx, conf_note, session_note):
@@ -3652,8 +3631,17 @@ def handle_command(text, chat_id, message=None):
                         f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V17.8.5 -</i>")
                     return
 
-                # ── Remind about running trades ───────────────────────────────
+                # ── Check slot availability (max 2 per scan version) ─────────
                 my_list = _scan_list(scan_ver)
+                if len(my_list) >= 2:
+                    send_reply(cid,
+                        f"🚫 <b>Scan{scan_ver} slots full</b>\n\n"
+                        f"Both scan{scan_ver} slots are occupied:\n" +
+                        "\n".join(f"  {'🟢' if x['signal']=='BUY' else '🔴'} {x['symbol']}" for x in my_list) +
+                        f"\n\nWaiting for a trade to close before scanning again.\n\n<i>- CLEXER V17.8.5 -</i>")
+                    return
+
+                # ── Remind about running trades ───────────────────────────────
                 if my_list:
                     lines = "\n".join(
                         f"{'🟢' if x['signal']=='BUY' else '🔴'} {x['signal']} {x['symbol']} "
@@ -3873,19 +3861,22 @@ Reasoning: [one line]"""
                     content.append({"type":"text","text":analysis_prompt})
 
                     analysis = ""
+                    _claude_ok = False
                     for _attempt in range(3):
                         try:
                             r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                                 model="claude-opus-4-8", max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
                             analysis = r2.content[0].text.strip()
+                            _claude_ok = True
                             break
                         except Exception as _ce:
+                            print(f"  [SCAN] Claude attempt {_attempt+1} FAIL: {_ce}")
                             if _attempt < 2:
-                                print(f"  [SCAN] Claude attempt {_attempt+1} failed: {_ce} — retrying in 10s")
                                 time.sleep(10)
-                            else:
-                                raise
+                    if not _claude_ok:
+                        print(f"  [SCAN] {chosen_sym}: Claude failed 3 times — skipping coin")
+                        continue
 
                     import re as _re
                     _analysis_clean = analysis.replace(",", "")  # strip thousand-sep commas before parsing
