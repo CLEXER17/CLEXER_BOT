@@ -4488,8 +4488,11 @@ def _run_test_scan(cid, scan_ver: int):
             def _p(label):
                 m = _re.search(rf"{label}[:\s]+([0-9.]+)", _ac, _re.IGNORECASE)
                 return float(m.group(1)) if m else 0.0
-            sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
-            scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
+            _all_sigs = [s.upper() for s in _re.findall(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)]
+            if not _all_sigs or "WAIT" in _all_sigs:
+                scan_signal_val = "WAIT"
+            else:
+                scan_signal_val = _all_sigs[-1]  # take last non-WAIT signal
 
             # Send analysis preview
             emoji = "🟢" if candidate["change"] >= 0 else "🔴"
@@ -4512,21 +4515,15 @@ def _run_test_scan(cid, scan_ver: int):
             sl_dist = abs(scan_entry - scan_sl_raw)
             sl_pct  = sl_dist / scan_entry * 100
 
-            # Clamp SL to 1.5%-3%
+            # Structure SL must be 1.5%–3% — reject both sides, never stretch
             if sl_pct < 1.5:
-                sl_dist = scan_entry * 0.015
-                sl_pct  = 1.5
-            elif sl_pct > 3.0:
-                print(f"  [TEST] {chosen_sym}: SL {sl_pct:.1f}% > 3% — too loose, skipping"); continue
+                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% < 1.5% — too tight, skipping"); continue
+            if sl_pct > 3.0:
+                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% > 3.0% — too loose, skipping"); continue
 
             scan_sl  = round(scan_entry - sl_dist if scan_signal_val == "BUY" else scan_entry + sl_dist, 6)
             scan_tp1 = round(scan_entry + sl_dist * 2.0 if scan_signal_val == "BUY" else scan_entry - sl_dist * 2.0, 6)
             scan_tp2 = round(scan_entry + sl_dist * 3.75 if scan_signal_val == "BUY" else scan_entry - sl_dist * 3.75, 6)
-            rr_actual = sl_dist * 2.0 / sl_dist  # always 2.0 by construction
-
-            # Check RR gate
-            if rr_actual < 2.0:
-                print(f"  [TEST] {chosen_sym}: RR {rr_actual:.2f} < 2 — skipping"); continue
 
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
@@ -4538,8 +4535,9 @@ def _run_test_scan(cid, scan_ver: int):
                 f"{arrow} — <b>MARKET ENTRY</b>\n\n"
                 f"🎯 Entry: <b>{scan_entry:,.4g}</b>\n"
                 f"🛑 SL:    <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
-                f"💰 TP1:  <b>{scan_tp1:,.4g}</b>  (RR 1:2.0)\n"
-                f"🏆 TP2:  <b>{scan_tp2:,.4g}</b>  (RR 1:3.75)\n"
+                f"💰 TP1:  <b>{scan_tp1:,.4g}</b>\n"
+                f"🏆 TP2:  <b>{scan_tp2:,.4g}</b>\n"
+                f"📊 RR:   <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
                 f"⏰ Timeout: 1H | move_age: {age}c\n\n"
                 f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>\n"
                 f"⚠️ <i>No real trade placed</i>"
