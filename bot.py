@@ -4218,10 +4218,12 @@ Change 24h: {change_24h:+.2f}%
 
 You are CLEXER SCALP V1. Analyze {symbol} for a short-term scalp trade.
 
-HARD GATES — output WAIT if ANY fail (check internally, do not output):
-1. 4H structure: BULLISH (HH+HL)→LONG only, BEARISH (LH+LL)→SHORT only, mixed→WAIT
-2. change_24h <= 40% in absolute terms (already checked: {abs(change_24h):.1f}%)
-3. RR >= 2.0 after computing SL (check after step below)
+HARD GATES — already pre-filtered before this prompt (do not recheck):
+1. 4H structure: BULLISH→LONG only, BEARISH→SHORT only (already confirmed: {struct.upper()})
+2. change_24h <= 40% (already checked: {abs(change_24h):.1f}%)
+3. move_age_1h <= 5 (already checked: {age} candles)
+4. move_age_4h <= 8 — 4H trend ≤ 8 candles old (already checked: {age_4h} candles)
+Remaining gate to check: RR >= 2.0 after computing SL
 
 ENTRY: MARKET at current price {cp:,.6g}
 
@@ -4252,14 +4254,15 @@ sl_dist = abs(entry - SL)
 TP1 = entry ± (sl_dist × 2.0)
 TP2 = entry ± (sl_dist × 3.75)
 
-OUTPUT ONLY — no working, no steps, no bullet points, just the block below. One Signal line only — never emit two Signal lines:
+OUTPUT ONLY — no working, no steps, no bullet points, just the block below. One Signal line only — never emit two Signal lines.
+Put Signal through SL_pct first so a token cutoff never eats the trade numbers:
 Signal: BUY / SELL / WAIT
 Entry: {cp:,.6g}
 SwingLevel: [see rules above — accepted/rejected/NONE tag required]
 SL: [price, or — if WAIT]
 TP1: [price, or — if WAIT]
 TP2: [price, or — if WAIT]
-RR: [number, or — if WAIT]
+RR: [e.g. 2.0 / 3.75 for both legs, or — if WAIT]
 SL_pct: [SL distance as % of entry, or — if WAIT]
 Reasoning: [one line — name the exact swing candle level used]"""
 
@@ -4452,7 +4455,16 @@ def _run_test_scan(cid, scan_ver: int):
                           for _, row in df_1h.iterrows()]
             age = _move_age_1h(h1_candles, direction)
             if age > 5:
-                print(f"  [TEST] {chosen_sym}: move_age={age} > 5 — too old, skipping")
+                print(f"  [TEST] {chosen_sym}: move_age_1h={age} > 5 — too old, skipping")
+                continue
+
+            # HTF exhaustion guard — 4H move_age must be ≤ 8 candles (32h)
+            # Prevents entering a "fresh 1H leg" inside a multi-day exhausted 4H move
+            h4_candles = [{"high": float(row["high"]), "low": float(row["low"])}
+                          for _, row in df_4h.iterrows()]
+            age_4h = _move_age_1h(h4_candles, direction)  # same fractal logic on 4H
+            if age_4h > 8:
+                print(f"  [TEST] {chosen_sym}: move_age_4h={age_4h} > 8 — HTF exhausted, skipping")
                 continue
 
             # Build data summary (same as main scan)
@@ -4461,7 +4473,8 @@ def _run_test_scan(cid, scan_ver: int):
                    f"24h Change: {candidate['change']:+.2f}%\n"
                    f"Volume (24h): ${candidate['vol_m']}M\n"
                    f"4H Structure: {struct}\n"
-                   f"move_age_1h: {age} candles (gate: ≤5)\n")
+                   f"move_age_1h: {age} candles (gate: ≤5)\n"
+                   f"move_age_4h: {age_4h} candles (gate: ≤8)\n")
 
             if df_4h is not None and len(df_4h) >= 10:
                 h4 = df_4h
