@@ -4512,13 +4512,16 @@ def _run_test_scan(cid, scan_ver: int):
             else:
                 scan_signal_val = _all_sigs[-1]  # take last non-WAIT signal
 
-            # Send analysis preview
+            # Send analysis preview — show only the final Signal block to avoid confusion
+            # Find last occurrence of "Signal:" and show from there
+            _last_sig_idx = analysis.rfind("Signal:")
+            _preview = analysis[_last_sig_idx:].strip() if _last_sig_idx >= 0 else analysis.strip()
             emoji = "🟢" if candidate["change"] >= 0 else "🔴"
             send_admin(
                 f"{emoji} <b>[TEST] {chosen_sym}</b>  {ist_str()}\n\n"
                 f"Price: <b>{cp:,.6g}</b> ({candidate['change']:+.2f}%)\n"
                 f"move_age: {age} candles\n\n"
-                f"<pre>{analysis[:700]}</pre>\n\n"
+                f"<pre>{_preview[:600]}</pre>\n\n"
                 f"<i>- CLEXER SCALP V1 TEST -</i>")
 
             if scan_signal_val == "WAIT":
