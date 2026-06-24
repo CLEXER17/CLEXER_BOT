@@ -4225,13 +4225,20 @@ HARD GATES — output WAIT if ANY fail (check internally, do not output):
 
 ENTRY: MARKET at current price {cp:,.6g}
 
-STOP LOSS:
-- Find the most recent clear 5M structure LOW (for LONG) or HIGH (for SHORT) from last 10-15 candles
-- SL distance must be between 1.5% and 3.0% from entry
-- If structure forces SL > 3% → WAIT (too loose)
-- If no clear 5M structure → use 2.0% from entry as default
+STOP LOSS RULE (critical — read carefully):
+Step 1: Find the most recent swing LOW (for LONG) or swing HIGH (for SHORT) in the last 10-15 x 5M candles.
+        A swing low = a candle whose low is lower than the candles on both sides.
+        A swing high = a candle whose high is higher than the candles on both sides.
+Step 2: If NO clear swing exists → output Signal: WAIT. Do NOT invent a percentage. Do NOT use a default. WAIT.
+Step 3: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
+        If sl_dist_pct < 1.5% → Signal: WAIT (structure too tight)
+        If sl_dist_pct > 3.0% → Signal: WAIT (structure too loose)
+        Otherwise → SL = swing_level (anchored to chart, never a made-up number)
 
-TAKE PROFIT:
+RULE: The 1.5%-3% band is a filter on real structure — it never generates a stop level.
+      "No valid structure in range" always means WAIT. There is no fallback.
+
+TAKE PROFIT (only compute if SL is valid):
 sl_dist = abs(entry - SL)
 TP1 = entry ± (sl_dist × 2.0)
 TP2 = entry ± (sl_dist × 3.75)
@@ -4239,12 +4246,13 @@ TP2 = entry ± (sl_dist × 3.75)
 OUTPUT ONLY (no explanation, replace bracketed values):
 Signal: BUY / SELL / WAIT
 Entry: {cp:,.6g}
-SL: [price]
-TP1: [price]
-TP2: [price]
-RR: [number]
-SL_pct: [SL distance as % of entry]
-Reasoning: [one line max]"""
+SwingLevel: [exact swing price used as SL anchor, or NONE if not found]
+SL: [price, or — if WAIT]
+TP1: [price, or — if WAIT]
+TP2: [price, or — if WAIT]
+RR: [number, or — if WAIT]
+SL_pct: [SL distance as % of entry, or — if WAIT]
+Reasoning: [one line — name the exact swing candle level used]"""
 
 _demo_monitor_lock = __import__("threading").Lock()
 
@@ -4508,8 +4516,13 @@ def _run_test_scan(cid, scan_ver: int):
                 continue
 
             scan_sl_raw = _p("SL")
-            if scan_sl_raw <= 0:
-                print(f"  [TEST] {chosen_sym}: could not parse SL — skipping"); continue
+            # Also parse SwingLevel for transparency
+            swing_m = _re.search(r"SwingLevel[:\s]+([0-9.]+)", analysis.replace(",",""), _re.IGNORECASE)
+            swing_level_str = swing_m.group(1) if swing_m else "NONE"
+
+            # If Claude reported no swing or couldn't parse SL → skip
+            if swing_level_str == "NONE" or scan_sl_raw <= 0:
+                print(f"  [TEST] {chosen_sym}: no swing level found — WAIT"); continue
 
             scan_entry = cp
             sl_dist = abs(scan_entry - scan_sl_raw)
@@ -4533,11 +4546,12 @@ def _run_test_scan(cid, scan_ver: int):
                 f" TEST SIGNAL — SCALP V1\n"
                 f"  🕐 {ist_str()}\n\n"
                 f"{arrow} — <b>MARKET ENTRY</b>\n\n"
-                f"🎯 Entry: <b>{scan_entry:,.4g}</b>\n"
-                f"🛑 SL:    <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
-                f"💰 TP1:  <b>{scan_tp1:,.4g}</b>\n"
-                f"🏆 TP2:  <b>{scan_tp2:,.4g}</b>\n"
-                f"📊 RR:   <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
+                f"🎯 Entry:      <b>{scan_entry:,.4g}</b>\n"
+                f"🛑 SL:         <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
+                f"📌 SwingLevel: <b>{swing_level_str}</b>\n"
+                f"💰 TP1:       <b>{scan_tp1:,.4g}</b>\n"
+                f"🏆 TP2:       <b>{scan_tp2:,.4g}</b>\n"
+                f"📊 RR:        <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
                 f"⏰ Timeout: 1H | move_age: {age}c\n\n"
                 f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>\n"
                 f"⚠️ <i>No real trade placed</i>"
