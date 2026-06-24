@@ -2700,6 +2700,13 @@ def handle_command(text, chat_id, message=None):
                 scan_lines += (f"\n\n<b>Scan{_ver}:</b> {sc['signal']} {sc['symbol']}\n"
                     f"Entry:{sc['entry']:,.4g} {'✅' if sc.get('entry_hit') else '⏳'}  "
                     f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g}")
+        for _dlst in (demo_scan1_trades, demo_scan2_trades):
+            for dc in _dlst:
+                _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
+                _pnl = (_cp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _cp and dc.get("entry") else 0
+                scan_lines += (f"\n\n<b>[DEMO]</b> {dc['signal']} {dc.get('symbol','?')}\n"
+                    f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
+                    f"TP1:{'✅' if dc.get('tp1_hit') else dc.get('tp1',0):,.4g}  P/L:{_pnl:+.2f}%")
         _ist_now = now_ist()
         _scan_hrs = {7, 11, 15, 19, 23}
         _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
@@ -2757,6 +2764,21 @@ def handle_command(text, chat_id, message=None):
                     f"SL:    <b>{sc['sl']:,.4g}</b>\n"
                     f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if sc.get('tp1_hit') else '⏳ pending'}\n"
                     f"TP2:   <b>{sc['tp2']:,.4g}</b>\nType:  {sc.get('entry_type','MARKET')}"
+                )
+        # Demo trades
+        for _dlst in (demo_scan1_trades, demo_scan2_trades):
+            for dc in _dlst:
+                try: _dcp = get_bingx_price(dc.get("symbol","")); _dcpl = f"Current: <b>{_dcp:,.4g}</b>\n" if _dcp else ""
+                except: _dcp = 0; _dcpl = ""
+                _dpnl = (_dcp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _dcp and dc.get("entry") else 0
+                parts_out.append(
+                    f"<b>[DEMO] SCALP V1</b>\n\n{dc['signal']} - {dc.get('symbol','?')}\n{_dcpl}"
+                    f"Entry: <b>{dc.get('entry',0):,.4g}</b> ✅ (MARKET)\n"
+                    f"SL:    <b>{dc.get('sl',0):,.4g}</b>\n"
+                    f"TP1:   <b>{dc.get('tp1',0):,.4g}</b> {'✅ HIT' if dc.get('tp1_hit') else '⏳ pending'}\n"
+                    f"TP2:   <b>{dc.get('tp2',0):,.4g}</b>\n"
+                    f"BE SL: <b>{dc.get('be_sl',0):,.4g}</b>" + (" (active)" if dc.get('tp1_hit') and dc.get('be_sl') else "") + "\n"
+                    f"P/L:   <b>{_dpnl:+.2f}%</b> | move_age: {dc.get('scan_ver','?')}"
                 )
         if parts_out:
             send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
@@ -4304,32 +4326,48 @@ def _demo_monitor_loop():
                         tp1_now = not tp1hit and tp1 > 0 and cp <= tp1
                         tp2_now = tp1hit and tp2 > 0 and cp <= tp2
 
+                    coin = sym.replace("-USDT","")
+                    arrow = "🟢" if sig == "BUY" else "🔴"
                     if tp2_now:
-                        send_admin(
-                            f"[DEMO] ✅ <b>{sym}</b> TP2 HIT @ <b>{cp:,.6g}</b>\n"
+                        send_telegram(
+                            f"{arrow} <b>[DEMO] {coin}-USDT — TP2 HIT ✅</b>\n"
+                            f"──────────────────────\n"
+                            f"Price @ TP2: <b>{cp:,.6g}</b>\n"
                             f"Entry: {entry:,.6g} → TP2: {tp2:,.6g}\n"
-                            f"Result: <b>FULL WIN</b> — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                            f"Result: <b>FULL WIN</b>\n\n"
+                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
-                        send_admin(
-                            f"[DEMO] ❌ <b>{sym}</b> {lbl} HIT @ <b>{cp:,.6g}</b>\n"
-                            f"Entry: {entry:,.6g} | SL: {sl:,.6g}\n"
-                            f"Result: {'BREAKEVEN' if tp1hit else 'LOSS'} — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                        result = "BREAKEVEN" if tp1hit else "LOSS"
+                        send_telegram(
+                            f"{arrow} <b>[DEMO] {coin}-USDT — {lbl} HIT ❌</b>\n"
+                            f"──────────────────────\n"
+                            f"Price @ {lbl}: <b>{cp:,.6g}</b>\n"
+                            f"Entry: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}\n"
+                            f"Result: <b>{result}</b>\n\n"
+                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
                         t["tp1_hit"] = True
                         t["be_sl"]   = be_sl_price
-                        send_admin(
-                            f"[DEMO] 🎯 <b>{sym}</b> TP1 HIT @ <b>{cp:,.6g}</b>\n"
-                            f"50% closed. BE SL set → {be_sl_price:,.6g}\n"
-                            f"Runner TP2: {tp2:,.6g} — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                        send_telegram(
+                            f"{arrow} <b>[DEMO] {coin}-USDT — TP1 HIT 🎯</b>\n"
+                            f"──────────────────────\n"
+                            f"Price @ TP1: <b>{cp:,.6g}</b>\n"
+                            f"50% closed. BE SL → <b>{be_sl_price:,.6g}</b>\n"
+                            f"Runner TP2: {tp2:,.6g}\n\n"
+                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
                     elif timeout_hit:
-                        send_admin(
-                            f"[DEMO] ⏰ <b>{sym}</b> TIMEOUT @ <b>{cp:,.6g}</b>\n"
-                            f"1H elapsed — no TP1/SL hit. Closing demo trade.\n"
-                            f"Entry: {entry:,.6g} | P/L: {(cp-entry)/entry*100*(1 if sig=='BUY' else -1):+.2f}%\n\n<i>- CLEXER TEST -</i>")
+                        pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
+                        send_telegram(
+                            f"{arrow} <b>[DEMO] {coin}-USDT — TIMEOUT ⏰</b>\n"
+                            f"──────────────────────\n"
+                            f"1H elapsed — no TP1/SL hit.\n"
+                            f"Exit @ <b>{cp:,.6g}</b> | P/L: <b>{pnl:+.2f}%</b>\n"
+                            f"Entry: {entry:,.6g}\n\n"
+                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
