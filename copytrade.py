@@ -868,10 +868,14 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
-            # Skip only if this scan slot already has this exact symbol open
-            p = _pfx(ver)
-            if user.get(f"{p}symbol") == symbol:
-                results.append(f"⏭ @{user.get('username','?')} already in {symbol} (scan{ver}) — skipping duplicate")
+            # Find a free slot for this scan version
+            p = _free_slot(user, ver)
+            if not p:
+                results.append(f"⏭ @{user.get('username','?')} scan{ver} slots full — skipping {symbol}")
+                continue
+            # Skip if this symbol already open in any slot
+            if _pfx_for_symbol(user, symbol):
+                results.append(f"⏭ @{user.get('username','?')} already in {symbol} — skipping duplicate")
                 continue
             risk = user.get("risk_usdt")
             if risk:
@@ -1036,9 +1040,8 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 def on_scan_tp1(symbol: str):
     """Scan TP1 hit — cancel all orders, close 50% at market, move SL to BE, re-place TP2."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        ver = _ver_for_symbol(user, symbol)
-        if not ver: continue
-        p = _pfx(ver)
+        p = _pfx_for_symbol(user, symbol)
+        if not p: continue
         try:
             side        = user[f"{p}side"]
             entry_price = float(user.get(f"{p}entry", 0))
@@ -1100,9 +1103,8 @@ def on_scan_tp1(symbol: str):
 def on_scan_tp2(symbol: str):
     """Scan TP2 hit — cancel remaining orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        ver = _ver_for_symbol(user, symbol)
-        if not ver: continue
-        p = _pfx(ver)
+        p = _pfx_for_symbol(user, symbol)
+        if not p: continue
         try:
             trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
             for o in _get_open_orders(api_key, api_secret, symbol):
@@ -1127,9 +1129,8 @@ def on_scan_tp2(symbol: str):
 def on_scan_sl(symbol: str):
     """Scan SL hit — cancel all orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        ver = _ver_for_symbol(user, symbol)
-        if not ver: continue
-        p = _pfx(ver)
+        p = _pfx_for_symbol(user, symbol)
+        if not p: continue
         try:
             trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
             for o in _get_open_orders(api_key, api_secret, symbol):
@@ -1228,20 +1229,42 @@ def on_scan_entry_missed(symbol: str):
         _clear_scan_state(cid, user)
 
 
+_SCAN_SLOTS = {
+    1: ["s1_", "s1b_"],    # scan1 slot A and B
+    2: ["scan_", "s2b_"],  # scan2 slot A and B
+}
+_ALL_SLOT_PREFIXES = ["s1_", "s1b_", "scan_", "s2b_"]
+
 def _pfx(ver: int) -> str:
-    """Return state key prefix for scan version. scan1→'s1_', scan2→'scan_'."""
+    """Legacy — returns slot A prefix for scan version."""
     return "s1_" if ver == 1 else "scan_"
+
+def _free_slot(user: dict, ver: int) -> str:
+    """Return first free slot prefix for this scan version, or '' if both slots full."""
+    for p in _SCAN_SLOTS[ver]:
+        if not user.get(f"{p}symbol", ""):
+            return p
+    return ""
+
+def _pfx_for_symbol(user: dict, symbol: str) -> str:
+    """Return slot prefix that owns this symbol, or '' if not found."""
+    for p in _ALL_SLOT_PREFIXES:
+        if user.get(f"{p}symbol") == symbol:
+            return p
+    return ""
 
 def _ver_for_symbol(user: dict, symbol: str) -> int:
     """Find which scan version owns this symbol (1 or 2). Returns 0 if not found."""
-    if user.get("s1_symbol") == symbol:    return 1
-    if user.get("scan_symbol") == symbol:  return 2
+    for p in _SCAN_SLOTS[1]:
+        if user.get(f"{p}symbol") == symbol: return 1
+    for p in _SCAN_SLOTS[2]:
+        if user.get(f"{p}symbol") == symbol: return 2
     return 0
 
 def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):
-    if not ver:
-        ver = _ver_for_symbol(user, symbol) or 2
-    p = _pfx(ver)
+    p = _pfx_for_symbol(user, symbol) if symbol else (_pfx(ver) if ver else "")
+    if not p:
+        p = "scan_"  # fallback
     sym = symbol or user.get(f"{p}symbol", "")
     user[f"{p}symbol"] = ""; user[f"{p}side"] = ""
     user[f"{p}entry"] = 0; user[f"{p}sl"] = 0; user[f"{p}tp1"] = 0
@@ -1341,9 +1364,8 @@ def monitor_sl_tp(notify_fn=None):
                 fixes.append(msg); print(f"[CT] {msg}")
                 if notify_fn: notify_fn(f"📊 <b>BTC trade closed @{uname}</b>\n{reason}")
 
-            # ── Ghost state: bot thinks scan open but BingX has nothing ──
-            for _gver in (1, 2):
-                _gp = _pfx(_gver)
+            # ── Ghost state: bot thinks scan open but BingX has nothing (all 4 slots) ──
+            for _gp in _ALL_SLOT_PREFIXES:
                 scan_sym = user.get(f"{_gp}symbol", "")
                 if not scan_sym: continue
                 _scan_pos_qty = abs(float((pos_by_sym.get(scan_sym) or {}).get("positionAmt", 0)))
@@ -1353,8 +1375,8 @@ def monitor_sl_tp(notify_fn=None):
                     tp1   = float(user.get(f"{_gp}tp1", 0))
                     tp2   = float(user.get(f"{_gp}tp2", 0))
                     reason = _detect_close_reason(scan_sym, entry, sl, tp1, tp2)
-                    _clear_scan_state(cid, user, scan_sym, _gver)
-                    msg = f"🔔 @{uname} {scan_sym} (scan{_gver}) {reason}"
+                    _clear_scan_state(cid, user, scan_sym)
+                    msg = f"🔔 @{uname} {scan_sym} ({_gp.rstrip('_')}) {reason}"
                     fixes.append(msg); print(f"[CT] {msg}")
                     if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
 
@@ -1425,9 +1447,8 @@ def monitor_sl_tp(notify_fn=None):
                     continue
 
                 # ── Scan: verify/place SL + TP ──
-                # Find which slot owns this symbol
-                _sv = _ver_for_symbol(user, sym)
-                _sp = _pfx(_sv) if _sv else "scan_"
+                # Find which slot owns this symbol (all 4 slots)
+                _sp = _pfx_for_symbol(user, sym) or "scan_"
                 sl_price  = float(user.get(f"{_sp}sl",  0))
                 tp1_price = float(user.get(f"{_sp}tp1", 0))
                 tp2_price = float(user.get(f"{_sp}tp2", 0))
@@ -1526,9 +1547,9 @@ def sync_check() -> list[str]:
                     lines.append(f"🚨 @{uname} ORPHAN BTC POSITION: {amt} BTC PnL={pnl:+.2f} USDT — bot state says NO TRADE")
                     lines.append(f"   → Use /close to close it or /ctsync to adopt it")
 
-            # ── Scan ──
-            scan_sym = user.get("scan_symbol", "")
-            if scan_sym:
+            # ── Scan (all 4 slots) ──
+            known_scan_syms = {user.get(f"{p}symbol","") for p in _ALL_SLOT_PREFIXES if user.get(f"{p}symbol","")}
+            for scan_sym in known_scan_syms:
                 if scan_sym not in pos_symbols:
                     lines.append(f"⚠️ @{uname} GHOST SCAN: bot thinks {scan_sym} open but BingX shows NONE")
                 else:
@@ -1536,7 +1557,7 @@ def sync_check() -> list[str]:
             # Orphan scan positions (BingX open, bot doesn't know)
             for sym in pos_symbols:
                 if sym == BINGX_SYMBOL: continue
-                if sym != scan_sym:
+                if sym not in known_scan_syms:
                     orphan = next(p for p in positions if p.get("symbol") == sym)
                     amt = float(orphan.get("positionAmt", 0))
                     pnl = float(orphan.get("unrealizedProfit", 0))
