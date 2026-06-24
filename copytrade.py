@@ -1455,11 +1455,23 @@ def monitor_sl_tp(notify_fn=None):
                 stored_qty = float(user.get(f"{_sp}qty", 0))
                 tp1_already_hit = bool(user.get(f"{_sp}tp1_hit", False))
 
-                # ── TP1 detection: position dropped to ~50% of stored qty ──
+                # ── TP1 detection: position dropped to ~50% AND price past TP1 ──
+                _side_stored = user.get(f"{_sp}side", "")
+                _tp1_price   = float(user.get(f"{_sp}tp1", 0))
+                _tp1_price_reached = False
+                if _tp1_price and avg_price:
+                    if _side_stored == "BUY"  and avg_price >= _tp1_price * 0.99:
+                        _tp1_price_reached = True
+                    elif _side_stored == "SELL" and avg_price <= _tp1_price * 1.01:
+                        _tp1_price_reached = True
+
                 if (not tp1_already_hit and stored_qty > 0
                         and pos_amt < stored_qty * 0.65
-                        and pos_amt > stored_qty * 0.05):
-                    print(f"[CT] [Monitor] @{uname} {sym}: TP1 detected (pos={pos_amt} stored={stored_qty}) — triggering on_scan_tp1")
+                        and pos_amt > stored_qty * 0.05
+                        and _tp1_price_reached):
+                    print(f"[CT] [Monitor] @{uname} {sym}: TP1 detected (pos={pos_amt} stored={stored_qty} price={avg_price} tp1={_tp1_price}) — triggering on_scan_tp1")
+                    # Mark tp1_hit immediately to stop spam before on_scan_tp1 runs
+                    user[f"{_sp}tp1_hit"] = True; _set(cid, user)
                     if notify_fn:
                         notify_fn(f"🎯 [Monitor] @{uname} {sym}: TP1 detected → placing BE SL")
                     on_scan_tp1(sym)
