@@ -4226,24 +4226,28 @@ HARD GATES — output WAIT if ANY fail (check internally, do not output):
 ENTRY: MARKET at current price {cp:,.6g}
 
 STOP LOSS RULE (critical — read carefully):
-Step 1: Find the most recent swing LOW (for LONG) or swing HIGH (for SHORT) in the last 10-15 x 5M candles.
-        A swing low = a candle whose low is lower than the candles on both sides.
-        A swing high = a candle whose high is higher than the candles on both sides.
-Step 2: If NO clear swing exists → output Signal: WAIT. Do NOT invent a percentage. Do NOT use a default. WAIT.
-Step 3: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
-        If sl_dist_pct < 1.5% → Signal: WAIT (structure too tight)
+Step 1: Try 15M candles first. Find the most recent swing LOW (LONG) or swing HIGH (SHORT).
+        A swing low = a 15M candle whose low is lower than both its left and right neighbor.
+        A swing high = a 15M candle whose high is higher than both its left and right neighbor.
+        Check last 10 candles. Needs 1 confirmed left and 1 confirmed right neighbor — edge candles don't count.
+Step 2: If no valid 15M swing → try 5M candles. Same fractal rule, last 10 candles.
+Step 3: If NO swing found in either timeframe → Signal: WAIT. Never invent a percentage.
+Step 4: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
+        If sl_dist_pct < 1.0% → Signal: WAIT (structure too tight)
         If sl_dist_pct > 3.0% → Signal: WAIT (structure too loose)
-        Otherwise → SL = swing_level (anchored to chart, never a made-up number)
+        Otherwise → SL = swing_level. Valid trade.
 
-RULE: The 1.5%-3% band is a filter on real structure — it never generates a stop level.
+RULE: The 1.0%-3.0% band filters real structure — it never generates a level.
       "No valid structure in range" always means WAIT. There is no fallback.
+
+For SwingLevel output: always report the level you found even if you reject it (e.g. SwingLevel: 0.5267 (rejected: 0.34% < 1.0%)). Only write SwingLevel: NONE if truly no swing candle was found at all.
 
 TAKE PROFIT (only compute if SL is valid):
 sl_dist = abs(entry - SL)
 TP1 = entry ± (sl_dist × 2.0)
 TP2 = entry ± (sl_dist × 3.75)
 
-OUTPUT ONLY (no explanation, replace bracketed values):
+OUTPUT ONLY — no working, no steps, no bullet points, just the block below:
 Signal: BUY / SELL / WAIT
 Entry: {cp:,.6g}
 SwingLevel: [exact swing price used as SL anchor, or NONE if not found]
@@ -4424,6 +4428,7 @@ def _run_test_scan(cid, scan_ver: int):
             _cached_4h = candidate.get("df4h")
             df_4h = _cached_4h if _cached_4h is not None else bingx_klines(chosen_sym, "4h", 60)
             df_1h = bingx_klines(chosen_sym, "1h", 40)
+            df_15m = bingx_klines(chosen_sym, "15m", 30)
             df_5m = bingx_klines(chosen_sym, "5m", 30)
             if df_4h is None or df_1h is None or df_5m is None:
                 continue
@@ -4469,10 +4474,15 @@ def _run_test_scan(cid, scan_ver: int):
                 last2_1h = [f"open={ops1[i]:,.4g} close={cls1[i]:,.4g}" for i in [-2,-1]]
                 smc += f"1H last 2: {last2_1h[0]} | {last2_1h[1]}\n"
 
+            if df_15m is not None and len(df_15m) >= 5:
+                h15 = df_15m; lows15 = h15["low"].values; highs15 = h15["high"].values
+                smc += (f"15M last 10 lows:  {[round(x,4) for x in lows15[-10:]]}\n"
+                        f"15M last 10 highs: {[round(x,4) for x in highs15[-10:]]}\n")
+
             if df_5m is not None and len(df_5m) >= 5:
                 h5 = df_5m; cls5 = h5["close"].values; lows5 = h5["low"].values; highs5 = h5["high"].values
-                smc += (f"5M last 5 lows: {[round(x,4) for x in lows5[-5:]]}\n"
-                        f"5M last 5 highs: {[round(x,4) for x in highs5[-5:]]}\n"
+                smc += (f"5M last 10 lows:  {[round(x,4) for x in lows5[-10:]]}\n"
+                        f"5M last 10 highs: {[round(x,4) for x in highs5[-10:]]}\n"
                         f"5M last close: {cls5[-1]:,.6g}\n")
 
             analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"])
@@ -4482,7 +4492,7 @@ def _run_test_scan(cid, scan_ver: int):
             for _attempt in range(3):
                 try:
                     r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=250,
+                        model="claude-opus-4-8", max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
                     analysis = r2.content[0].text.strip()
                     _claude_ok = True; break
@@ -4528,9 +4538,9 @@ def _run_test_scan(cid, scan_ver: int):
             sl_dist = abs(scan_entry - scan_sl_raw)
             sl_pct  = sl_dist / scan_entry * 100
 
-            # Structure SL must be 1.5%–3% — reject both sides, never stretch
-            if sl_pct < 1.5:
-                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% < 1.5% — too tight, skipping"); continue
+            # Structure SL must be 1.0%–3.0% — reject both sides, never stretch
+            if sl_pct < 1.0:
+                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% < 1.0% — too tight, skipping"); continue
             if sl_pct > 3.0:
                 print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% > 3.0% — too loose, skipping"); continue
 
