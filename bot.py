@@ -4413,7 +4413,8 @@ def _run_test_scan(cid, scan_ver: int):
             tried.append(chosen_sym)
 
             # Fetch candles
-            df_4h = candidate.get("df4h") or bingx_klines(chosen_sym, "4h", 60)
+            _cached_4h = candidate.get("df4h")
+            df_4h = _cached_4h if _cached_4h is not None else bingx_klines(chosen_sym, "4h", 60)
             df_1h = bingx_klines(chosen_sym, "1h", 40)
             df_5m = bingx_klines(chosen_sym, "5m", 30)
             if df_4h is None or df_1h is None or df_5m is None:
