@@ -4210,7 +4210,8 @@ def _move_age_1h(candles_1h: list, direction: str) -> int:
                 return (len(candles_1h) - 1) - i
     return 999  # no swing found → treat as old/exhausted → skip
 
-def _build_scalp_v1_prompt(symbol: str, cp: float, smc: str, vol_24h: float, change_24h: float) -> str:
+def _build_scalp_v1_prompt(symbol: str, cp: float, smc: str, vol_24h: float, change_24h: float,
+                           struct: str = "", age: int = 0, age_4h: int = 0) -> str:
     return f"""{smc}
 Current Price: {cp:,.6g}
 Volume 24h: ${vol_24h/1e6:.1f}M
@@ -4503,7 +4504,8 @@ def _run_test_scan(cid, scan_ver: int):
                         f"5M last 10 highs: {[round(x,4) for x in highs5[-10:]]}\n"
                         f"5M last close: {cls5[-1]:,.6g}\n")
 
-            analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"])
+            analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"],
+                                                     struct=struct, age=age, age_4h=age_4h)
 
             # Claude analysis
             analysis = ""; _claude_ok = False
