@@ -4240,17 +4240,22 @@ Step 4: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
 RULE: The 1.0%-3.0% band filters real structure — it never generates a level.
       "No valid structure in range" always means WAIT. There is no fallback.
 
-For SwingLevel output: always report the level you found even if you reject it (e.g. SwingLevel: 0.5267 (rejected: 0.34% < 1.0%)). Only write SwingLevel: NONE if truly no swing candle was found at all.
+For SwingLevel output:
+- If swing found AND used for the trade:  SwingLevel: 0.4400 (accepted: 2.91% in band)
+- If swing found BUT rejected (too tight): SwingLevel: 0.5267 (rejected: 0.34% < 1.0%)
+- If swing found BUT rejected (too loose): SwingLevel: 0.1049 (rejected: 5.70% > 3.0%)
+- If NO swing candle found at all:         SwingLevel: NONE
+Never write "rejected" on a level that was used. Never write "accepted" on a level that was rejected.
 
 TAKE PROFIT (only compute if SL is valid):
 sl_dist = abs(entry - SL)
 TP1 = entry ± (sl_dist × 2.0)
 TP2 = entry ± (sl_dist × 3.75)
 
-OUTPUT ONLY — no working, no steps, no bullet points, just the block below:
+OUTPUT ONLY — no working, no steps, no bullet points, just the block below. One Signal line only — never emit two Signal lines:
 Signal: BUY / SELL / WAIT
 Entry: {cp:,.6g}
-SwingLevel: [exact swing price used as SL anchor, or NONE if not found]
+SwingLevel: [see rules above — accepted/rejected/NONE tag required]
 SL: [price, or — if WAIT]
 TP1: [price, or — if WAIT]
 TP2: [price, or — if WAIT]
