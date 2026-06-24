@@ -95,6 +95,12 @@ active_trade = {
 }
 scan1_trades = []   # list of active scan1 trade dicts (unlimited slots)
 scan2_trades = []   # list of active scan2 trade dicts (unlimited slots)
+demo_scan1_trades = []   # DEMO trades — test strategy only, no copytrade
+demo_scan2_trades = []
+TEST_SCAN_ENABLED = False
+TEST_SCAN_MINUTE  = 5
+_test_scan1_last_hour = -1
+_test_scan2_last_hour = -1
 last_scan_tick_time = 0
 signal_history        = []
 scan_history          = []   # closed scan trades — appended on TP/SL/missed
@@ -3217,6 +3223,60 @@ def handle_command(text, chat_id, message=None):
             f"Scan1 still at: <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
             f"<i>- CLEXER V17.8.5 -</i>"); return
 
+    elif cmd == "/test" and is_admin:
+        global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        if sub == "on":
+            TEST_SCAN_ENABLED = True
+            _test_scan1_last_hour = -1; _test_scan2_last_hour = -1
+            send_reply(chat_id,
+                f"✅ <b>Test Mode ON</b> — CLEXER SCALP V1\n\n"
+                f"Demo scans fire every hour at <b>:05 IST</b>\n"
+                f"Signals tagged <b>[DEMO]</b> — no real trades placed.\n"
+                f"Monitor checks TP1/SL/timeout every 30s.\n\n"
+                f"Commands:\n"
+                f"<code>/test off</code> — disable\n"
+                f"<code>/test</code> — show active demo trades\n\n"
+                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+        elif sub == "off":
+            TEST_SCAN_ENABLED = False
+            send_reply(chat_id,
+                f"❌ <b>Test Mode OFF</b>\n\n"
+                f"Demo scans stopped. Active demo trades still monitored until closed.\n\n"
+                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+        elif sub == "run":
+            send_reply(chat_id, "🧪 Triggering both demo scans now...")
+            threading.Thread(target=lambda: _run_test_scan(chat_id, 1), daemon=True).start()
+            time.sleep(3)
+            threading.Thread(target=lambda: _run_test_scan(chat_id, 2), daemon=True).start()
+            return
+        else:
+            # Show status
+            all_demo = demo_scan1_trades + demo_scan2_trades
+            state = "ON ✅" if TEST_SCAN_ENABLED else "OFF ❌"
+            if not all_demo:
+                trades_str = "No active demo trades."
+            else:
+                lines = []
+                for t in all_demo:
+                    sym   = t.get("symbol","?")
+                    sig   = t.get("signal","?")
+                    entry = t.get("entry",0)
+                    sl    = t.get("sl",0)
+                    tp1   = t.get("tp1",0)
+                    tp1h  = "✅" if t.get("tp1_hit") else "⏳"
+                    cp    = get_bingx_price(sym)
+                    pnl   = (cp - entry) / entry * 100 * (1 if sig=="BUY" else -1) if entry and cp else 0
+                    lines.append(f"{'🟢' if sig=='BUY' else '🔴'} {sym}  Entry:{entry:,.4g}  SL:{sl:,.4g}  TP1:{tp1h}  P/L:{pnl:+.2f}%")
+                trades_str = "\n".join(lines)
+            send_reply(chat_id,
+                f"🧪 <b>Test Mode: {state}</b>\n"
+                f"Fires at <b>:05 IST</b> hourly | Strategy: CLEXER SCALP V1\n\n"
+                f"<b>Active Demo Trades ({len(all_demo)}):</b>\n"
+                f"<pre>{trades_str}</pre>\n\n"
+                f"<code>/test on</code> | <code>/test off</code> | <code>/test run</code> (manual trigger)\n\n"
+                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+
     elif cmd == "/scancopy" and is_admin:
         if len(parts) < 2 or parts[1].lower() not in ("on","off"):
             state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
@@ -4131,6 +4191,360 @@ def _run_auto_scan(cid, scan_ver=2):
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
     handle_command(cmd, cid)
 
+# ══════════════════════════════════════════════════════════
+# TEST MODE — CLEXER SCALP v1 (demo only, no copytrade)
+# ══════════════════════════════════════════════════════════
+
+def _move_age_1h(candles_1h: list, direction: str) -> int:
+    """Count 1H candles since last confirmed swing point. Returns 999 if no swing found."""
+    n = 2
+    last = len(candles_1h) - 1 - n
+    for i in range(last, n - 1, -1):
+        c = candles_1h[i]
+        neighbors = (i-2, i-1, i+1, i+2)
+        if direction == "long":
+            if all(c["low"] < candles_1h[j]["low"] for j in neighbors):
+                return (len(candles_1h) - 1) - i
+        else:
+            if all(c["high"] > candles_1h[j]["high"] for j in neighbors):
+                return (len(candles_1h) - 1) - i
+    return 999  # no swing found → treat as old/exhausted → skip
+
+def _build_scalp_v1_prompt(symbol: str, cp: float, smc: str, vol_24h: float, change_24h: float) -> str:
+    return f"""{smc}
+Current Price: {cp:,.6g}
+Volume 24h: ${vol_24h/1e6:.1f}M
+Change 24h: {change_24h:+.2f}%
+
+You are CLEXER SCALP V1. Analyze {symbol} for a short-term scalp trade.
+
+HARD GATES — output WAIT if ANY fail (check internally, do not output):
+1. 4H structure: BULLISH (HH+HL)→LONG only, BEARISH (LH+LL)→SHORT only, mixed→WAIT
+2. change_24h <= 40% in absolute terms (already checked: {abs(change_24h):.1f}%)
+3. RR >= 2.0 after computing SL (check after step below)
+
+ENTRY: MARKET at current price {cp:,.6g}
+
+STOP LOSS:
+- Find the most recent clear 5M structure LOW (for LONG) or HIGH (for SHORT) from last 10-15 candles
+- SL distance must be between 1.5% and 3.0% from entry
+- If structure forces SL > 3% → WAIT (too loose)
+- If no clear 5M structure → use 2.0% from entry as default
+
+TAKE PROFIT:
+sl_dist = abs(entry - SL)
+TP1 = entry ± (sl_dist × 2.0)
+TP2 = entry ± (sl_dist × 3.75)
+
+OUTPUT ONLY (no explanation, replace bracketed values):
+Signal: BUY / SELL / WAIT
+Entry: {cp:,.6g}
+SL: [price]
+TP1: [price]
+TP2: [price]
+RR: [number]
+SL_pct: [SL distance as % of entry]
+Reasoning: [one line max]"""
+
+_demo_monitor_lock = __import__("threading").Lock()
+
+def _demo_monitor_loop():
+    """Background thread: monitors demo trades every 30s. No copytrade — only TG alerts."""
+    import re as _re
+    while True:
+        try:
+            time.sleep(30)
+            now = time.time()
+            for demo_list in (demo_scan1_trades, demo_scan2_trades):
+                to_remove = []
+                for t in list(demo_list):
+                    sym    = t.get("symbol","")
+                    sig    = t.get("signal","")
+                    entry  = float(t.get("entry", 0))
+                    sl     = float(t.get("sl", 0))
+                    tp1    = float(t.get("tp1", 0))
+                    tp2    = float(t.get("tp2", 0))
+                    tp1hit = t.get("tp1_hit", False)
+                    be_sl  = float(t.get("be_sl", 0))
+                    created = float(t.get("created_at", now))
+
+                    if not sym or not entry: continue
+                    cp = get_bingx_price(sym)
+                    if cp <= 0: continue
+
+                    timeout_hit = (now - created) >= 3600  # 1H timeout
+
+                    if sig == "BUY":
+                        sl_hit  = cp <= (be_sl if tp1hit and be_sl else sl)
+                        tp1_now = not tp1hit and tp1 > 0 and cp >= tp1
+                        tp2_now = tp1hit and tp2 > 0 and cp >= tp2
+                    else:
+                        sl_hit  = cp >= (be_sl if tp1hit and be_sl else sl)
+                        tp1_now = not tp1hit and tp1 > 0 and cp <= tp1
+                        tp2_now = tp1hit and tp2 > 0 and cp <= tp2
+
+                    if tp2_now:
+                        send_admin(
+                            f"[DEMO] ✅ <b>{sym}</b> TP2 HIT @ <b>{cp:,.6g}</b>\n"
+                            f"Entry: {entry:,.6g} → TP2: {tp2:,.6g}\n"
+                            f"Result: <b>FULL WIN</b> — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                        to_remove.append(t)
+                    elif sl_hit:
+                        lbl = "BE SL" if tp1hit else "SL"
+                        send_admin(
+                            f"[DEMO] ❌ <b>{sym}</b> {lbl} HIT @ <b>{cp:,.6g}</b>\n"
+                            f"Entry: {entry:,.6g} | SL: {sl:,.6g}\n"
+                            f"Result: {'BREAKEVEN' if tp1hit else 'LOSS'} — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                        to_remove.append(t)
+                    elif tp1_now:
+                        be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
+                        t["tp1_hit"] = True
+                        t["be_sl"]   = be_sl_price
+                        send_admin(
+                            f"[DEMO] 🎯 <b>{sym}</b> TP1 HIT @ <b>{cp:,.6g}</b>\n"
+                            f"50% closed. BE SL set → {be_sl_price:,.6g}\n"
+                            f"Runner TP2: {tp2:,.6g} — SCALP V1\n\n<i>- CLEXER TEST -</i>")
+                    elif timeout_hit:
+                        send_admin(
+                            f"[DEMO] ⏰ <b>{sym}</b> TIMEOUT @ <b>{cp:,.6g}</b>\n"
+                            f"1H elapsed — no TP1/SL hit. Closing demo trade.\n"
+                            f"Entry: {entry:,.6g} | P/L: {(cp-entry)/entry*100*(1 if sig=='BUY' else -1):+.2f}%\n\n<i>- CLEXER TEST -</i>")
+                        to_remove.append(t)
+
+                with _demo_monitor_lock:
+                    for t in to_remove:
+                        if t in demo_scan1_trades: demo_scan1_trades.remove(t)
+                        if t in demo_scan2_trades: demo_scan2_trades.remove(t)
+        except Exception as _e:
+            print(f"  [DEMO MONITOR] Error: {_e}")
+
+def _run_test_scan(cid, scan_ver: int):
+    """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. No copytrade."""
+    import re as _re, math as _math
+    lbl = "S1" if scan_ver == 1 else "S2"
+    send_admin(f"🧪 <b>[TEST] Scalp V1 Scan{lbl}</b>  {ist_str()}\n\nDemo scan starting...\n\n<i>- CLEXER TEST -</i>")
+
+    demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
+    with _demo_monitor_lock:
+        if len(demo_list) >= 2:
+            send_admin(f"🚫 <b>[TEST] Scan{lbl} slots full</b>\n\nBoth demo slots occupied. Waiting for close.\n\n<i>- CLEXER TEST -</i>")
+            return
+
+    try:
+        # Fetch BingX ticker
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                         timeout=15).json()
+        skip = {"USDC","BUSD","DAI","TUSD","FDUSD","USDP","FRAX","USDT","BTC","BTCDOM"}
+        movers = []
+        for t in r.get("data", []):
+            sym = t.get("symbol","")
+            if not sym.endswith("-USDT"): continue
+            base = sym.replace("-USDT","")
+            if base in skip: continue
+            vol  = float(t.get("quoteVolume",0) or t.get("volume",0) or 0)
+            chg  = float(t.get("priceChangePercent",0) or 0)
+            px   = float(t.get("lastPrice",0) or 0)
+            if vol < 5_000_000: continue   # SCALP V1 gate: $5M floor
+            if px <= 0: continue
+            if abs(chg) > 40: continue     # SCALP V1 gate: exhausted
+            if abs(chg) > 200: continue
+            import re as _re2
+            if _re2.search(r'\d', base): continue
+            if len(base) > 10: continue
+            if "USD" in base: continue
+            if not _re2.match(r'^[A-Z]+$', base): continue
+            # Skip coins already in real or demo trades
+            existing_syms = (
+                [t2.get("symbol","") for t2 in scan1_trades + scan2_trades] +
+                [t2.get("symbol","") for t2 in demo_scan1_trades + demo_scan2_trades]
+            )
+            if sym in existing_syms: continue
+            if scan_ver == 1:
+                score = (abs(chg) ** 1.5) * (_math.sqrt(vol / 1e6))
+            else:
+                if abs(chg) > 15: continue
+                freshness = 1.0 if 2 <= abs(chg) <= 10 else 0.6
+                score = _math.sqrt(vol / 1e6) * (abs(chg) ** 0.8) * freshness
+            movers.append({"sym":sym,"base":base,"price":px,"change":chg,"vol_m":round(vol/1e6,1),"score":score,"vol":vol})
+
+        movers.sort(key=lambda x: x["score"], reverse=True)
+        top10 = movers[:10]
+
+        if not top10:
+            send_admin(f"[TEST] ❌ No coins found from BingX for scan{lbl}."); return
+
+        # Check 4H structure
+        for t in top10:
+            df4 = get_klines(t["sym"], "4h", 30)
+            t["structure"] = check_4h_structure(df4)
+            t["df4h"] = df4
+        structured = [t for t in top10 if t["structure"] != "NEUTRAL"]
+        candidate_order = structured + [c for c in top10 if c not in structured]
+
+        signal_placed = False
+        tried = []
+        for candidate in candidate_order:
+            if signal_placed: break
+            chosen_sym  = candidate["sym"]
+            chosen_base = candidate["base"]
+            cp          = candidate["price"]
+            tried.append(chosen_sym)
+
+            # Fetch candles
+            df_4h = candidate.get("df4h") or get_klines(chosen_sym, "4h", 60)
+            df_1h = get_klines(chosen_sym, "1h", 40)
+            df_5m = get_klines(chosen_sym, "5m", 30)
+            if df_4h is None or df_1h is None or df_5m is None:
+                continue
+
+            # move_age_1h gate — determine direction first from 4H structure
+            struct = candidate["structure"]
+            if struct == "BULLISH":
+                direction = "long"
+            elif struct == "BEARISH":
+                direction = "short"
+            else:
+                continue  # NEUTRAL → skip
+
+            # Build 1H candle dicts for move_age calculation
+            h1_candles = [{"high": float(row["high"]), "low": float(row["low"])}
+                          for _, row in df_1h.iterrows()]
+            age = _move_age_1h(h1_candles, direction)
+            if age > 5:
+                print(f"  [TEST] {chosen_sym}: move_age={age} > 5 — too old, skipping")
+                continue
+
+            # Build data summary (same as main scan)
+            smc = (f"=== {chosen_sym} DATA SUMMARY ===\n"
+                   f"Price: {cp:,.6g}\n"
+                   f"24h Change: {candidate['change']:+.2f}%\n"
+                   f"Volume (24h): ${candidate['vol_m']}M\n"
+                   f"4H Structure: {struct}\n"
+                   f"move_age_1h: {age} candles (gate: ≤5)\n")
+
+            if df_4h is not None and len(df_4h) >= 10:
+                h4 = df_4h
+                cls4 = h4["close"].values; ops4 = h4["open"].values
+                highs4 = h4["high"].values; lows4 = h4["low"].values
+                sh = []; sl_p = []
+                for i in range(1, len(highs4)-1):
+                    if highs4[i]>highs4[i-1] and highs4[i]>highs4[i+1]: sh.append(highs4[i])
+                    if lows4[i]<lows4[i-1] and lows4[i]<lows4[i+1]: sl_p.append(lows4[i])
+                smc += (f"4H Swing highs: {[round(x,4) for x in sh[-4:]]}\n"
+                        f"4H Swing lows: {[round(x,4) for x in sl_p[-4:]]}\n")
+
+            if df_1h is not None and len(df_1h) >= 5:
+                h1 = df_1h; cls1 = h1["close"].values; ops1 = h1["open"].values
+                last2_1h = [f"open={ops1[i]:,.4g} close={cls1[i]:,.4g}" for i in [-2,-1]]
+                smc += f"1H last 2: {last2_1h[0]} | {last2_1h[1]}\n"
+
+            if df_5m is not None and len(df_5m) >= 5:
+                h5 = df_5m; cls5 = h5["close"].values; lows5 = h5["low"].values; highs5 = h5["high"].values
+                smc += (f"5M last 5 lows: {[round(x,4) for x in lows5[-5:]]}\n"
+                        f"5M last 5 highs: {[round(x,4) for x in highs5[-5:]]}\n"
+                        f"5M last close: {cls5[-1]:,.6g}\n")
+
+            analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"])
+
+            # Claude analysis
+            analysis = ""; _claude_ok = False
+            for _attempt in range(3):
+                try:
+                    r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                        model="claude-opus-4-8", max_tokens=250,
+                        messages=[{"role":"user","content":analysis_prompt}])
+                    analysis = r2.content[0].text.strip()
+                    _claude_ok = True; break
+                except Exception as _ce:
+                    print(f"  [TEST] Claude attempt {_attempt+1} FAIL: {_ce}")
+                    if _attempt < 2: time.sleep(10)
+            if not _claude_ok:
+                print(f"  [TEST] {chosen_sym}: Claude failed 3 times — skipping"); continue
+
+            _ac = analysis.replace(",","")
+            def _p(label):
+                m = _re.search(rf"{label}[:\s]+([0-9.]+)", _ac, _re.IGNORECASE)
+                return float(m.group(1)) if m else 0.0
+            sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
+            scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
+
+            # Send analysis preview
+            emoji = "🟢" if candidate["change"] >= 0 else "🔴"
+            send_admin(
+                f"{emoji} <b>[TEST] {chosen_sym}</b>  {ist_str()}\n\n"
+                f"Price: <b>{cp:,.6g}</b> ({candidate['change']:+.2f}%)\n"
+                f"move_age: {age} candles\n\n"
+                f"<pre>{analysis[:700]}</pre>\n\n"
+                f"<i>- CLEXER SCALP V1 TEST -</i>")
+
+            if scan_signal_val == "WAIT":
+                print(f"  [TEST] {chosen_sym} → WAIT")
+                continue
+
+            scan_sl_raw = _p("SL")
+            if scan_sl_raw <= 0:
+                print(f"  [TEST] {chosen_sym}: could not parse SL — skipping"); continue
+
+            scan_entry = cp
+            sl_dist = abs(scan_entry - scan_sl_raw)
+            sl_pct  = sl_dist / scan_entry * 100
+
+            # Clamp SL to 1.5%-3%
+            if sl_pct < 1.5:
+                sl_dist = scan_entry * 0.015
+                sl_pct  = 1.5
+            elif sl_pct > 3.0:
+                print(f"  [TEST] {chosen_sym}: SL {sl_pct:.1f}% > 3% — too loose, skipping"); continue
+
+            scan_sl  = round(scan_entry - sl_dist if scan_signal_val == "BUY" else scan_entry + sl_dist, 6)
+            scan_tp1 = round(scan_entry + sl_dist * 2.0 if scan_signal_val == "BUY" else scan_entry - sl_dist * 2.0, 6)
+            scan_tp2 = round(scan_entry + sl_dist * 3.75 if scan_signal_val == "BUY" else scan_entry - sl_dist * 3.75, 6)
+            rr_actual = sl_dist * 2.0 / sl_dist  # always 2.0 by construction
+
+            # Check RR gate
+            if rr_actual < 2.0:
+                print(f"  [TEST] {chosen_sym}: RR {rr_actual:.2f} < 2 — skipping"); continue
+
+            arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
+            coin  = chosen_sym.replace("-USDT","")
+            demo_msg = (
+                f"<b>📣 [DEMO] {coin}-USDT</b>\n"
+                f"<b>{'─'*22}</b>\n\n"
+                f" TEST SIGNAL — SCALP V1\n"
+                f"  🕐 {ist_str()}\n\n"
+                f"{arrow} — <b>MARKET ENTRY</b>\n\n"
+                f"🎯 Entry: <b>{scan_entry:,.4g}</b>\n"
+                f"🛑 SL:    <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
+                f"💰 TP1:  <b>{scan_tp1:,.4g}</b>  (RR 1:2.0)\n"
+                f"🏆 TP2:  <b>{scan_tp2:,.4g}</b>  (RR 1:3.75)\n"
+                f"⏰ Timeout: 1H | move_age: {age}c\n\n"
+                f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>\n"
+                f"⚠️ <i>No real trade placed</i>"
+            )
+            send_telegram(demo_msg)
+
+            slot_data = {
+                "symbol": chosen_sym, "signal": scan_signal_val,
+                "entry": scan_entry, "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
+                "tp1_hit": False, "be_sl": 0, "created_at": time.time(),
+                "scan_ver": scan_ver,
+            }
+            with _demo_monitor_lock:
+                demo_list.append(slot_data)
+            signal_placed = True
+            print(f"  [TEST] {chosen_sym} {scan_signal_val} demo signal placed — scan{lbl}")
+
+        if not signal_placed:
+            tried_str = ", ".join(tried) if tried else "none"
+            send_admin(
+                f"⏸ <b>[TEST] No demo signal</b>  {ist_str()}\n\n"
+                f"Tried: <b>{tried_str}</b>\n\n"
+                f"All WAIT or failed gates (age/SL/RR).\n\n<i>- CLEXER SCALP V1 TEST -</i>")
+
+    except Exception as e:
+        send_admin(f"❌ [TEST] Scan error: {e}")
+        import traceback as _tb3; print(_tb3.format_exc())
+
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time, last_scan_tick_time
 
@@ -4154,6 +4568,7 @@ def main():
             print("  TV bridge OFFLINE - Binance fallback")
 
     threading.Thread(target=command_listener, daemon=True).start()
+    threading.Thread(target=_demo_monitor_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
@@ -4233,6 +4648,18 @@ def main():
                 print(f"  [AUTO-SCAN2] Scan2 at {_ist_now.strftime('%H')}:{ALT_SCAN2_MINUTE:02d} IST")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
+            # Test scan: every hour at :05 (if enabled)
+            global _test_scan1_last_hour, _test_scan2_last_hour
+            if TEST_SCAN_ENABLED and _ist_now.minute == TEST_SCAN_MINUTE:
+                if _test_scan1_last_hour != _ist_now.hour:
+                    _test_scan1_last_hour = _ist_now.hour
+                    print(f"  [TEST-SCAN1] Demo scan1 at {_ist_now.strftime('%H')}:{TEST_SCAN_MINUTE:02d} IST")
+                    if ADMIN_CHAT_ID:
+                        threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 1), daemon=True).start()
+                if _test_scan2_last_hour != _ist_now.hour:
+                    _test_scan2_last_hour = _ist_now.hour
+                    print(f"  [TEST-SCAN2] Demo scan2 at {_ist_now.strftime('%H')}:{TEST_SCAN_MINUTE:02d} IST")
+                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
