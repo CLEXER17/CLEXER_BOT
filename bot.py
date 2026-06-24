@@ -4374,9 +4374,31 @@ def _run_test_scan(cid, scan_ver: int):
             send_admin(f"[TEST] ❌ No coins found from BingX for scan{lbl}."); return
 
         # Check 4H structure
+        import pandas as _pd
+        def _check_4h_struct(df):
+            if df is None or len(df) < 8: return "NEUTRAL"
+            h = df["high"].values[-15:]; l = df["low"].values[-15:]; cls = df["close"].values[-15:]
+            sh = []; sl_s = []
+            for i in range(1, len(h)-1):
+                if h[i] > h[i-1] and h[i] > h[i+1]: sh.append(h[i])
+                if l[i] < l[i-1] and l[i] < l[i+1]: sl_s.append(l[i])
+            swing = "NEUTRAL"
+            if len(sh) >= 2 and len(sl_s) >= 2:
+                if sh[-1] > sh[-2] and sl_s[-1] > sl_s[-2]: swing = "BULLISH"
+                if sh[-1] < sh[-2] and sl_s[-1] < sl_s[-2]: swing = "BEARISH"
+            mid = cls[len(cls)//2]
+            trend = "NEUTRAL"
+            if mid > 0:
+                tp = (cls[-1] - mid) / mid * 100
+                if tp < -5: trend = "BEARISH"
+                elif tp > 5: trend = "BULLISH"
+            if swing == trend: return swing
+            if swing == "BULLISH" and trend == "BEARISH": return "BEARISH"
+            if swing == "BEARISH" and trend == "BULLISH": return "BULLISH"
+            return swing if swing != "NEUTRAL" else trend
         for t in top10:
-            df4 = get_klines(t["sym"], "4h", 30)
-            t["structure"] = check_4h_structure(df4)
+            df4 = bingx_klines(t["sym"], "4h", 30)
+            t["structure"] = _check_4h_struct(df4)
             t["df4h"] = df4
         structured = [t for t in top10 if t["structure"] != "NEUTRAL"]
         candidate_order = structured + [c for c in top10 if c not in structured]
@@ -4391,9 +4413,9 @@ def _run_test_scan(cid, scan_ver: int):
             tried.append(chosen_sym)
 
             # Fetch candles
-            df_4h = candidate.get("df4h") or get_klines(chosen_sym, "4h", 60)
-            df_1h = get_klines(chosen_sym, "1h", 40)
-            df_5m = get_klines(chosen_sym, "5m", 30)
+            df_4h = candidate.get("df4h") or bingx_klines(chosen_sym, "4h", 60)
+            df_1h = bingx_klines(chosen_sym, "1h", 40)
+            df_5m = bingx_klines(chosen_sym, "5m", 30)
             if df_4h is None or df_1h is None or df_5m is None:
                 continue
 
