@@ -1431,6 +1431,12 @@ def monitor_sl_tp(notify_fn=None):
                 is_scan = any(user.get(f"{p}symbol", "") == sym for p in _ALL_SLOT_PREFIXES)
                 is_known = is_btc or is_scan
 
+                # Skip entire position if user has this coin in nocopy — they manage it manually
+                _nocopy = set(user.get("nocopy_coins", []))
+                _base   = sym.split("-")[0].upper()
+                if _base in _nocopy or sym.upper() in _nocopy:
+                    continue
+
                 # ── Orphan: BingX has position, bot has no state → adopt it ──
                 # Also check adopted_symbols (multi-position tracking)
                 adopted = user.get("adopted_symbols", {})
