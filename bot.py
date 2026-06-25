@@ -173,6 +173,7 @@ def register_user(chat_id):
         registered_users.add(chat_id); save_users()
 
 broadcast_pending: dict = {}
+pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
 
 trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
@@ -2599,7 +2600,7 @@ def handle_command(text, chat_id, message=None):
         return
 
     if cmd in ("/start","/help"):
-        send_reply(chat_id, ADMIN_HELP if is_admin else FRIEND_HELP)
+        send_help_menu(chat_id, is_admin)
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear()
@@ -4245,6 +4246,156 @@ def handle_broadcast_message(chat_id, message):
     send_reply(chat_id, f"Broadcasting to {len(registered_users)+1} targets...")
     threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type), daemon=True).start()
 
+# ─── HELP BUTTON MENU ────────────────────────────────────────────────────────
+# Each category: (label, admin_only, [(cmd, emoji, short_description), ...])
+_HELP_CATS = {
+    "monitor": (
+        "📊 Status & Info", False, [
+            ("/status",   "📊", "Full bot status & positions"),
+            ("/trade",    "📈", "Active BTC + all scan trades"),
+            ("/price",    "💲", "Current BTC price"),
+            ("/session",  "🕐", "London / NY / Sleep session"),
+            ("/history",  "📜", "Last 5 BTC signals"),
+            ("/stats",    "🏆", "Win rate & trade statistics"),
+        ]
+    ),
+    "copyuser": (
+        "💰 My Copy Trade", False, [
+            ("/connect",     "🔗", "Link your BingX API key"),
+            ("/disconnect",  "🔌", "Remove your BingX API key"),
+            ("/copytrade",   "🔄", "Turn copy trading on / off"),
+            ("/setsize",     "💵", "Set margin per trade"),
+            ("/setleverage", "⚡", "Set manual leverage"),
+            ("/setrisk",     "🛡", "Auto-risk: set max $ loss/trade"),
+            ("/nocopy",      "🚫", "Block a coin from auto-copy"),
+            ("/mytrade",     "📋", "Your open position on BingX"),
+            ("/mysize",      "⚙️", "Your size, leverage & exposure"),
+            ("/myhistory",   "📊", "Your copy trade P&L history"),
+        ]
+    ),
+    "tradecontrol": (
+        "🎯 Trade Control", True, [
+            ("/close",     "❌", "Close active BTC trade"),
+            ("/sltobe",    "🛡", "Move SL to breakeven"),
+            ("/setsl",     "🔧", "Set custom SL price"),
+            ("/settp1",    "🎯", "Set custom TP1 price"),
+            ("/settp2",    "🏆", "Set custom TP2 price"),
+            ("/resetsl",   "🔄", "Reset SL streak & cooldown"),
+            ("/signal",    "⚡", "Force BTC signal scan now"),
+            ("/closescan", "🗑", "Clear all scan trades"),
+            ("/closetrade","❌", "Close specific coin position"),
+            ("/cancel",    "⛔", "Cancel pending broadcast"),
+        ]
+    ),
+    "scan": (
+        "🔍 Scan Control", True, [
+            ("/scan",      "🔍", "Force Scan1 + Scan2 now"),
+            ("/scan1",     "1️⃣", "Force Scan1 only"),
+            ("/scan2",     "2️⃣", "Force Scan2 only"),
+            ("/alt",       "🪙", "Manual Scan1 for a coin"),
+            ("/alt2",      "🪙", "Manual Scan2 for a coin"),
+            ("/test",      "🧪", "Demo scan — no real trades"),
+            ("/scancopy",  "📋", "Copy trade for scan signals on/off"),
+            ("/tradelog",  "📥", "Download trade history CSV"),
+            ("/demo",      "🎭", "Simulate a demo trade"),
+            ("/coin",      "🪙", "Manage coin scan settings"),
+        ]
+    ),
+    "copyadmin": (
+        "👥 Copy Admin", True, [
+            ("/allusers",  "👥", "Summary of all copy users"),
+            ("/users",     "📋", "List all users with status"),
+            ("/user",      "👤", "Detail for one user"),
+            ("/kick",      "🚫", "Remove user & cancel orders"),
+            ("/pauseuser", "⏸", "Pause / unpause a user"),
+            ("/ctstatus",  "🔍", "Failed users & active signal"),
+            ("/ctretry",   "🔄", "Retry failed copy trade"),
+            ("/ctclose",   "❌", "Close copy trade positions"),
+            ("/synccheck", "🔄", "Check BingX vs bot sync"),
+        ]
+    ),
+    "settings": (
+        "⚙️ Settings", True, [
+            ("/go",          "▶️", "Resume bot — start scanning"),
+            ("/pause",       "⏸", "Pause all bot activity"),
+            ("/btcmode",     "🔀", "Switch BTC prompt V7/V9"),
+            ("/btcanalysis", "📡", "Toggle scheduled BTC analysis"),
+            ("/chartson",    "📸", "Enable chart snapshots"),
+            ("/chartsoff",   "🚫", "Disable charts (saves credits)"),
+            ("/setinterval", "⏰", "Set scan interval in hours"),
+            ("/images",      "🖼", "Enable / disable chart images"),
+            ("/setimages",   "🖼", "Set chart timeframes"),
+            ("/news",        "📰", "Toggle crypto news feed"),
+            ("/miniapp",     "📱", "Pause / resume mini app"),
+        ]
+    ),
+    "tv": (
+        "📡 TV & Advanced", True, [
+            ("/tvstatus",    "📡", "TradingView bridge status"),
+            ("/tvstudies",   "📊", "Read RSI/EMA/MACD from TV"),
+            ("/calcstudies", "🧮", "Calculate indicators (BingX)"),
+            ("/scantv",      "🔀", "Toggle TV data for scans"),
+            ("/compare",     "⚖️", "4 parallel BTC analyses"),
+            ("/force_reload","🔄", "Reload TV bridge connection"),
+            ("/btcanalysis", "📡", "Toggle BTC analysis schedule"),
+        ]
+    ),
+    "broadcast": (
+        "📢 Broadcast & Channels", True, [
+            ("/broadcast",     "📢", "Message to all users"),
+            ("/channels",      "📡", "Show channel status"),
+            ("/pausechannel",  "⏸", "Pause a signal channel"),
+            ("/resumechannel", "▶️", "Resume a signal channel"),
+            ("/latestnews",    "📰", "Fetch latest crypto news"),
+        ]
+    ),
+}
+
+def _help_edit_or_send(chat_id, text, markup, message_id=None):
+    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+               "reply_markup": markup, "disable_web_page_preview": True}
+    if message_id:
+        payload["message_id"] = message_id
+        try:
+            requests.post(f"{base}/editMessageText", json=payload, timeout=10)
+        except Exception:
+            requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+    else:
+        requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+
+def send_help_menu(chat_id, is_admin, message_id=None):
+    rows = []
+    for cat_id, (label, admin_only, _) in _HELP_CATS.items():
+        if admin_only and not is_admin:
+            continue
+        rows.append([{"text": label, "callback_data": f"help_cat:{cat_id}"}])
+    markup = {"inline_keyboard": rows}
+    role = "👑 Admin" if is_admin else "👤 User"
+    text = (
+        f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
+        "Tap a category to see commands 👇"
+    )
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+def send_help_category(chat_id, cat_id, is_admin, message_id=None):
+    entry = _HELP_CATS.get(cat_id)
+    if not entry:
+        return
+    label, admin_only, cmds = entry
+    if admin_only and not is_admin:
+        return
+    rows = []
+    for cmd, emoji, desc in cmds:
+        rows.append([{"text": f"{emoji}  {cmd}  —  {desc}", "callback_data": f"help_cmd:{cmd}"}])
+    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    markup = {"inline_keyboard": rows}
+    text = f"<b>{label}</b>\n\n<i>Tap any command to run it instantly 👇</i>"
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+# ─── END HELP MENU ────────────────────────────────────────────────────────────
+
+
 def command_listener():
     global last_update_id
     print("[CMD] Listener started")
@@ -4263,9 +4414,42 @@ def command_listener():
                 cb = upd.get("callback_query")
                 if cb:
                     cb_data = cb.get("data",""); cb_cid = cb["from"]["id"]
+                    cb_msg_id = cb.get("message",{}).get("message_id")
+                    cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                   json={"callback_query_id": cb["id"]}, timeout=5)
-                    if str(cb_cid) == str(ADMIN_CHAT_ID):
+
+                    # Help menu navigation
+                    if cb_data == "help_main":
+                        send_help_menu(cb_cid, cb_is_admin, message_id=cb_msg_id)
+                    elif cb_data.startswith("help_cat:"):
+                        cat_id = cb_data.split(":", 1)[1]
+                        send_help_category(cb_cid, cat_id, cb_is_admin, message_id=cb_msg_id)
+                    elif cb_data.startswith("help_cmd:"):
+                        cmd_text = cb_data.split(":", 1)[1]
+                        _INPUT_PROMPTS = {
+                            "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
+                            "/setsize":     "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
+                            "/setleverage": "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
+                            "/setrisk":     "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>",
+                            "/setsl":       "🔧 <b>Set Stop Loss</b>\n\nType the SL price:\n<i>Example: <code>62000</code></i>",
+                            "/settp1":      "🎯 <b>Set TP1</b>\n\nType the TP1 price:\n<i>Example: <code>68500</code></i>",
+                            "/settp2":      "🏆 <b>Set TP2</b>\n\nType the TP2 price:\n<i>Example: <code>72000</code></i>",
+                            "/alt":         "🕐 <b>Set Scan1 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>02</code></i>",
+                            "/alt2":        "🕐 <b>Set Scan2 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>24</code></i>",
+                        }
+                        if cmd_text in _INPUT_PROMPTS:
+                            pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key"} if cmd_text == "/connect" else {"cmd": cmd_text}
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": cb_cid, "text": _INPUT_PROMPTS[cmd_text],
+                                      "parse_mode": "HTML"}, timeout=5)
+                        else:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": cb_cid, "text": f"▶️ Running <b>{cmd_text}</b>",
+                                      "parse_mode": "HTML"}, timeout=5)
+                            handle_command(cmd_text, cb_cid, {})
+
+                    elif cb_is_admin:
                         global btc_analysis_enabled
                         if cb_data == "btca_on":
                             btc_analysis_enabled = True
@@ -4291,6 +4475,30 @@ def command_listener():
                 register_user(cid)
                 if cid in broadcast_pending and not text.startswith("/"):
                     handle_broadcast_message(cid, msg); continue
+                # Pending input — user typed value after tapping a button
+                if cid in pending_input and not text.startswith("/"):
+                    pi = pending_input[cid]
+                    # /connect is two-step: api_key → secret
+                    if pi["cmd"] == "/connect":
+                        if pi.get("step") == "secret":
+                            api_key = pi["api_key"]
+                            api_secret = text.strip()
+                            del pending_input[cid]
+                            print(f"  [CMD] pending input resolved: /connect *** ***")
+                            handle_command(f"/connect {api_key} {api_secret}", cid, msg)
+                        else:
+                            # step 1: got api key, now ask for secret
+                            pending_input[cid] = {"cmd": "/connect", "step": "secret", "api_key": text.strip()}
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": cid,
+                                      "text": "🔑 <b>Connect BingX — Step 2/2</b>\n\nNow type your <b>Secret Key</b>:",
+                                      "parse_mode": "HTML"}, timeout=5)
+                    else:
+                        del pending_input[cid]
+                        full_cmd = f"{pi['cmd']} {text.strip()}"
+                        print(f"  [CMD] pending input resolved: {full_cmd}")
+                        handle_command(full_cmd, cid, msg)
+                    continue
                 if text.startswith("/"): handle_command(text, cid, msg)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
