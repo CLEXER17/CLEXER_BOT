@@ -169,7 +169,37 @@ trade_stats = {
     "scan_sl": 0, "scan_tp1": 0, "scan_tp2": 0, "scan_signals": 0,
 }
 
-STATE_FILE = os.path.join(DATA_DIR, "clexer_state.json")
+STATE_FILE    = os.path.join(DATA_DIR, "clexer_state.json")
+TRADE_LOG_CSV = os.path.join(DATA_DIR, "trade_history.csv")
+TRADE_LOG_WEBHOOK = os.getenv("TRADE_LOG_WEBHOOK", "")   # optional — set in Railway env vars
+
+_CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
+                 "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
+
+def _ensure_csv():
+    if not os.path.exists(TRADE_LOG_CSV):
+        import csv
+        with open(TRADE_LOG_CSV, "w", newline="") as f:
+            csv.writer(f).writerow(_CSV_HEADERS)
+
+def log_trade_event(row: dict):
+    """Append one trade event row to CSV and optionally POST to webhook."""
+    import csv
+    _ensure_csv()
+    ordered = {h: row.get(h, "") for h in _CSV_HEADERS}
+    try:
+        with open(TRADE_LOG_CSV, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=_CSV_HEADERS).writerow(ordered)
+    except Exception as e:
+        print(f"  [LOG] CSV write error: {e}")
+    if TRADE_LOG_WEBHOOK:
+        try:
+            requests.post(TRADE_LOG_WEBHOOK, json=ordered, timeout=8)
+        except Exception as e:
+            print(f"  [LOG] Webhook error: {e}")
+
+def _ist_str_now() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d %H:%M IST")
 
 def save_state():
     state = {
@@ -2196,6 +2226,9 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, "TP2", price)
             send_telegram(fmt_scan_update("TP2_HIT", price, t))
             ct.on_scan_tp2(sym)
+            log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+                "tp2_hit_time": _ist_str_now(), "result": "TP2",
+                "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
@@ -2203,12 +2236,15 @@ def _tick_one(ver: int, t: dict) -> bool:
             if tp1_hit:
                 t["tp1_hit"] = True
                 t["sl"] = entry
-                sl = entry  # update local var so SL-at-BE check works in THIS tick
+                sl = entry
                 trade_stats["scan_tp1"] += 1
                 send_telegram(fmt_scan_update("TP1_HIT", price, t))
                 ct.on_scan_tp1(sym)
+                log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+                    "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
+                    "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
 
-        sl_margin = sl * 0.002  # margin based on current SL (BE after TP1), not entry
+        sl_margin = sl * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
                  (sig == "SELL" and check_high > sl + sl_margin)
         if sl_hit:
@@ -2217,6 +2253,9 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, result, price)
             send_telegram(fmt_scan_update("SL_HIT", price, t))
             ct.on_scan_sl(sym)
+            log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+                "sl_hit_time": _ist_str_now(), "result": result,
+                "entry_price": entry, "sl_price": t.get("sl",0)})
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -3245,6 +3284,32 @@ def handle_command(text, chat_id, message=None):
             f"Scan1 still at: <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
             f"<i>- CLEXER V17.8.5 -</i>"); return
 
+    elif cmd == "/tradelog" and is_admin:
+        if not os.path.exists(TRADE_LOG_CSV):
+            send_reply(chat_id, "📂 No trade history yet. Trades are logged automatically after first signal."); return
+        try:
+            import csv
+            with open(TRADE_LOG_CSV, "r") as f:
+                rows = list(csv.DictReader(f))
+            if not rows:
+                send_reply(chat_id, "📂 Trade log is empty."); return
+            # Show last 10 rows as text summary
+            lines = ["<b>Trade Log (last 10)</b>\n"]
+            for r in rows[-10:]:
+                coin = r.get("coin","?"); direction = r.get("direction","?")
+                result = r.get("result","?"); sig_t = r.get("signal_time","")
+                entry = r.get("entry_price",""); tp_type = r.get("type","")
+                lines.append(f"[{tp_type}] {direction} {coin} @ {entry} → {result} | {sig_t}")
+            send_reply(chat_id, "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\nFile: trade_history.csv")
+            # Send the actual CSV file
+            with open(TRADE_LOG_CSV, "rb") as f:
+                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                    data={"chat_id": chat_id, "caption": "CLEXER Trade History"},
+                    files={"document": ("trade_history.csv", f, "text/csv")}, timeout=30)
+        except Exception as e:
+            send_reply(chat_id, f"❌ Error reading trade log: {e}")
+        return
+
     elif cmd == "/test" and is_admin:
         global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -3713,12 +3778,12 @@ def handle_command(text, chat_id, message=None):
                         f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V17.8.5 -</i>")
                     return
 
-                # ── Check slot availability (max 2 per scan version) ─────────
+                # ── Check slot availability (scan1=6 slots, scan2=2 slots) ──────
+                _max_slots = 6 if scan_ver == 1 else 2
                 my_list = _scan_list(scan_ver)
-                if len(my_list) >= 2:
+                if len(my_list) >= _max_slots:
                     send_reply(cid,
-                        f"🚫 <b>Scan{scan_ver} slots full</b>\n\n"
-                        f"Both scan{scan_ver} slots are occupied:\n" +
+                        f"🚫 <b>Scan{scan_ver} slots full ({_max_slots}/{_max_slots})</b>\n\n" +
                         "\n".join(f"  {'🟢' if x['signal']=='BUY' else '🔴'} {x['symbol']}" for x in my_list) +
                         f"\n\nWaiting for a trade to close before scanning again.\n\n<i>- CLEXER V17.8.5 -</i>")
                     return
@@ -4016,6 +4081,11 @@ Reasoning: [one line]"""
                         trade_stats["scan_signals"] += 1
                         save_state()
                         send_telegram(fmt_scan_signal(slot_data))
+                        log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
+                            "direction": scan_signal_val, "signal_time": _ist_str_now(),
+                            "entry_price": scan_entry, "sl_price": scan_sl,
+                            "tp1_price": scan_tp1, "tp2_price": scan_tp2,
+                            "entry_trigger_time": _ist_str_now(), "result": "open"})
                         sd["ver"] = scan_ver
                         ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
@@ -4193,11 +4263,25 @@ def command_listener():
         time.sleep(2)
 
 # --- MAIN ---------------------------------------------------------------------
-_auto_scan1_last_hour = -1  # tracks last IST hour scan1 ran
-_auto_scan2_last_hour = -1  # tracks last IST hour scan2 ran
+# ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
+SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
+    # AM
+    (1,2),(2,2),(3,2),(4,23),(5,2),(6,23),(8,2),(8,23),(11,2),
+    # PM
+    (12,3),(12,23),(13,7),(13,23),(14,23),(15,23),(16,23),(17,9),(19,4),(19,23),(20,23),(21,23),
+]))
+# Test demo fires 1 min after each scan1 time
+SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = [
+    ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN1_SCHEDULE
+]
+_scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
+_test_triggered_today:  set[tuple[int,int]] = set()
+_last_midnight_date = None   # for midnight reset
+
+ALT_SCAN_MINUTE  = 2        # kept for /alt command reference — not used for auto-trigger
+ALT_SCAN2_MINUTE = 24       # scan2 — disabled for auto-trigger (SCAN2_AUTO_ENABLED=False)
+SCAN2_AUTO_ENABLED = False   # set True to re-enable scan2 auto
 _auto_scan_last_hour  = -1  # legacy
-ALT_SCAN_MINUTE  = 2        # scan1 trigger minute — /alt MM
-ALT_SCAN2_MINUTE = 24       # scan2 trigger minute — /alt2 MM
 _scan_cycle_placed = set()  # coins signaled this cycle — prevents scan1+scan2 picking same coin
 _scan_cycle_lock   = __import__("threading").Lock()
 
@@ -4329,6 +4413,9 @@ def _demo_monitor_loop():
                     coin = sym.replace("-USDT","")
                     arrow = "🟢" if sig == "BUY" else "🔴"
                     if tp2_now:
+                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                            "tp2_hit_time":_ist_str_now(),"result":"TP2",
+                            "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         send_telegram(
                             f"{arrow} <b>[DEMO] {coin}-USDT — TP2 HIT ✅</b>\n"
                             f"──────────────────────\n"
@@ -4340,6 +4427,10 @@ def _demo_monitor_loop():
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
                         result = "BREAKEVEN" if tp1hit else "LOSS"
+                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                            "sl_hit_time":_ist_str_now(),"result":result,
+                            "entry_price":entry,"sl_price":be_sl if tp1hit and be_sl else sl,
+                            "tp1_price":tp1,"tp2_price":tp2})
                         send_telegram(
                             f"{arrow} <b>[DEMO] {coin}-USDT — {lbl} HIT ❌</b>\n"
                             f"──────────────────────\n"
@@ -4352,6 +4443,9 @@ def _demo_monitor_loop():
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
                         t["tp1_hit"] = True
                         t["be_sl"]   = be_sl_price
+                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                            "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
+                            "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         send_telegram(
                             f"{arrow} <b>[DEMO] {coin}-USDT — TP1 HIT 🎯</b>\n"
                             f"──────────────────────\n"
@@ -4361,6 +4455,9 @@ def _demo_monitor_loop():
                             f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
+                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                            "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
+                            "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         send_telegram(
                             f"{arrow} <b>[DEMO] {coin}-USDT — TIMEOUT ⏰</b>\n"
                             f"──────────────────────\n"
@@ -4637,6 +4734,10 @@ def _run_test_scan(cid, scan_ver: int):
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
+            log_trade_event({"type":"demo","coin":chosen_sym,"direction":scan_signal_val,
+                "signal_time":_ist_str_now(),"entry_price":scan_entry,
+                "sl_price":scan_sl,"tp1_price":scan_tp1,"tp2_price":scan_tp2,
+                "entry_trigger_time":_ist_str_now(),"result":"open"})
             signal_placed = True
             print(f"  [TEST] {chosen_sym} {scan_signal_val} demo signal placed — scan{lbl}")
 
@@ -4738,34 +4839,41 @@ def main():
                 last_news_check_time = now
                 threading.Thread(target=check_news, daemon=True).start()
 
-            # ── BTC scan at :21, Scan1 at ALT_SCAN_MINUTE, Scan2 at ALT_SCAN2_MINUTE ─
-            global _auto_scan1_last_hour, _auto_scan2_last_hour
+            # ── Scan schedule ──────────────────────────────────────────────────
+            global _last_midnight_date, _scan1_triggered_today, _test_triggered_today
             _ist_now = now_ist()
+            _today = _ist_now.date()
+            # Reset daily trigger sets at midnight
+            if _last_midnight_date != _today:
+                _last_midnight_date = _today
+                _scan1_triggered_today.clear()
+                _test_triggered_today.clear()
+
             _btc_fixed_hours = {7, 11, 15, 19, 23}
-            # Scan1: every hour at ALT_SCAN_MINUTE
-            if (_ist_now.minute == ALT_SCAN_MINUTE and _auto_scan1_last_hour != _ist_now.hour):
-                _auto_scan1_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN1] Scan1 at {_ist_now.strftime('%H')}:{ALT_SCAN_MINUTE:02d} IST")
+            _cur_hm = (_ist_now.hour, _ist_now.minute)
+
+            # Scan1: fixed schedule
+            if _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
+                _scan1_triggered_today.add(_cur_hm)
+                print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
-            # Scan2: every hour at ALT_SCAN2_MINUTE
-            if (_ist_now.minute == ALT_SCAN2_MINUTE and _auto_scan2_last_hour != _ist_now.hour):
-                _auto_scan2_last_hour = _ist_now.hour
-                print(f"  [AUTO-SCAN2] Scan2 at {_ist_now.strftime('%H')}:{ALT_SCAN2_MINUTE:02d} IST")
-                if ADMIN_CHAT_ID:
-                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
-            # Test scan: every hour at :05 (if enabled)
-            global _test_scan1_last_hour, _test_scan2_last_hour
-            if TEST_SCAN_ENABLED and _ist_now.minute == TEST_SCAN_MINUTE:
-                if _test_scan1_last_hour != _ist_now.hour:
-                    _test_scan1_last_hour = _ist_now.hour
-                    print(f"  [TEST-SCAN1] Demo scan1 at {_ist_now.strftime('%H')}:{TEST_SCAN_MINUTE:02d} IST")
+
+            # Scan2: disabled (SCAN2_AUTO_ENABLED=False)
+            if SCAN2_AUTO_ENABLED:
+                _s2_hm = (_ist_now.hour, ALT_SCAN2_MINUTE)
+                if _ist_now.minute == ALT_SCAN2_MINUTE and _s2_hm not in _scan1_triggered_today:
+                    _scan1_triggered_today.add(_s2_hm)
+                    print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H')}:{ALT_SCAN2_MINUTE:02d} IST")
                     if ADMIN_CHAT_ID:
-                        threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 1), daemon=True).start()
-                if _test_scan2_last_hour != _ist_now.hour:
-                    _test_scan2_last_hour = _ist_now.hour
-                    print(f"  [TEST-SCAN2] Demo scan2 at {_ist_now.strftime('%H')}:{TEST_SCAN_MINUTE:02d} IST")
-                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 2), daemon=True).start()
+                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
+
+            # Test demo: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
+            if TEST_SCAN_ENABLED and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
+                _test_triggered_today.add(_cur_hm)
+                print(f"  [TEST-SCAN] Demo scan at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
+                if ADMIN_CHAT_ID:
+                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
