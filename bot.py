@@ -2232,7 +2232,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
-            tp1_hit = (sig == "BUY" and check_high >= tp1) or (sig == "SELL" and check_low <= tp1)
+            # Use current mark price only (not wick) — prevents false triggers from brief spikes
+            tp1_hit = (sig == "BUY" and price >= tp1) or (sig == "SELL" and price <= tp1)
             if tp1_hit:
                 t["tp1_hit"] = True
                 t["sl"] = entry
@@ -3303,7 +3304,7 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\nFile: trade_history.csv")
             # Send the actual CSV file
             with open(TRADE_LOG_CSV, "rb") as f:
-                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
                     data={"chat_id": chat_id, "caption": "CLEXER Trade History"},
                     files={"document": ("trade_history.csv", f, "text/csv")}, timeout=30)
         except Exception as e:
@@ -3805,6 +3806,7 @@ def handle_command(text, chat_id, message=None):
                 MAX_TRIES = 3
                 signal_placed = False
                 tried = []
+                skip_log = []   # tracks why each coin was skipped
 
                 for candidate in candidate_order[:MAX_TRIES + 3]:  # a few extras in case of skips
                     if signal_placed: break
@@ -3816,6 +3818,7 @@ def handle_command(text, chat_id, message=None):
 
                     # Skip if already in active trade
                     if chosen_sym in _all_active_scan_syms():
+                        skip_log.append(f"⏭ {chosen_sym}: already in active trade")
                         print(f"  [SCAN] Skip {chosen_sym} — already active")
                         continue
 
@@ -3876,6 +3879,7 @@ def handle_command(text, chat_id, message=None):
                         return True
 
                     if not _integrity_ok(df_4h, df_1h, df_5m, cp, f" {chosen_sym}"):
+                        skip_log.append(f"⚠️ {chosen_sym}: candle data mismatch (integrity fail)")
                         print(f"  [SCAN] {chosen_sym} integrity fail — trying next coin")
                         continue   # skip to next candidate
 
@@ -3937,6 +3941,7 @@ def handle_command(text, chat_id, message=None):
                         elif _gain_10 > 40 and _last_move_pct < 0:
                             _skip_reason=f"parabolic +{_gain_10:.0f}% with red close"
                         if _skip_reason:
+                            skip_log.append(f"🚫 {chosen_sym}: pre-filter blocked ({_skip_reason})")
                             print(f"  [SCAN] {chosen_sym} pre-filter blocked: {_skip_reason} — trying next")
                             send_reply(cid, f"⏸ {chosen_sym} blocked ({_skip_reason}) — trying next coin...")
                             continue   # try next candidate
@@ -4042,12 +4047,18 @@ Reasoning: [one line]"""
                         f"⚠️ <i>Not financial advice — CLEXER V17.8.5</i>")
 
                     if scan_signal_val == "WAIT":
+                        # Extract reasoning from Claude's analysis for the skip log
+                        _wait_reason = ""
+                        _r_match = _re.search(r"[Rr]easoning[:\s]+(.+)", analysis)
+                        if _r_match: _wait_reason = _r_match.group(1).strip()[:80]
+                        skip_log.append(f"⏸ {chosen_sym}: Claude → WAIT" + (f" ({_wait_reason})" if _wait_reason else ""))
                         print(f"  [SCAN] {chosen_sym} → WAIT — trying next coin")
                         continue   # try next candidate
 
                     # ── Dedup: skip if other scan version already signaled this coin this cycle ──
                     with _scan_cycle_lock:
                         if chosen_sym in _scan_cycle_placed:
+                            skip_log.append(f"⏭ {chosen_sym}: already signaled by other scan this cycle")
                             print(f"  [SCAN] {chosen_sym} already signaled by other scan this cycle — skipping")
                             continue
                         _scan_cycle_placed.add(chosen_sym)
@@ -4059,11 +4070,15 @@ Reasoning: [one line]"""
 
                     if scan_sl > 0:
                         sl_dist = abs(scan_entry - scan_sl)
-                        min_sl  = scan_entry * 0.015
-                        if sl_dist < min_sl:
-                            sl_dist = min_sl
-                            scan_sl = round(scan_entry - sl_dist if scan_signal_val == "BUY"
-                                            else scan_entry + sl_dist, 6)
+                        sl_pct  = sl_dist / scan_entry * 100
+                        if sl_pct < 1.0:
+                            skip_log.append(f"⚠️ {chosen_sym}: SL {sl_pct:.2f}% < 1.0% — too tight, skipping")
+                            print(f"  [SCAN] {chosen_sym}: SL {sl_pct:.2f}% < 1.0% — skipping")
+                            continue
+                        if sl_pct > 5.0:
+                            skip_log.append(f"⚠️ {chosen_sym}: SL {sl_pct:.2f}% > 5.0% — too loose, skipping")
+                            print(f"  [SCAN] {chosen_sym}: SL {sl_pct:.2f}% > 5.0% — skipping")
+                            continue
                         scan_tp1 = round(scan_entry + sl_dist*1.5 if scan_signal_val=="BUY"
                                          else scan_entry - sl_dist*1.5, 6)
                         scan_tp2 = round(scan_entry + sl_dist*3.0 if scan_signal_val=="BUY"
@@ -4089,8 +4104,14 @@ Reasoning: [one line]"""
                         sd["ver"] = scan_ver
                         ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
+                        # Send skip summary explaining why previous coins were skipped
+                        if skip_log:
+                            send_reply(cid,
+                                f"📋 <b>Why {chosen_sym} was picked:</b>\n\n"
+                                + "\n".join(skip_log) + f"\n\n✅ <b>{chosen_sym}</b>: Claude → {scan_signal_val} — signal placed")
                         signal_placed = True
                     else:
+                        skip_log.append(f"⚠️ {chosen_sym}: could not parse SL from Claude output")
                         print(f"  [SCAN] {chosen_sym} — could not parse SL, trying next")
                         continue
 
