@@ -2810,23 +2810,44 @@ def handle_command(text, chat_id, message=None):
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
                     f"TP1:{'✅' if dc.get('tp1_hit') else dc.get('tp1',0):,.4g}  P/L:{_pnl:+.2f}%")
         _ist_now = now_ist()
+        _now_hm  = (_ist_now.hour, _ist_now.minute)
+        # Next BTC scan
         _scan_hrs = {7, 11, 15, 19, 23}
         _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
-        _next_alt_scan = f"{_ist_now.hour}:{ALT_SCAN_MINUTE:02d}" if _ist_now.minute < ALT_SCAN_MINUTE else f"{(_ist_now.hour+1)%24}:{ALT_SCAN_MINUTE:02d}"
-        _scan_status = "🟢 ON" if not bot_paused.is_set() and btc_analysis_enabled else "🔴 OFF"
-        _alt_scan_status = "🟢 ON" if not bot_paused.is_set() else "🔴 OFF (bot paused)"
+        # Next Alt scan — from SCAN1_SCHEDULE (exact hour+minute pairs)
+        _future_slots = [(h, m) for h, m in SCAN1_SCHEDULE if (h, m) > _now_hm]
+        if _future_slots:
+            _nh, _nm = _future_slots[0]
+            _next_alt_scan = f"{_nh}:{_nm:02d} IST"
+        else:
+            _nh, _nm = SCAN1_SCHEDULE[0]
+            _next_alt_scan = f"{_nh}:{_nm:02d} IST (tomorrow)"
+        # Flags
+        _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
+        _alt_flag    = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
+        _charts_flag = "✅ ON"  if SEND_CHARTS                       else "❌ OFF"
+        _news_flag   = "✅ ON"  if SEND_NEWS                         else "❌ OFF"
+        _btcmode_lbl = "V7 Classic" if BTC_PROMPT_MODE == "V7" else "V9 Current"
+        _scancopy_flag = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
+        # Copy trade: per-user for non-admin, global active users count for admin
+        _user_ct = ct._get(str(chat_id))
+        _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
         send_reply(chat_id,
-            f"<b>CLEXER V17.8.5</b>\n\nBot: {st}\n{cd}"
-            f"Session: {get_session()} {'active' if is_trading_hours() else 'inactive'}\n"
-            f"IST: {ist_str()}\n"
-            f"BTC Scan: {_scan_status} | Alt Scan: {_alt_scan_status}\n"
-            f"Next BTC scan: <b>{_next_btc_scan} IST</b> | Alt scan: <b>{_next_alt_scan} IST</b>\n"
-            f"MinConf: {required_confidence()} | Consec SL: {trade_stats['consecutive_sl']}\n"
-            + (f"Users: {len(registered_users)}\n" if is_admin else "")
-            + f"\nSource: <b>{src}</b>\nMode: <b>{'NEW (TV)' if is_tv_online() else 'OLD (Binance)'}</b>\n"
-            + (f"TV: {tv_status}\n" if is_admin else "")
-            + (f"Charts: {'ON' if SEND_CHARTS else 'OFF'} | News: {'ON' if SEND_NEWS else 'OFF'}\n\n" if is_admin else "\n")
-            + f"<b>BTC Trade:</b>\n{ti}"
+            f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
+            f"🤖 Bot:        <b>{st}</b>\n"
+            f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
+            f"🔍 Alt Scan:   <b>{_alt_flag}</b>\n"
+            f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
+            f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
+            f"🖼  Charts:     <b>{_charts_flag}</b>\n"
+            f"📰 News:       <b>{_news_flag}</b>\n"
+            f"\n⏰ Next BTC scan:  <b>{_next_btc_scan} IST</b>\n"
+            f"⏰ Next Alt scan:  <b>{_next_alt_scan}</b>\n"
+            f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
+            + (f"👥 Users: {len(registered_users)}\n" if is_admin else "")
+            + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
+            + (f"{cd}" if cd else "")
+            + f"\n<b>BTC Trade:</b>\n{ti}"
             + scan_lines)
 
     elif cmd == "/price":
