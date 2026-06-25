@@ -119,7 +119,7 @@ scan_history          = []   # closed scan trades — appended on TP/SL/missed
 trade_outcomes        = []
 force_scan            = threading.Event()
 bot_paused            = threading.Event()
-btc_analysis_enabled  = True   # toggle via /btcanalysis on|off or inline button
+btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 last_update_id        = 0
 last_force_scan_time  = 0
 last_signal_scan_time = 0
@@ -174,6 +174,7 @@ def register_user(chat_id):
 
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
+_last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
 
 trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
@@ -182,8 +183,40 @@ trade_stats = {
     "scan_sl": 0, "scan_tp1": 0, "scan_tp2": 0, "scan_signals": 0,
 }
 
-STATE_FILE    = os.path.join(DATA_DIR, "clexer_state.json")
-TRADE_LOG_CSV = os.path.join(DATA_DIR, "trade_history.csv")
+STATE_FILE       = os.path.join(DATA_DIR, "clexer_state.json")
+TRADE_LOG_CSV    = os.path.join(DATA_DIR, "trade_history.csv")
+API_COST_LOG     = os.path.join(DATA_DIR, "api_cost_log.csv")
+
+# Opus 4-8 pricing per token
+_OPUS_IN_COST  = 15.0 / 1_000_000   # $15 per 1M input tokens
+_OPUS_OUT_COST = 75.0 / 1_000_000   # $75 per 1M output tokens
+# Haiku 4-5 pricing per token
+_HAIKU_IN_COST  = 0.80 / 1_000_000
+_HAIKU_OUT_COST = 4.0  / 1_000_000
+
+def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens: int):
+    """Log every Claude API call with token count and cost to CSV."""
+    import csv
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    if "haiku" in model:
+        cost = input_tokens * _HAIKU_IN_COST + output_tokens * _HAIKU_OUT_COST
+    else:
+        cost = input_tokens * _OPUS_IN_COST  + output_tokens * _OPUS_OUT_COST
+    headers = ["date","time","call_type","model","input_tokens","output_tokens","cost_usd"]
+    row = [date_str, time_str, call_type, model, input_tokens, output_tokens, f"{cost:.6f}"]
+    write_header = not os.path.exists(API_COST_LOG)
+    try:
+        with open(API_COST_LOG, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(headers)
+            w.writerow(row)
+    except Exception as e:
+        print(f"  [API LOG] {e}")
 TRADE_LOG_WEBHOOK = os.getenv("TRADE_LOG_WEBHOOK", "")   # optional — set in Railway env vars
 
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
@@ -1530,6 +1563,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                 model="claude-opus-4-8", max_tokens=1200,
                 messages=[{"role": "user", "content": content}])
+            _log_api_usage("btc_analysis", "claude-opus-4-8",
+                           msg.usage.input_tokens, msg.usage.output_tokens)
             raw = msg.content[0].text.strip() if msg.content else ""
             if raw: break
             time.sleep(2)
@@ -1542,6 +1577,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                     msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                         model="claude-opus-4-8", max_tokens=1200,
                         messages=[{"role": "user", "content": content_text}])
+                    _log_api_usage("btc_analysis_textonly", "claude-opus-4-8",
+                                   msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip() if msg.content else ""
                     if raw: break
                 except Exception as e2: print(f"  [CLAUDE] text-only retry: {e2}")
@@ -1656,6 +1693,8 @@ def b1_analyze(ticker, data, use_tv=False):
             model="claude-opus-4-8", max_tokens=2000,
             system="You are a trading signal bot. Respond with ONLY a JSON object. No reasoning, no steps, no text before or after the JSON.",
             messages=[{"role": "user", "content": prompt}])
+        _log_api_usage("btc_b1", "claude-opus-4-8",
+                       msg.usage.input_tokens, msg.usage.output_tokens)
         raw = msg.content[0].text.strip() if msg.content else ""
     except Exception as e:
         print(f"  [B1 CLAUDE] {e}"); return None, label
@@ -1841,6 +1880,8 @@ def send_reply(chat_id, text, reply_markup=None):
     cid_str = str(chat_id)
     if cid_str in _reply_capture:
         _reply_capture[cid_str]["texts"].append(text)
+        if reply_markup:
+            _reply_capture[cid_str]["markup"] = reply_markup
         return
     try:
         payload = {"chat_id": chat_id, "text": text,
@@ -2408,6 +2449,8 @@ def check_news(force=False):
             resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                 model="claude-haiku-4-5-20251001", max_tokens=600,
                 messages=[{"role":"user","content":f"BTC: ${btc_price:,.0f}\n{news_block}\n\nReturn JSON array HIGH/MEDIUM impact only. Fields: index,impact(BULLISH/BEARISH/NEUTRAL),strength(HIGH/MEDIUM),reason. Empty [] if none. JSON only."}])
+            _log_api_usage("news", "claude-haiku-4-5-20251001",
+                           resp.usage.input_tokens, resp.usage.output_tokens)
             analyzed = json.loads(resp.content[0].text.strip().replace("```json","").replace("```","").strip())
             for item in analyzed:
                 idx = item.get("index",-1)
@@ -2577,7 +2620,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
 def handle_command(text, chat_id, message=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour
@@ -2896,25 +2939,32 @@ def handle_command(text, chat_id, message=None):
 
     elif cmd == "/miniapp":
         if not is_admin: return
+        _mini_btns = {"inline_keyboard": [[
+            {"text": "▶️  Resume (Live)",       "callback_data": "miniapp_resume"},
+            {"text": "⏸  Pause (Maintenance)", "callback_data": "miniapp_pause"}]]}
         sub = parts[1].lower() if len(parts) > 1 else ""
+        if not sub:
+            send_reply(chat_id,
+                "<b>Mini App Control</b>\n\n"
+                "Tap a button to pause or resume the mini app.\n\n"
+                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
+            return
         msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
         if sub in ("pause", "off", "maintenance"):
             on = True
         elif sub in ("resume", "on", "live"):
-            on = False
-            msg = "Live"
+            on = False; msg = "Live"
         else:
-            send_reply(chat_id, "Usage:\n/miniapp pause [message]\n/miniapp resume")
-            return
+            send_reply(chat_id, "Usage:\n/miniapp pause\n/miniapp resume", reply_markup=_mini_btns); return
         if CLEXER_API_URL:
             try:
                 hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
-                r = requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": on, "msg": msg}, headers=hdrs, timeout=5)
-                send_reply(chat_id, f"🔧 Mini App {'PAUSED ⏸' if on else 'RESUMED ▶️'}\nMessage: {msg}")
+                requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": on, "msg": msg}, headers=hdrs, timeout=5)
+                send_reply(chat_id, f"🔧 Mini App {'⏸ PAUSED' if on else '▶️ RESUMED'}\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
             except Exception as e:
-                send_reply(chat_id, f"Error: {e}")
+                send_reply(chat_id, f"Error: {e}", reply_markup=_mini_btns)
         else:
-            send_reply(chat_id, "CLEXER_API_URL not set")
+            send_reply(chat_id, "CLEXER_API_URL not set", reply_markup=_mini_btns)
 
     elif cmd == "/close":
         t = active_trade
@@ -3002,6 +3052,8 @@ def handle_command(text, chat_id, message=None):
                     msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                         model="claude-opus-4-8", max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
+                    _log_api_usage("compare_v9_bingx", "claude-opus-4-8",
+                                   msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip()
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "BingX"; sig["prompt_mode"] = "V9+BingX"
@@ -3023,6 +3075,8 @@ def handle_command(text, chat_id, message=None):
                     msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                         model="claude-opus-4-8", max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
+                    _log_api_usage("compare_v9_tv", "claude-opus-4-8",
+                                   msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip()
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "TV"; sig["prompt_mode"] = "V9+TV"
@@ -3103,41 +3157,30 @@ def handle_command(text, chat_id, message=None):
         send_reply(chat_id, "SL streak + cooldown reset.")
 
     elif cmd == "/btcmode":
+        _bmode_btns = {"inline_keyboard": [[
+            {"text": "🔵  V7 Classic (on)",    "callback_data": "btcmode_v7"},
+            {"text": "🟠  V9 Current (off)",   "callback_data": "btcmode_v9"}]]}
+        mode_label = "🔵 V7 CLASSIC" if BTC_PROMPT_MODE == "V7" else "🟠 V9 CURRENT"
         if len(parts) < 2:
-            mode_label = "V7 CLASSIC" if BTC_PROMPT_MODE == "V7" else "V9 CURRENT"
             send_reply(chat_id,
-                f"<b>BTC Prompt Mode</b>\n\n"
-                f"Current: <b>{mode_label}</b>\n\n"
-                f"/btcmode on  — V7 Classic\n"
-                f"  TV/BingX split, no CRITICAL header\n"
-                f"  Scan: narrated, min 2 pause candles, no Rule 8\n\n"
-                f"/btcmode off — V9 Current (default)\n"
-                f"  Always new prompt, CRITICAL JSON header\n"
-                f"  Scan: silent, min 3 pause candles, Rule 8 hard block")
+                f"<b>BTC Prompt Mode</b>\n\nCurrent: <b>{mode_label}</b>\n\n"
+                f"<b>V7 Classic</b> — TV/BingX split, narrated scan, no Rule 8\n"
+                f"<b>V9 Current</b> — CRITICAL header, silent scan, Rule 8 hard block\n\n"
+                f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_bmode_btns)
         elif parts[1].lower() == "on":
             BTC_PROMPT_MODE = "V7"; save_settings()
             send_reply(chat_id,
-                f"<b>BTC Mode → V7 CLASSIC</b> ✅\n\n"
-                f"Using CLEXER_V7_CLASSIC prompts:\n"
-                f"• TV online → build_new_prompt_v7 (10-step, no CRITICAL)\n"
-                f"• TV offline → build_old_prompt_v7 (BingX + session notes)\n\n"
-                f"Scan logic: V7 mode\n"
-                f"• Narrated 5 steps | min 2 pause candles\n"
-                f"• No Rule 8 hard block | no pre-filter\n\n"
-                f"<i>- CLEXER V17.8.5 -</i>")
+                f"<b>BTC Mode → 🔵 V7 CLASSIC</b> ✅\n\n"
+                f"Narrated scan | min 2 pause candles | no Rule 8\n\n"
+                f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_bmode_btns)
         elif parts[1].lower() == "off":
             BTC_PROMPT_MODE = "V9"; save_settings()
             send_reply(chat_id,
-                f"<b>BTC Mode → V9 CURRENT</b> ✅\n\n"
-                f"Using CLEXER_V9_CURRENT prompts:\n"
-                f"• Always new prompt (TV or BingX)\n"
-                f"• CRITICAL JSON-only header\n\n"
-                f"Scan logic: V9 mode\n"
-                f"• Silent output | min 3 pause candles\n"
-                f"• Rule 8 hard block | post-pump pre-filter\n\n"
-                f"<i>- CLEXER V17.8.5 -</i>")
+                f"<b>BTC Mode → 🟠 V9 CURRENT</b> ✅\n\n"
+                f"CRITICAL header | silent scan | Rule 8 hard block\n\n"
+                f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_bmode_btns)
         else:
-            send_reply(chat_id, "Usage: /btcmode on|off\n\non = V7 Classic\noff = V9 Current (default)")
+            send_reply(chat_id, "Usage: /btcmode on|off", reply_markup=_bmode_btns)
 
 
     elif cmd == "/setinterval":
@@ -3150,29 +3193,55 @@ def handle_command(text, chat_id, message=None):
             except: send_reply(chat_id, "Usage: /setinterval 4")
 
     elif cmd == "/images":
+        _img_btns = {"inline_keyboard": [[
+            {"text": "🖼  ON",  "callback_data": "images_on"},
+            {"text": "🚫  OFF", "callback_data": "images_off"}]]}
         if len(parts)<2:
-            send_reply(chat_id, f"Charts: {'ON' if SEND_CHARTS else 'OFF'}\nTFs: {', '.join(CHART_TFS).upper()}\n\nUsage: /images on|off\n(OFF by default)")
+            send_reply(chat_id,
+                f"<b>Chart Images</b>\n\nStatus: <b>{'✅ ON' if SEND_CHARTS else '❌ OFF'}</b>\n"
+                f"TFs: <b>{', '.join(CHART_TFS).upper()}</b>\n\n<i>— CLEXER V17.8.5 —</i>",
+                reply_markup=_img_btns)
         elif parts[1].lower()=="on":
             SEND_CHARTS = True; save_settings()
-            send_reply(chat_id, f"Charts ON - posting to channel only\nTFs: {', '.join(CHART_TFS).upper()}")
+            send_reply(chat_id, f"✅ <b>Charts ON</b>\nTFs: {', '.join(CHART_TFS).upper()}\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_img_btns)
         elif parts[1].lower()=="off":
-            SEND_CHARTS = False; save_settings(); send_reply(chat_id, "Charts OFF")
-        else: send_reply(chat_id, "Usage: /images on|off")
+            SEND_CHARTS = False; save_settings()
+            send_reply(chat_id, "❌ <b>Charts OFF</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_img_btns)
+        else: send_reply(chat_id, "Usage: /images on|off", reply_markup=_img_btns)
 
     elif cmd == "/setimages":
-        if len(parts)<2: send_reply(chat_id, f"Current: {', '.join(CHART_TFS).upper()}\nUsage: /setimages weekly,4h,1h,5m")
+        _tf_btns = {"inline_keyboard": [
+            [{"text": "📅  Weekly", "callback_data": "setimg:weekly"},
+             {"text": "📊  4H",     "callback_data": "setimg:4h"}],
+            [{"text": "📈  1H",     "callback_data": "setimg:1h"},
+             {"text": "⏱  15M",    "callback_data": "setimg:15m"}],
+            [{"text": "⚡  5M",     "callback_data": "setimg:5m"}]]}
+        if len(parts)<2:
+            send_reply(chat_id,
+                f"<b>Chart Timeframes</b>\n\nCurrent: <b>{', '.join(CHART_TFS).upper()}</b>\n\n"
+                f"<i>Tap to toggle a timeframe, or use:\n/setimages weekly,4h,1h,5m</i>",
+                reply_markup=_tf_btns)
         else:
-            valid = {"weekly","4h","1h","5m"}
+            valid = {"weekly","4h","1h","15m","5m"}
             chosen = [tf.strip().lower() for tf in parts[1].split(",") if tf.strip().lower() in valid]
-            if not chosen: send_reply(chat_id, "No valid TFs. Use: weekly, 4h, 1h, 5m")
-            else: CHART_TFS = chosen; save_settings(); send_reply(chat_id, f"Chart TFs: {', '.join(CHART_TFS).upper()}")
+            if not chosen: send_reply(chat_id, "No valid TFs. Use: weekly, 4h, 1h, 15m, 5m", reply_markup=_tf_btns)
+            else: CHART_TFS = chosen; save_settings(); send_reply(chat_id, f"✅ Chart TFs: <b>{', '.join(CHART_TFS).upper()}</b>", reply_markup=_tf_btns)
 
     elif cmd == "/news":
+        _news_btns = {"inline_keyboard": [[
+            {"text": "📰  ON",  "callback_data": "news_on"},
+            {"text": "🚫  OFF", "callback_data": "news_off"}]]}
         if len(parts)<2:
-            send_reply(chat_id, f"News: {'ON' if SEND_NEWS else 'OFF (default)'}\nUsage: /news on|off")
-        elif parts[1].lower()=="on":  SEND_NEWS = True;  save_settings(); send_reply(chat_id, f"News ON - {len(NEWS_SOURCES)} sources")
-        elif parts[1].lower()=="off": SEND_NEWS = False; save_settings(); send_reply(chat_id, "News OFF")
-        else: send_reply(chat_id, "Usage: /news on|off")
+            send_reply(chat_id,
+                f"<b>Crypto News</b>\n\nStatus: <b>{'✅ ON' if SEND_NEWS else '❌ OFF'}</b>\n\n<i>— CLEXER V17.8.5 —</i>",
+                reply_markup=_news_btns)
+        elif parts[1].lower()=="on":
+            SEND_NEWS = True; save_settings()
+            send_reply(chat_id, f"✅ <b>News ON</b> — {len(NEWS_SOURCES)} sources\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_news_btns)
+        elif parts[1].lower()=="off":
+            SEND_NEWS = False; save_settings()
+            send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_news_btns)
+        else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
 
     elif cmd == "/latestnews":
         send_reply(chat_id, "Fetching news (~15s)...")
@@ -3330,6 +3399,45 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, f"❌ Error reading trade log: {e}")
         return
 
+    elif cmd == "/report" and is_admin:
+        if not os.path.exists(API_COST_LOG):
+            send_reply(chat_id, "📊 No API cost data yet. Data is logged from the next Claude call."); return
+        try:
+            import csv
+            from collections import defaultdict
+            with open(API_COST_LOG, "r") as f:
+                rows = list(csv.DictReader(f))
+            if not rows:
+                send_reply(chat_id, "📊 API cost log is empty."); return
+            # Group by date
+            daily = defaultdict(lambda: {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0})
+            for r in rows:
+                d = r.get("date","?")
+                daily[d]["calls"]        += 1
+                daily[d]["input_tokens"] += int(r.get("input_tokens", 0))
+                daily[d]["output_tokens"]+= int(r.get("output_tokens", 0))
+                daily[d]["cost"]         += float(r.get("cost_usd", 0))
+            # Build text summary (last 14 days)
+            lines = ["📊 <b>Claude API Cost Report</b>\n"]
+            total_cost = 0.0
+            for date in sorted(daily.keys())[-14:]:
+                d = daily[date]
+                total_tok = d["input_tokens"] + d["output_tokens"]
+                lines.append(
+                    f"<b>{date}</b>  {d['calls']} calls  "
+                    f"{total_tok:,} tokens  <b>${d['cost']:.4f}</b>")
+                total_cost += d["cost"]
+            lines.append(f"\n<b>Total (shown): ${total_cost:.4f}</b>")
+            send_reply(chat_id, "\n".join(lines))
+            # Send full CSV
+            with open(API_COST_LOG, "rb") as f:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+                    data={"chat_id": chat_id, "caption": "CLEXER API Cost Log"},
+                    files={"document": ("api_cost_log.csv", f, "text/csv")}, timeout=30)
+        except Exception as e:
+            send_reply(chat_id, f"❌ Error: {e}")
+        return
+
     elif cmd == "/test" and is_admin:
         global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -3385,17 +3493,19 @@ def handle_command(text, chat_id, message=None):
                 f"<i>- CLEXER SCALP V1 TEST -</i>"); return
 
     elif cmd == "/scancopy" and is_admin:
+        _sc_btns = {"inline_keyboard": [[
+            {"text": "✅  ON",  "callback_data": "scancopy_on"},
+            {"text": "❌  OFF", "callback_data": "scancopy_off"}]]}
         if len(parts) < 2 or parts[1].lower() not in ("on","off"):
-            state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
+            state = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
             send_reply(chat_id,
-                f"<b>Scan Copy Trade:</b> {state}\n\n"
-                "Usage: <code>/scancopy on</code> or <code>/scancopy off</code>\n\n"
-                "When ON — /scan will auto-place trades on copy users for the chosen alt coin.\n"
-                "When OFF — /scan gives analysis only, no trade placed.\n\n"
-                "<i>- CLEXER V17.8.5 -</i>"); return
+                f"<b>Scan Copy Trade</b>\n\nStatus: <b>{state}</b>\n\n"
+                "ON → /scan auto-places trades on copy users.\n"
+                "OFF → analysis only, no trades placed.\n\n"
+                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_sc_btns); return
         ct.set_scan_ct(parts[1].lower() == "on")
-        state = "ON ✅" if ct.SCAN_CT_ENABLED else "OFF ❌"
-        send_reply(chat_id, f"✅ Scan copy trade is now <b>{state}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
+        state = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
+        send_reply(chat_id, f"<b>Scan Copy Trade → {state}</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_sc_btns)
 
     elif cmd in ("/readindicators", "/checktvdata") and is_admin:
         if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
@@ -4038,6 +4148,8 @@ Reasoning: [one line]"""
                             r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                                 model="claude-opus-4-8", max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
+                            _log_api_usage(f"scan{ver}_{chosen_sym}", "claude-opus-4-8",
+                                           r2.usage.input_tokens, r2.usage.output_tokens)
                             analysis = r2.content[0].text.strip()
                             _claude_ok = True
                             break
@@ -4224,6 +4336,8 @@ Reasoning: [one line]"""
                         f"5. Confidence: HIGH / MED / LOW\n"
                         f"6. Reasoning (2-3 lines max)\n\n"
                         f"Be practical and concise. No fluff."}])
+                _log_api_usage(f"coin_{sym}", "claude-haiku-4-5-20251001",
+                               resp.usage.input_tokens, resp.usage.output_tokens)
                 analysis = resp.content[0].text.strip()
                 emoji = "🟢" if change >= 0 else "🔴"
                 send_reply(cid,
@@ -4303,6 +4417,7 @@ _HELP_CATS = {
             ("/test",      "🧪", "Demo scan — no real trades"),
             ("/scancopy",  "📋", "Copy trade for scan signals on/off"),
             ("/tradelog",  "📥", "Download trade history CSV"),
+            ("/report",    "📊", "Daily Claude API token usage & cost"),
             ("/demo",      "🎭", "Simulate a demo trade"),
             ("/coin",      "🪙", "Manage coin scan settings"),
         ]
@@ -4382,7 +4497,30 @@ def send_help_menu(chat_id, is_admin, message_id=None):
         f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
         "Tap a category to see commands 👇"
     )
-    _help_edit_or_send(chat_id, text, markup, message_id)
+    cid_str = str(chat_id)
+    if message_id:
+        # Editing existing message (e.g. Back button press) — no dedup needed
+        _help_edit_or_send(chat_id, text, markup, message_id)
+    else:
+        # New /help command — delete previous help message first (clean chat)
+        old_msg_id = _last_help_msg.get(cid_str)
+        if old_msg_id:
+            try:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                    json={"chat_id": chat_id, "message_id": old_msg_id}, timeout=5)
+            except Exception:
+                pass
+        # Send fresh help menu and track its message_id
+        base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                   "reply_markup": markup, "disable_web_page_preview": True}
+        try:
+            r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+            new_msg_id = r.json().get("result", {}).get("message_id")
+            if new_msg_id:
+                _last_help_msg[cid_str] = new_msg_id
+        except Exception:
+            pass
 
 def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     entry = _HELP_CATS.get(cat_id)
@@ -4460,10 +4598,90 @@ def command_listener():
                             handle_command(cmd_text, cb_cid, {})
                             captured = _reply_capture.pop(cid_str, {})
                             result_text = "\n\n".join(captured.get("texts", [])) or f"✅ Done: {cmd_text}"
-                            # Telegram message text limit is 4096 chars
                             if len(result_text) > 4000:
                                 result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
-                            _help_edit_or_send(cb_cid, result_text, _back_markup, message_id=cb_msg_id)
+                            # Merge captured inline buttons + Back button
+                            cap_mkp = captured.get("markup")
+                            if cap_mkp and "inline_keyboard" in cap_mkp:
+                                merged_rows = cap_mkp["inline_keyboard"] + _back_markup["inline_keyboard"]
+                            else:
+                                merged_rows = _back_markup["inline_keyboard"]
+                            _help_edit_or_send(cb_cid, result_text, {"inline_keyboard": merged_rows}, message_id=cb_msg_id)
+
+                    # ── Copytrade ON/OFF ─────────────────────────────────────
+                    elif cb_data in ("copytrade_on", "copytrade_off"):
+                        handle_command(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_cid, {})
+
+                    # ── Mysize quick-set buttons ──────────────────────────────
+                    elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):
+                        _map = {"mysize_setsize": "/setsize", "mysize_setlev": "/setleverage", "mysize_setrisk": "/setrisk"}
+                        _pm  = {"mysize_setsize": "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
+                                "mysize_setlev":  "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
+                                "mysize_setrisk": "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>"}
+                        pending_input[cb_cid] = {"cmd": _map[cb_data], "msg_id": cb_msg_id, "cat_id": "copyuser"}
+                        _help_edit_or_send(cb_cid, _pm[cb_data],
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
+                            message_id=cb_msg_id)
+
+                    # ── Nocopy coin block/unblock ─────────────────────────────
+                    elif cb_data.startswith("nocopy_blk:") or cb_data.startswith("nocopy_clr:"):
+                        _nc_coin = cb_data.split(":", 1)[1]
+                        _nc_action = "clear" if cb_data.startswith("nocopy_clr:") else ""
+                        _nc_cmd = f"/nocopy clear {_nc_coin}" if _nc_action else f"/nocopy {_nc_coin}"
+                        cid_str = str(cb_cid)
+                        _reply_capture[cid_str] = {"texts": [], "cat_id": "copyuser"}
+                        handle_command(_nc_cmd, cb_cid, {})
+                        captured = _reply_capture.pop(cid_str, {})
+                        result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
+                        cap_mkp = captured.get("markup")
+                        if cap_mkp and "inline_keyboard" in cap_mkp:
+                            _help_edit_or_send(cb_cid, result_text, cap_mkp, message_id=cb_msg_id)
+                        else:
+                            _help_edit_or_send(cb_cid, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]}, message_id=cb_msg_id)
+                    elif cb_data == "nocopy_type":
+                        pending_input[cb_cid] = {"cmd": "/nocopy", "msg_id": cb_msg_id, "cat_id": "copyuser"}
+                        _help_edit_or_send(cb_cid, "⌨️ <b>Type Coin Name</b>\n\nEnter the coin (e.g. <code>SOL</code>):",
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
+                            message_id=cb_msg_id)
+
+                    # ── Images ON/OFF ─────────────────────────────────────────
+                    elif cb_data in ("images_on", "images_off"):
+                        handle_command(f"/images {'on' if cb_data=='images_on' else 'off'}", cb_cid, {})
+
+                    # ── Setimages TF buttons ──────────────────────────────────
+                    elif cb_data.startswith("setimg:"):
+                        tf = cb_data.split(":", 1)[1]
+                        global CHART_TFS
+                        if tf in CHART_TFS:
+                            CHART_TFS = [t for t in CHART_TFS if t != tf]
+                        else:
+                            CHART_TFS.append(tf)
+                        save_settings()
+                        _tf_btns2 = {"inline_keyboard": [
+                            [{"text": f"{'✅' if 'weekly' in CHART_TFS else '📅'}  Weekly", "callback_data": "setimg:weekly"},
+                             {"text": f"{'✅' if '4h' in CHART_TFS else '📊'}  4H",         "callback_data": "setimg:4h"}],
+                            [{"text": f"{'✅' if '1h' in CHART_TFS else '📈'}  1H",          "callback_data": "setimg:1h"},
+                             {"text": f"{'✅' if '15m' in CHART_TFS else '⏱'}  15M",        "callback_data": "setimg:15m"}],
+                            [{"text": f"{'✅' if '5m' in CHART_TFS else '⚡'}  5M",          "callback_data": "setimg:5m"}]]}
+                        _help_edit_or_send(cb_cid,
+                            f"<b>Chart Timeframes</b>\n\nActive: <b>{', '.join(CHART_TFS).upper() or 'none'}</b>\n\n<i>Tap to toggle ✅ = active</i>",
+                            _tf_btns2, message_id=cb_msg_id)
+
+                    # ── News ON/OFF ───────────────────────────────────────────
+                    elif cb_data in ("news_on", "news_off"):
+                        handle_command(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_cid, {})
+
+                    # ── BTC Mode V7/V9 ────────────────────────────────────────
+                    elif cb_data in ("btcmode_v7", "btcmode_v9"):
+                        handle_command(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_cid, {})
+
+                    # ── Scancopy ON/OFF ───────────────────────────────────────
+                    elif cb_data in ("scancopy_on", "scancopy_off"):
+                        handle_command(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_cid, {})
+
+                    # ── Miniapp pause/resume ──────────────────────────────────
+                    elif cb_data in ("miniapp_pause", "miniapp_resume"):
+                        handle_command(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_cid, {})
 
                     elif cb_is_admin:
                         global btc_analysis_enabled
@@ -4530,10 +4748,15 @@ def command_listener():
                         result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
                         if len(result_text) > 4000:
                             result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
-                        if _pi_msg_id:
-                            _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id)
+                        cap_mkp = captured.get("markup")
+                        if cap_mkp and "inline_keyboard" in cap_mkp:
+                            final_mkp = {"inline_keyboard": cap_mkp["inline_keyboard"] + _back_mkp["inline_keyboard"]}
                         else:
-                            send_reply(cid, result_text, reply_markup=_back_mkp)
+                            final_mkp = _back_mkp
+                        if _pi_msg_id:
+                            _help_edit_or_send(cid, result_text, final_mkp, message_id=_pi_msg_id)
+                        else:
+                            send_reply(cid, result_text, reply_markup=final_mkp)
                     continue
                 if text.startswith("/"): handle_command(text, cid, msg)
         except Exception as e: print(f"  [CMD] {e}")
@@ -4926,6 +5149,8 @@ def _run_test_scan(cid, scan_ver: int):
                     r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                         model="claude-opus-4-8", max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
+                    _log_api_usage(f"demo_{chosen_sym}", "claude-opus-4-8",
+                                   r2.usage.input_tokens, r2.usage.output_tokens)
                     analysis = r2.content[0].text.strip()
                     _claude_ok = True; break
                 except Exception as _ce:
