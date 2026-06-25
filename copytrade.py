@@ -1389,7 +1389,7 @@ def monitor_sl_tp(notify_fn=None):
                 trade_side = "BUY" if pos_side == "LONG" else "SELL"
 
                 is_btc  = (sym == BINGX_SYMBOL)
-                is_scan = (sym == user.get("scan_symbol",""))
+                is_scan = any(user.get(f"{p}symbol", "") == sym for p in _ALL_SLOT_PREFIXES)
                 is_known = is_btc or is_scan
 
                 # ── Orphan: BingX has position, bot has no state → adopt it ──
