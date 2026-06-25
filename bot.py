@@ -1835,7 +1835,13 @@ def send_admin(text):
                   "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
+_reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
+
 def send_reply(chat_id, text, reply_markup=None):
+    cid_str = str(chat_id)
+    if cid_str in _reply_capture:
+        _reply_capture[cid_str]["texts"].append(text)
+        return
     try:
         payload = {"chat_id": chat_id, "text": text,
                    "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -4438,16 +4444,26 @@ def command_listener():
                             "/alt":         "🕐 <b>Set Scan1 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>02</code></i>",
                             "/alt2":        "🕐 <b>Set Scan2 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>24</code></i>",
                         }
+                        # Find which category this command belongs to (for Back button)
+                        _cmd_cat = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
+                                         if any(c == cmd_text for c, _, _ in cmds_)), "monitor")
+                        _back_markup = {"inline_keyboard": [[
+                            {"text": "◀️  Back", "callback_data": f"help_cat:{_cmd_cat}"}]]}
+
                         if cmd_text in _INPUT_PROMPTS:
-                            pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key"} if cmd_text == "/connect" else {"cmd": cmd_text}
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                                json={"chat_id": cb_cid, "text": _INPUT_PROMPTS[cmd_text],
-                                      "parse_mode": "HTML"}, timeout=5)
+                            pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _cmd_cat} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _cmd_cat}
+                            _help_edit_or_send(cb_cid, _INPUT_PROMPTS[cmd_text], _back_markup, message_id=cb_msg_id)
                         else:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                                json={"chat_id": cb_cid, "text": f"▶️ Running <b>{cmd_text}</b>",
-                                      "parse_mode": "HTML"}, timeout=5)
+                            # Capture the command output and edit message in-place
+                            cid_str = str(cb_cid)
+                            _reply_capture[cid_str] = {"texts": [], "cat_id": _cmd_cat}
                             handle_command(cmd_text, cb_cid, {})
+                            captured = _reply_capture.pop(cid_str, {})
+                            result_text = "\n\n".join(captured.get("texts", [])) or f"✅ Done: {cmd_text}"
+                            # Telegram message text limit is 4096 chars
+                            if len(result_text) > 4000:
+                                result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+                            _help_edit_or_send(cb_cid, result_text, _back_markup, message_id=cb_msg_id)
 
                     elif cb_is_admin:
                         global btc_analysis_enabled
@@ -4478,26 +4494,46 @@ def command_listener():
                 # Pending input — user typed value after tapping a button
                 if cid in pending_input and not text.startswith("/"):
                     pi = pending_input[cid]
-                    # /connect is two-step: api_key → secret
+                    _pi_msg_id  = pi.get("msg_id")
+                    _pi_cat_id  = pi.get("cat_id", "monitor")
+                    _back_mkp   = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:{_pi_cat_id}"}]]}
+
                     if pi["cmd"] == "/connect":
                         if pi.get("step") == "secret":
                             api_key = pi["api_key"]
                             api_secret = text.strip()
                             del pending_input[cid]
                             print(f"  [CMD] pending input resolved: /connect *** ***")
+                            cid_str = str(cid)
+                            _reply_capture[cid_str] = {"texts": [], "cat_id": _pi_cat_id}
                             handle_command(f"/connect {api_key} {api_secret}", cid, msg)
+                            captured = _reply_capture.pop(cid_str, {})
+                            result_text = "\n\n".join(captured.get("texts", [])) or "✅ Connected"
+                            if _pi_msg_id:
+                                _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id)
+                            else:
+                                send_reply(cid, result_text, reply_markup=_back_mkp)
                         else:
-                            # step 1: got api key, now ask for secret
-                            pending_input[cid] = {"cmd": "/connect", "step": "secret", "api_key": text.strip()}
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                                json={"chat_id": cid,
-                                      "text": "🔑 <b>Connect BingX — Step 2/2</b>\n\nNow type your <b>Secret Key</b>:",
-                                      "parse_mode": "HTML"}, timeout=5)
+                            pending_input[cid] = {"cmd": "/connect", "step": "secret",
+                                                  "api_key": text.strip(), "msg_id": _pi_msg_id, "cat_id": _pi_cat_id}
+                            _help_edit_or_send(cid,
+                                "🔑 <b>Connect BingX — Step 2/2</b>\n\nNow type your <b>Secret Key</b>:",
+                                _back_mkp, message_id=_pi_msg_id)
                     else:
                         del pending_input[cid]
                         full_cmd = f"{pi['cmd']} {text.strip()}"
                         print(f"  [CMD] pending input resolved: {full_cmd}")
+                        cid_str = str(cid)
+                        _reply_capture[cid_str] = {"texts": [], "cat_id": _pi_cat_id}
                         handle_command(full_cmd, cid, msg)
+                        captured = _reply_capture.pop(cid_str, {})
+                        result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
+                        if len(result_text) > 4000:
+                            result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+                        if _pi_msg_id:
+                            _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id)
+                        else:
+                            send_reply(cid, result_text, reply_markup=_back_mkp)
                     continue
                 if text.startswith("/"): handle_command(text, cid, msg)
         except Exception as e: print(f"  [CMD] {e}")
