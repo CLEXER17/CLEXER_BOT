@@ -482,6 +482,11 @@ def on_signal(signal: dict, price: float) -> list[str]:
 
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
+            # Skip if user blocked BTC copy (/nocopy BTC)
+            nocopy = set(user.get("nocopy_coins", []))
+            if "BTC" in nocopy or "BTC-USDT" in nocopy:
+                print(f"[CT] {cid} nocopy BTC — skipping")
+                continue
             risk = user.get("risk_usdt")
             if risk:
                 lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl)
@@ -874,6 +879,12 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 results.append(f"⏭ @{user.get('username','?')} scan{ver} slots full — skipping {symbol}")
                 continue
             # Skip if this symbol already open in any slot
+            # Skip if user blocked this coin (/nocopy BTC, /nocopy SOL, etc.)
+            nocopy = set(user.get("nocopy_coins", []))
+            base_coin = symbol.split("-")[0].upper()
+            if base_coin in nocopy or symbol.upper() in nocopy:
+                results.append(f"⏭ @{user.get('username','?')} nocopy {base_coin} — skipping")
+                continue
             if _pfx_for_symbol(user, symbol):
                 results.append(f"⏭ @{user.get('username','?')} already in {symbol} — skipping duplicate")
                 continue
@@ -1665,7 +1676,8 @@ def on_update_sl(new_sl: float):
 # ─── COMMAND HANDLERS ─────────────────────────────────────────────────────────
 
 CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage", "/setrisk",
-                     "/copytrade", "/mytrade", "/mysize", "/myhistory"}
+                     "/copytrade", "/mytrade", "/mysize", "/myhistory",
+                     "/nocopy"}
 CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
                      "/ctretry", "/ctstatus", "/ctclose"}
 
@@ -1914,6 +1926,57 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Total PnL:    <b>{pnl_s}</b>\n\n"
             f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
             f"<i>— CLEXER V9.0 —</i>")
+
+    elif cmd == "/nocopy":
+        user = _get(cid) or {}
+        nocopy = list(user.get("nocopy_coins", []))
+        arg = parts[1].upper() if len(parts) > 1 else ""
+
+        if not arg or arg in ("LIST", ""):
+            if not nocopy:
+                send_reply_fn(chat_id,
+                    "🔓 <b>No Copy Block Active</b>\n\n"
+                    "All signals are being copied.\n\n"
+                    "To block a coin: <code>/nocopy BTC</code>\n"
+                    "To unblock:      <code>/nocopy clear BTC</code>")
+            else:
+                coins_str = ", ".join(f"<b>{c}</b>" for c in nocopy)
+                send_reply_fn(chat_id,
+                    f"🚫 <b>Blocked from Copy</b>\n\n{coins_str}\n\n"
+                    "You trade these manually — signals skipped.\n\n"
+                    "To unblock: <code>/nocopy clear BTC</code>\n"
+                    "To unblock all: <code>/nocopy clear all</code>")
+            return
+
+        if arg == "CLEAR":
+            target = parts[2].upper() if len(parts) > 2 else ""
+            if target == "ALL":
+                user["nocopy_coins"] = []
+                _set(cid, user)
+                send_reply_fn(chat_id, "✅ <b>All coins unblocked.</b>\n\nAll signals will be copied again.")
+            elif target:
+                if target in nocopy:
+                    nocopy.remove(target)
+                    user["nocopy_coins"] = nocopy
+                    _set(cid, user)
+                    send_reply_fn(chat_id, f"✅ <b>{target} unblocked.</b>\n\nSignals for {target} will be copied again.")
+                else:
+                    send_reply_fn(chat_id, f"ℹ️ <b>{target}</b> was not blocked.")
+            else:
+                send_reply_fn(chat_id, "Usage: <code>/nocopy clear BTC</code>  or  <code>/nocopy clear all</code>")
+            return
+
+        # Block the coin
+        if arg not in nocopy:
+            nocopy.append(arg)
+            user["nocopy_coins"] = nocopy
+            _set(cid, user)
+        coins_str = ", ".join(f"<b>{c}</b>" for c in nocopy)
+        send_reply_fn(chat_id,
+            f"🚫 <b>{arg} blocked from copy</b>\n\n"
+            f"Currently blocked: {coins_str}\n\n"
+            "Bot will skip this coin's signals — trade it your own way.\n"
+            f"To unblock: <code>/nocopy clear {arg}</code>")
 
     # ── ADMIN COMMANDS ────────────────────────────────────────────────────────
 
