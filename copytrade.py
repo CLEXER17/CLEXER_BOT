@@ -1038,7 +1038,9 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
 
 
 def on_scan_tp1(symbol: str):
-    """Scan TP1 hit — cancel all orders, close 50% at market, move SL to BE, re-place TP2."""
+    """Scan TP1 hit — cancel remaining orders, move SL to BE, re-place TP2.
+    BingX's own TP1 TAKE_PROFIT_MARKET order handles the 50% close automatically.
+    We only close 50% manually if BingX's order didn't fire (e.g. TP1 order failed at entry)."""
     for cid, user, api_key, api_secret in _users_with_copy():
         p = _pfx_for_symbol(user, symbol)
         if not p: continue
@@ -1061,18 +1063,37 @@ def on_scan_tp1(symbol: str):
                     _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": oid})
 
-            # Close 50% at market
-            close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
-                "symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                "type": "MARKET", "quantity": round(half_qty, 4)
-            })
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: close50% code={close_r.get('code')} msg={close_r.get('msg','')}")
+            # Check actual position size — BingX TP1 order may have already closed 50%
+            time.sleep(1)
+            pos_r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {"symbol": symbol})
+            actual_qty = 0.0
+            for pos in ((pos_r.get("data") or {}).get("positions") or pos_r.get("data") or []):
+                if isinstance(pos, dict) and pos.get("positionSide") == trade_ps:
+                    actual_qty = abs(float(pos.get("positionAmt", 0)))
+                    break
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: stored_qty={qty} actual_qty={actual_qty}")
 
-            # Wait for position to update
-            time.sleep(3)
+            if actual_qty >= qty * 0.75:
+                # BingX TP1 order didn't fire — close 50% manually
+                close_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
+                    "symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                    "type": "MARKET", "quantity": round(half_qty, 4)
+                })
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: manual close50% code={close_r.get('code')} msg={close_r.get('msg','')}")
+                time.sleep(2)
+                remaining_qty = half_qty
+            elif actual_qty >= 0.001:
+                # BingX already closed ~50% via TP1 order — use actual remaining size
+                remaining_qty = round(actual_qty, 4)
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: BingX TP1 already closed 50%, remaining={remaining_qty}")
+            else:
+                # Position fully closed (both halves gone)
+                print(f"[CT] on_scan_tp1 {cid} {symbol}: position already fully closed, skipping BE SL")
+                user[f"{p}tp1_hit"] = True
+                _set(cid, user)
+                continue
 
-            # BE SL for remaining 50% with 0.1% buffer so BingX accepts
-            remaining_qty = max(round(qty - half_qty, 4), 0.0001)
+            # BE SL for remaining position with 0.1% buffer so BingX accepts
             be_sl_price = round(entry_price * 0.999, 6) if side == "BUY" else round(entry_price * 1.001, 6)
             sl_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
                 "symbol": symbol, "side": close_side, "positionSide": trade_ps,
@@ -1081,21 +1102,21 @@ def on_scan_tp1(symbol: str):
             })
             print(f"[CT] on_scan_tp1 {cid} {symbol}: BE SL@{be_sl_price} qty={remaining_qty} code={sl_r.get('code')} msg={sl_r.get('msg','')}")
 
-            # Re-place TP2 for remaining half
+            # Re-place TP2 for remaining qty
             tp2 = float(user.get(f"{p}tp2", 0))
             if tp2:
                 tp2_r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret, {
                     "symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                    "type": "TAKE_PROFIT_MARKET", "quantity": round(half_qty, 4),
+                    "type": "TAKE_PROFIT_MARKET", "quantity": round(remaining_qty, 4),
                     "stopPrice": round(tp2, 6)
                 })
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
-            user[f"{p}qty"]     = half_qty
+            user[f"{p}qty"]     = remaining_qty
             user[f"{p}sl"]      = be_sl_price
             user[f"{p}tp1_hit"] = True
             _set(cid, user)
-            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — closed {half_qty} SL→BE@{be_sl_price}")
+            print(f"[CT] on_scan_tp1 {cid} {symbol}: done — remaining={remaining_qty} SL→BE@{be_sl_price}")
         except Exception as e:
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
