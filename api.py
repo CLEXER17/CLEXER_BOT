@@ -224,7 +224,15 @@ def health():
     return {"ok": True, "ts": int(time.time())}
 
 # ── maintenance mode ──────────────────────────────────────────────────────────
-_maintenance = {"on": False, "msg": "Under Maintenance"}
+# Starts ON by default — send /miniapp resume from Telegram to go live
+_maintenance = {"on": True, "msg": "Under Maintenance — send /miniapp resume to go live"}
+
+@app.middleware("http")
+async def maintenance_gate(request: Request, call_next):
+    """Block all requests except /maintenance endpoints when in maintenance mode."""
+    if _maintenance["on"] and not request.url.path.startswith("/maintenance"):
+        return JSONResponse({"error": "maintenance", "msg": _maintenance["msg"]}, status_code=503)
+    return await call_next(request)
 
 @app.get("/maintenance")
 def get_maintenance():
