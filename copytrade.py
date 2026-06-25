@@ -1123,7 +1123,7 @@ def on_scan_tp2(symbol: str):
             print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
-        _clear_scan_state(cid, user, symbol, ver)
+        _clear_scan_state(cid, user, symbol)
 
 
 def on_scan_sl(symbol: str):
@@ -1149,7 +1149,7 @@ def on_scan_sl(symbol: str):
             print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
-        _clear_scan_state(cid, user, symbol, ver)
+        _clear_scan_state(cid, user, symbol)
 
 
 def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: float, tp2: float):
@@ -1272,6 +1272,11 @@ def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):
     adopted = user.get("adopted_symbols", {})
     if sym in adopted:
         del adopted[sym]; user["adopted_symbols"] = adopted
+    # Also clear legacy scan_symbol key if it points to this symbol
+    if user.get("scan_symbol") == sym:
+        user["scan_symbol"] = ""; user["scan_side"] = ""
+        user["scan_entry"] = 0; user["scan_sl"] = 0
+        user["scan_tp1"] = 0; user["scan_tp2"] = 0; user["scan_qty"] = 0
     _set(cid, user)
 
 
@@ -1396,10 +1401,8 @@ def monitor_sl_tp(notify_fn=None):
                 # Also check adopted_symbols (multi-position tracking)
                 adopted = user.get("adopted_symbols", {})
                 if not is_known and sym not in adopted:
-                    user["scan_symbol"] = sym
-                    user["scan_side"]   = trade_side
-                    user["scan_entry"]  = avg_price
-                    user["scan_qty"]    = pos_amt
+                    # Track via adopted_symbols only — do NOT write scan_symbol (legacy key)
+                    # to avoid double-slot detection with s1_/s1b_/etc.
                     adopted[sym] = {"side": trade_side, "entry": avg_price, "qty": pos_amt}
                     user["adopted_symbols"] = adopted
                     _set(cid, user)
@@ -1407,7 +1410,7 @@ def monitor_sl_tp(notify_fn=None):
                     fixes.append(msg); print(f"[CT] {msg}")
                     # Place emergency 2% SL — no Claude involved
                     emergency_sl = round(avg_price * (0.98 if pos_side=="LONG" else 1.02), 6)
-                    user[f"scan_sl"] = emergency_sl; _set(cid, user)
+                    _set(cid, user)
                     _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
                         "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
