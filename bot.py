@@ -87,6 +87,18 @@ def is_ist_sleep():
     mins = now_ist().hour * 60 + now_ist().minute
     return 60 <= mins < 450
 
+def is_weekend_sleep() -> bool:
+    """True from Friday 22:00 IST to Sunday 23:00 IST — full bot pause."""
+    t = now_ist()
+    wd = t.weekday()   # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+    mins = t.hour * 60 + t.minute
+    if wd == 4 and mins >= 22 * 60:   return True   # Fri 22:00+
+    if wd == 5:                        return True   # All Saturday
+    if wd == 6 and mins < 23 * 60:    return True   # Sun before 23:00
+    return False
+
+_weekend_sleep_notified = False
+
 active_trade = {
     "signal": None, "entry": None, "sl": None,
     "tp1": None, "tp2": None, "tp1_hit": False,
@@ -4836,6 +4848,17 @@ def main():
         try:
             if bot_paused.is_set():
                 time.sleep(MAIN_TICK); continue
+
+            # ── Weekend sleep: Fri 22:00 IST → Sun 23:00 IST ──────────────────
+            global _weekend_sleep_notified
+            if is_weekend_sleep():
+                if not _weekend_sleep_notified:
+                    _weekend_sleep_notified = True
+                    send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — BingX orders still active.\n\n<i>- CLEXER V17.8.5 -</i>")
+                time.sleep(60); continue
+            elif _weekend_sleep_notified:
+                _weekend_sleep_notified = False
+                send_admin("✅ <b>Weekend Sleep Ended</b>\n\nBot resuming all activity.\n\n<i>- CLEXER V17.8.5 -</i>")
 
             now = time.time(); forced = force_scan.is_set()
             if forced: force_scan.clear()
