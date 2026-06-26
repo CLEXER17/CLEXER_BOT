@@ -1069,6 +1069,10 @@ def on_scan_tp1(symbol: str):
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: entry=0, cannot set BE SL")
                 continue
 
+            # Mark tp1_hit FIRST before any BingX calls — prevents monitor from re-placing TP1 if we crash
+            user[f"{p}tp1_hit"] = True
+            _set(cid, user)
+
             # Cancel ALL open orders for this symbol
             for o in _get_open_orders(api_key, api_secret, symbol):
                 oid = str(o.get("orderId", ""))
@@ -1080,7 +1084,9 @@ def on_scan_tp1(symbol: str):
             time.sleep(1)
             pos_r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {"symbol": symbol})
             actual_qty = 0.0
-            for pos in ((pos_r.get("data") or {}).get("positions") or pos_r.get("data") or []):
+            _pos_data = pos_r.get("data") or []
+            _pos_list = _pos_data if isinstance(_pos_data, list) else _pos_data.get("positions", [])
+            for pos in _pos_list:
                 if isinstance(pos, dict) and pos.get("positionSide") == trade_ps:
                     actual_qty = abs(float(pos.get("positionAmt", 0)))
                     break
