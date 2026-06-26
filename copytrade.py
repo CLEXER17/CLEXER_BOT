@@ -846,6 +846,14 @@ def set_scan_ct(enabled: bool):
     global SCAN_CT_ENABLED
     SCAN_CT_ENABLED = enabled
 
+def is_scan_tp1_hit(symbol: str) -> bool:
+    """Returns True if ANY copy user has tp1_hit=True for this symbol."""
+    for cid, user, _, _ in _users_with_copy():
+        p = _pfx_for_symbol(user, symbol)
+        if p and user.get(f"{p}tp1_hit"):
+            return True
+    return False
+
 
 def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
     """
@@ -1504,20 +1512,13 @@ def monitor_sl_tp(notify_fn=None):
                 stored_qty = float(user.get(f"{_sp}qty", 0))
                 tp1_already_hit = bool(user.get(f"{_sp}tp1_hit", False))
 
-                # ── TP1 detection: position dropped to ~50% AND price past TP1 ──
+                # ── TP1 detection: position dropped to ~50% (price may have come back) ──
                 _side_stored = user.get(f"{_sp}side", "")
                 _tp1_price   = float(user.get(f"{_sp}tp1", 0))
-                _tp1_price_reached = False
-                if _tp1_price and avg_price:
-                    if _side_stored == "BUY"  and avg_price >= _tp1_price * 0.99:
-                        _tp1_price_reached = True
-                    elif _side_stored == "SELL" and avg_price <= _tp1_price * 1.01:
-                        _tp1_price_reached = True
 
                 if (not tp1_already_hit and stored_qty > 0
                         and pos_amt < stored_qty * 0.65
-                        and pos_amt > stored_qty * 0.05
-                        and _tp1_price_reached):
+                        and pos_amt > stored_qty * 0.05):
                     print(f"[CT] [Monitor] @{uname} {sym}: TP1 detected (pos={pos_amt} stored={stored_qty} price={avg_price} tp1={_tp1_price}) — triggering on_scan_tp1")
                     # Mark tp1_hit immediately to stop spam before on_scan_tp1 runs
                     user[f"{_sp}tp1_hit"] = True; _set(cid, user)
