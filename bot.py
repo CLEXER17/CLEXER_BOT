@@ -4658,7 +4658,10 @@ def command_listener():
                 if cb:
                     cb_data    = cb.get("data","")
                     cb_cid     = cb["from"]["id"]          # user who pressed the button
-                    cb_uname   = cb["from"].get("username") or cb["from"].get("first_name","?")
+                    _cb_fname  = cb["from"].get("first_name") or cb["from"].get("username") or "User"
+                    _cb_tgid   = cb["from"]["id"]
+                    cb_uname   = cb["from"].get("username") or _cb_fname
+                    cb_mention = f'<a href="tg://user?id={_cb_tgid}">{_cb_fname}</a>'
                     cb_msg     = cb.get("message", {})
                     cb_msg_id  = cb_msg.get("message_id")
                     cb_chat_id = cb_msg.get("chat", {}).get("id", cb_cid)  # group or DM chat
@@ -4681,7 +4684,7 @@ def command_listener():
                                 _cmd_admin_only = True; break
                         if _cmd_admin_only and not cb_is_admin:
                             send_reply(cb_chat_id,
-                                f"😅 @{cb_uname} Bhai yeh button admin only hai!\n\n"
+                                f"😅 {cb_mention} Bhai yeh button admin only hai!\n\n"
                                 f"Tum /help send karo, main tumhare liye user commands deta hu 👇")
                             continue
                         _INPUT_PROMPTS = {
