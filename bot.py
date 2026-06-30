@@ -2623,7 +2623,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
 def handle_command(text, chat_id, message=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     is_admin = (str(chat_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
@@ -3376,7 +3376,6 @@ def handle_command(text, chat_id, message=None):
             f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/alt" and is_admin:
-        global SCAN1_SCHEDULE
         _alt_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:1"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:1"},
