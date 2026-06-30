@@ -4870,9 +4870,7 @@ def command_listener():
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 if not cid: continue
-                # Ignore messages from the second group (send-only)
-                ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
-                if ch2 and str(cid) == str(ch2): continue
+
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
                 register_user(cid)
                 if cid in broadcast_pending and not text.startswith("/"):
