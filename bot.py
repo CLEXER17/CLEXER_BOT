@@ -2622,11 +2622,13 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
-def handle_command(text, chat_id, message=None):
+def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
-    is_admin = (str(chat_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
+    # In groups, chat_id is the group — check sender_id for admin
+    _check_id = sender_id if sender_id else chat_id
+    is_admin = (str(_check_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
 
     if cmd in ADMIN_COMMANDS and not is_admin:
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see your commands."); return
@@ -4869,6 +4871,7 @@ def command_listener():
 
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
+                sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
 
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
@@ -4925,7 +4928,7 @@ def command_listener():
                         else:
                             send_reply(cid, result_text, reply_markup=final_mkp)
                     continue
-                if text.startswith("/"): handle_command(text, cid, msg)
+                if text.startswith("/"): handle_command(text, cid, msg, sender_id=sender_uid)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
 
