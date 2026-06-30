@@ -2645,7 +2645,31 @@ def handle_command(text, chat_id, message=None):
     if cmd == "/synccheck" and is_admin:
         send_reply(chat_id, "🔍 Checking BingX vs bot state...")
         lines = ct.sync_check()
-        send_reply(chat_id, "<b>Sync Check Result</b>\n\n" + "\n".join(lines))
+        # Parse __BTN__ markers into inline buttons
+        text_lines = []; btn_rows = []
+        for line in lines:
+            if line.startswith("__BTN__"):
+                row = []
+                for item in line[7:].split("|"):
+                    cb, *_ = item.split(":")
+                    uid = item.split(":")[-1]
+                    if cb.startswith("close_btc"):
+                        row.append({"text": "❌ Close BTC", "callback_data": f"sync_close_btc:{uid}"})
+                    elif cb.startswith("adopt_btc"):
+                        row.append({"text": "✅ Adopt BTC", "callback_data": f"sync_adopt_btc:{uid}"})
+                    elif cb.startswith("reset_ghost"):
+                        row.append({"text": "🔄 Reset Ghost State", "callback_data": f"sync_reset_ghost:{uid}"})
+                    elif cb.startswith("ctretry_"):
+                        parts2 = cb.split("_"); sym = parts2[2] if len(parts2) > 2 else "?"
+                        row.append({"text": f"✅ Adopt {sym}", "callback_data": f"sync_adopt_scan:{uid}:{sym}"})
+                    elif cb.startswith("closescan_"):
+                        sym = cb.replace("closescan_","")
+                        row.append({"text": f"❌ Close {sym.replace('-USDT','')}", "callback_data": f"sync_close_scan:{uid}:{sym}"})
+                if row: btn_rows.append(row)
+            else:
+                text_lines.append(line)
+        markup = {"inline_keyboard": btn_rows} if btn_rows else None
+        send_reply(chat_id, "<b>Sync Check Result</b>\n\n" + "\n".join(text_lines), reply_markup=markup)
         return
 
     if cmd in ("/start","/help"):
@@ -2943,23 +2967,30 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
 
     elif cmd == "/stats":
+        if parts[1:] == ["reset"] and is_admin:
+            signal_history.clear(); scan_history.clear(); save_state()
+            send_reply(chat_id, "🗑 <b>Signal history cleared</b>\n\nCSV trade log untouched.\n\n<i>- CLEXER V17.8.5 -</i>"); return
         ts = trade_stats
         btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
         btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
         sc_total = ts['scan_tp1'] + ts['scan_tp2'] + ts['scan_sl'] or 1
         sc_wr = (ts['scan_tp1'] + ts['scan_tp2']) / sc_total * 100
+        _stats_btns = {"inline_keyboard": [[
+            {"text": "🏆 Win Stats",        "callback_data": "stats_win"},
+            {"text": "🗑 Reset History",     "callback_data": "stats_reset"},
+        ]]} if is_admin else None
         send_reply(chat_id,
             f"<b>Statistics</b>\n\n"
             f"<b>BTC Trades</b>\n"
             f"Signals: {ts['total_signals']}\n"
             f"TP1: {ts['total_tp1']} | TP2: {ts['total_tp2']} | SL: {ts['total_sl']}\n"
-            f"Win rate: {btc_wr:.0f}%\n"
+            f"Win rate: <b>{btc_wr:.0f}%</b>\n"
             f"Stop hunts: {ts['stop_hunts']} | Missed: {ts['missed_entries']}\n"
             f"Consec SL: {ts['consecutive_sl']} | Cooldown: {ts['cooldown_scans']}\n\n"
             f"<b>Scan Trades</b>\n"
             f"Signals: {ts['scan_signals']}\n"
             f"TP1: {ts['scan_tp1']} | TP2: {ts['scan_tp2']} | SL: {ts['scan_sl']}\n"
-            f"Win rate: {sc_wr:.0f}%")
+            f"Win rate: <b>{sc_wr:.0f}%</b>", reply_markup=_stats_btns)
 
     elif cmd == "/session":
         s = get_session()
@@ -3393,20 +3424,21 @@ def handle_command(text, chat_id, message=None):
             SCAN1_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
             _scan1_triggered_today.clear()
             send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
-        # /alt manual 1:02 2:23 14:25  → specific times
+        # /alt manual 2.02 2.23 14.25  → specific times (supports both . and : separator)
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []
             for t in parts[2:]:
                 try:
-                    h, m = t.split(":"); new_slots.append((int(h), int(m)))
+                    sep = "." if "." in t else ":"
+                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
                 except: pass
             if not new_slots:
-                send_reply(chat_id, "❌ Usage: /alt manual 1:02 2:23 14:25"); return
+                send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25 15.46</code>"); return
             SCAN1_SCHEDULE = sorted(set(new_slots))
             _scan1_triggered_today.clear()
-            _times = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_SCHEDULE)
-            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n<code>{_times}</code>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
-        send_reply(chat_id, "❌ Usage: /alt loop 02  or  /alt manual 1:02 2:23 14:25", reply_markup=_alt_btns); return
+            _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_SCHEDULE)
+            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
+        send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt_btns); return
 
     elif cmd == "/alt2" and is_admin:
         _alt2_btns = {"inline_keyboard": [[
@@ -3419,12 +3451,25 @@ def handle_command(text, chat_id, message=None):
                 f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "loop" and len(parts) > 2:
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
-            except: send_reply(chat_id, "❌ Usage: /alt2 loop 24"); return
+            except: send_reply(chat_id, "❌ Type a minute (0–59)"); return
             old_min = ALT_SCAN2_MINUTE
             ALT_SCAN2_MINUTE = new_min
             _auto_scan2_last_hour = -1
             send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
-        send_reply(chat_id, "❌ Usage: /alt2 loop 24  or  /alt2 manual 12:24 15:24", reply_markup=_alt2_btns); return
+        if parts[1].lower() == "manual" and len(parts) > 2:
+            new_slots = []
+            for t in parts[2:]:
+                try:
+                    sep = "." if "." in t else ":"
+                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
+                except: pass
+            if not new_slots:
+                send_reply(chat_id, "❌ Type times like: <code>12.24 15.24 19.24</code>"); return
+            global SCAN2_SCHEDULE
+            SCAN2_SCHEDULE = sorted(set(new_slots))
+            _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
+            send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
+        send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt2_btns); return
     elif cmd == "/tradelog" and is_admin:
         if not os.path.exists(TRADE_LOG_CSV):
             send_reply(chat_id, "📂 No trade history yet. Trades are logged automatically after first signal."); return
@@ -4752,6 +4797,26 @@ def command_listener():
                     elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
                         sub = cb_data.replace("history_", "")
                         handle_command(f"/history {sub}", cb_cid, {})
+                    elif cb_data == "stats_win":
+                        handle_command("/stats", cb_cid, {})
+                    elif cb_data == "stats_reset":
+                        if cb_is_admin:
+                            handle_command("/stats reset", cb_cid, {})
+                    elif cb_data.startswith("sync_close_btc:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/ctclose {uid}", cb_cid, {})
+                    elif cb_data.startswith("sync_adopt_btc:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/ctretry {uid}", cb_cid, {})
+                    elif cb_data.startswith("sync_reset_ghost:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/ctsync {uid}", cb_cid, {})
+                    elif cb_data.startswith("sync_adopt_scan:"):
+                        _, uid, sym = cb_data.split(":")
+                        handle_command(f"/ctretry {uid} {sym}", cb_cid, {})
+                    elif cb_data.startswith("sync_close_scan:"):
+                        _, uid, sym = cb_data.split(":")
+                        handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_cid, {})
                     elif cb_data.startswith("pausech:"):
                         handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_cid, {})
                     elif cb_data.startswith("resumech:"):
@@ -4775,17 +4840,18 @@ def command_listener():
                         _mode, _ver = cb_data.split(":")
                         _cmd = "/alt" if _ver == "1" else "/alt2"
                         if _mode == "alt_loop":
-                            pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": cb_msg_id, "cat_id": "scan"}
-                            _back = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:scan"}]]}
-                            _help_edit_or_send(cb_cid,
-                                f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\nType the minute (00–59):\nBot will run every hour at that minute.\n\n<i>Example: <code>02</code> → runs at 1:02, 2:02, 3:02...</i>",
-                                _back, cb_msg_id)
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": None, "cat_id": "scan"}
+                            send_reply(cb_cid,
+                                f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\n"
+                                f"Type the minute <b>(0–59)</b>:\n"
+                                f"Bot will run every hour at that minute.\n\n"
+                                f"<i>Example: type <code>2</code> → runs at 1:02, 2:02, 3:02, 4:02...</i>")
                         else:
-                            pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": cb_msg_id, "cat_id": "scan"}
-                            _back = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:scan"}]]}
-                            _help_edit_or_send(cb_cid,
-                                f"📋 <b>Manual Times — Scan{_ver}</b>\n\nType specific times separated by spaces:\n\n<i>Example: <code>1:02 2:23 14:25 15:46</code></i>",
-                                _back, cb_msg_id)
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": None, "cat_id": "scan"}
+                            send_reply(cb_cid,
+                                f"📋 <b>Manual Times — Scan{_ver}</b>\n\n"
+                                f"Type your specific times separated by spaces:\n\n"
+                                f"<i>Example: <code>2.02 2.23 14.25 15.26 15.46</code></i>")
                     continue
 
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
