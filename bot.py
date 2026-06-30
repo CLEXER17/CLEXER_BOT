@@ -4656,16 +4656,35 @@ def command_listener():
                 # Handle inline button callbacks
                 cb = upd.get("callback_query")
                 if cb:
-                    cb_data    = cb.get("data","")
-                    cb_cid     = cb["from"]["id"]          # user who pressed the button
-                    _cb_fname  = cb["from"].get("first_name") or cb["from"].get("username") or "User"
-                    _cb_tgid   = cb["from"]["id"]
-                    cb_uname   = cb["from"].get("username") or _cb_fname
-                    cb_mention = f'<a href="tg://user?id={_cb_tgid}">{_cb_fname}</a>'
-                    cb_msg     = cb.get("message", {})
-                    cb_msg_id  = cb_msg.get("message_id")
-                    cb_chat_id = cb_msg.get("chat", {}).get("id", cb_cid)  # group or DM chat
+                    cb_data     = cb.get("data","")
+                    cb_cid      = cb["from"]["id"]
+                    _cb_fname   = cb["from"].get("first_name") or cb["from"].get("username") or "User"
+                    cb_uname    = cb["from"].get("username") or _cb_fname
+                    cb_mention  = f'<a href="tg://user?id={cb_cid}">{_cb_fname}</a>'
+                    cb_msg      = cb.get("message", {})
+                    cb_msg_id   = cb_msg.get("message_id")
+                    cb_chat_id  = cb_msg.get("chat", {}).get("id", cb_cid)
                     cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
+
+                    # Check admin-only BEFORE answering, so we can show alert popup
+                    _is_admin_btn = False
+                    if cb_data.startswith("help_cmd:"):
+                        _ct = cb_data.split(":", 1)[1]
+                        for _, (_cl, _cadm, _ccmds) in _HELP_CATS.items():
+                            if _cadm and any(_ct == _c for _c, _, _ in _ccmds):
+                                _is_admin_btn = True; break
+
+                    if _is_admin_btn and not cb_is_admin:
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                            json={"callback_query_id": cb["id"],
+                                  "text": "😅 Bhai yeh admin only button hai! /help bhejo apne commands ke liye 👇",
+                                  "show_alert": True}, timeout=5)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": cb_chat_id,
+                                  "text": f"😅 {cb_mention} Bhai yeh button admin only hai!\n\nTum /help send karo, main tumhare liye user commands deta hu 👇",
+                                  "parse_mode": "HTML"}, timeout=10)
+                        continue
+
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                   json={"callback_query_id": cb["id"]}, timeout=5)
 
@@ -4678,21 +4697,6 @@ def command_listener():
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
                         # Check if non-admin is pressing an admin-only button
-                        _cmd_admin_only = False
-                        for _ckey, (_clabel, _cadm, _ccmds) in _HELP_CATS.items():
-                            if _cadm and any(cmd_text == _c for _c, _, _ in _ccmds):
-                                _cmd_admin_only = True; break
-                        if _cmd_admin_only and not cb_is_admin:
-                            _rebuke_text = (
-                                f"😅 {cb_mention} Bhai yeh button admin only hai!\n\n"
-                                f"Tum /help send karo, main tumhare liye user commands deta hu 👇"
-                            )
-                            try:
-                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                                    json={"chat_id": cb_chat_id, "text": _rebuke_text,
-                                          "parse_mode": "HTML"}, timeout=10)
-                            except: pass
-                            continue
                         _INPUT_PROMPTS = {
                             "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
                             "/setsize":     "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
