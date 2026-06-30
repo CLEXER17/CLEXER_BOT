@@ -5444,7 +5444,28 @@ def main():
         lines = ct.sync_check()
         has_orphan = any("ORPHAN" in l or "GHOST" in l for l in lines)
         if has_orphan:
-            send_admin("🚨 <b>STARTUP SYNC ALERT</b>\n\n" + "\n".join(lines) + "\n\nUse /synccheck anytime to recheck.")
+            text_lines = [l for l in lines if not l.startswith("__BTN__")]
+            btn_rows = []
+            for line in lines:
+                if not line.startswith("__BTN__"): continue
+                row = []
+                for item in line[7:].split("|"):
+                    cb = item.split(":")[0]; uid = item.split(":")[-1]
+                    if cb.startswith("close_btc"):
+                        row.append({"text": "❌ Close BTC", "callback_data": f"sync_close_btc:{uid}"})
+                    elif cb.startswith("adopt_btc"):
+                        row.append({"text": "✅ Adopt BTC", "callback_data": f"sync_adopt_btc:{uid}"})
+                    elif cb.startswith("reset_ghost"):
+                        row.append({"text": "🔄 Reset Ghost", "callback_data": f"sync_reset_ghost:{uid}"})
+                    elif cb.startswith("ctretry_"):
+                        sym = cb.split("_")[2] if len(cb.split("_")) > 2 else "?"
+                        row.append({"text": f"✅ Adopt {sym}", "callback_data": f"sync_adopt_scan:{uid}:{sym}"})
+                    elif cb.startswith("closescan_"):
+                        sym = cb.replace("closescan_","")
+                        row.append({"text": f"❌ Close {sym.replace('-USDT','')}", "callback_data": f"sync_close_scan:{uid}:{sym}"})
+                if row: btn_rows.append(row)
+            markup = {"inline_keyboard": btn_rows} if btn_rows else None
+            send_reply(ADMIN_CHAT_ID, "🚨 <b>STARTUP SYNC ALERT</b>\n\n" + "\n".join(text_lines), reply_markup=markup)
     threading.Thread(target=_startup_sync, daemon=True).start()
 
     # Startup message → admin DM only
