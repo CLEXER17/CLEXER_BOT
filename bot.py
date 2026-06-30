@@ -3867,8 +3867,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"Scan now uses BingX candles directly.\n"
                 f"TV bridge not needed. Works anytime.")
 
-    elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
-        if cmd == "/scantoggle" and is_admin:
+    elif cmd in ("/scan", "/scan1", "/scan2", "/scantoggle") and is_admin:
+        if cmd == "/scantoggle":
             _arg = parts[1].lower() if len(parts) > 1 else ""
             if _arg == "scan1on":
                 SCAN1_AUTO_ENABLED = True
