@@ -3376,6 +3376,7 @@ def handle_command(text, chat_id, message=None):
             f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/alt" and is_admin:
+        global SCAN1_SCHEDULE
         _alt_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:1"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:1"},
@@ -3390,7 +3391,6 @@ def handle_command(text, chat_id, message=None):
         if parts[1].lower() == "loop" and len(parts) > 2:
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
             except: send_reply(chat_id, "❌ Usage: /alt loop 02"); return
-            global SCAN1_SCHEDULE
             SCAN1_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
             _scan1_triggered_today.clear()
             send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
