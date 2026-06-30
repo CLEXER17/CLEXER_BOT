@@ -4681,7 +4681,8 @@ def command_listener():
                                 _cmd_admin_only = True; break
                         if _cmd_admin_only and not cb_is_admin:
                             send_reply(cb_chat_id,
-                                f"⛔ @{cb_uname} these controls are only for admins.\nPlease use /help for your commands.")
+                                f"😅 @{cb_uname} Bhai yeh button admin only hai!\n\n"
+                                f"Tum /help send karo, main tumhare liye user commands deta hu 👇")
                             continue
                         _INPUT_PROMPTS = {
                             "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
