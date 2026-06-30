@@ -2824,7 +2824,9 @@ def handle_command(text, chat_id, message=None):
             _next_alt_scan = f"{_nh}:{_nm:02d} IST (tomorrow)"
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
-        _alt_flag    = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
+        _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
+        _scan2_flag  = "✅ ON"  if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "❌ OFF"
+        _alt_flag    = f"Scan1 {_scan1_flag}  |  Scan2 {_scan2_flag}"
         _charts_flag = "✅ ON"  if SEND_CHARTS                       else "❌ OFF"
         _news_flag   = "✅ ON"  if SEND_NEWS                         else "❌ OFF"
         _btcmode_lbl = "V7 Classic" if BTC_PROMPT_MODE == "V7" else "V9 Current"
@@ -2836,7 +2838,7 @@ def handle_command(text, chat_id, message=None):
             f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
             f"🤖 Bot:        <b>{st}</b>\n"
             f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
-            f"🔍 Alt Scan:   <b>{_alt_flag}</b>\n"
+            f"🔍 Alt Scan:   {_alt_flag}\n"
             f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
             f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
             f"🖼  Charts:     <b>{_charts_flag}</b>\n"
@@ -2881,11 +2883,14 @@ def handle_command(text, chat_id, message=None):
                     sp = get_bingx_price(sc["symbol"])
                     spl = f"Current: <b>{sp:,.4g}</b>\n" if sp else ""
                 except: spl = ""
+                # Check tp1_hit from bot state OR from any copy user's state
+                _tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc["symbol"])
+                _sl_label = f"<b>{sc['sl']:,.4g}</b>" + (" ← BE" if _tp1_hit else "")
                 parts_out.append(
                     f"<b>Scan{_ver} Trade</b>\n\n{sc['signal']} - {sc['symbol']}\n{spl}"
                     f"Entry: <b>{sc['entry']:,.4g}</b> {'✅' if sc.get('entry_hit') else '⏳ pending'}\n"
-                    f"SL:    <b>{sc['sl']:,.4g}</b>\n"
-                    f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if sc.get('tp1_hit') else '⏳ pending'}\n"
+                    f"SL:    {_sl_label}\n"
+                    f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if _tp1_hit else '⏳ pending'}\n"
                     f"TP2:   <b>{sc['tp2']:,.4g}</b>\nType:  {sc.get('entry_type','MARKET')}"
                 )
         # Demo trades
@@ -2909,26 +2914,33 @@ def handle_command(text, chat_id, message=None):
             send_reply(chat_id, "No active trade.")
 
     elif cmd == "/history":
-        lines = []
-        if signal_history:
-            lines.append("<b>BTC Signals (last 5)</b>")
+        sub = parts[1].lower() if len(parts) > 1 else "btc"
+        _hist_btns = {"inline_keyboard": [[
+            {"text": "📡 BTC",   "callback_data": "history_btc"},
+            {"text": "🔍 Scan1", "callback_data": "history_scan1"},
+            {"text": "🔍 Scan2", "callback_data": "history_scan2"},
+        ]]}
+        if sub in ("scan1", "scan2"):
+            ver = sub[-1]
+            _sh = [s for s in scan_history if str(s.get("ver","1")) == ver]
+            if not _sh:
+                send_reply(chat_id, f"📜 <b>Scan{ver} History</b>\n\nNo signals yet.", reply_markup=_hist_btns); return
+            lines = [f"📜 <b>Scan{ver} History (last 5)</b>"]
+            for s in reversed(_sh[-5:]):
+                res = s.get("result","?")
+                em = "🏆" if res=="TP2" else ("💰" if res in ("TP1","BE") else "❌")
+                lines.append(f"{em} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
+                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n   {s['time']}")
+            send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
+        else:
+            if not signal_history:
+                send_reply(chat_id, "📜 <b>BTC History</b>\n\nNo signals yet.", reply_markup=_hist_btns); return
+            lines = ["📜 <b>BTC Signals (last 5)</b>"]
             for s in reversed(signal_history[-5:]):
                 lines.append(f"{'🟢' if s['signal']=='BUY' else '🔴'} {s['signal']} @ {s['entry']:,.0f}  "
                     f"R:R:{s.get('rr','?')}  {s.get('confidence','?')}\n"
-                    f"   SL:{s['sl']:,.0f}  TP1:{s['tp1']:,.0f}  TP2:{s['tp2']:,.0f}\n"
-                    f"   {s['time']}")
-        if scan_history:
-            lines.append("\n<b>Scan Signals (last 5)</b>")
-            for s in reversed(scan_history[-5:]):
-                res = s.get("result","?")
-                emoji = "🏆" if res=="TP2" else ("💰" if res in ("TP1","BE") else "❌")
-                lines.append(f"{emoji} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
-                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n"
-                    f"   {s['time']}")
-        if lines:
-            send_reply(chat_id, "\n".join(lines))
-        else:
-            send_reply(chat_id, "No history yet.")
+                    f"   SL:{s['sl']:,.0f}  TP1:{s['tp1']:,.0f}  TP2:{s['tp2']:,.0f}\n   {s['time']}")
+            send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
 
     elif cmd == "/stats":
         ts = trade_stats
@@ -2966,9 +2978,7 @@ def handle_command(text, chat_id, message=None):
         sub = parts[1].lower() if len(parts) > 1 else ""
         if not sub:
             send_reply(chat_id,
-                "<b>Mini App Control</b>\n\n"
-                "Tap a button to pause or resume the mini app.\n\n"
-                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
+                "<b>Mini App Control</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
             return
         msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
         if sub in ("pause", "off", "maintenance"):
@@ -3283,20 +3293,34 @@ def handle_command(text, chat_id, message=None):
             f"/pausechannel 1 or 2\n/resumechannel 1 or 2")
 
     elif cmd == "/pausechannel":
+        def _ch_btns(action):
+            s1 = "⏸ Paused" if channel_paused.get("1") else "✅ Live"
+            s2 = "⏸ Paused" if channel_paused.get("2") else "✅ Live"
+            return {"inline_keyboard": [[
+                {"text": f"📢 Channel 1  {s1}", "callback_data": f"{action}:1"},
+                {"text": f"📢 Channel 2  {s2}", "callback_data": f"{action}:2"},
+            ]]}
         if len(parts) < 2 or parts[1] not in ("1","2"):
-            send_reply(chat_id, "Usage: /pausechannel 1\nor /pausechannel 2"); return
+            send_reply(chat_id, "<b>⏸ Pause Channel</b>\n\nSelect channel:", reply_markup=_ch_btns("pausech")); return
         key = parts[1]
         channel_paused[key] = True
         save_settings()
-        send_reply(chat_id, f"<b>Channel {key} PAUSED</b>\n\nNo signals will be sent to channel {key}.\nUse /resumechannel {key} to resume.")
+        send_reply(chat_id, f"<b>Channel {key} PAUSED ⏸</b>", reply_markup=_ch_btns("pausech"))
 
     elif cmd == "/resumechannel":
+        def _ch_btns_r(action):
+            s1 = "⏸ Paused" if channel_paused.get("1") else "✅ Live"
+            s2 = "⏸ Paused" if channel_paused.get("2") else "✅ Live"
+            return {"inline_keyboard": [[
+                {"text": f"📢 Channel 1  {s1}", "callback_data": f"{action}:1"},
+                {"text": f"📢 Channel 2  {s2}", "callback_data": f"{action}:2"},
+            ]]}
         if len(parts) < 2 or parts[1] not in ("1","2"):
-            send_reply(chat_id, "Usage: /resumechannel 1\nor /resumechannel 2"); return
+            send_reply(chat_id, "<b>▶️ Resume Channel</b>\n\nSelect channel:", reply_markup=_ch_btns_r("resumech")); return
         key = parts[1]
         channel_paused[key] = False
         save_settings()
-        send_reply(chat_id, f"<b>Channel {key} RESUMED</b>\n\nSignals will now be sent to channel {key}.")
+        send_reply(chat_id, f"<b>Channel {key} RESUMED ✅</b>", reply_markup=_ch_btns_r("resumech"))
 
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
@@ -3352,48 +3376,56 @@ def handle_command(text, chat_id, message=None):
             f"Scan1: {s1} removed\nScan2: {s2} removed\n\n<i>- CLEXER V17.8.5 -</i>")
 
     elif cmd == "/alt" and is_admin:
+        _alt_btns = {"inline_keyboard": [[
+            {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:1"},
+            {"text": "📋  Manual Times",           "callback_data": "alt_manual:1"},
+        ]]}
+        _sched_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_SCHEDULE)
         if len(parts) < 2:
             send_reply(chat_id,
-                f"⏰ <b>Alt Scan Times</b>\n\n"
-                f"Scan1: every hour at <b>:{ALT_SCAN_MINUTE:02d}</b>\n"
-                f"Scan2: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
-                f"Usage: <code>/alt 02</code> — change scan1 minute\n"
-                f"       <code>/alt2 24</code> — change scan2 minute\n\n"
-                f"<i>- CLEXER V17.8.5 -</i>"); return
-        try:
-            new_min = int(parts[1])
-            if not (0 <= new_min <= 59):
-                raise ValueError
-        except ValueError:
-            send_reply(chat_id, "❌ Invalid minute. Use 0–59. Example: <code>/alt 02</code>"); return
-        old_min = ALT_SCAN_MINUTE
-        ALT_SCAN_MINUTE = new_min
-        _auto_scan1_last_hour = -1
-        send_reply(chat_id,
-            f"✅ <b>Scan1 Time Updated</b>\n\n"
-            f"Was: :{old_min:02d} | Now: <b>:{new_min:02d}</b>\n"
-            f"Scan2 still at: <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
-            f"<i>- CLEXER V17.8.5 -</i>"); return
+                f"⏰ <b>Scan1 Schedule</b>\n\n"
+                f"Current times:\n<code>{_sched_str}</code>\n\n"
+                f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
+        # /alt loop 2  → every hour at :02
+        if parts[1].lower() == "loop" and len(parts) > 2:
+            try: new_min = int(parts[2]); assert 0 <= new_min <= 59
+            except: send_reply(chat_id, "❌ Usage: /alt loop 02"); return
+            global SCAN1_SCHEDULE
+            SCAN1_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
+            _scan1_triggered_today.clear()
+            send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
+        # /alt manual 1:02 2:23 14:25  → specific times
+        if parts[1].lower() == "manual" and len(parts) > 2:
+            new_slots = []
+            for t in parts[2:]:
+                try:
+                    h, m = t.split(":"); new_slots.append((int(h), int(m)))
+                except: pass
+            if not new_slots:
+                send_reply(chat_id, "❌ Usage: /alt manual 1:02 2:23 14:25"); return
+            SCAN1_SCHEDULE = sorted(set(new_slots))
+            _scan1_triggered_today.clear()
+            _times = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_SCHEDULE)
+            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n<code>{_times}</code>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
+        send_reply(chat_id, "❌ Usage: /alt loop 02  or  /alt manual 1:02 2:23 14:25", reply_markup=_alt_btns); return
 
     elif cmd == "/alt2" and is_admin:
+        _alt2_btns = {"inline_keyboard": [[
+            {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:2"},
+            {"text": "📋  Manual Times",           "callback_data": "alt_manual:2"},
+        ]]}
         if len(parts) < 2:
             send_reply(chat_id,
-                f"⏰ <b>Scan2 Time</b>\n\nCurrent: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
-                f"Usage: <code>/alt2 24</code>\n\n<i>- CLEXER V17.8.5 -</i>"); return
-        try:
-            new_min = int(parts[1])
-            if not (0 <= new_min <= 59): raise ValueError
-        except ValueError:
-            send_reply(chat_id, "❌ Invalid minute. Use 0–59. Example: <code>/alt2 24</code>"); return
-        old_min = ALT_SCAN2_MINUTE
-        ALT_SCAN2_MINUTE = new_min
-        _auto_scan2_last_hour = -1
-        send_reply(chat_id,
-            f"✅ <b>Scan2 Time Updated</b>\n\n"
-            f"Was: :{old_min:02d} | Now: <b>:{new_min:02d}</b>\n"
-            f"Scan1 still at: <b>:{ALT_SCAN_MINUTE:02d}</b>\n\n"
-            f"<i>- CLEXER V17.8.5 -</i>"); return
-
+                f"⏰ <b>Scan2 Schedule</b>\n\nCurrent: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
+                f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
+        if parts[1].lower() == "loop" and len(parts) > 2:
+            try: new_min = int(parts[2]); assert 0 <= new_min <= 59
+            except: send_reply(chat_id, "❌ Usage: /alt2 loop 24"); return
+            old_min = ALT_SCAN2_MINUTE
+            ALT_SCAN2_MINUTE = new_min
+            _auto_scan2_last_hour = -1
+            send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
+        send_reply(chat_id, "❌ Usage: /alt2 loop 24  or  /alt2 manual 12:24 15:24", reply_markup=_alt2_btns); return
     elif cmd == "/tradelog" and is_admin:
         if not os.path.exists(TRADE_LOG_CSV):
             send_reply(chat_id, "📂 No trade history yet. Trades are logged automatically after first signal."); return
@@ -4552,7 +4584,7 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
         return
     rows = []
     for cmd, emoji, desc in cmds:
-        rows.append([{"text": f"{emoji}  {cmd}  —  {desc}", "callback_data": f"help_cmd:{cmd}"}])
+        rows.append([{"text": f"{emoji}  {desc}", "callback_data": f"help_cmd:{cmd}"}])
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<i>Tap any command to run it instantly 👇</i>"
@@ -4718,6 +4750,43 @@ def command_listener():
                                 reply_markup={"inline_keyboard": [[
                                     {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                                     {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
+                    elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
+                        sub = cb_data.replace("history_", "")
+                        handle_command(f"/history {sub}", cb_cid, {})
+                    elif cb_data.startswith("pausech:"):
+                        handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_cid, {})
+                    elif cb_data.startswith("resumech:"):
+                        handle_command(f"/resumechannel {cb_data.split(':')[1]}", cb_cid, {})
+                    elif cb_data.startswith("userinfo:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/user {uid}", cb_cid, {})
+                    elif cb_data.startswith("kick:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/kick {uid}", cb_cid, {})
+                    elif cb_data.startswith("pauseuser:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/pauseuser {uid}", cb_cid, {})
+                    elif cb_data.startswith("ctretry:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/ctretry {uid}", cb_cid, {})
+                    elif cb_data.startswith("ctclose:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/ctclose {uid}", cb_cid, {})
+                    elif cb_data.startswith("alt_loop:") or cb_data.startswith("alt_manual:"):
+                        _mode, _ver = cb_data.split(":")
+                        _cmd = "/alt" if _ver == "1" else "/alt2"
+                        if _mode == "alt_loop":
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": cb_msg_id, "cat_id": "scan"}
+                            _back = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:scan"}]]}
+                            _help_edit_or_send(cb_cid,
+                                f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\nType the minute (00–59):\nBot will run every hour at that minute.\n\n<i>Example: <code>02</code> → runs at 1:02, 2:02, 3:02...</i>",
+                                _back, cb_msg_id)
+                        else:
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": cb_msg_id, "cat_id": "scan"}
+                            _back = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:scan"}]]}
+                            _help_edit_or_send(cb_cid,
+                                f"📋 <b>Manual Times — Scan{_ver}</b>\n\nType specific times separated by spaces:\n\n<i>Example: <code>1:02 2:23 14:25 15:46</code></i>",
+                                _back, cb_msg_id)
                     continue
 
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
@@ -4760,7 +4829,8 @@ def command_listener():
                                 _back_mkp, message_id=_pi_msg_id)
                     else:
                         del pending_input[cid]
-                        full_cmd = f"{pi['cmd']} {text.strip()}"
+                        _step = pi.get("step", "")
+                        full_cmd = f"{pi['cmd']} {_step} {text.strip()}" if _step in ("loop","manual") else f"{pi['cmd']} {text.strip()}"
                         print(f"  [CMD] pending input resolved: {full_cmd}")
                         cid_str = str(cid)
                         _reply_capture[cid_str] = {"texts": [], "cat_id": _pi_cat_id}
