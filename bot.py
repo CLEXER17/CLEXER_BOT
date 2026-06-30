@@ -4420,7 +4420,7 @@ Reasoning: [one line]"""
 
                 # Ask Claude for brief analysis
                 resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model="claude-haiku-4-5-20251001", max_tokens=700,
+                    model="claude-opus-4-8", max_tokens=700,
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
                         f"Current Price: ${price:,.6g}\n"
@@ -4433,7 +4433,7 @@ Reasoning: [one line]"""
                         f"5. Confidence: HIGH / MED / LOW\n"
                         f"6. Reasoning (2-3 lines max)\n\n"
                         f"Be practical and concise. No fluff."}])
-                _log_api_usage(f"coin_{sym}", "claude-haiku-4-5-20251001",
+                _log_api_usage(f"coin_{sym}", "claude-opus-4-8",
                                resp.usage.input_tokens, resp.usage.output_tokens)
                 analysis = resp.content[0].text.strip()
                 emoji = "🟢" if change >= 0 else "🔴"
@@ -4654,20 +4654,33 @@ def command_listener():
                 # Handle inline button callbacks
                 cb = upd.get("callback_query")
                 if cb:
-                    cb_data = cb.get("data",""); cb_cid = cb["from"]["id"]
-                    cb_msg_id = cb.get("message",{}).get("message_id")
+                    cb_data    = cb.get("data","")
+                    cb_cid     = cb["from"]["id"]          # user who pressed the button
+                    cb_uname   = cb["from"].get("username") or cb["from"].get("first_name","?")
+                    cb_msg     = cb.get("message", {})
+                    cb_msg_id  = cb_msg.get("message_id")
+                    cb_chat_id = cb_msg.get("chat", {}).get("id", cb_cid)  # group or DM chat
                     cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                   json={"callback_query_id": cb["id"]}, timeout=5)
 
                     # Help menu navigation
                     if cb_data == "help_main":
-                        send_help_menu(cb_cid, cb_is_admin, message_id=cb_msg_id)
+                        send_help_menu(cb_chat_id, cb_is_admin, message_id=cb_msg_id)
                     elif cb_data.startswith("help_cat:"):
                         cat_id = cb_data.split(":", 1)[1]
-                        send_help_category(cb_cid, cat_id, cb_is_admin, message_id=cb_msg_id)
+                        send_help_category(cb_chat_id, cat_id, cb_is_admin, message_id=cb_msg_id)
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
+                        # Check if non-admin is pressing an admin-only button
+                        _cmd_admin_only = False
+                        for _ckey, (_clabel, _cadm, _ccmds) in _HELP_CATS.items():
+                            if _cadm and any(cmd_text == _c for _c, _, _ in _ccmds):
+                                _cmd_admin_only = True; break
+                        if _cmd_admin_only and not cb_is_admin:
+                            send_reply(cb_chat_id,
+                                f"⛔ @{cb_uname} these controls are only for admins.\nPlease use /help for your commands.")
+                            continue
                         _INPUT_PROMPTS = {
                             "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
                             "/setsize":     "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
@@ -4687,12 +4700,12 @@ def command_listener():
 
                         if cmd_text in _INPUT_PROMPTS:
                             pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _cmd_cat} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _cmd_cat}
-                            _help_edit_or_send(cb_cid, _INPUT_PROMPTS[cmd_text], _back_markup, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, _INPUT_PROMPTS[cmd_text], _back_markup, message_id=cb_msg_id)
                         else:
                             # Capture the command output and edit message in-place
                             cid_str = str(cb_cid)
                             _reply_capture[cid_str] = {"texts": [], "cat_id": _cmd_cat}
-                            handle_command(cmd_text, cb_cid, {})
+                            handle_command(cmd_text, cb_chat_id, {})
                             captured = _reply_capture.pop(cid_str, {})
                             result_text = "\n\n".join(captured.get("texts", [])) or f"✅ Done: {cmd_text}"
                             if len(result_text) > 4000:
@@ -4703,11 +4716,11 @@ def command_listener():
                                 merged_rows = cap_mkp["inline_keyboard"] + _back_markup["inline_keyboard"]
                             else:
                                 merged_rows = _back_markup["inline_keyboard"]
-                            _help_edit_or_send(cb_cid, result_text, {"inline_keyboard": merged_rows}, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": merged_rows}, message_id=cb_msg_id)
 
                     # ── Copytrade ON/OFF ─────────────────────────────────────
                     elif cb_data in ("copytrade_on", "copytrade_off"):
-                        handle_command(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_cid, {})
+                        handle_command(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_chat_id, {})
 
                     # ── Mysize quick-set buttons ──────────────────────────────
                     elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):
@@ -4716,7 +4729,7 @@ def command_listener():
                                 "mysize_setlev":  "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
                                 "mysize_setrisk": "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>"}
                         pending_input[cb_cid] = {"cmd": _map[cb_data], "msg_id": cb_msg_id, "cat_id": "copyuser"}
-                        _help_edit_or_send(cb_cid, _pm[cb_data],
+                        _help_edit_or_send(cb_chat_id, _pm[cb_data],
                             {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
                             message_id=cb_msg_id)
 
@@ -4727,23 +4740,23 @@ def command_listener():
                         _nc_cmd = f"/nocopy clear {_nc_coin}" if _nc_action else f"/nocopy {_nc_coin}"
                         cid_str = str(cb_cid)
                         _reply_capture[cid_str] = {"texts": [], "cat_id": "copyuser"}
-                        handle_command(_nc_cmd, cb_cid, {})
+                        handle_command(_nc_cmd, cb_chat_id, {})
                         captured = _reply_capture.pop(cid_str, {})
                         result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
                         cap_mkp = captured.get("markup")
                         if cap_mkp and "inline_keyboard" in cap_mkp:
-                            _help_edit_or_send(cb_cid, result_text, cap_mkp, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, cap_mkp, message_id=cb_msg_id)
                         else:
-                            _help_edit_or_send(cb_cid, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]}, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]}, message_id=cb_msg_id)
                     elif cb_data == "nocopy_type":
                         pending_input[cb_cid] = {"cmd": "/nocopy", "msg_id": cb_msg_id, "cat_id": "copyuser"}
-                        _help_edit_or_send(cb_cid, "⌨️ <b>Type Coin Name</b>\n\nEnter the coin (e.g. <code>SOL</code>):",
+                        _help_edit_or_send(cb_chat_id, "⌨️ <b>Type Coin Name</b>\n\nEnter the coin (e.g. <code>SOL</code>):",
                             {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
                             message_id=cb_msg_id)
 
                     # ── Images ON/OFF ─────────────────────────────────────────
                     elif cb_data in ("images_on", "images_off"):
-                        handle_command(f"/images {'on' if cb_data=='images_on' else 'off'}", cb_cid, {})
+                        handle_command(f"/images {'on' if cb_data=='images_on' else 'off'}", cb_chat_id, {})
 
                     # ── Setimages TF buttons ──────────────────────────────────
                     elif cb_data.startswith("setimg:"):
@@ -4760,95 +4773,95 @@ def command_listener():
                             [{"text": f"{'✅' if '1h' in CHART_TFS else '📈'}  1H",          "callback_data": "setimg:1h"},
                              {"text": f"{'✅' if '15m' in CHART_TFS else '⏱'}  15M",        "callback_data": "setimg:15m"}],
                             [{"text": f"{'✅' if '5m' in CHART_TFS else '⚡'}  5M",          "callback_data": "setimg:5m"}]]}
-                        _help_edit_or_send(cb_cid,
+                        _help_edit_or_send(cb_chat_id,
                             f"<b>Chart Timeframes</b>\n\nActive: <b>{', '.join(CHART_TFS).upper() or 'none'}</b>\n\n<i>Tap to toggle ✅ = active</i>",
                             _tf_btns2, message_id=cb_msg_id)
 
                     # ── News ON/OFF ───────────────────────────────────────────
                     elif cb_data in ("news_on", "news_off"):
-                        handle_command(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_cid, {})
+                        handle_command(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_chat_id, {})
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
-                        handle_command(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_cid, {})
+                        handle_command(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_chat_id, {})
 
                     # ── Scancopy ON/OFF ───────────────────────────────────────
                     elif cb_data in ("scancopy_on", "scancopy_off"):
-                        handle_command(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_cid, {})
+                        handle_command(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_chat_id, {})
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
-                        handle_command(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_cid, {})
+                        handle_command(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, {})
 
                     elif cb_is_admin:
                         global btc_analysis_enabled
                         if cb_data == "btca_on":
                             btc_analysis_enabled = True
-                            send_reply(cb_cid, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V17.8.5 -</i>",
+                            send_reply(cb_chat_id, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V17.8.5 -</i>",
                                 reply_markup={"inline_keyboard": [[
                                     {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                                     {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
                         elif cb_data == "btca_off":
                             btc_analysis_enabled = False
-                            send_reply(cb_cid, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V17.8.5 -</i>",
+                            send_reply(cb_chat_id, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V17.8.5 -</i>",
                                 reply_markup={"inline_keyboard": [[
                                     {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
                                     {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
                     elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
                         sub = cb_data.replace("history_", "")
-                        handle_command(f"/history {sub}", cb_cid, {})
+                        handle_command(f"/history {sub}", cb_chat_id, {})
                     elif cb_data == "stats_win":
-                        handle_command("/stats", cb_cid, {})
+                        handle_command("/stats", cb_chat_id, {})
                     elif cb_data == "stats_reset":
                         if cb_is_admin:
-                            handle_command("/stats reset", cb_cid, {})
+                            handle_command("/stats reset", cb_chat_id, {})
                     elif cb_data.startswith("sync_close_btc:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctclose {uid}", cb_cid, {})
+                        handle_command(f"/ctclose {uid}", cb_chat_id, {})
                     elif cb_data.startswith("sync_adopt_btc:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctretry {uid}", cb_cid, {})
+                        handle_command(f"/ctretry {uid}", cb_chat_id, {})
                     elif cb_data.startswith("sync_reset_ghost:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctsync {uid}", cb_cid, {})
+                        handle_command(f"/ctsync {uid}", cb_chat_id, {})
                     elif cb_data.startswith("sync_adopt_scan:"):
                         _, uid, sym = cb_data.split(":")
-                        handle_command(f"/ctretry {uid} {sym}", cb_cid, {})
+                        handle_command(f"/ctretry {uid} {sym}", cb_chat_id, {})
                     elif cb_data.startswith("sync_close_scan:"):
                         _, uid, sym = cb_data.split(":")
-                        handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_cid, {})
+                        handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_chat_id, {})
                     elif cb_data.startswith("pausech:"):
-                        handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_cid, {})
+                        handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, {})
                     elif cb_data.startswith("resumech:"):
-                        handle_command(f"/resumechannel {cb_data.split(':')[1]}", cb_cid, {})
+                        handle_command(f"/resumechannel {cb_data.split(':')[1]}", cb_chat_id, {})
                     elif cb_data.startswith("userinfo:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/user {uid}", cb_cid, {})
+                        handle_command(f"/user {uid}", cb_chat_id, {})
                     elif cb_data.startswith("kick:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/kick {uid}", cb_cid, {})
+                        handle_command(f"/kick {uid}", cb_chat_id, {})
                     elif cb_data.startswith("pauseuser:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/pauseuser {uid}", cb_cid, {})
+                        handle_command(f"/pauseuser {uid}", cb_chat_id, {})
                     elif cb_data.startswith("ctretry:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctretry {uid}", cb_cid, {})
+                        handle_command(f"/ctretry {uid}", cb_chat_id, {})
                     elif cb_data.startswith("ctclose:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctclose {uid}", cb_cid, {})
+                        handle_command(f"/ctclose {uid}", cb_chat_id, {})
                     elif cb_data.startswith("alt_loop:") or cb_data.startswith("alt_manual:"):
                         _mode, _ver = cb_data.split(":")
                         _cmd = "/alt" if _ver == "1" else "/alt2"
                         if _mode == "alt_loop":
                             pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": None, "cat_id": "scan"}
-                            send_reply(cb_cid,
+                            send_reply(cb_chat_id,
                                 f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\n"
                                 f"Type the minute <b>(0–59)</b>:\n"
                                 f"Bot will run every hour at that minute.\n\n"
                                 f"<i>Example: type <code>2</code> → runs at 1:02, 2:02, 3:02, 4:02...</i>")
                         else:
                             pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": None, "cat_id": "scan"}
-                            send_reply(cb_cid,
+                            send_reply(cb_chat_id,
                                 f"📋 <b>Manual Times — Scan{_ver}</b>\n\n"
                                 f"Type your specific times separated by spaces:\n\n"
                                 f"<i>Example: <code>2.02 2.23 14.25 15.26 15.46</code></i>")
