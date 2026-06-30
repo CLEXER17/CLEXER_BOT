@@ -109,6 +109,7 @@ scan1_trades = []   # list of active scan1 trade dicts (unlimited slots)
 scan2_trades = []   # list of active scan2 trade dicts (unlimited slots)
 demo_scan1_trades = []   # DEMO trades — test strategy only, no copytrade
 demo_scan2_trades = []
+SCAN1_AUTO_ENABLED = True
 TEST_SCAN_ENABLED = False
 TEST_SCAN_MINUTE  = 5
 _test_scan1_last_hour = -1
@@ -2619,11 +2620,11 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
-    "/scan","/scan1","/scan2","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
+    "/scan","/scan1","/scan2","/scantoggle","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     # In groups, chat_id is the group — check sender_id for admin
@@ -3867,6 +3868,36 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"TV bridge not needed. Works anytime.")
 
     elif cmd in ("/scan", "/scan1", "/scan2") and is_admin:
+        if cmd == "/scantoggle" and is_admin:
+            _arg = parts[1].lower() if len(parts) > 1 else ""
+            if _arg == "scan1on":
+                SCAN1_AUTO_ENABLED = True
+            elif _arg == "scan1off":
+                SCAN1_AUTO_ENABLED = False
+            elif _arg == "scan2on":
+                SCAN2_AUTO_ENABLED = True
+            elif _arg == "scan2off":
+                SCAN2_AUTO_ENABLED = False
+            elif _arg == "teston":
+                TEST_SCAN_ENABLED = True
+            elif _arg == "testoff":
+                TEST_SCAN_ENABLED = False
+            _s1 = "✅ ON" if SCAN1_AUTO_ENABLED else "❌ OFF"
+            _s2 = "✅ ON" if SCAN2_AUTO_ENABLED else "❌ OFF"
+            _ts = "✅ ON" if TEST_SCAN_ENABLED else "❌ OFF"
+            _mkp = {"inline_keyboard": [
+                [{"text": f"🔍 Scan1  {_s1}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:scan1on"}, {"text": "⏸ OFF", "callback_data": "scantoggle:scan1off"}],
+                [{"text": f"🔍 Scan2  {_s2}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:scan2on"}, {"text": "⏸ OFF", "callback_data": "scantoggle:scan2off"}],
+                [{"text": f"🧪 Demo   {_ts}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:teston"},  {"text": "⏸ OFF", "callback_data": "scantoggle:testoff"}],
+            ]}
+            send_reply(chat_id,
+                f"<b>Scan Toggle</b>\n\n"
+                f"🔍 Scan1 Auto  —  <b>{_s1}</b>\n"
+                f"🔍 Scan2 Auto  —  <b>{_s2}</b>\n"
+                f"🧪 Demo Trade  —  <b>{_ts}</b>\n\n"
+                f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_mkp)
+            return
+
         if cmd == "/scan":
             # Force-run both scan1 and scan2 back-to-back
             send_reply(chat_id, "📡 Force-running Scan1 + Scan2 (~3 min total)...")
@@ -4508,7 +4539,9 @@ _HELP_CATS = {
     ),
     "scan": (
         "🔍 Scan Control", True, [
-            ("/scan",      "🔍", "Force Scan1 + Scan2 now"),
+            ("/scantoggle", "⚙️", "Scan1 / Scan2 / Demo ON-OFF"),
+            ("/btcanalysis","📡", "BTC Analysis ON / OFF"),
+            ("/scan",       "🔍", "Force Scan1 + Scan2 now"),
             ("/scan1",     "1️⃣", "Force Scan1 only"),
             ("/scan2",     "2️⃣", "Force Scan2 only"),
             ("/alt",       "🪙", "Manual Scan1 for a coin"),
@@ -4846,6 +4879,11 @@ def command_listener():
                     elif cb_data.startswith("sync_close_scan:"):
                         _, uid, sym = cb_data.split(":")
                         handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("scantoggle:"):
+                        if cb_is_admin:
+                            handle_command(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data == "noop":
+                        pass
                     elif cb_data.startswith("pausech:"):
                         handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("resumech:"):
@@ -4950,10 +4988,14 @@ def command_listener():
 # ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
 SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
-    (1,2),(2,2),(3,2),(4,23),(5,2),(6,23),(8,2),(8,23),(11,2),
+    (1,2),(1,23),(2,2),(2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
+    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),
     # PM
-    (12,3),(12,23),(13,7),(13,23),(14,23),(15,23),(16,23),(17,9),(19,4),(19,23),(20,23),(21,23),
+    (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
+    (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
 ]))
+# Scan2 runs at the same times as Scan1
+SCAN2_SCHEDULE: list[tuple[int,int]] = SCAN1_SCHEDULE[:]
 # Test demo fires 1 min after each scan1 time
 SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = [
     ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN1_SCHEDULE
@@ -5571,18 +5613,17 @@ def main():
             _cur_hm = (_ist_now.hour, _ist_now.minute)
 
             # Scan1: fixed schedule
-            if _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
+            if SCAN1_AUTO_ENABLED and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
                 print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
-            # Scan2: disabled (SCAN2_AUTO_ENABLED=False)
+            # Scan2: same schedule as Scan1
             if SCAN2_AUTO_ENABLED:
-                _s2_hm = (_ist_now.hour, ALT_SCAN2_MINUTE)
-                if _ist_now.minute == ALT_SCAN2_MINUTE and _s2_hm not in _scan1_triggered_today:
-                    _scan1_triggered_today.add(_s2_hm)
-                    print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H')}:{ALT_SCAN2_MINUTE:02d} IST")
+                if _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
+                    _scan1_triggered_today.add((_cur_hm, 2))
+                    print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
