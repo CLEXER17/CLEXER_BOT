@@ -1852,12 +1852,13 @@ def save_settings():
 
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
-def send_telegram(text):
+def send_telegram(text, include_ch2=True):
     success = False
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
+        if key == "2" and not include_ch2: continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text,
@@ -2078,6 +2079,9 @@ def run_tick_check():
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row, low:{check_low:,.0f} sl:{sl:,.0f}")
+            # Suppress ch2 if SL hit within 10 min of entry (stop hunt / quick SL)
+            _entry_ts = t.get("entry_time", 0)
+            _sl_in_ch2 = (time.time() - _entry_ts) > 600
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
                 send_telegram(
@@ -2085,7 +2089,7 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V17.8.5 -</i>")
+                    f"❄️ Cooling down 2 scans...\n\n<i>- CLEXER V17.8.5 -</i>", include_ch2=_sl_in_ch2)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 send_telegram(
@@ -2093,9 +2097,9 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V17.8.5 -</i>")
+                    f"❄️ Cooling down 1 scan...\n\n<i>- CLEXER V17.8.5 -</i>", include_ch2=_sl_in_ch2)
             else:
-                send_telegram(fmt_update("SL_HIT"))
+                send_telegram(fmt_update("SL_HIT"), include_ch2=_sl_in_ch2)
             ct.on_sl(entry, sl); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -2791,15 +2795,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/btcanalysis":
         arg = parts[1].lower() if len(parts) > 1 else ("off" if btc_analysis_enabled else "on")
         btc_analysis_enabled = (arg == "on")
-        status = "✅ ON" if btc_analysis_enabled else "⏸ OFF"
-        send_reply(chat_id,
-            f"<b>BTC Analysis {status}</b>\n\n"
-            f"Scheduled scans: {'7:21, 11:21, 15:21, 19:21, 23:21 IST' if btc_analysis_enabled else 'paused'}\n"
-            f"/signal still forces immediate scan.\n\n<i>- CLEXER V17.8.5 -</i>",
-            reply_markup={"inline_keyboard": [[
-                {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
-                {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}
-            ]]})
+        _btca_mkp = {"inline_keyboard": [[
+            {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
+            {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
+        ]]}
+        if btc_analysis_enabled:
+            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>- CLEXER V17.8.5 -</i>"
+        else:
+            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\nScheduled scans paused.\n\n<i>- CLEXER V17.8.5 -</i>"
+        send_reply(chat_id, _btca_text, reply_markup=_btca_mkp)
 
     elif cmd == "/tvstatus":
         cmd_tvstatus(chat_id)
@@ -4842,20 +4846,21 @@ def command_listener():
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
                         handle_command(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, {}, sender_id=cb_cid)
 
-                    elif cb_is_admin:
+                    elif cb_data in ("btca_on", "btca_off") and cb_is_admin:
                         global btc_analysis_enabled
-                        if cb_data == "btca_on":
-                            btc_analysis_enabled = True
-                            send_reply(cb_chat_id, "✅ <b>BTC Analysis ON</b>\n\nWill scan at 7:21, 11:21, 15:21, 19:21, 23:21 IST.\n\n<i>- CLEXER V17.8.5 -</i>",
-                                reply_markup={"inline_keyboard": [[
-                                    {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
-                                    {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
-                        elif cb_data == "btca_off":
-                            btc_analysis_enabled = False
-                            send_reply(cb_chat_id, "⏸ <b>BTC Analysis OFF</b>\n\nScheduled scans paused. /signal still forces a scan.\n\n<i>- CLEXER V17.8.5 -</i>",
-                                reply_markup={"inline_keyboard": [[
-                                    {"text": "▶ Enable Analysis", "callback_data": "btca_on"},
-                                    {"text": "⏸ Disable Analysis", "callback_data": "btca_off"}]]})
+                        btc_analysis_enabled = (cb_data == "btca_on")
+                        _btca_mkp = {"inline_keyboard": [[
+                            {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
+                            {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
+                        ]]}
+                        if btc_analysis_enabled:
+                            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>- CLEXER V17.8.5 -</i>"
+                        else:
+                            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\nScheduled scans paused.\n\n<i>- CLEXER V17.8.5 -</i>"
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                            json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                  "text": _btca_text, "parse_mode": "HTML",
+                                  "reply_markup": _btca_mkp}, timeout=10)
                     elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
                         sub = cb_data.replace("history_", "")
                         handle_command(f"/history {sub}", cb_chat_id, {}, sender_id=cb_cid)
