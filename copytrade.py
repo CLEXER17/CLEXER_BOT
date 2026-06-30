@@ -1598,7 +1598,7 @@ def sync_check() -> list[str]:
             if user.get("in_position"):
                 if BINGX_SYMBOL not in pos_symbols:
                     lines.append(f"⚠️ @{uname} GHOST STATE: bot thinks BTC position open but BingX shows NONE")
-                    lines.append(f"   → Run /ctsync to reset or /ctretry to re-enter")
+                    lines.append(f"__BTN__reset_ghost:{cid}")
                 else:
                     lines.append(f"✅ @{uname} BTC position confirmed on BingX")
             else:
@@ -1607,7 +1607,7 @@ def sync_check() -> list[str]:
                     amt = float(btc_pos.get("positionAmt", 0))
                     pnl = float(btc_pos.get("unrealizedProfit", 0))
                     lines.append(f"🚨 @{uname} ORPHAN BTC POSITION: {amt} BTC PnL={pnl:+.2f} USDT — bot state says NO TRADE")
-                    lines.append(f"   → Use /close to close it or /ctsync to adopt it")
+                    lines.append(f"__BTN__close_btc:{cid}|adopt_btc:{cid}")
 
             # ── Scan (all 4 slots) ──
             known_scan_syms = {user.get(f"{p}symbol","") for p in _ALL_SLOT_PREFIXES if user.get(f"{p}symbol","")}
@@ -1624,7 +1624,7 @@ def sync_check() -> list[str]:
                     amt = float(orphan.get("positionAmt", 0))
                     pnl = float(orphan.get("unrealizedProfit", 0))
                     lines.append(f"🚨 @{uname} ORPHAN SCAN: {sym} {amt} PnL={pnl:+.2f} USDT — bot has NO record")
-                    lines.append(f"   → Use /ctretry {cid} {sym.replace('-USDT','')} to adopt, or close manually")
+                    lines.append(f"__BTN__ctretry_{cid}_{sym.replace('-USDT','')}:{cid}|closescan_{sym}:{cid}")
 
         except Exception as e:
             lines.append(f"❌ {cid}: {e}")
@@ -1856,7 +1856,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id,
                 f"<b>Copy Trade</b>\n\nStatus: <b>{st}</b>\n\n"
                 f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | Leverage: <b>{user.get('leverage', 10)}x</b>\n\n"
-                f"<i>Tap a button or use /copytrade on|off</i>\n\n"
+                f""
                 f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
             send_reply_fn(chat_id,
@@ -2056,8 +2056,20 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id, "\n".join(lines))
 
     elif cmd == "/user" and is_admin:
+        def _user_btns(cb_prefix):
+            rows = []
+            row = []
+            for uid, u in list(_db.items()):
+                uname = u.get("username") or uid
+                label = f"@{uname}" + (" ⛔" if u.get("paused_by_admin") else ("  🟢" if u.get("copy_on") else ""))
+                row.append({"text": label, "callback_data": f"{cb_prefix}:{uid}"})
+                if len(row) == 2:
+                    rows.append(row); row = []
+            if row: rows.append(row)
+            return {"inline_keyboard": rows} if rows else None
         if len(parts) < 2:
-            send_reply_fn(chat_id, "Usage: /user TELEGRAM_ID"); return
+            mkp = _user_btns("userinfo")
+            send_reply_fn(chat_id, "👥 <b>Select a user:</b>", reply_markup=mkp); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
             send_reply_fn(chat_id, f"User {target} not found."); return
@@ -2093,7 +2105,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/kick" and is_admin:
         if len(parts) < 2:
-            send_reply_fn(chat_id, "Usage: /kick TELEGRAM_ID"); return
+            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"kick:{uid}"}] for uid, u in list(_db.items())]
+            send_reply_fn(chat_id, "🚫 <b>Select user to kick:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
             send_reply_fn(chat_id, f"User {target} not found."); return
@@ -2111,7 +2124,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/pauseuser" and is_admin:
         if len(parts) < 2:
-            send_reply_fn(chat_id, "Usage: /pauseuser TELEGRAM_ID"); return
+            rows = []
+            for uid, u in list(_db.items()):
+                state = "⛔ Paused" if u.get("paused_by_admin") else "✅ Active"
+                rows.append([{"text": f"@{u.get('username',uid)}  {state}", "callback_data": f"pauseuser:{uid}"}])
+            send_reply_fn(chat_id, "⏸ <b>Select user to pause/unpause:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
             send_reply_fn(chat_id, f"User {target} not found."); return
@@ -2157,12 +2174,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         /ctretry USER_ID all      → retry ALL active scan trades
         """
         if len(parts) < 2:
-            send_reply_fn(chat_id,
-                "<b>Retry Copy Trade</b>\n\n"
-                "<code>/ctretry USER_ID</code> — retry BTC trade\n"
-                "<code>/ctretry USER_ID SOL</code> — retry SOL scan trade\n"
-                "<code>/ctretry USER_ID all</code> — retry all active scan trades\n\n"
-                "Use /ctstatus to see failed users."); return
+            failed = [(uid, u) for uid, u in _db.items() if u.get("failed_copy")]
+            rows = [[{"text": f"🔄 @{u.get('username',uid)}", "callback_data": f"ctretry:{uid}"}] for uid, u in (failed or list(_db.items())[:10])]
+            send_reply_fn(chat_id, "🔄 <b>Select user to retry:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
 
         target = str(parts[1])
         user = _db.get(target)
@@ -2344,6 +2358,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             print(f"[CT] /ctretry {target}: {e}")
 
     elif cmd == "/ctclose" and is_admin:
+        if len(parts) < 2:
+            rows = [[{"text": f"❌ Close @{u.get('username',uid)}", "callback_data": f"ctclose:{uid}"}] for uid, u in _db.items() if u.get("in_position") or u.get("copy_on")]
+            rows.append([{"text": "❌ Close ALL users", "callback_data": "ctclose:all"}])
+            send_reply_fn(chat_id, "⚠️ <b>Select user to close:</b>", reply_markup={"inline_keyboard": rows}); return
         if len(parts) >= 2 and parts[1].lower() != "all":
             # Close one specific user
             target = str(parts[1])
