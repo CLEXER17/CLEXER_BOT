@@ -1830,7 +1830,7 @@ def load_settings():
             SEND_NEWS             = d.get("send_news",           SEND_NEWS)
             SIGNAL_SCAN_INTERVAL  = d.get("scan_interval",       SIGNAL_SCAN_INTERVAL)
             BTC_PROMPT_MODE       = d.get("btc_prompt_mode",     BTC_PROMPT_MODE)
-            btc_analysis_enabled  = d.get("btc_analysis",        False)  # default OFF
+            btc_analysis_enabled  = False  # always OFF on startup
             SCAN1_AUTO_ENABLED    = d.get("scan1_auto",          True)
             SCAN2_AUTO_ENABLED    = d.get("scan2_auto",          False)
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
