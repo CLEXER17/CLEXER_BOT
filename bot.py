@@ -119,7 +119,8 @@ signal_history        = []
 scan_history          = []   # closed scan trades — appended on TP/SL/missed
 trade_outcomes        = []
 force_scan            = threading.Event()
-bot_paused            = threading.Event()
+bot_paused            = threading.Event()  # PAUSE: freezes everything
+bot_stopped           = threading.Event()  # STOP: blocks new scans only, monitoring continues
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 last_update_id        = 0
 last_force_scan_time  = 0
@@ -2632,7 +2633,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
-    "/scan","/scan1","/scan2","/scantoggle","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
+    "/scan","/scan1","/scan2","/scantoggle","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
@@ -2691,19 +2692,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         send_help_menu(chat_id, is_admin)
 
     elif cmd in ("/go", "/resume"):
-        bot_paused.clear()
-        _go_ist = now_ist()
-        _go_scan_hrs = {7, 11, 15, 19, 23}
-        _go_next_alt = f"{_go_ist.hour}:{ALT_SCAN_MINUTE:02d}" if _go_ist.minute < ALT_SCAN_MINUTE else f"{(_go_ist.hour+1)%24}:{ALT_SCAN_MINUTE:02d}"
+        bot_paused.clear(); bot_stopped.clear()
+        _ctrl_btns = {"inline_keyboard": [[
+            {"text": "⏸ Pause All",    "callback_data": "bot_pause"},
+            {"text": "🛑 Stop Scans",  "callback_data": "bot_stop"},
+        ]]}
         send_reply(chat_id,
-            f"<b>CLEXER Started</b>\n\n"
-            f"✅ Bot is RUNNING\n"
-            f"📡 BTC Scan: {'ON' if btc_analysis_enabled else 'OFF (use /btcanalysis on)'}\n"
-            f"📊 Alt Scan: ON\n"
-            f"⏰ Next BTC scan: <b>{next((f'{h}:21' for h in sorted({7,11,15,19,23}) if h > _go_ist.hour or (h == _go_ist.hour and _go_ist.minute < 21)), '07:21 tomorrow')} IST</b>\n"
-            f"⏰ Next Alt scan: <b>{_go_next_alt} IST</b>\n\n"
-            f"Tick: {TICK_INTERVAL}s | Source: {get_current_source()}\n\n"
-            f"<i>- CLEXER V17.8.5 -</i>")
+            f"▶️ <b>Bot RUNNING</b>\n\n"
+            f"All scans, monitoring and alerts active.\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_ctrl_btns)
 
     elif cmd == "/demo" and is_admin:
         """
@@ -2797,13 +2794,38 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"❌ Demo error: {e}")
 
     elif cmd == "/pause":
-        bot_paused.set()
-        send_reply(chat_id, "<b>Bot Paused</b>\n\nUse /go to resume.\n\n<i>- CLEXER V17.8.5 -</i>")
+        bot_paused.set(); bot_stopped.set()
+        _ctrl_btns = {"inline_keyboard": [[
+            {"text": "▶️ Resume",       "callback_data": "bot_go"},
+            {"text": "🛑 Stop Scans",  "callback_data": "bot_stop"},
+        ]]}
+        send_reply(chat_id,
+            f"⏸ <b>Bot PAUSED</b>\n\n"
+            f"Everything frozen — scans, monitoring, alerts.\n"
+            f"Use ▶️ Resume to restart.\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_ctrl_btns)
+
+    elif cmd == "/stop":
+        bot_stopped.set(); bot_paused.clear()
+        _ctrl_btns = {"inline_keyboard": [[
+            {"text": "▶️ Resume",       "callback_data": "bot_go"},
+            {"text": "⏸ Pause All",    "callback_data": "bot_pause"},
+        ]]}
+        send_reply(chat_id,
+            f"🛑 <b>Scans STOPPED</b>\n\n"
+            f"✅ Trade monitoring still active\n"
+            f"✅ Copytrade SL/TP still active\n"
+            f"❌ New scans blocked\n"
+            f"❌ BTC analysis blocked\n"
+            f"❌ Demo blocked\n"
+            f"❌ News blocked\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_ctrl_btns)
 
     elif cmd == "/btcanalysis":
-        arg = parts[1].lower() if len(parts) > 1 else ("off" if btc_analysis_enabled else "on")
-        btc_analysis_enabled = (arg == "on")
-        save_settings()
+        arg = parts[1].lower() if len(parts) > 1 else ""
+        if arg in ("on", "off"):
+            btc_analysis_enabled = (arg == "on")
+            save_settings()
         _btca_mkp = {"inline_keyboard": [[
             {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
             {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
@@ -2828,7 +2850,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "❌ TV_BRIDGE_URL not set — bridge not configured.")
 
     elif cmd == "/status":
-        t = active_trade; st = "PAUSED (/go to start)" if bot_paused.is_set() else "RUNNING"
+        t = active_trade
+        st = "⏸ PAUSED" if bot_paused.is_set() else ("🛑 STOPPED (scans off)" if bot_stopped.is_set() else "▶️ RUNNING")
         cd = f"Cooldown: {trade_stats['cooldown_scans']} scans\n" if trade_stats["cooldown_scans"] else ""
         ti = (f"{t['signal']} @ {t['entry']:,.0f}\nSL:{t['sl']:,.0f}  TP1:{t['tp1']:,.0f}  TP2:{t['tp2']:,.0f}\n"
             f"Entry:{'OK' if t['entry_hit'] else 'pending'}  TP1:{'OK' if t['tp1_hit'] else 'no'}"
@@ -4896,6 +4919,12 @@ def command_listener():
                     elif cb_data.startswith("sync_close_scan:"):
                         _, uid, sym = cb_data.split(":")
                         handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data == "bot_go" and cb_is_admin:
+                        handle_command("/go", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data == "bot_pause" and cb_is_admin:
+                        handle_command("/pause", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data == "bot_stop" and cb_is_admin:
+                        handle_command("/stop", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("scantoggle:"):
                         if cb_is_admin:
                             handle_command(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
@@ -5124,6 +5153,7 @@ def _demo_monitor_loop():
     while True:
         try:
             time.sleep(30)
+            if bot_paused.is_set(): continue
             now = time.time()
             for demo_list in (demo_scan1_trades, demo_scan2_trades):
                 to_remove = []
@@ -5523,7 +5553,7 @@ def main():
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
-    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
+    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1, pause_event=bot_paused)
 
     # Startup sync check — alert admin if any orphan positions exist
     def _startup_sync():
@@ -5630,14 +5660,14 @@ def main():
             _cur_hm = (_ist_now.hour, _ist_now.minute)
 
             # Scan1: fixed schedule
-            if SCAN1_AUTO_ENABLED and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
+            if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
                 print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
             # Scan2: same schedule as Scan1
-            if SCAN2_AUTO_ENABLED:
+            if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set():
                 if _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
                     _scan1_triggered_today.add((_cur_hm, 2))
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
@@ -5645,7 +5675,7 @@ def main():
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # Test demo: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
-            if TEST_SCAN_ENABLED and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
                 print(f"  [TEST-SCAN] Demo scan at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
                 if ADMIN_CHAT_ID:
@@ -5684,7 +5714,7 @@ def main():
                 _btc_ist.hour in _btc_scan_hours and
                 last_signal_scan_time < (now - 3600)  # once per window (don't re-run same minute)
             )
-            if not forced and (not _btc_scan_due or not btc_analysis_enabled):
+            if not forced and (not _btc_scan_due or not btc_analysis_enabled or bot_stopped.is_set()):
                 time.sleep(MAIN_TICK); continue
 
             # Cooldown
