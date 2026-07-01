@@ -1816,6 +1816,7 @@ def check_price_status(price, high, low, df_5m=None):
     return "RUNNING"
 
 import copytrade as ct
+ct._pause_event = bot_paused
 
 # --- TELEGRAM -----------------------------------------------------------------
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
@@ -5553,7 +5554,7 @@ def main():
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
-    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1, pause_event=bot_paused)
+    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
 
     # Startup sync check — alert admin if any orphan positions exist
     def _startup_sync():
