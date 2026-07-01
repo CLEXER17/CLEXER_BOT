@@ -1632,20 +1632,24 @@ def sync_check() -> list[str]:
     return lines or ["✅ All users in sync — no orphan positions found"]
 
 
+_pause_event = None  # set by bot.py after import
+
 def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
-    """Start background thread that runs monitor_sl_tp every 2 minutes."""
+    """Start background thread that runs monitor_sl_tp every 30 seconds."""
     import threading as _th
     def _loop():
         time.sleep(30)  # initial delay to let bot fully start
         while True:
             try:
+                if _pause_event and _pause_event.is_set():
+                    time.sleep(30); continue
                 monitor_sl_tp(notify_fn)
             except Exception as e:
                 print(f"[CT] monitor loop error: {e}")
-            time.sleep(30)   # check every 30 seconds for fast TP1 detection
+            time.sleep(30)
     t = _th.Thread(target=_loop, daemon=True)
     t.start()
-    print(f"[CT] SL/TP monitor started — checks every 2 minutes")
+    print(f"[CT] SL/TP monitor started — checks every 30 seconds")
 
 
 def on_sl_to_be(entry: float):
