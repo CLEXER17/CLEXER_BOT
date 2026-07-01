@@ -231,20 +231,67 @@ def _ensure_csv():
             csv.writer(f).writerow(_CSV_HEADERS)
 
 def log_trade_event(row: dict):
-    """Append one trade event row to CSV and optionally POST to webhook."""
+    """Log a trade event. 'open' rows are appended; all other events update the existing open row."""
     import csv
     _ensure_csv()
-    ordered = {h: row.get(h, "") for h in _CSV_HEADERS}
+    result = row.get("result", "open")
+
+    if result == "open":
+        # New trade — append a fresh row
+        ordered = {h: row.get(h, "") for h in _CSV_HEADERS}
+        try:
+            with open(TRADE_LOG_CSV, "a", newline="") as f:
+                csv.DictWriter(f, fieldnames=_CSV_HEADERS).writerow(ordered)
+        except Exception as e:
+            print(f"  [LOG] CSV write error: {e}")
+        if TRADE_LOG_WEBHOOK:
+            try: requests.post(TRADE_LOG_WEBHOOK, json=ordered, timeout=8)
+            except Exception as e: print(f"  [LOG] Webhook error: {e}")
+        return
+
+    # For TP1/TP2/SL/BE/TIMEOUT etc — find and update the matching open row
+    coin      = row.get("coin", "")
+    direction = row.get("direction", "")
+    trade_type = row.get("type", "")
+
     try:
-        with open(TRADE_LOG_CSV, "a", newline="") as f:
-            csv.DictWriter(f, fieldnames=_CSV_HEADERS).writerow(ordered)
+        with open(TRADE_LOG_CSV, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        print(f"  [LOG] CSV read error: {e}"); return
+
+    # Find the LAST open row for this coin+direction+type (most recent active trade)
+    match_idx = None
+    for i, r in enumerate(rows):
+        if (r.get("coin") == coin and r.get("direction") == direction
+                and r.get("type") == trade_type and r.get("result") == "open"):
+            match_idx = i
+
+    if match_idx is not None:
+        # Update existing row with new columns from the event
+        for key, val in row.items():
+            if key in _CSV_HEADERS and val:
+                rows[match_idx][key] = val
+        # Only mark result as final if this event closes the trade
+        # TP1_partial keeps it "open" (still running), everything else closes it
+        if result != "TP1_partial":
+            rows[match_idx]["result"] = result
+    else:
+        # No matching open row found — append as new row (fallback)
+        rows.append({h: row.get(h, "") for h in _CSV_HEADERS})
+
+    try:
+        with open(TRADE_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=_CSV_HEADERS)
+            w.writeheader()
+            w.writerows(rows)
     except Exception as e:
         print(f"  [LOG] CSV write error: {e}")
+
     if TRADE_LOG_WEBHOOK:
-        try:
-            requests.post(TRADE_LOG_WEBHOOK, json=ordered, timeout=8)
-        except Exception as e:
-            print(f"  [LOG] Webhook error: {e}")
+        ordered = {h: rows[match_idx][h] if match_idx is not None else row.get(h, "") for h in _CSV_HEADERS}
+        try: requests.post(TRADE_LOG_WEBHOOK, json=ordered, timeout=8)
+        except Exception as e: print(f"  [LOG] Webhook error: {e}")
 
 def _ist_str_now() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d %H:%M IST")
@@ -5035,17 +5082,24 @@ def command_listener():
 # ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
 SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
+    (2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
+    (6,2),(8,2),(8,23),(11,2),(11,23),
+    # PM
+    (12,23),(13,23),(14,7),(14,23),
+    (16,7),(17,23),(19,23),(20,7),(20,23),(21,7),
+]))
+# Scan2 keeps the full original schedule (independent of Scan1)
+SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
+    # AM
     (1,2),(1,23),(2,2),(2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
     (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),
     # PM
     (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
     (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
 ]))
-# Scan2 runs at the same times as Scan1
-SCAN2_SCHEDULE: list[tuple[int,int]] = SCAN1_SCHEDULE[:]
-# Test demo fires 1 min after each scan1 time
+# Demo/Test fires 1 min after each Scan2 slot (uses full schedule, not trimmed Scan1)
 SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = [
-    ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN1_SCHEDULE
+    ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN2_SCHEDULE
 ]
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
