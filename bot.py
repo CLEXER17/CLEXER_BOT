@@ -1820,16 +1820,20 @@ import copytrade as ct
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
             channel_paused.update(d.get("channel_paused", {}))
-            SEND_CHARTS           = d.get("send_charts",       SEND_CHARTS)
-            CHART_TFS             = d.get("chart_tfs",         CHART_TFS)
-            SEND_NEWS             = d.get("send_news",         SEND_NEWS)
-            SIGNAL_SCAN_INTERVAL  = d.get("scan_interval",     SIGNAL_SCAN_INTERVAL)
-            BTC_PROMPT_MODE       = d.get("btc_prompt_mode",   BTC_PROMPT_MODE)
+            SEND_CHARTS           = d.get("send_charts",         SEND_CHARTS)
+            CHART_TFS             = d.get("chart_tfs",           CHART_TFS)
+            SEND_NEWS             = d.get("send_news",           SEND_NEWS)
+            SIGNAL_SCAN_INTERVAL  = d.get("scan_interval",       SIGNAL_SCAN_INTERVAL)
+            BTC_PROMPT_MODE       = d.get("btc_prompt_mode",     BTC_PROMPT_MODE)
+            btc_analysis_enabled  = d.get("btc_analysis",        False)  # default OFF
+            SCAN1_AUTO_ENABLED    = d.get("scan1_auto",          True)
+            SCAN2_AUTO_ENABLED    = d.get("scan2_auto",          False)
+            TEST_SCAN_ENABLED     = d.get("test_scan",           False)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -1846,6 +1850,10 @@ def save_settings():
             "send_news":        SEND_NEWS,
             "scan_interval":    SIGNAL_SCAN_INTERVAL,
             "btc_prompt_mode":  BTC_PROMPT_MODE,
+            "btc_analysis":     btc_analysis_enabled,
+            "scan1_auto":       SCAN1_AUTO_ENABLED,
+            "scan2_auto":       SCAN2_AUTO_ENABLED,
+            "test_scan":        TEST_SCAN_ENABLED,
         }, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
@@ -2795,6 +2803,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/btcanalysis":
         arg = parts[1].lower() if len(parts) > 1 else ("off" if btc_analysis_enabled else "on")
         btc_analysis_enabled = (arg == "on")
+        save_settings()
         _btca_mkp = {"inline_keyboard": [[
             {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
             {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
@@ -3887,6 +3896,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 TEST_SCAN_ENABLED = True
             elif _arg == "testoff":
                 TEST_SCAN_ENABLED = False
+            if _arg: save_settings()
             _s1 = "✅ ON" if SCAN1_AUTO_ENABLED else "❌ OFF"
             _s2 = "✅ ON" if SCAN2_AUTO_ENABLED else "❌ OFF"
             _ts = "✅ ON" if TEST_SCAN_ENABLED else "❌ OFF"
@@ -4850,6 +4860,7 @@ def command_listener():
                     elif cb_data in ("btca_on", "btca_off") and cb_is_admin:
                         global btc_analysis_enabled
                         btc_analysis_enabled = (cb_data == "btca_on")
+                        save_settings()
                         _btca_mkp = {"inline_keyboard": [[
                             {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
                             {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
