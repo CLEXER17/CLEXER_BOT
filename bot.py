@@ -2837,9 +2837,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             for dc in _dlst:
                 _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
                 _pnl = (_cp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _cp and dc.get("entry") else 0
+                _dc_tp1 = "✅" if dc.get('tp1_hit') else f"{dc.get('tp1',0):,.4g}"
                 scan_lines += (f"\n\n<b>[DEMO]</b> {dc['signal']} {dc.get('symbol','?')}\n"
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
-                    f"TP1:{'✅' if dc.get('tp1_hit') else dc.get('tp1',0):,.4g}  P/L:{_pnl:+.2f}%")
+                    f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
         _ist_now = now_ist()
         _now_hm  = (_ist_now.hour, _ist_now.minute)
         # Next BTC scan
