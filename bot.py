@@ -4168,8 +4168,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>- CLEXER V17.8.5 -</i>")
                     return
 
-                # ── Check slot availability (scan1=6 slots, scan2=2 slots) ──────
-                _max_slots = 6 if scan_ver == 1 else 2
+                # ── Check slot availability (scan1=6 slots, scan2=6 slots) ──────
+                _max_slots = 6
                 my_list = _scan_list(scan_ver)
                 if len(my_list) >= _max_slots:
                     send_reply(cid,
@@ -5472,9 +5472,10 @@ def _run_test_scan(cid, scan_ver: int):
     send_admin(f"🧪 <b>[TEST] Scalp V1 Scan{lbl}</b>  {ist_str()}\n\nDemo scan starting...\n\n<i>- CLEXER TEST -</i>")
 
     demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
+    _max_demo_slots = 6
     with _demo_monitor_lock:
-        if len(demo_list) >= 2:
-            send_admin(f"🚫 <b>[TEST] Scan{lbl} slots full</b>\n\nBoth demo slots occupied. Waiting for close.\n\n<i>- CLEXER TEST -</i>")
+        if len(demo_list) >= _max_demo_slots:
+            send_admin(f"🚫 <b>[TEST] Scan{lbl} slots full ({_max_demo_slots}/{_max_demo_slots})</b>\n\nAll demo slots occupied. Waiting for close.\n\n<i>- CLEXER TEST -</i>")
             return
 
     try:
