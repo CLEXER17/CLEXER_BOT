@@ -2948,14 +2948,16 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Next BTC scan
         _scan_hrs = {7, 11, 15, 19, 23}
         _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
-        # Next Alt scan — from SCAN1_SCHEDULE (exact hour+minute pairs)
-        _future_slots = [(h, m) for h, m in SCAN1_SCHEDULE if (h, m) > _now_hm]
-        if _future_slots:
-            _nh, _nm = _future_slots[0]
-            _next_alt_scan = f"{_nh}:{_nm:02d} IST"
-        else:
-            _nh, _nm = SCAN1_SCHEDULE[0]
-            _next_alt_scan = f"{_nh}:{_nm:02d} IST (tomorrow)"
+        # Next Scan1 / Scan2 — each uses its own independent schedule
+        def _next_slot(schedule):
+            _fut = [(h, m) for h, m in schedule if (h, m) > _now_hm]
+            if _fut:
+                _h, _m = _fut[0]
+                return f"{_h}:{_m:02d} IST"
+            _h, _m = schedule[0]
+            return f"{_h}:{_m:02d} IST (tomorrow)"
+        _next_scan1 = _next_slot(SCAN1_SCHEDULE)
+        _next_scan2 = _next_slot(SCAN2_SCHEDULE)
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
@@ -2981,8 +2983,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
             f"🖼  Charts:     <b>{_charts_flag}</b>\n"
             f"📰 News:       <b>{_news_flag}</b>\n"
-            f"\n⏰ Next BTC scan:  <b>{_next_btc_scan} IST</b>\n"
-            f"⏰ Next Alt scan:  <b>{_next_alt_scan}</b>\n"
+            f"\n⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n"
+            f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n"
+            f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n"
             f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
             + (f"👥 Users: {len(registered_users)}\n" if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
@@ -3126,6 +3129,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 "<b>Mini App Control</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
             return
         msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
+        if "/" in msg:
+            send_reply(chat_id, "⚠️ Maintenance message can't contain bot commands (users would see it). Rephrase without '/'.", reply_markup=_mini_btns)
+            return
         if sub in ("pause", "off", "maintenance"):
             on = True
         elif sub in ("resume", "on", "live"):
@@ -3582,7 +3588,6 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 except: pass
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>12.24 15.24 19.24</code>"); return
-            global SCAN2_SCHEDULE
             SCAN2_SCHEDULE = sorted(set(new_slots))
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
             send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
