@@ -5048,12 +5048,59 @@ def command_listener():
                     elif cb_data.startswith("scantoggle:"):
                         if cb_is_admin:
                             handle_command(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
-                    elif cb_data.startswith("model:"):
-                        if cb_is_admin:
-                            handle_command(f"/model {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
-                    elif cb_data.startswith("gateway:"):
-                        if cb_is_admin:
-                            handle_command(f"/gateway {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("model:") and cb_is_admin:
+                        global SCAN_MODEL
+                        _marg = cb_data.split(":")[1]
+                        if _marg == "opus":  SCAN_MODEL = "claude-opus-4-8"
+                        elif _marg == "fable": SCAN_MODEL = "claude-fable-5"
+                        save_settings()
+                        _is_opus  = SCAN_MODEL == "claude-opus-4-8"
+                        _is_fable = SCAN_MODEL == "claude-fable-5"
+                        _model_mkp = {"inline_keyboard": [[
+                            {"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
+                            {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
+                        ]]}
+                        _model_text = (
+                            f"<b>🧠 AI Model</b>\n\n"
+                            f"Active: <b>{SCAN_MODEL}</b>\n\n"
+                            f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
+                            f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
+                            f"Used for all scan/BTC/coin analysis calls.\n\n"
+                            f"<i>- CLEXER V17.8.5 -</i>")
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                            json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                  "text": _model_text, "parse_mode": "HTML",
+                                  "reply_markup": _model_mkp}, timeout=10)
+
+                    elif cb_data.startswith("gateway:") and cb_is_admin:
+                        global USE_AEROLINK
+                        _garg = cb_data.split(":")[1]
+                        if _garg == "direct":
+                            USE_AEROLINK = False
+                        elif _garg == "aerolink":
+                            if not AEROLINK_API_KEY:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"],
+                                          "text": "⚠️ AEROLINK_API_KEY not set in Railway env vars.",
+                                          "show_alert": True}, timeout=5)
+                                continue
+                            USE_AEROLINK = True
+                        save_settings()
+                        _gw_mkp = {"inline_keyboard": [[
+                            {"text": ("✅ " if not USE_AEROLINK else "") + "Direct (Anthropic)", "callback_data": "gateway:direct"},
+                            {"text": ("✅ " if USE_AEROLINK else "") + "Aerolink Gateway",  "callback_data": "gateway:aerolink"},
+                        ]]}
+                        _gw_text = (
+                            f"<b>🔌 API Gateway</b>\n\n"
+                            f"Active: <b>{'Aerolink Gateway' if USE_AEROLINK else 'Direct (Anthropic)'}</b>\n\n"
+                            f"Direct — uses your own ANTHROPIC_API_KEY straight to Anthropic.\n"
+                            f"Aerolink — uses a separate AEROLINK_API_KEY through capi.aerolink.lat.\n"
+                            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.\n\n"
+                            f"<i>- CLEXER V17.8.5 -</i>")
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                            json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                  "text": _gw_text, "parse_mode": "HTML",
+                                  "reply_markup": _gw_mkp}, timeout=10)
                     elif cb_data == "noop":
                         pass
                     elif cb_data.startswith("pausech:"):
