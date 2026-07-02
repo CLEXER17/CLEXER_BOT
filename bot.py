@@ -36,6 +36,8 @@ except ImportError:
 
 # --- CONFIG -------------------------------------------------------------------
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
+AEROLINK_API_KEY    = os.getenv("AEROLINK_API_KEY",    "")   # separate key issued by aerolink.lat — never mix with ANTHROPIC_API_KEY
+AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
@@ -122,6 +124,8 @@ force_scan            = threading.Event()
 bot_paused            = threading.Event()  # PAUSE: freezes everything
 bot_stopped           = threading.Event()  # STOP: blocks new scans only, monitoring continues
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
+SCAN_MODEL             = "claude-opus-4-8"  # switch via /model button — claude-opus-4-8 or claude-fable-5
+USE_AEROLINK           = False  # switch via /gateway button — routes calls through aerolink.lat using AEROLINK_API_KEY only
 last_update_id        = 0
 last_force_scan_time  = 0
 last_signal_scan_time = 0
@@ -192,6 +196,9 @@ API_COST_LOG     = os.path.join(DATA_DIR, "api_cost_log.csv")
 # Opus 4-8 pricing per token
 _OPUS_IN_COST  = 15.0 / 1_000_000   # $15 per 1M input tokens
 _OPUS_OUT_COST = 75.0 / 1_000_000   # $75 per 1M output tokens
+# Fable 5 pricing per token
+_FABLE_IN_COST  = 10.0 / 1_000_000  # $10 per 1M input tokens
+_FABLE_OUT_COST = 50.0 / 1_000_000  # $50 per 1M output tokens
 # Haiku 4-5 pricing per token
 _HAIKU_IN_COST  = 0.80 / 1_000_000
 _HAIKU_OUT_COST = 4.0  / 1_000_000
@@ -206,6 +213,8 @@ def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens:
     time_str = now.strftime("%H:%M:%S")
     if "haiku" in model:
         cost = input_tokens * _HAIKU_IN_COST + output_tokens * _HAIKU_OUT_COST
+    elif "fable" in model:
+        cost = input_tokens * _FABLE_IN_COST + output_tokens * _FABLE_OUT_COST
     else:
         cost = input_tokens * _OPUS_IN_COST  + output_tokens * _OPUS_OUT_COST
     headers = ["date","time","call_type","model","input_tokens","output_tokens","cost_usd"]
@@ -220,6 +229,14 @@ def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens:
     except Exception as e:
         print(f"  [API LOG] {e}")
 TRADE_LOG_WEBHOOK = os.getenv("TRADE_LOG_WEBHOOK", "")   # optional — set in Railway env vars
+
+def _claude_client():
+    """Returns an Anthropic client. When USE_AEROLINK is on, uses ONLY the separate
+    AEROLINK_API_KEY + AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched
+    or sent to the gateway."""
+    if USE_AEROLINK and AEROLINK_API_KEY:
+        return anthropic.Anthropic(api_key=AEROLINK_API_KEY, base_url=AEROLINK_BASE_URL)
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
@@ -1609,10 +1626,10 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     max_retries = 2; raw = None
     for attempt in range(max_retries):
         try:
-            msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                model="claude-opus-4-8", max_tokens=1200,
+            msg = _claude_client().messages.create(
+                model=SCAN_MODEL, max_tokens=1200,
                 messages=[{"role": "user", "content": content}])
-            _log_api_usage("btc_analysis", "claude-opus-4-8",
+            _log_api_usage("btc_analysis", SCAN_MODEL,
                            msg.usage.input_tokens, msg.usage.output_tokens)
             raw = msg.content[0].text.strip() if msg.content else ""
             if raw: break
@@ -1623,10 +1640,10 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 print("  [CLAUDE] Retrying text-only...")
                 content_text = [c for c in content if c["type"] == "text"]
                 try:
-                    msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=1200,
+                    msg = _claude_client().messages.create(
+                        model=SCAN_MODEL, max_tokens=1200,
                         messages=[{"role": "user", "content": content_text}])
-                    _log_api_usage("btc_analysis_textonly", "claude-opus-4-8",
+                    _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip() if msg.content else ""
                     if raw: break
@@ -1738,11 +1755,11 @@ def b1_analyze(ticker, data, use_tv=False):
         prompt = build_old_prompt_v7(summary, price, session, "", "", "", "", session_note)
 
     try:
-        msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-            model="claude-opus-4-8", max_tokens=2000,
+        msg = _claude_client().messages.create(
+            model=SCAN_MODEL, max_tokens=2000,
             system="You are a trading signal bot. Respond with ONLY a JSON object. No reasoning, no steps, no text before or after the JSON.",
             messages=[{"role": "user", "content": prompt}])
-        _log_api_usage("btc_b1", "claude-opus-4-8",
+        _log_api_usage("btc_b1", SCAN_MODEL,
                        msg.usage.input_tokens, msg.usage.output_tokens)
         raw = msg.content[0].text.strip() if msg.content else ""
     except Exception as e:
@@ -1869,7 +1886,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -1883,9 +1900,12 @@ def load_settings():
             SCAN1_AUTO_ENABLED    = d.get("scan1_auto",          True)
             SCAN2_AUTO_ENABLED    = d.get("scan2_auto",          False)
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
+            SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
+            USE_AEROLINK          = False  # always OFF on startup — must re-enable via /gateway after every deploy
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
+                  f"model:{SCAN_MODEL} "
                   f"ch_paused:{channel_paused}")
     except Exception as e:
         print(f"[SETTINGS] Load error: {e}")
@@ -1903,6 +1923,8 @@ def save_settings():
             "scan1_auto":       SCAN1_AUTO_ENABLED,
             "scan2_auto":       SCAN2_AUTO_ENABLED,
             "test_scan":        TEST_SCAN_ENABLED,
+            "scan_model":       SCAN_MODEL,
+            "use_aerolink":     USE_AEROLINK,
         }, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
@@ -2508,7 +2530,7 @@ def check_news(force=False):
         batch = candidates[i:i+10]
         news_block = "\n\n".join(f"[{j}] {e['source']}\nTITLE: {e['title']}\nSUMMARY: {e['summary'][:200]}" for j,e in enumerate(batch))
         try:
-            resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+            resp = _claude_client().messages.create(
                 model="claude-haiku-4-5-20251001", max_tokens=600,
                 messages=[{"role":"user","content":f"BTC: ${btc_price:,.0f}\n{news_block}\n\nReturn JSON array HIGH/MEDIUM impact only. Fields: index,impact(BULLISH/BEARISH/NEUTRAL),strength(HIGH/MEDIUM),reason. Empty [] if none. JSON only."}])
             _log_api_usage("news", "claude-haiku-4-5-20251001",
@@ -2681,11 +2703,11 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
-    "/scan","/scan1","/scan2","/scantoggle","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
+    "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     # In groups, chat_id is the group — check sender_id for admin
@@ -2943,6 +2965,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _news_flag   = "✅ ON"  if SEND_NEWS                         else "❌ OFF"
         _btcmode_lbl = "V7 Classic" if BTC_PROMPT_MODE == "V7" else "V9 Current"
         _scancopy_flag = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
+        _model_lbl   = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
+        _gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
         # Copy trade: per-user for non-admin, global active users count for admin
         _user_ct = ct._get(str(chat_id))
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
@@ -2951,6 +2975,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"🤖 Bot:        <b>{st}</b>\n"
             f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
             f"🔍 Alt Scan:   {_alt_flag}\n"
+            f"🧠 AI Model:   <b>{_model_lbl}</b>\n"
+            f"🔌 Gateway:    <b>{_gateway_lbl}</b>\n"
             f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
             f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
             f"🖼  Charts:     <b>{_charts_flag}</b>\n"
@@ -3199,10 +3225,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     price = tk["price"]; session = get_session()
                     summary = build_smc_summary(d, tk)
                     prompt = build_new_prompt_v9(summary, price, session, "", "", "", "")
-                    msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=1000,
+                    msg = _claude_client().messages.create(
+                        model=SCAN_MODEL, max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
-                    _log_api_usage("compare_v9_bingx", "claude-opus-4-8",
+                    _log_api_usage("compare_v9_bingx", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip()
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
@@ -3222,10 +3248,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     indicators = fetch_tv_indicators()
                     summary = build_smc_summary(d, tk) + build_indicator_context(indicators)
                     prompt = build_new_prompt_v9(summary, price, session, "", "", "", "")
-                    msg = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=1000,
+                    msg = _claude_client().messages.create(
+                        model=SCAN_MODEL, max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
-                    _log_api_usage("compare_v9_tv", "claude-opus-4-8",
+                    _log_api_usage("compare_v9_tv", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
                     raw = msg.content[0].text.strip()
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
@@ -4361,10 +4387,10 @@ Reasoning: [one line]"""
                     _claude_ok = False
                     for _attempt in range(3):
                         try:
-                            r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                                model="claude-opus-4-8", max_tokens=_max_tokens,
+                            r2 = _claude_client().messages.create(
+                                model=SCAN_MODEL, max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
-                            _log_api_usage(f"scan{ver}_{chosen_sym}", "claude-opus-4-8",
+                            _log_api_usage(f"scan{ver}_{chosen_sym}", SCAN_MODEL,
                                            r2.usage.input_tokens, r2.usage.output_tokens)
                             analysis = r2.content[0].text.strip()
                             _claude_ok = True
@@ -4477,6 +4503,50 @@ Reasoning: [one line]"""
                 import traceback as _tb2; print(_tb2.format_exc())
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
+    elif cmd == "/model" and is_admin:
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in ("opus", "4.8", "4-8"):
+            SCAN_MODEL = "claude-opus-4-8"
+        elif _arg in ("fable", "fable5", "5"):
+            SCAN_MODEL = "claude-fable-5"
+        if _arg: save_settings()
+        _is_opus  = SCAN_MODEL == "claude-opus-4-8"
+        _is_fable = SCAN_MODEL == "claude-fable-5"
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
+            {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
+        ]]}
+        send_reply(chat_id,
+            f"<b>🧠 AI Model</b>\n\n"
+            f"Active: <b>{SCAN_MODEL}</b>\n\n"
+            f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
+            f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
+            f"Used for all scan/BTC/coin analysis calls.\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_mkp)
+
+    elif cmd == "/gateway" and is_admin:
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg == "direct":
+            USE_AEROLINK = False
+        elif _arg == "aerolink":
+            if not AEROLINK_API_KEY:
+                send_reply(chat_id, "⚠️ AEROLINK_API_KEY not set in Railway env vars. Add it first, then switch.")
+                return
+            USE_AEROLINK = True
+        if _arg: save_settings()
+        _is_direct = not USE_AEROLINK
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if _is_direct else "") + "Direct (Anthropic)", "callback_data": "gateway:direct"},
+            {"text": ("✅ " if USE_AEROLINK else "") + "Aerolink Gateway",  "callback_data": "gateway:aerolink"},
+        ]]}
+        send_reply(chat_id,
+            f"<b>🔌 API Gateway</b>\n\n"
+            f"Active: <b>{'Aerolink Gateway' if USE_AEROLINK else 'Direct (Anthropic)'}</b>\n\n"
+            f"Direct — uses your own ANTHROPIC_API_KEY straight to Anthropic.\n"
+            f"Aerolink — uses a separate AEROLINK_API_KEY through capi.aerolink.lat.\n"
+            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.\n\n"
+            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_mkp)
+
     elif cmd == "/coin" and is_admin:
         if len(parts) < 2:
             send_reply(chat_id,
@@ -4538,8 +4608,8 @@ Reasoning: [one line]"""
                 vol    = float(d.get("volume", 0))
 
                 # Ask Claude for brief analysis
-                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model="claude-opus-4-8", max_tokens=700,
+                resp = _claude_client().messages.create(
+                    model=SCAN_MODEL, max_tokens=700,
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
                         f"Current Price: ${price:,.6g}\n"
@@ -4552,7 +4622,7 @@ Reasoning: [one line]"""
                         f"5. Confidence: HIGH / MED / LOW\n"
                         f"6. Reasoning (2-3 lines max)\n\n"
                         f"Be practical and concise. No fluff."}])
-                _log_api_usage(f"coin_{sym}", "claude-opus-4-8",
+                _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
                 analysis = resp.content[0].text.strip()
                 emoji = "🟢" if change >= 0 else "🔴"
@@ -4626,6 +4696,8 @@ _HELP_CATS = {
     "scan": (
         "🔍 Scan Control", True, [
             ("/scantoggle", "⚙️", "Scan1 / Scan2 / Demo ON-OFF"),
+            ("/model",      "🧠", "Switch AI model — Opus 4.8 / Fable 5"),
+            ("/gateway",    "🔌", "Switch API route — Direct / Aerolink"),
             ("/btcanalysis","📡", "BTC Analysis ON / OFF"),
             ("/scan",       "🔍", "Force Scan1 + Scan2 now"),
             ("/scan1",     "1️⃣", "Force Scan1 only"),
@@ -4976,6 +5048,12 @@ def command_listener():
                     elif cb_data.startswith("scantoggle:"):
                         if cb_is_admin:
                             handle_command(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("model:"):
+                        if cb_is_admin:
+                            handle_command(f"/model {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("gateway:"):
+                        if cb_is_admin:
+                            handle_command(f"/gateway {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data == "noop":
                         pass
                     elif cb_data.startswith("pausech:"):
@@ -5474,10 +5552,10 @@ def _run_test_scan(cid, scan_ver: int):
             analysis = ""; _claude_ok = False
             for _attempt in range(3):
                 try:
-                    r2 = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                        model="claude-opus-4-8", max_tokens=500,
+                    r2 = _claude_client().messages.create(
+                        model=SCAN_MODEL, max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
-                    _log_api_usage(f"demo_{chosen_sym}", "claude-opus-4-8",
+                    _log_api_usage(f"demo_{chosen_sym}", SCAN_MODEL,
                                    r2.usage.input_tokens, r2.usage.output_tokens)
                     analysis = r2.content[0].text.strip()
                     _claude_ok = True; break
