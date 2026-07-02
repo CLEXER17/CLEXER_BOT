@@ -295,9 +295,10 @@ def log_trade_event(row: dict):
             match_idx = i
 
     if match_idx is not None:
-        # Update existing row with new columns from the event
+        # Update existing row with new columns from the event — "result" is handled
+        # separately below so a TP1_partial update can't clobber the "open" marker
         for key, val in row.items():
-            if key in _CSV_HEADERS and val:
+            if key in _CSV_HEADERS and key != "result" and val:
                 rows[match_idx][key] = val
         # Only mark result as final if this event closes the trade
         # TP1_partial keeps it "open" (still running), everything else closes it
@@ -5245,11 +5246,11 @@ def command_listener():
 # ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
 SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
-    (2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
-    (6,2),(8,2),(8,23),(11,2),(11,23),
+    (3,2),(3,23),(4,2),(4,23),(5,23),
+    (6,2),
     # PM
-    (12,23),(13,23),(14,7),(14,23),
-    (16,7),(17,23),(19,23),(20,7),(20,23),(21,7),
+    (12,23),(13,45),(14,7),(14,23),
+    (16,7),(20,7),(20,23),(21,7),
 ]))
 # Scan2 keeps the full original schedule (independent of Scan1)
 SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
