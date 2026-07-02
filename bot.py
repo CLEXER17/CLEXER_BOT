@@ -3136,7 +3136,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             try:
                 hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
                 requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": on, "msg": msg}, headers=hdrs, timeout=5)
-                send_reply(chat_id, f"🔧 Mini App {'⏸ PAUSED' if on else '▶️ RESUMED'}\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
+                if not on:
+                    # Resuming — force a fresh state push so the mini app can't show a stale/ghost trade
+                    save_state()
+                send_reply(chat_id, f"🔧 Mini App {'⏸ PAUSED' if on else '▶️ RESUMED (state synced)'}\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_mini_btns)
             except Exception as e:
                 send_reply(chat_id, f"Error: {e}", reply_markup=_mini_btns)
         else:
@@ -4762,6 +4765,24 @@ _HELP_CATS = {
     ),
 }
 
+def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
+    """Run a command, capture its reply, and edit the current message in-place
+    with the result + a Back button — instead of sending a brand-new message."""
+    cid_str = str(cid)
+    _reply_capture[cid_str] = {"texts": [], "cat_id": cat_id}
+    handle_command(cmd_text, chat_id, {}, sender_id=cid)
+    captured = _reply_capture.pop(cid_str, {})
+    result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
+    if len(result_text) > 4000:
+        result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+    _back_row = [{"text": "◀️  Back", "callback_data": f"help_cat:{cat_id}"}]
+    cap_mkp = captured.get("markup")
+    if cap_mkp and "inline_keyboard" in cap_mkp:
+        merged = cap_mkp["inline_keyboard"] + [_back_row]
+    else:
+        merged = [_back_row]
+    _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id)
+
 def _help_edit_or_send(chat_id, text, markup, message_id=None):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
@@ -4927,7 +4948,7 @@ def command_listener():
 
                     # ── Copytrade ON/OFF ─────────────────────────────────────
                     elif cb_data in ("copytrade_on", "copytrade_off"):
-                        handle_command(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "copyuser")
 
                     # ── Mysize quick-set buttons ──────────────────────────────
                     elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):
@@ -4963,7 +4984,7 @@ def command_listener():
 
                     # ── Images ON/OFF ─────────────────────────────────────────
                     elif cb_data in ("images_on", "images_off"):
-                        handle_command(f"/images {'on' if cb_data=='images_on' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/images {'on' if cb_data=='images_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── Setimages TF buttons ──────────────────────────────────
                     elif cb_data.startswith("setimg:"):
@@ -4986,19 +5007,19 @@ def command_listener():
 
                     # ── News ON/OFF ───────────────────────────────────────────
                     elif cb_data in ("news_on", "news_off"):
-                        handle_command(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
-                        handle_command(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── Scancopy ON/OFF ───────────────────────────────────────
                     elif cb_data in ("scancopy_on", "scancopy_off"):
-                        handle_command(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "scan")
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
-                        handle_command(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     elif cb_data in ("btca_on", "btca_off") and cb_is_admin:
                         global btc_analysis_enabled
@@ -5018,12 +5039,12 @@ def command_listener():
                                   "reply_markup": _btca_mkp}, timeout=10)
                     elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
                         sub = cb_data.replace("history_", "")
-                        handle_command(f"/history {sub}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_win":
-                        handle_command("/stats", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd("/stats", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_reset":
                         if cb_is_admin:
-                            handle_command("/stats reset", cb_chat_id, {}, sender_id=cb_cid)
+                            _toggle_cmd("/stats reset", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data.startswith("sync_close_btc:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
@@ -5040,14 +5061,14 @@ def command_listener():
                         _, uid, sym = cb_data.split(":")
                         handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data == "bot_go" and cb_is_admin:
-                        handle_command("/go", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd("/go", cb_chat_id, cb_cid, cb_msg_id, "settings")
                     elif cb_data == "bot_pause" and cb_is_admin:
-                        handle_command("/pause", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd("/pause", cb_chat_id, cb_cid, cb_msg_id, "settings")
                     elif cb_data == "bot_stop" and cb_is_admin:
-                        handle_command("/stop", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd("/stop", cb_chat_id, cb_cid, cb_msg_id, "settings")
                     elif cb_data.startswith("scantoggle:"):
                         if cb_is_admin:
-                            handle_command(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                            _toggle_cmd(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "scan")
                     elif cb_data.startswith("model:") and cb_is_admin:
                         global SCAN_MODEL
                         _marg = cb_data.split(":")[1]
@@ -5056,10 +5077,11 @@ def command_listener():
                         save_settings()
                         _is_opus  = SCAN_MODEL == "claude-opus-4-8"
                         _is_fable = SCAN_MODEL == "claude-fable-5"
-                        _model_mkp = {"inline_keyboard": [[
-                            {"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
-                            {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
-                        ]]}
+                        _model_mkp = {"inline_keyboard": [
+                            [{"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
+                             {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"}],
+                            [{"text": "◀️  Back", "callback_data": "help_cat:scan"}],
+                        ]}
                         _model_text = (
                             f"<b>🧠 AI Model</b>\n\n"
                             f"Active: <b>{SCAN_MODEL}</b>\n\n"
@@ -5086,10 +5108,11 @@ def command_listener():
                                 continue
                             USE_AEROLINK = True
                         save_settings()
-                        _gw_mkp = {"inline_keyboard": [[
-                            {"text": ("✅ " if not USE_AEROLINK else "") + "Direct (Anthropic)", "callback_data": "gateway:direct"},
-                            {"text": ("✅ " if USE_AEROLINK else "") + "Aerolink Gateway",  "callback_data": "gateway:aerolink"},
-                        ]]}
+                        _gw_mkp = {"inline_keyboard": [
+                            [{"text": ("✅ " if not USE_AEROLINK else "") + "Direct (Anthropic)", "callback_data": "gateway:direct"},
+                             {"text": ("✅ " if USE_AEROLINK else "") + "Aerolink Gateway",  "callback_data": "gateway:aerolink"}],
+                            [{"text": "◀️  Back", "callback_data": "help_cat:scan"}],
+                        ]}
                         _gw_text = (
                             f"<b>🔌 API Gateway</b>\n\n"
                             f"Active: <b>{'Aerolink Gateway' if USE_AEROLINK else 'Direct (Anthropic)'}</b>\n\n"
@@ -5104,9 +5127,9 @@ def command_listener():
                     elif cb_data == "noop":
                         pass
                     elif cb_data.startswith("pausech:"):
-                        handle_command(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
                     elif cb_data.startswith("resumech:"):
-                        handle_command(f"/resumechannel {cb_data.split(':')[1]}", cb_chat_id, {}, sender_id=cb_cid)
+                        _toggle_cmd(f"/resumechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
                     elif cb_data.startswith("userinfo:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/user {uid}", cb_chat_id, {}, sender_id=cb_cid)
