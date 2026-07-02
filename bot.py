@@ -230,6 +230,16 @@ def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens:
         print(f"  [API LOG] {e}")
 TRADE_LOG_WEBHOOK = os.getenv("TRADE_LOG_WEBHOOK", "")   # optional — set in Railway env vars
 
+def _claude_text(msg):
+    """Extract the text from a Claude response, skipping ThinkingBlocks
+    (extended-thinking models return those as content[0] before the real text block)."""
+    if not msg.content:
+        return ""
+    for block in msg.content:
+        if getattr(block, "type", None) == "text":
+            return block.text.strip()
+    return ""
+
 def _claude_client():
     """Returns an Anthropic client. When USE_AEROLINK is on, uses ONLY the separate
     AEROLINK_API_KEY + AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched
@@ -1631,7 +1641,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 messages=[{"role": "user", "content": content}])
             _log_api_usage("btc_analysis", SCAN_MODEL,
                            msg.usage.input_tokens, msg.usage.output_tokens)
-            raw = msg.content[0].text.strip() if msg.content else ""
+            raw = _claude_text(msg)
             if raw: break
             time.sleep(2)
         except Exception as e:
@@ -1645,7 +1655,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                         messages=[{"role": "user", "content": content_text}])
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
-                    raw = msg.content[0].text.strip() if msg.content else ""
+                    raw = _claude_text(msg)
                     if raw: break
                 except Exception as e2: print(f"  [CLAUDE] text-only retry: {e2}")
             if attempt < max_retries-1: time.sleep(3)
@@ -1761,7 +1771,7 @@ def b1_analyze(ticker, data, use_tv=False):
             messages=[{"role": "user", "content": prompt}])
         _log_api_usage("btc_b1", SCAN_MODEL,
                        msg.usage.input_tokens, msg.usage.output_tokens)
-        raw = msg.content[0].text.strip() if msg.content else ""
+        raw = _claude_text(msg)
     except Exception as e:
         print(f"  [B1 CLAUDE] {e}"); return None, label
 
@@ -2535,7 +2545,7 @@ def check_news(force=False):
                 messages=[{"role":"user","content":f"BTC: ${btc_price:,.0f}\n{news_block}\n\nReturn JSON array HIGH/MEDIUM impact only. Fields: index,impact(BULLISH/BEARISH/NEUTRAL),strength(HIGH/MEDIUM),reason. Empty [] if none. JSON only."}])
             _log_api_usage("news", "claude-haiku-4-5-20251001",
                            resp.usage.input_tokens, resp.usage.output_tokens)
-            analyzed = json.loads(resp.content[0].text.strip().replace("```json","").replace("```","").strip())
+            analyzed = json.loads(_claude_text(resp).replace("```json","").replace("```","").strip())
             for item in analyzed:
                 idx = item.get("index",-1)
                 if 0 <= idx < len(batch):
@@ -3239,7 +3249,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         messages=[{"role":"user","content":prompt}])
                     _log_api_usage("compare_v9_bingx", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
-                    raw = msg.content[0].text.strip()
+                    raw = _claude_text(msg)
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "BingX"; sig["prompt_mode"] = "V9+BingX"
                     results[0] = sig
@@ -3262,7 +3272,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         messages=[{"role":"user","content":prompt}])
                     _log_api_usage("compare_v9_tv", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens)
-                    raw = msg.content[0].text.strip()
+                    raw = _claude_text(msg)
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "TV"; sig["prompt_mode"] = "V9+TV"
                     results[1] = sig
@@ -4400,7 +4410,7 @@ Reasoning: [one line]"""
                                 messages=[{"role":"user","content":content}])
                             _log_api_usage(f"scan{ver}_{chosen_sym}", SCAN_MODEL,
                                            r2.usage.input_tokens, r2.usage.output_tokens)
-                            analysis = r2.content[0].text.strip()
+                            analysis = _claude_text(r2)
                             _claude_ok = True
                             break
                         except Exception as _ce:
@@ -4632,7 +4642,7 @@ Reasoning: [one line]"""
                         f"Be practical and concise. No fluff."}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
-                analysis = resp.content[0].text.strip()
+                analysis = _claude_text(resp)
                 emoji = "🟢" if change >= 0 else "🔴"
                 send_reply(cid,
                     f"{emoji} <b>{sym} Analysis</b>  {ist_str()}\n\n"
@@ -5632,7 +5642,7 @@ def _run_test_scan(cid, scan_ver: int):
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo_{chosen_sym}", SCAN_MODEL,
                                    r2.usage.input_tokens, r2.usage.output_tokens)
-                    analysis = r2.content[0].text.strip()
+                    analysis = _claude_text(r2)
                     _claude_ok = True; break
                 except Exception as _ce:
                     print(f"  [TEST] Claude attempt {_attempt+1} FAIL: {_ce}")
