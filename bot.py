@@ -3586,18 +3586,23 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
         # /alt manual 2.02 2.23 14.25  → specific times (supports both . and : separator)
         if parts[1].lower() == "manual" and len(parts) > 2:
-            new_slots = []
+            new_slots = []; rejected = []
             for t in parts[2:]:
                 try:
                     sep = "." if "." in t else ":"
-                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
-                except: pass
+                    h, m = t.split(sep); h, m = int(h), int(m)
+                    if 0 <= h <= 23 and 0 <= m <= 59:
+                        new_slots.append((h, m))
+                    else:
+                        rejected.append(t)
+                except: rejected.append(t)
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25 15.46</code>"); return
             SCAN1_SCHEDULE = sorted(set(new_slots))
             _scan1_triggered_today.clear()
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_SCHEDULE)
-            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
+            _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
+            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt_btns); return
 
     elif cmd == "/alt2" and is_admin:
@@ -3607,29 +3612,35 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         ], [
             {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:scan2"},
         ]]}
+        _sched2_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN2_SCHEDULE)
         if len(parts) < 2:
             send_reply(chat_id,
-                f"⏰ <b>Scan2 Schedule</b>\n\nCurrent: every hour at <b>:{ALT_SCAN2_MINUTE:02d}</b>\n\n"
+                f"⏰ <b>Scan2 Schedule</b>\n\n"
+                f"Current times:\n<code>{_sched2_str}</code>\n\n"
                 f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "loop" and len(parts) > 2:
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
-            except: send_reply(chat_id, "❌ Type a minute (0–59)"); return
-            old_min = ALT_SCAN2_MINUTE
-            ALT_SCAN2_MINUTE = new_min
+            except: send_reply(chat_id, "❌ Usage: /alt2 loop 24"); return
+            SCAN2_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
             _auto_scan2_last_hour = -1
             send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
-            new_slots = []
+            new_slots = []; rejected = []
             for t in parts[2:]:
                 try:
                     sep = "." if "." in t else ":"
-                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
-                except: pass
+                    h, m = t.split(sep); h, m = int(h), int(m)
+                    if 0 <= h <= 23 and 0 <= m <= 59:
+                        new_slots.append((h, m))
+                    else:
+                        rejected.append(t)
+                except: rejected.append(t)
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>12.24 15.24 19.24</code>"); return
             SCAN2_SCHEDULE = sorted(set(new_slots))
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
-            send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
+            _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
+            send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt2_btns); return
 
     elif cmd == "/altdemo" and is_admin:
@@ -3645,18 +3656,23 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"Current times:\n<code>{_sched_str}</code>\n\n"
                 f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_altd_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
-            new_slots = []
+            new_slots = []; rejected = []
             for t in parts[2:]:
                 try:
                     sep = "." if "." in t else ":"
-                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
-                except: pass
+                    h, m = t.split(sep); h, m = int(h), int(m)
+                    if 0 <= h <= 23 and 0 <= m <= 59:
+                        new_slots.append((h, m))
+                    else:
+                        rejected.append(t)
+                except: rejected.append(t)
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25</code>"); return
             SCAN1_TEST_SCHEDULE = sorted(set(new_slots))
             _test_triggered_today.clear()
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_TEST_SCHEDULE)
-            send_reply(chat_id, f"✅ <b>Demo → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_altd_btns); return
+            _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
+            send_reply(chat_id, f"✅ <b>Demo → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_altd_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd_btns); return
 
     elif cmd == "/tradelog" and is_admin:
