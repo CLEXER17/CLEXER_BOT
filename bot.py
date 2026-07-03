@@ -187,6 +187,8 @@ trade_stats = {
     "total_sl": 0, "total_tp1": 0, "total_tp2": 0,
     "total_signals": 0, "missed_entries": 0, "stop_hunts": 0,
     "scan_sl": 0, "scan_tp1": 0, "scan_tp2": 0, "scan_signals": 0,
+    "scan1_sl": 0, "scan1_tp1": 0, "scan1_tp2": 0, "scan1_signals": 0,
+    "scan2_sl": 0, "scan2_tp1": 0, "scan2_tp2": 0, "scan2_signals": 0,
 }
 
 STATE_FILE       = os.path.join(DATA_DIR, "clexer_state.json")
@@ -2379,6 +2381,7 @@ def _tick_one(ver: int, t: dict) -> bool:
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
         if tp2_hit:
             trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
+            trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
             _log_scan_history(t, "TP2", price)
             send_telegram(fmt_scan_update("TP2_HIT", price, t))
             ct.on_scan_tp2(sym)
@@ -2395,6 +2398,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 t["sl"] = entry
                 sl = entry
                 trade_stats["scan_tp1"] += 1
+                trade_stats[f"scan{ver}_tp1"] += 1
                 send_telegram(fmt_scan_update("TP1_HIT", price, t))
                 ct.on_scan_tp1(sym)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -2406,6 +2410,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                  (sig == "SELL" and check_high > sl + sl_margin)
         if sl_hit:
             trade_stats["scan_sl"] += 1
+            trade_stats[f"scan{ver}_sl"] += 1
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
             send_telegram(fmt_scan_update("SL_HIT", price, t))
@@ -2776,8 +2781,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
         _ctrl_btns = {"inline_keyboard": [[
-            {"text": "⏸ Pause All",    "callback_data": "bot_pause"},
-            {"text": "🛑 Stop Scans",  "callback_data": "bot_stop"},
+            {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
+            {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
         ]]}
         send_reply(chat_id,
             f"▶️ <b>Bot RUNNING</b>\n\n"
@@ -2878,8 +2883,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/pause":
         bot_paused.set(); bot_stopped.set()
         _ctrl_btns = {"inline_keyboard": [[
-            {"text": "▶️ Resume",       "callback_data": "bot_go"},
-            {"text": "🛑 Stop Scans",  "callback_data": "bot_stop"},
+            {"text": "🟢 Resume",       "callback_data": "bot_go"},
+            {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
         ]]}
         send_reply(chat_id,
             f"⏸ <b>Bot PAUSED</b>\n\n"
@@ -2890,8 +2895,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/stop":
         bot_stopped.set(); bot_paused.clear()
         _ctrl_btns = {"inline_keyboard": [[
-            {"text": "▶️ Resume",       "callback_data": "bot_go"},
-            {"text": "⏸ Pause All",    "callback_data": "bot_pause"},
+            {"text": "🟢 Resume",       "callback_data": "bot_go"},
+            {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
         ]]}
         send_reply(chat_id,
             f"🛑 <b>Scans STOPPED</b>\n\n"
@@ -2909,8 +2914,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             btc_analysis_enabled = (arg == "on")
             save_settings()
         _btca_mkp = {"inline_keyboard": [[
-            {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
-            {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
+            {"text": "🟢 Enable Analysis",  "callback_data": "btca_on"},
+            {"text": "🔴 Disable Analysis", "callback_data": "btca_off"},
         ]]}
         if btc_analysis_enabled:
             _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>- CLEXER V17.8.5 -</i>"
@@ -3102,8 +3107,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         ts = trade_stats
         btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
         btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
-        sc_total = ts['scan_tp1'] + ts['scan_tp2'] + ts['scan_sl'] or 1
-        sc_wr = (ts['scan_tp1'] + ts['scan_tp2']) / sc_total * 100
+        s1_total = ts['scan1_tp1'] + ts['scan1_tp2'] + ts['scan1_sl'] or 1
+        s1_wr = (ts['scan1_tp1'] + ts['scan1_tp2']) / s1_total * 100
+        s2_total = ts['scan2_tp1'] + ts['scan2_tp2'] + ts['scan2_sl'] or 1
+        s2_wr = (ts['scan2_tp1'] + ts['scan2_tp2']) / s2_total * 100
         _stats_btns = {"inline_keyboard": [[
             {"text": "🏆 Win Stats",        "callback_data": "stats_win"},
             {"text": "🗑 Reset History",     "callback_data": "stats_reset"},
@@ -3116,10 +3123,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"Win rate: <b>{btc_wr:.0f}%</b>\n"
             f"Stop hunts: {ts['stop_hunts']} | Missed: {ts['missed_entries']}\n"
             f"Consec SL: {ts['consecutive_sl']} | Cooldown: {ts['cooldown_scans']}\n\n"
-            f"<b>Scan Trades</b>\n"
-            f"Signals: {ts['scan_signals']}\n"
-            f"TP1: {ts['scan_tp1']} | TP2: {ts['scan_tp2']} | SL: {ts['scan_sl']}\n"
-            f"Win rate: <b>{sc_wr:.0f}%</b>", reply_markup=_stats_btns)
+            f"<b>Scan1 Trades</b>\n"
+            f"Signals: {ts['scan1_signals']}\n"
+            f"TP1: {ts['scan1_tp1']} | TP2: {ts['scan1_tp2']} | SL: {ts['scan1_sl']}\n"
+            f"Win rate: <b>{s1_wr:.0f}%</b>\n\n"
+            f"<b>Scan2 Trades</b>\n"
+            f"Signals: {ts['scan2_signals']}\n"
+            f"TP1: {ts['scan2_tp1']} | TP2: {ts['scan2_tp2']} | SL: {ts['scan2_sl']}\n"
+            f"Win rate: <b>{s2_wr:.0f}%</b>", reply_markup=_stats_btns)
 
     elif cmd == "/session":
         s = get_session()
@@ -3356,7 +3367,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/btcmode":
         _bmode_btns = {"inline_keyboard": [[
             {"text": "🔵  V7 Classic (on)",    "callback_data": "btcmode_v7"},
-            {"text": "🟠  V9 Current (off)",   "callback_data": "btcmode_v9"}]]}
+            {"text": "🔴  V9 Current (off)",   "callback_data": "btcmode_v9"}]]}
         mode_label = "🔵 V7 CLASSIC" if BTC_PROMPT_MODE == "V7" else "🟠 V9 CURRENT"
         if len(parts) < 2:
             send_reply(chat_id,
@@ -3391,8 +3402,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/images":
         _img_btns = {"inline_keyboard": [[
-            {"text": "🖼  ON",  "callback_data": "images_on"},
-            {"text": "🚫  OFF", "callback_data": "images_off"}]]}
+            {"text": "🟢  ON",  "callback_data": "images_on"},
+            {"text": "🔴  OFF", "callback_data": "images_off"}]]}
         if len(parts)<2:
             send_reply(chat_id,
                 f"<b>Chart Images</b>\n\nStatus: <b>{'✅ ON' if SEND_CHARTS else '❌ OFF'}</b>\n"
@@ -3426,8 +3437,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/news":
         _news_btns = {"inline_keyboard": [[
-            {"text": "📰  ON",  "callback_data": "news_on"},
-            {"text": "🚫  OFF", "callback_data": "news_off"}]]}
+            {"text": "🟢  ON",  "callback_data": "news_on"},
+            {"text": "🔴  OFF", "callback_data": "news_off"}]]}
         if len(parts)<2:
             send_reply(chat_id,
                 f"<b>Crypto News</b>\n\nStatus: <b>{'✅ ON' if SEND_NEWS else '❌ OFF'}</b>\n\n<i>— CLEXER V17.8.5 —</i>",
@@ -3673,7 +3684,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
         _test_btns = {"inline_keyboard": [
-            [{"text": "▶️  ON", "callback_data": "test_on"}, {"text": "⏸  OFF", "callback_data": "test_off"}],
+            [{"text": "🟢  ON", "callback_data": "test_on"}, {"text": "🔴  OFF", "callback_data": "test_off"}],
             [{"text": "🧪  Run Now", "callback_data": "test_run"}],
         ]}
         if sub == "on":
@@ -3725,8 +3736,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/scancopy" and is_admin:
         _sc_btns = {"inline_keyboard": [[
-            {"text": "✅  ON",  "callback_data": "scancopy_on"},
-            {"text": "❌  OFF", "callback_data": "scancopy_off"}]]}
+            {"text": "🟢  ON",  "callback_data": "scancopy_on"},
+            {"text": "🔴  OFF", "callback_data": "scancopy_off"}]]}
         if len(parts) < 2 or parts[1].lower() not in ("on","off"):
             state = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
             send_reply(chat_id,
@@ -4018,9 +4029,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _s2 = "✅ ON" if SCAN2_AUTO_ENABLED else "❌ OFF"
             _ts = "✅ ON" if TEST_SCAN_ENABLED else "❌ OFF"
             _mkp = {"inline_keyboard": [
-                [{"text": f"🔍 Scan1  {_s1}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:scan1on"}, {"text": "⏸ OFF", "callback_data": "scantoggle:scan1off"}],
-                [{"text": f"🔍 Scan2  {_s2}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:scan2on"}, {"text": "⏸ OFF", "callback_data": "scantoggle:scan2off"}],
-                [{"text": f"🧪 Demo   {_ts}", "callback_data": "noop"}, {"text": "▶ ON", "callback_data": "scantoggle:teston"},  {"text": "⏸ OFF", "callback_data": "scantoggle:testoff"}],
+                [{"text": f"🔍 Scan1  {_s1}", "callback_data": "noop"}, {"text": "🟢 ON", "callback_data": "scantoggle:scan1on"}, {"text": "🔴 OFF", "callback_data": "scantoggle:scan1off"}],
+                [{"text": f"🔍 Scan2  {_s2}", "callback_data": "noop"}, {"text": "🟢 ON", "callback_data": "scantoggle:scan2on"}, {"text": "🔴 OFF", "callback_data": "scantoggle:scan2off"}],
+                [{"text": f"🧪 Demo   {_ts}", "callback_data": "noop"}, {"text": "🟢 ON", "callback_data": "scantoggle:teston"},  {"text": "🔴 OFF", "callback_data": "scantoggle:testoff"}],
             ]}
             send_reply(chat_id,
                 f"<b>Scan Toggle</b>\n\n"
@@ -4487,6 +4498,7 @@ Reasoning: [one line]"""
                         }
                         _scan_list(scan_ver).append(slot_data)
                         trade_stats["scan_signals"] += 1
+                        trade_stats[f"scan{scan_ver}_signals"] += 1
                         save_state()
                         send_telegram(fmt_scan_signal(slot_data))
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
@@ -4782,6 +4794,29 @@ _HELP_CATS = {
     ),
 }
 
+# ─── "My Copy Trade" is split into sub-sections (main gate → door) ────────────
+# Each entry: subcat_id -> (label, [(cmd, emoji, bold_title, slim_description), ...])
+_COPYUSER_SUBCATS = {
+    "connect": ("🔗 Connection", [
+        ("/connect",    "🔗", "Connect Account",    "Link your BingX API key so the bot can copy trades for you."),
+        ("/disconnect", "🔌", "Disconnect Account", "Remove your BingX API key. Open positions stay open — manage them manually."),
+    ]),
+    "controls": ("⚙️ Trading Controls", [
+        ("/copytrade", "🔄", "Copy Trading On/Off", "Master switch — when ON, every CLEXER signal auto-copies to your BingX account."),
+        ("/nocopy",    "🚫", "Block a Coin",         "Stop one specific coin from ever being auto-copied, without turning off everything."),
+    ]),
+    "sizing": ("💰 Position Sizing", [
+        ("/setsize",     "💵", "Margin Per Trade", "How many USDT you put down as margin on each copied trade."),
+        ("/setleverage", "⚡", "Manual Leverage",   "Fix the leverage multiplier yourself (1x–125x) for every trade."),
+        ("/setrisk",     "🛡", "Auto-Risk Mode",    "Instead of fixed leverage, cap your max $ loss per trade — leverage adjusts automatically to the SL distance."),
+    ]),
+    "reports": ("📊 Reports", [
+        ("/mytrade",   "📋", "Open Position", "Shows your current live position on BingX, if any."),
+        ("/mysize",    "⚙️", "My Settings",   "Your current margin, leverage, and exposure per trade."),
+        ("/myhistory", "📊", "P&L History",   "Your past copy-traded results — wins, losses, total P&L."),
+    ]),
+}
+
 def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
     """Run a command, capture its reply, and edit the current message in-place
     with the result + a Back button — instead of sending a brand-new message."""
@@ -4857,12 +4892,47 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     label, admin_only, cmds = entry
     if admin_only and not is_admin:
         return
+
+    # "My Copy Trade" is a main gate — show sub-sections instead of a flat list
+    if cat_id == "copyuser":
+        rows = [[{"text": sub_label, "callback_data": f"copyuser_sub:{sub_id}"}]
+                for sub_id, (sub_label, _) in _COPYUSER_SUBCATS.items()]
+        rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+        markup = {"inline_keyboard": rows}
+        text = f"<b>{label}</b>\n\n<i>Pick a section 👇</i>"
+        _help_edit_or_send(chat_id, text, markup, message_id)
+        return
+
     rows = []
     for cmd, emoji, desc in cmds:
         rows.append([{"text": f"{emoji}  {desc}", "callback_data": f"help_cmd:{cmd}"}])
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<i>Tap any command to run it instantly 👇</i>"
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
+    entry = _COPYUSER_SUBCATS.get(sub_id)
+    if not entry:
+        return
+    label, cmds = entry
+    user = ct._get(str(user_cid))
+    connected = bool(user and user.get("connected"))
+
+    rows = []
+    desc_lines = []
+    for cmd, emoji, title, desc in cmds:
+        # Connection section: only show the button that applies right now
+        if sub_id == "connect":
+            if cmd == "/connect" and connected:
+                continue
+            if cmd == "/disconnect" and not connected:
+                continue
+        rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
+        desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
+    rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}])
+    markup = {"inline_keyboard": rows}
+    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 # ─── END HELP MENU ────────────────────────────────────────────────────────────
@@ -4923,6 +4993,9 @@ def command_listener():
                     elif cb_data.startswith("help_cat:"):
                         cat_id = cb_data.split(":", 1)[1]
                         send_help_category(cb_chat_id, cat_id, cb_is_admin, message_id=cb_msg_id)
+                    elif cb_data.startswith("copyuser_sub:"):
+                        sub_id = cb_data.split(":", 1)[1]
+                        send_copyuser_subcat(cb_chat_id, sub_id, cb_cid, message_id=cb_msg_id)
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
                         # Check if non-admin is pressing an admin-only button
@@ -5043,8 +5116,8 @@ def command_listener():
                         btc_analysis_enabled = (cb_data == "btca_on")
                         save_settings()
                         _btca_mkp = {"inline_keyboard": [[
-                            {"text": "▶ Enable Analysis",  "callback_data": "btca_on"},
-                            {"text": "⏸ Disable Analysis", "callback_data": "btca_off"},
+                            {"text": "🟢 Enable Analysis",  "callback_data": "btca_on"},
+                            {"text": "🔴 Disable Analysis", "callback_data": "btca_off"},
                         ]]}
                         if btc_analysis_enabled:
                             _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>- CLEXER V17.8.5 -</i>"
