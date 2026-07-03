@@ -2364,6 +2364,12 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
             f"Price bypassed entry zone <b>{entry:,.4g}</b> without filling.\n"
             f"⛔ <b>DO NOT CHASE</b>\n\n✨ <i>- CLEXER V17.8.5 -</i>"
         ),
+        "TIMEOUT": (
+            f"⏰ <b>TIMEOUT — {sym}</b>  🕐 {ist_str()}\n\n"
+            f"{'🟢' if sig=='BUY' else '🔴'} {sig} still running after 12 hours — force-closed.\n"
+            f"📊 Result: <b>{t.get('_timeout_pnl', '?')}</b>\n\n"
+            f"🔍 Waiting for next scan signal...\n\n✨ <i>- CLEXER V17.8.5 -</i>"
+        ),
         "WAITING_ENTRY": (
             f"⏳ <b>Waiting Entry — {sym}</b>\n"
             f"🎯 Entry: <b>{entry:,.4g}</b>\n"
@@ -2375,11 +2381,47 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     }
     return msgs.get(status, f"✅ {sym} trade running")
 
+def _wick_check_since_entry(sym: str, created_at: float):
+    """Re-verify against 15m candles from the trade's entry time (rounded down
+    to the nearest :00/:15/:30/:45) through now. Catches spikes a narrow
+    1m/live-price window could've missed — e.g. after a bot restart or a gap
+    between tick checks. Returns (high, low) or (None, None) if unavailable."""
+    if not created_at:
+        return None, None
+    try:
+        entry_dt = datetime.utcfromtimestamp(created_at) + IST
+        rounded_min = (entry_dt.minute // 15) * 15
+        start_dt = entry_dt.replace(minute=rounded_min, second=0, microsecond=0)
+        elapsed_min = (now_ist() - start_dt).total_seconds() / 60
+        n_candles = min(max(1, int(elapsed_min // 15) + 2), 100)
+        df15 = bingx_klines(sym, "15m", n_candles)
+        if df15 is not None and len(df15) > 0:
+            return float(df15["high"].max()), float(df15["low"].min())
+    except Exception as e:
+        print(f"  [WICK CHECK] {sym} error: {e}")
+    return None, None
+
 def _tick_one(ver: int, t: dict) -> bool:
     """Tick check for one trade dict. Returns True if trade closed."""
     sym = t["symbol"]; sig = t["signal"]
     entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
     try:
+        _created_at = t.get("created_at")
+        _age_hours  = (time.time() - _created_at) / 3600 if _created_at else 0
+
+        # Hard cutoff — force-close any trade still running after 12 hours
+        if _age_hours >= 12:
+            price = get_bingx_price(sym)
+            pnl = (price - entry) / entry * 100 * (1 if sig == "BUY" else -1) if price and entry else 0
+            t["_timeout_pnl"] = f"{pnl:+.2f}%"
+            _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
+            send_telegram(fmt_scan_update("TIMEOUT", price, t))
+            ct.on_scan_sl(sym)
+            log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+                "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
+                "entry_price": entry, "sl_price": t.get("sl",0)})
+            _remove_scan_trade(ver, sym); return True
+
         price = get_bingx_price(sym)
         if price <= 0: return False
         df1m = bingx_klines(sym, "1m", 3)
@@ -2388,6 +2430,18 @@ def _tick_one(ver: int, t: dict) -> bool:
             check_low  = min(price, float(df1m["low"].min()))
         else:
             check_high = price; check_low = price
+
+        # Comprehensive since-entry wick re-check — only kicks in once the trade
+        # has been running 6+ hours, then re-runs at most every 4 hours after
+        # that (not every tick) to avoid hammering the API for long-running trades.
+        if _age_hours >= 6:
+            _last_wick = t.get("last_wick_check", 0)
+            if time.time() - _last_wick >= 4 * 3600:
+                t["last_wick_check"] = time.time()
+                _wick_high, _wick_low = _wick_check_since_entry(sym, _created_at)
+                if _wick_high is not None:
+                    check_high = max(check_high, _wick_high)
+                    check_low  = min(check_low, _wick_low)
         print(f"  [SCAN{ver} {sym}] {sig} price:{price:.4g} H:{check_high:.4g} L:{check_low:.4g}")
 
         # All entries are MARKET — entry_hit is always True from creation.
@@ -2979,6 +3033,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
                     f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
         _next_btc_scan, _next_scan1, _next_scan2 = _next_schedule_times()
+        _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
+        _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
+        _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
@@ -3010,9 +3067,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"📰 News:       <b>{_news_flag}</b>\n"
                 if is_admin else ""
             )
-            + f"\n⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n"
-            f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n"
-            f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n"
+            + f"\n{_next_btc_line}"
+            f"{_next_s1_line}"
+            f"{_next_s2_line}"
             f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
             + (f"👥 Users: {len(registered_users)}\n" if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
@@ -5072,6 +5129,9 @@ def send_go_screen(chat_id, message_id=None):
     _go_model_lbl   = "Opus 4.8" if _go_is_opus else "Fable 5"
     _go_gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
     _go_next_btc, _go_next_s1, _go_next_s2 = _next_schedule_times()
+    _go_btc_line = f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan: <b>OFF</b>\n"
+    _go_s1_line  = f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n" if SCAN1_AUTO_ENABLED else "⏰ Next Scan1: <b>OFF</b>\n"
+    _go_s2_line  = f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n" if SCAN2_AUTO_ENABLED else "⏰ Next Scan2: <b>OFF</b>\n"
     _ctrl_btns = {"inline_keyboard": [[
         {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
         {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
@@ -5089,9 +5149,9 @@ def send_go_screen(chat_id, message_id=None):
         f"All scans, monitoring and alerts active.\n\n"
         f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
         f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
-        f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n"
-        f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n"
-        f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n\n"
+        f"{_go_btc_line}"
+        f"{_go_s1_line}"
+        f"{_go_s2_line}\n"
         f"<i>- CLEXER V17.8.5 -</i>")
     if message_id:
         _help_edit_or_send(chat_id, text, _ctrl_btns, message_id=message_id)
