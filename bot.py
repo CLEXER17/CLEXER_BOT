@@ -181,6 +181,7 @@ def register_user(chat_id):
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
+_tp_state: dict = {}       # cid → {"target": "scan1"/"scan2"/"demo", "digits": [], "times": [(h,m),...], "msg_id": int}
 
 trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
@@ -2721,10 +2722,10 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","alt","alt2"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE
     register_user(chat_id)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     # In groups, chat_id is the group — check sender_id for admin
@@ -3556,6 +3557,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _alt_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:1"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:1"},
+        ], [
+            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:scan1"},
         ]]}
         _sched_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_SCHEDULE)
         if len(parts) < 2:
@@ -3590,6 +3593,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _alt2_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:2"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:2"},
+        ], [
+            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:scan2"},
         ]]}
         if len(parts) < 2:
             send_reply(chat_id,
@@ -3615,6 +3620,34 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
             send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_alt2_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt2_btns); return
+
+    elif cmd == "/altdemo" and is_admin:
+        _altd_btns = {"inline_keyboard": [[
+            {"text": "📋  Manual Times", "callback_data": "alt_manual:3"},
+        ], [
+            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:demo"},
+        ]]}
+        _sched_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_TEST_SCHEDULE)
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"⏰ <b>Demo/Test Schedule</b>\n\n"
+                f"Current times:\n<code>{_sched_str}</code>\n\n"
+                f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_altd_btns); return
+        if parts[1].lower() == "manual" and len(parts) > 2:
+            new_slots = []
+            for t in parts[2:]:
+                try:
+                    sep = "." if "." in t else ":"
+                    h, m = t.split(sep); new_slots.append((int(h), int(m)))
+                except: pass
+            if not new_slots:
+                send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25</code>"); return
+            SCAN1_TEST_SCHEDULE = sorted(set(new_slots))
+            _test_triggered_today.clear()
+            _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_TEST_SCHEDULE)
+            send_reply(chat_id, f"✅ <b>Demo → Manual Times</b>\n\n{_times}\n\n<i>- CLEXER V17.8.5 -</i>", reply_markup=_altd_btns); return
+        send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd_btns); return
+
     elif cmd == "/tradelog" and is_admin:
         if not os.path.exists(TRADE_LOG_CSV):
             send_reply(chat_id, "📂 No trade history yet. Trades are logged automatically after first signal."); return
@@ -4734,8 +4767,9 @@ _HELP_CATS = {
             ("/scan",       "🔍", "Force Scan1 + Scan2 now"),
             ("/scan1",     "1️⃣", "Force Scan1 only"),
             ("/scan2",     "2️⃣", "Force Scan2 only"),
-            ("/alt",       "🪙", "Manual Scan1 for a coin"),
-            ("/alt2",      "🪙", "Manual Scan2 for a coin"),
+            ("/alt",       "⏰", "Edit Scan1 schedule times"),
+            ("/alt2",      "⏰", "Edit Scan2 schedule times"),
+            ("/altdemo",   "⏰", "Edit Demo/Test schedule times"),
             ("/test",      "🧪", "Demo scan — no real trades"),
             ("/scancopy",  "📋", "Copy trade for scan signals on/off"),
             ("/tradelog",  "📥", "Download trade history CSV"),
@@ -4817,6 +4851,159 @@ _COPYUSER_SUBCATS = {
     ]),
 }
 
+# ─── "Scan Control" is split into sub-sections (main gate → door) ─────────────
+_SCAN_SUBCATS = {
+    "toggles": ("⚙️ On/Off Switches", [
+        ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
+        ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
+        ("/scancopy",    "📋", "Scan Copy Trade",    "Turn auto-copy of scan (alt-coin) signals to users' BingX accounts on or off."),
+    ]),
+    "system": ("🧠 AI & Gateway", [
+        ("/model",   "🧠", "AI Model",   "Switch which Claude model powers scan/BTC analysis — Opus 4.8 or Fable 5."),
+        ("/gateway", "🔌", "API Route",  "Switch between calling Anthropic directly or through the Aerolink gateway."),
+    ]),
+    "schedule": ("⏰ Schedule Editor", [
+        ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
+        ("/alt2",    "⏰", "Scan2 Times",       "Edit the exact hour:minute slots Scan2 fires at."),
+        ("/altdemo", "⏰", "Demo/Test Times",   "Edit the exact hour:minute slots the demo scan fires at."),
+    ]),
+    "run": ("🔍 Run Now", [
+        ("/scan",  "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
+        ("/scan1", "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
+        ("/scan2", "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
+        ("/test",  "🧪", "Run Demo Scan",       "Fires a demo/test scan now — signals only, no real trades."),
+        ("/demo",  "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
+    ]),
+    "data": ("📊 Data & Settings", [
+        ("/tradelog", "📥", "Trade History CSV", "Download the full trade log as a CSV file."),
+        ("/report",   "📊", "API Cost Report",   "Daily Claude API token usage and cost breakdown."),
+        ("/coin",     "🪙", "Coin Scan Settings","Manage which coins are included/excluded from scanning."),
+    ]),
+}
+
+# ─── "Trade Control" is split into sub-sections (main gate → door) ────────────
+_TRADECONTROL_SUBCATS = {
+    "levels": ("🎯 SL / TP Levels", [
+        ("/sltobe",  "🛡", "Move SL to Breakeven", "Moves the active BTC trade's stop-loss up to entry price, locking in a no-loss trade."),
+        ("/setsl",   "🔧", "Set Custom SL",        "Manually override the active BTC trade's stop-loss price."),
+        ("/settp1",  "🎯", "Set Custom TP1",       "Manually override the active BTC trade's first take-profit price."),
+        ("/settp2",  "🏆", "Set Custom TP2",       "Manually override the active BTC trade's final take-profit price."),
+    ]),
+    "close": ("❌ Close Positions", [
+        ("/close",      "❌", "Close BTC Trade",     "Manually closes the currently active BTC trade right now."),
+        ("/closetrade", "❌", "Close a Coin",         "Close one specific open scan (alt-coin) position by symbol."),
+        ("/closescan",  "🗑", "Clear All Scan Trades","Force-closes and clears every open Scan1/Scan2 trade at once."),
+    ]),
+    "actions": ("⚡ Other Actions", [
+        ("/signal",  "⚡", "Force BTC Scan",         "Runs a BTC signal analysis immediately, outside the schedule."),
+        ("/resetsl", "🔄", "Reset SL Streak",        "Clears the consecutive-SL counter and any active cooldown."),
+        ("/cancel",  "⛔", "Cancel Broadcast",       "Cancels a broadcast message that's pending confirmation."),
+    ]),
+}
+
+# ─── "Copy Admin" is split into sub-sections (main gate → door) ───────────────
+_COPYADMIN_SUBCATS = {
+    "directory": ("👥 User Directory", [
+        ("/allusers", "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
+        ("/users",    "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
+        ("/user",     "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
+    ]),
+    "manage": ("🛡 User Management", [
+        ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
+        ("/pauseuser", "⏸", "Pause / Unpause",   "Pause or resume a specific user's copy trading without removing them."),
+    ]),
+    "sync": ("🔄 Sync & Recovery", [
+        ("/ctstatus",  "🔍", "Failed Users",      "Shows users whose copy trade failed, plus the active signal."),
+        ("/ctretry",   "🔄", "Retry Failed Copy", "Re-attempts a copy trade that previously failed for a user."),
+        ("/ctclose",   "❌", "Close Positions",   "Force-closes a user's copy-traded positions."),
+        ("/synccheck", "🔄", "BingX vs Bot Sync", "Compares live BingX positions against what the bot thinks is open."),
+    ]),
+}
+
+# ─── "Settings" is split into sub-sections (main gate → door) ─────────────────
+_SETTINGS_SUBCATS = {
+    "botcontrol": ("▶️ Bot Control", [
+        ("/go",    "▶️", "Resume Bot",   "Starts scanning again after a pause."),
+        ("/pause", "⏸", "Pause Bot",    "Freezes everything — no new scans, signals, or trades."),
+    ]),
+    "btcsettings": ("📡 BTC Settings", [
+        ("/btcmode",      "🔀", "Prompt Mode V7/V9",  "Switch which BTC analysis prompt version is used."),
+        ("/btcanalysis",  "📡", "Toggle Analysis",     "Turn scheduled BTC signal analysis on or off."),
+        ("/setinterval",  "⏰", "Scan Interval",       "Set how many hours between each BTC analysis scan."),
+    ]),
+    "charts": ("🖼 Charts & Images", [
+        ("/chartson",  "📸", "Enable Charts",   "Turn on chart snapshot generation for signals."),
+        ("/chartsoff", "🚫", "Disable Charts",  "Turn off chart snapshots — saves API credits."),
+        ("/images",    "🖼", "Images On/Off",   "Enable or disable chart images being sent at all."),
+        ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
+    ]),
+    "extras": ("📰 Extras", [
+        ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
+        ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
+    ]),
+}
+
+# ─── "Broadcast & Channels" is split into sub-sections (main gate → door) ─────
+_BROADCAST_SUBCATS = {
+    "messaging": ("📢 Messaging", [
+        ("/broadcast",   "📢", "Message All Users", "Send a message to every registered user of the bot."),
+        ("/latestnews",  "📰", "Fetch Latest News",  "Pull and post the latest crypto news right now."),
+    ]),
+    "channels": ("📡 Channel Control", [
+        ("/channels",      "📡", "Channel Status",    "Show the current status of all connected signal channels."),
+        ("/pausechannel",  "⏸", "Pause a Channel",   "Stop signals from being sent to a specific channel."),
+        ("/resumechannel", "▶️", "Resume a Channel",  "Re-enable signals for a specific channel."),
+    ]),
+}
+
+# ─── Tap-to-pick time keypad (digit entry for Scan1/Scan2/Demo schedules) ─────
+_TP_LABELS  = {"scan1": "Scan1", "scan2": "Scan2", "demo": "Demo/Test"}
+_TP_APPLYCMD = {"scan1": "/alt manual", "scan2": "/alt2 manual", "demo": "/altdemo manual"}
+_TP_BACKCAT  = {"scan1": "scan", "scan2": "scan", "demo": "scan"}
+
+def _tp_render(chat_id, cid, msg_id):
+    st = _tp_state.get(str(cid))
+    if not st:
+        return
+    digits = st["digits"]
+    times  = st["times"]
+    label  = _TP_LABELS[st["target"]]
+
+    slots = [str(d) for d in digits] + ["_"] * (4 - len(digits))
+    entering = f"{slots[0]}{slots[1]} : {slots[2]}{slots[3]}"
+    complete = len(digits) == 4
+
+    saved_str = "  ".join(f"{h}:{m:02d}" for h, m in times) if times else "(none yet)"
+    text = (
+        f"🔢 <b>Pick {label} Times</b>\n\n"
+        f"Saved so far: <code>{saved_str}</code>\n\n"
+        f"Entering: <code>{entering}</code>{'  ✅' if complete else ''}\n\n"
+        f"<i>Tap digits to build HH:MM (24h). First 2 = hour, last 2 = minute.</i>"
+    )
+
+    rows = []
+    if not complete:
+        rows.append([{"text": str(n), "callback_data": f"tp_d:{n}"} for n in (1, 2, 3)])
+        rows.append([{"text": str(n), "callback_data": f"tp_d:{n}"} for n in (4, 5, 6)])
+        rows.append([{"text": str(n), "callback_data": f"tp_d:{n}"} for n in (7, 8, 9)])
+        rows.append([{"text": "0", "callback_data": "tp_d:0"}])
+        rows.append([
+            {"text": "◀️ Previous", "callback_data": "tp_prev"},
+            {"text": "🚫 Back",     "callback_data": "tp_back"},
+        ])
+    else:
+        rows.append([
+            {"text": "➡️ Next",     "callback_data": "tp_next"},
+            {"text": "💾 Save",     "callback_data": "tp_save"},
+        ])
+        rows.append([
+            {"text": "◀️ Previous", "callback_data": "tp_prev"},
+            {"text": "🚫 Back",     "callback_data": "tp_back"},
+        ])
+
+    markup = {"inline_keyboard": rows}
+    _help_edit_or_send(chat_id, text, markup, message_id=msg_id)
+
 def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
     """Run a command, capture its reply, and edit the current message in-place
     with the result + a Back button — instead of sending a brand-new message."""
@@ -4893,10 +5080,16 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     if admin_only and not is_admin:
         return
 
-    # "My Copy Trade" is a main gate — show sub-sections instead of a flat list
-    if cat_id == "copyuser":
-        rows = [[{"text": sub_label, "callback_data": f"copyuser_sub:{sub_id}"}]
-                for sub_id, (sub_label, _) in _COPYUSER_SUBCATS.items()]
+    # Some categories are a main gate — show sub-sections instead of a flat list
+    _NESTED_CATS = {"copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_SUBCATS, "scan_sub"),
+                     "tradecontrol": (_TRADECONTROL_SUBCATS, "tradecontrol_sub"),
+                     "copyadmin": (_COPYADMIN_SUBCATS, "copyadmin_sub"),
+                     "settings": (_SETTINGS_SUBCATS, "settings_sub"),
+                     "broadcast": (_BROADCAST_SUBCATS, "broadcast_sub")}
+    if cat_id in _NESTED_CATS:
+        subcats, cb_prefix = _NESTED_CATS[cat_id]
+        rows = [[{"text": sub_label, "callback_data": f"{cb_prefix}:{sub_id}"}]
+                for sub_id, (sub_label, _) in subcats.items()]
         rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
         markup = {"inline_keyboard": rows}
         text = f"<b>{label}</b>\n\n<i>Pick a section 👇</i>"
@@ -4931,6 +5124,51 @@ def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
         desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}])
+    markup = {"inline_keyboard": rows}
+    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+def send_scan_subcat(chat_id, sub_id, message_id=None):
+    entry = _SCAN_SUBCATS.get(sub_id)
+    if not entry:
+        return
+    label, cmds = entry
+    rows = []
+    desc_lines = []
+    for cmd, emoji, title, desc in cmds:
+        rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
+        desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
+    rows.append([{"text": "◀️  Back", "callback_data": "help_cat:scan"}])
+    markup = {"inline_keyboard": rows}
+    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+def send_tradecontrol_subcat(chat_id, sub_id, message_id=None):
+    entry = _TRADECONTROL_SUBCATS.get(sub_id)
+    if not entry:
+        return
+    label, cmds = entry
+    rows = []
+    desc_lines = []
+    for cmd, emoji, title, desc in cmds:
+        rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
+        desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
+    rows.append([{"text": "◀️  Back", "callback_data": "help_cat:tradecontrol"}])
+    markup = {"inline_keyboard": rows}
+    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    _help_edit_or_send(chat_id, text, markup, message_id)
+
+def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
+    entry = subcats.get(sub_id)
+    if not entry:
+        return
+    label, cmds = entry
+    rows = []
+    desc_lines = []
+    for cmd, emoji, title, desc in cmds:
+        rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
+        desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
+    rows.append([{"text": "◀️  Back", "callback_data": f"help_cat:{back_cat}"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
     _help_edit_or_send(chat_id, text, markup, message_id)
@@ -4996,6 +5234,73 @@ def command_listener():
                     elif cb_data.startswith("copyuser_sub:"):
                         sub_id = cb_data.split(":", 1)[1]
                         send_copyuser_subcat(cb_chat_id, sub_id, cb_cid, message_id=cb_msg_id)
+                    elif cb_data.startswith("scan_sub:") and cb_is_admin:
+                        sub_id = cb_data.split(":", 1)[1]
+                        send_scan_subcat(cb_chat_id, sub_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("tradecontrol_sub:") and cb_is_admin:
+                        sub_id = cb_data.split(":", 1)[1]
+                        send_tradecontrol_subcat(cb_chat_id, sub_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("copyadmin_sub:") and cb_is_admin:
+                        sub_id = cb_data.split(":", 1)[1]
+                        _send_generic_subcat(cb_chat_id, _COPYADMIN_SUBCATS, sub_id, "copyadmin", message_id=cb_msg_id)
+                    elif cb_data.startswith("settings_sub:") and cb_is_admin:
+                        sub_id = cb_data.split(":", 1)[1]
+                        _send_generic_subcat(cb_chat_id, _SETTINGS_SUBCATS, sub_id, "settings", message_id=cb_msg_id)
+                    elif cb_data.startswith("broadcast_sub:") and cb_is_admin:
+                        sub_id = cb_data.split(":", 1)[1]
+                        _send_generic_subcat(cb_chat_id, _BROADCAST_SUBCATS, sub_id, "broadcast", message_id=cb_msg_id)
+
+                    elif cb_data.startswith("tp_start:") and cb_is_admin:
+                        target = cb_data.split(":", 1)[1]
+                        _tp_state[str(cb_cid)] = {"target": target, "digits": [], "times": [], "msg_id": cb_msg_id}
+                        _tp_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data.startswith("tp_d:") and cb_is_admin:
+                        st = _tp_state.get(str(cb_cid))
+                        if st and len(st["digits"]) < 4:
+                            st["digits"].append(cb_data.split(":", 1)[1])
+                            _tp_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "tp_prev" and cb_is_admin:
+                        st = _tp_state.get(str(cb_cid))
+                        if st and st["digits"]:
+                            st["digits"].pop()
+                            _tp_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "tp_next" and cb_is_admin:
+                        st = _tp_state.get(str(cb_cid))
+                        if st and len(st["digits"]) == 4:
+                            h = int("".join(st["digits"][0:2])); m = int("".join(st["digits"][2:4]))
+                            if 0 <= h <= 23 and 0 <= m <= 59:
+                                st["times"].append((h, m))
+                                st["digits"] = []
+                                _tp_render(cb_chat_id, cb_cid, cb_msg_id)
+                            else:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Invalid time — hour must be 00-23, minute 00-59",
+                                          "show_alert": True}, timeout=5)
+                    elif cb_data == "tp_save" and cb_is_admin:
+                        st = _tp_state.get(str(cb_cid))
+                        if st:
+                            if len(st["digits"]) == 4:
+                                h = int("".join(st["digits"][0:2])); m = int("".join(st["digits"][2:4]))
+                                if 0 <= h <= 23 and 0 <= m <= 59:
+                                    st["times"].append((h, m))
+                                else:
+                                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                        json={"callback_query_id": cb["id"], "text": "⚠️ Invalid time — hour must be 00-23, minute 00-59",
+                                              "show_alert": True}, timeout=5)
+                                    continue
+                            if not st["times"]:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Add at least one time first", "show_alert": True}, timeout=5)
+                                continue
+                            times_str = " ".join(f"{h}.{m:02d}" for h, m in st["times"])
+                            applycmd = _TP_APPLYCMD[st["target"]]
+                            del _tp_state[str(cb_cid)]
+                            _toggle_cmd(f"{applycmd} {times_str}", cb_chat_id, cb_cid, cb_msg_id, _TP_BACKCAT[st["target"]])
+                    elif cb_data == "tp_back" and cb_is_admin:
+                        st = _tp_state.pop(str(cb_cid), None)
+                        cat = _TP_BACKCAT.get(st["target"], "scan") if st else "scan"
+                        send_help_category(cb_chat_id, cat, cb_is_admin, message_id=cb_msg_id)
+
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
                         # Check if non-admin is pressing an admin-only button
