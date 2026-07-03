@@ -2735,11 +2735,6 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     if cmd in ADMIN_COMMANDS and not is_admin:
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see your commands."); return
 
-    if not is_admin and cmd in FRIEND_COMMANDS:
-        allowed, reset_str = check_rate_limit(chat_id, cmd)
-        if not allowed:
-            send_reply(chat_id, f"<b>Limit reached</b>\n\nUse <code>{cmd}</code> again at <b>{reset_str}</b>\n\n<i>Free tier: 2 uses/hr</i>"); return
-
     # -- Copy trade commands (user + admin) -----------------------------------
     if ct.is_ct_command(cmd, is_admin):
         uname = (message.get("from",{}).get("username","?") if message else "?")
@@ -2963,7 +2958,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             for sc in _lst:
                 scan_lines += (f"\n\n<b>Scan{_ver}:</b> {sc['signal']} {sc['symbol']}\n"
                     f"Entry:{sc['entry']:,.4g} {'✅' if sc.get('entry_hit') else '⏳'}  "
-                    f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g}")
+                    f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g} {'✅' if sc.get('tp1_hit') else ''}")
         for _dlst in (demo_scan1_trades, demo_scan2_trades):
             for dc in _dlst:
                 _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
@@ -3004,15 +2999,21 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         send_reply(chat_id,
             f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
             f"🤖 Bot:        <b>{st}</b>\n"
-            f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
-            f"🔍 Alt Scan:   {_alt_flag}\n"
-            f"🧠 AI Model:   <b>{_model_lbl}</b>\n"
-            f"🔌 Gateway:    <b>{_gateway_lbl}</b>\n"
-            f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
-            f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
-            f"🖼  Charts:     <b>{_charts_flag}</b>\n"
-            f"📰 News:       <b>{_news_flag}</b>\n"
-            f"\n⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n"
+            + (
+                f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
+                f"🔍 Alt Scan:   {_alt_flag}\n"
+                f"🧠 AI Model:   <b>{_model_lbl}</b>\n"
+                f"🔌 Gateway:    <b>{_gateway_lbl}</b>\n"
+                if is_admin else ""
+            )
+            + f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
+            + (
+                f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
+                f"🖼  Charts:     <b>{_charts_flag}</b>\n"
+                f"📰 News:       <b>{_news_flag}</b>\n"
+                if is_admin else ""
+            )
+            + f"\n⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n"
             f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n"
             f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n"
             f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
@@ -5246,6 +5247,12 @@ def command_listener():
                     cb_msg_id   = cb_msg.get("message_id")
                     cb_chat_id  = cb_msg.get("chat", {}).get("id", cb_cid)
                     cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
+
+                    # Pressing ANY button cancels a stale pending text-input prompt
+                    # (e.g. Loop Mode / Manual Times) so a later stray message can't
+                    # get misapplied to an abandoned flow. Handlers that need fresh
+                    # pending_input set it themselves right after this.
+                    pending_input.pop(cb_cid, None)
 
                     # Check admin-only BEFORE answering, so we can show alert popup
                     _is_admin_btn = False
