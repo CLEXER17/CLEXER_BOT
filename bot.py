@@ -2244,6 +2244,7 @@ def _log_scan_history(t: dict, result: str, close_price: float):
         "result":      result,          # TP1 / TP2 / SL / BE
         "close_price": close_price,
         "tp1_hit":     t.get("tp1_hit", False),
+        "ver":         t.get("ver", 1),
     })
     if len(scan_history) > 30: scan_history.pop(0)
     save_state()
@@ -3671,6 +3672,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/test" and is_admin:
         global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
+        _test_btns = {"inline_keyboard": [
+            [{"text": "▶️  ON", "callback_data": "test_on"}, {"text": "⏸  OFF", "callback_data": "test_off"}],
+            [{"text": "🧪  Run Now", "callback_data": "test_run"}],
+        ]}
         if sub == "on":
             TEST_SCAN_ENABLED = True
             _test_scan1_last_hour = -1; _test_scan2_last_hour = -1
@@ -3679,16 +3684,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"Demo scans fire every hour at <b>:05 IST</b>\n"
                 f"Signals tagged <b>[DEMO]</b> — no real trades placed.\n"
                 f"Monitor checks TP1/SL/timeout every 30s.\n\n"
-                f"Commands:\n"
-                f"<code>/test off</code> — disable\n"
-                f"<code>/test</code> — show active demo trades\n\n"
-                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+                f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
         elif sub == "off":
             TEST_SCAN_ENABLED = False
             send_reply(chat_id,
                 f"❌ <b>Test Mode OFF</b>\n\n"
                 f"Demo scans stopped. Active demo trades still monitored until closed.\n\n"
-                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+                f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
         elif sub == "run":
             send_reply(chat_id, "🧪 Triggering both demo scans now...")
             threading.Thread(target=lambda: _run_test_scan(chat_id, 1), daemon=True).start()
@@ -3719,8 +3721,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"Fires at <b>:05 IST</b> hourly | Strategy: CLEXER SCALP V1\n\n"
                 f"<b>Active Demo Trades ({len(all_demo)}):</b>\n"
                 f"<pre>{trades_str}</pre>\n\n"
-                f"<code>/test on</code> | <code>/test off</code> | <code>/test run</code> (manual trigger)\n\n"
-                f"<i>- CLEXER SCALP V1 TEST -</i>"); return
+                f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
 
     elif cmd == "/scancopy" and is_admin:
         _sc_btns = {"inline_keyboard": [[
@@ -4482,7 +4483,7 @@ Reasoning: [one line]"""
                             "symbol":chosen_sym,"signal":scan_signal_val,
                             "entry":scan_entry,"sl":scan_sl,"tp1":scan_tp1,"tp2":scan_tp2,
                             "entry_type":"MARKET","tp1_hit":False,
-                            "entry_hit":True,"created_at":time.time(),
+                            "entry_hit":True,"created_at":time.time(),"ver":scan_ver,
                         }
                         _scan_list(scan_ver).append(slot_data)
                         trade_stats["scan_signals"] += 1
@@ -4680,7 +4681,7 @@ _HELP_CATS = {
             ("/trade",    "📈", "Active BTC + all scan trades"),
             ("/price",    "💲", "Current BTC price"),
             ("/session",  "🕐", "London / NY / Sleep session"),
-            ("/history",  "📜", "Last 5 BTC signals"),
+            ("/history",  "📜", "Last 5 signals"),
             ("/stats",    "🏆", "Win rate & trade statistics"),
         ]
     ),
@@ -5142,6 +5143,12 @@ def command_listener():
                                   "reply_markup": _gw_mkp}, timeout=10)
                     elif cb_data == "noop":
                         pass
+                    elif cb_data == "test_on" and cb_is_admin:
+                        _toggle_cmd("/test on", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data == "test_off" and cb_is_admin:
+                        _toggle_cmd("/test off", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data == "test_run" and cb_is_admin:
+                        _toggle_cmd("/test run", cb_chat_id, cb_cid, cb_msg_id, "scan")
                     elif cb_data.startswith("pausech:"):
                         _toggle_cmd(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
                     elif cb_data.startswith("resumech:"):
@@ -5246,11 +5253,9 @@ def command_listener():
 # ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
 SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
-    (3,2),(3,23),(4,2),(4,23),(5,23),
-    (6,2),
+    (3,2),(5,23),
     # PM
-    (12,23),(13,45),(14,7),(14,23),
-    (16,7),(20,7),(20,23),(21,7),
+    (12,23),(13,45),
 ]))
 # Scan2 keeps the full original schedule (independent of Scan1)
 SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
