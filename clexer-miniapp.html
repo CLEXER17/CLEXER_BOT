@@ -1039,11 +1039,19 @@
     // Maintenance check after UI loads (non-blocking)
     fetch(`${API}/maintenance`,{cache:"no-store"})
       .then(r=>r.json()).then(m=>{
-        if(m.on) document.body.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;font-family:ui-monospace,monospace;text-align:center;gap:12px">
-          <div style="font-size:32px">🔧</div>
+        if(m.on) document.body.innerHTML=`<style>
+          @keyframes clexer-spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
+          @keyframes clexer-pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+          .clexer-wrench{display:inline-block;animation:clexer-spin 2.4s linear infinite;}
+          .clexer-dots span{animation:clexer-pulse 1.4s ease-in-out infinite;}
+          .clexer-dots span:nth-child(2){animation-delay:.2s;}
+          .clexer-dots span:nth-child(3){animation-delay:.4s;}
+        </style>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;font-family:ui-monospace,monospace;text-align:center;gap:12px">
+          <div class="clexer-wrench" style="font-size:32px">🔧</div>
           <div style="font-size:15px;letter-spacing:.1em;color:#FFB020;font-weight:700">CLEXER</div>
           <div style="font-size:13px;color:#E6EAF0;margin-top:4px">${m.msg}</div>
-          <div style="font-size:11px;color:#6B7480;margin-top:6px">Please check back later</div>
+          <div class="clexer-dots" style="font-size:11px;color:#6B7480;margin-top:6px">Please check back later<span>.</span><span>.</span><span>.</span></div>
         </div>`;
       }).catch(()=>{});
   }
