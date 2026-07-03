@@ -2794,32 +2794,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
-        _go_is_opus  = SCAN_MODEL == "claude-opus-4-8"
-        _go_is_fable = SCAN_MODEL == "claude-fable-5"
-        _go_model_lbl   = "Opus 4.8" if _go_is_opus else "Fable 5"
-        _go_gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
-        _go_next_btc, _go_next_s1, _go_next_s2 = _next_schedule_times()
-        _ctrl_btns = {"inline_keyboard": [[
-            {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
-            {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
-        ], [
-            {"text": ("✅ " if _go_is_opus else "") + "🧠 Opus 4.8",  "callback_data": "model:opus"},
-            {"text": ("✅ " if _go_is_fable else "") + "🧠 Fable 5",  "callback_data": "model:fable"},
-        ], [
-            {"text": ("✅ " if not USE_AEROLINK else "") + "🔌 Direct",   "callback_data": "gateway:direct"},
-            {"text": ("✅ " if USE_AEROLINK else "") + "🔌 Aerolink", "callback_data": "gateway:aerolink"},
-        ], [
-            {"text": "◀️  Back", "callback_data": "help_main"},
-        ]]}
-        send_reply(chat_id,
-            f"▶️ <b>Bot RUNNING</b>\n\n"
-            f"All scans, monitoring and alerts active.\n\n"
-            f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
-            f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
-            f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n"
-            f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n"
-            f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n\n"
-            f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_ctrl_btns)
+        send_go_screen(chat_id)
 
     elif cmd == "/demo" and is_admin:
         """
@@ -5089,6 +5064,40 @@ def _help_edit_or_send(chat_id, text, markup, message_id=None):
     else:
         requests.post(f"{base}/sendMessage", json=payload, timeout=10)
 
+def send_go_screen(chat_id, message_id=None):
+    """Renders the /go 'Bot RUNNING' screen. Its model/gateway buttons toggle
+    in-place (go_model:/go_gateway:) instead of opening the separate detail screens."""
+    _go_is_opus  = SCAN_MODEL == "claude-opus-4-8"
+    _go_is_fable = SCAN_MODEL == "claude-fable-5"
+    _go_model_lbl   = "Opus 4.8" if _go_is_opus else "Fable 5"
+    _go_gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
+    _go_next_btc, _go_next_s1, _go_next_s2 = _next_schedule_times()
+    _ctrl_btns = {"inline_keyboard": [[
+        {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
+        {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
+    ], [
+        {"text": ("✅ " if _go_is_opus else "") + "🧠 Opus 4.8",  "callback_data": "go_model:opus"},
+        {"text": ("✅ " if _go_is_fable else "") + "🧠 Fable 5",  "callback_data": "go_model:fable"},
+    ], [
+        {"text": ("✅ " if not USE_AEROLINK else "") + "🔌 Direct",   "callback_data": "go_gateway:direct"},
+        {"text": ("✅ " if USE_AEROLINK else "") + "🔌 Aerolink", "callback_data": "go_gateway:aerolink"},
+    ], [
+        {"text": "◀️  Back", "callback_data": "help_main"},
+    ]]}
+    text = (
+        f"▶️ <b>Bot RUNNING</b>\n\n"
+        f"All scans, monitoring and alerts active.\n\n"
+        f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
+        f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
+        f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n"
+        f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n"
+        f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n\n"
+        f"<i>- CLEXER V17.8.5 -</i>")
+    if message_id:
+        _help_edit_or_send(chat_id, text, _ctrl_btns, message_id=message_id)
+    else:
+        send_reply(chat_id, text, reply_markup=_ctrl_btns)
+
 def send_help_menu(chat_id, is_admin, message_id=None):
     rows = []
     for cat_id, (label, admin_only, _) in _HELP_CATS.items():
@@ -5592,6 +5601,28 @@ def command_listener():
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _gw_text, "parse_mode": "HTML",
                                   "reply_markup": _gw_mkp}, timeout=10)
+
+                    elif cb_data.startswith("go_model:") and cb_is_admin:
+                        _garg = cb_data.split(":")[1]
+                        if _garg == "opus":  SCAN_MODEL = "claude-opus-4-8"
+                        elif _garg == "fable": SCAN_MODEL = "claude-fable-5"
+                        save_settings()
+                        send_go_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("go_gateway:") and cb_is_admin:
+                        _garg = cb_data.split(":")[1]
+                        if _garg == "direct":
+                            USE_AEROLINK = False
+                        elif _garg == "aerolink":
+                            if not AEROLINK_API_KEY:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"],
+                                          "text": "⚠️ AEROLINK_API_KEY not set in Railway env vars.",
+                                          "show_alert": True}, timeout=5)
+                                continue
+                            USE_AEROLINK = True
+                        save_settings()
+                        send_go_screen(cb_chat_id, message_id=cb_msg_id)
+
                     elif cb_data == "noop":
                         pass
                     elif cb_data == "test_on" and cb_is_admin:
