@@ -1040,18 +1040,132 @@
     fetch(`${API}/maintenance`,{cache:"no-store"})
       .then(r=>r.json()).then(m=>{
         if(m.on) document.body.innerHTML=`<style>
-          @keyframes clexer-spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}
-          @keyframes clexer-pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
-          .clexer-wrench{display:inline-block;animation:clexer-spin 2.4s linear infinite;}
-          .clexer-dots span{animation:clexer-pulse 1.4s ease-in-out infinite;}
-          .clexer-dots span:nth-child(2){animation-delay:.2s;}
-          .clexer-dots span:nth-child(3){animation-delay:.4s;}
+          @keyframes clexer-flow{to{stroke-dashoffset:-40;}}
+          @keyframes clexer-blink{0%,100%{opacity:1;}50%{opacity:.15;}}
+          @keyframes clexer-wrench-swing{0%,100%{transform:rotate(-18deg);}50%{transform:rotate(22deg);}}
+          @keyframes clexer-bob{0%,100%{transform:translateY(0);}50%{transform:translateY(-4px);}}
+          @keyframes clexer-climb{0%,100%{transform:translateY(0);}50%{transform:translateY(-3px);}}
+          @keyframes clexer-spark{0%,100%{opacity:0;transform:scale(.4);}50%{opacity:1;transform:scale(1);}}
+          @keyframes clexer-screenflicker{0%,100%{opacity:.9;}45%{opacity:.9;}50%{opacity:.3;}55%{opacity:.9;}}
+          .cx-wire{stroke:#FFB020;stroke-width:2;fill:none;stroke-dasharray:6 5;animation:clexer-flow 1s linear infinite;}
+          .cx-led{animation:clexer-blink 1.1s ease-in-out infinite;}
+          .cx-led2{animation:clexer-blink 1.3s ease-in-out infinite .3s;}
+          .cx-led3{animation:clexer-blink .9s ease-in-out infinite .6s;}
+          .cx-arm{transform-origin:0px 0px;animation:clexer-wrench-swing 1s ease-in-out infinite;}
+          .cx-man2{animation:clexer-bob 1.6s ease-in-out infinite;transform-origin:center bottom;}
+          .cx-man3{animation:clexer-climb 1.4s ease-in-out infinite .3s;transform-origin:center bottom;}
+          .cx-spark{animation:clexer-spark .8s ease-in-out infinite;transform-origin:center;}
+          .cx-screen{animation:clexer-screenflicker 2.4s ease-in-out infinite;}
         </style>
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;font-family:ui-monospace,monospace;text-align:center;gap:12px">
-          <div class="clexer-wrench" style="font-size:32px">🔧</div>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;font-family:ui-monospace,monospace;text-align:center;gap:10px;padding:16px;box-sizing:border-box">
+          <svg viewBox="0 0 340 170" width="340" height="170" style="width:100%;max-width:340px;height:auto;display:block">
+            <!-- circuit trace background -->
+            <path d="M10 150 H60 V130 H100" stroke="#1E242E" stroke-width="1.5" fill="none"/>
+            <path d="M240 130 H280 V150 H330" stroke="#1E242E" stroke-width="1.5" fill="none"/>
+            <circle cx="60" cy="130" r="2" fill="#2A3140"/><circle cx="280" cy="130" r="2" fill="#2A3140"/>
+
+            <!-- Computer 1 (left) -->
+            <g transform="translate(8,70)">
+              <rect x="0" y="0" width="40" height="28" rx="2" fill="#1E2530" stroke="#4B5563"/>
+              <rect x="3" y="3" width="34" height="20" fill="#0A0D12" class="cx-screen"/>
+              <rect x="2" y="21" width="36" height="2" fill="#FFB020" opacity=".5"/>
+              <rect x="14" y="28" width="12" height="5" fill="#171C25"/>
+              <rect x="6" y="33" width="28" height="3" rx="1" fill="#2A3140"/>
+            </g>
+
+            <!-- Server rack 1 -->
+            <g transform="translate(70,50)">
+              <rect x="0" y="0" width="34" height="70" rx="2" fill="#1E2530" stroke="#4B5563"/>
+              <rect x="4" y="6" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led" cx="9" cy="10" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led2" cx="15" cy="10" r="1.6" fill="#FFB020"/>
+              <circle class="cx-led3" cx="21" cy="10" r="1.6" fill="#FF4D5E"/>
+              <rect x="4" y="18" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led2" cx="9" cy="22" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led3" cx="15" cy="22" r="1.6" fill="#FFB020"/>
+              <circle class="cx-led" cx="21" cy="22" r="1.6" fill="#00D18F"/>
+              <rect x="4" y="30" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led3" cx="9" cy="34" r="1.6" fill="#FFB020"/>
+              <circle class="cx-led" cx="15" cy="34" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led2" cx="21" cy="34" r="1.6" fill="#FF4D5E"/>
+              <rect x="4" y="42" width="26" height="22" fill="#0A0D12"/>
+              <text x="17" y="57" font-size="7" fill="#6B7480" text-anchor="middle" font-family="ui-monospace,monospace">GPU</text>
+            </g>
+
+            <!-- Stickman 1 — swinging wrench at loose wire -->
+            <g transform="translate(118,86)">
+              <circle cx="10" cy="0" r="6" fill="none" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="10" y1="6" x2="10" y2="26" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="10" y1="10" x2="0" y2="18" stroke="#E6EAF0" stroke-width="2"/>
+              <g transform="translate(10,10)"><g class="cx-arm">
+                <line x1="0" y1="0" x2="16" y2="4" stroke="#E6EAF0" stroke-width="2"/>
+                <rect x="14" y="-1" width="8" height="4" rx="1" fill="#FFB020" transform="rotate(15 18 1)"/>
+              </g></g>
+              <line x1="10" y1="26" x2="3" y2="40" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="10" y1="26" x2="17" y2="40" stroke="#E6EAF0" stroke-width="2"/>
+              <circle class="cx-spark" cx="24" cy="10" r="4" fill="#FFB020"/>
+            </g>
+
+            <!-- loose dangling wire between racks -->
+            <path class="cx-wire" d="M104 78 Q126 100 140 84 Q152 70 168 82" />
+
+            <!-- Stickman 2 — sitting, holding cable connector, bobbing -->
+            <g transform="translate(160,96)"><g class="cx-man2">
+              <circle cx="8" cy="0" r="6" fill="none" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="8" y1="6" x2="8" y2="22" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="8" y1="12" x2="-4" y2="16" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="8" y1="12" x2="20" y2="10" stroke="#E6EAF0" stroke-width="2"/>
+              <rect x="18" y="6" width="7" height="7" rx="1" fill="#FFB020"/>
+              <line x1="8" y1="22" x2="0" y2="34" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="8" y1="22" x2="16" y2="34" stroke="#E6EAF0" stroke-width="2"/>
+            </g></g>
+
+            <!-- Server rack 2 -->
+            <g transform="translate(228,50)">
+              <rect x="0" y="0" width="34" height="70" rx="2" fill="#1E2530" stroke="#4B5563"/>
+              <rect x="4" y="6" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led3" cx="9" cy="10" r="1.6" fill="#FF4D5E"/>
+              <circle class="cx-led" cx="15" cy="10" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led2" cx="21" cy="10" r="1.6" fill="#FFB020"/>
+              <rect x="4" y="18" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led" cx="9" cy="22" r="1.6" fill="#FFB020"/>
+              <circle class="cx-led2" cx="15" cy="22" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led3" cx="21" cy="22" r="1.6" fill="#00D18F"/>
+              <rect x="4" y="30" width="26" height="8" fill="#0A0D12"/>
+              <circle class="cx-led2" cx="9" cy="34" r="1.6" fill="#00D18F"/>
+              <circle class="cx-led3" cx="15" cy="34" r="1.6" fill="#FF4D5E"/>
+              <circle class="cx-led" cx="21" cy="34" r="1.6" fill="#FFB020"/>
+              <rect x="4" y="42" width="26" height="22" fill="#0A0D12"/>
+              <text x="17" y="57" font-size="7" fill="#6B7480" text-anchor="middle" font-family="ui-monospace,monospace">CPU</text>
+            </g>
+
+            <!-- Stickman 3 — climbing rack 2 -->
+            <g transform="translate(254,58)"><g class="cx-man3">
+              <circle cx="6" cy="0" r="5" fill="none" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="6" y1="5" x2="6" y2="18" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="6" y1="9" x2="14" y2="4" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="6" y1="9" x2="-2" y2="14" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="6" y1="18" x2="0" y2="24" stroke="#E6EAF0" stroke-width="2"/>
+              <line x1="6" y1="18" x2="13" y2="26" stroke="#E6EAF0" stroke-width="2"/>
+            </g></g>
+
+            <!-- Computer 2 (right) -->
+            <g transform="translate(292,70)">
+              <rect x="0" y="0" width="40" height="28" rx="2" fill="#1E2530" stroke="#4B5563"/>
+              <rect x="3" y="3" width="34" height="20" fill="#0A0D12" class="cx-screen"/>
+              <rect x="2" y="21" width="36" height="2" fill="#FFB020" opacity=".5"/>
+              <rect x="14" y="28" width="12" height="5" fill="#171C25"/>
+              <rect x="6" y="33" width="28" height="3" rx="1" fill="#2A3140"/>
+            </g>
+
+            <!-- wires connecting everything -->
+            <path class="cx-wire" d="M48 90 H70" />
+            <path class="cx-wire" d="M104 60 H228" style="animation-delay:.3s" />
+            <path class="cx-wire" d="M262 90 H292" style="animation-delay:.5s" />
+          </svg>
           <div style="font-size:15px;letter-spacing:.1em;color:#FFB020;font-weight:700">CLEXER</div>
-          <div style="font-size:13px;color:#E6EAF0;margin-top:4px">${m.msg}</div>
-          <div class="clexer-dots" style="font-size:11px;color:#6B7480;margin-top:6px">Please check back later<span>.</span><span>.</span><span>.</span></div>
+          <div style="font-size:13px;color:#E6EAF0;margin-top:2px">${m.msg}</div>
+          <div style="font-size:11px;color:#6B7480;margin-top:2px">Please check back later</div>
         </div>`;
       }).catch(()=>{});
   }
