@@ -2800,6 +2800,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         /demo btc close     → force close all positions
         """
         raw = " ".join(parts[1:]).lower()
+        if not raw:
+            send_reply(chat_id,
+                "<b>Simulate Demo Trade</b>\n\n"
+                "Usage:\n"
+                "<code>/demo btc buy entry 66000 tp1 67000 tp2 68000 sl 65500</code>\n"
+                "<code>/demo tp1</code> — simulate TP1 hit\n"
+                "<code>/demo tp2</code> — simulate TP2 hit\n"
+                "<code>/demo sl</code> — simulate SL hit\n"
+                "<code>/demo btc sl 67000</code> — move SL\n"
+                "<code>/demo btc close</code> — force close\n\n"
+                "<i>- CLEXER V17.8.5 -</i>"); return
         try:
             def _fmt(results):
                 if results is None: return "Done."
@@ -5006,7 +5017,9 @@ def _tp_render(chat_id, cid, msg_id):
 
 def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
     """Run a command, capture its reply, and edit the current message in-place
-    with the result + a Back button — instead of sending a brand-new message."""
+    with the result + a Back button — instead of sending a brand-new message.
+    The Back button target is auto-resolved to the immediate subcategory the
+    command lives in (falls back to the given cat_id if it can't be found)."""
     cid_str = str(cid)
     _reply_capture[cid_str] = {"texts": [], "cat_id": cat_id}
     handle_command(cmd_text, chat_id, {}, sender_id=cid)
@@ -5014,7 +5027,9 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
     result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
     if len(result_text) > 4000:
         result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
-    _back_row = [{"text": "◀️  Back", "callback_data": f"help_cat:{cat_id}"}]
+    _base_cmd = cmd_text.split()[0]
+    _back_cb, _ = _find_back_target(_base_cmd)
+    _back_row = [{"text": "◀️  Back", "callback_data": _back_cb}]
     cap_mkp = captured.get("markup")
     if cap_mkp and "inline_keyboard" in cap_mkp:
         merged = cap_mkp["inline_keyboard"] + [_back_row]
@@ -5072,6 +5087,25 @@ def send_help_menu(chat_id, is_admin, message_id=None):
         except Exception:
             pass
 
+# Categories that are a "main gate" — show sub-sections instead of a flat list.
+# Maps cat_id -> (subcats dict, callback prefix used for that subcat's buttons)
+_NESTED_CATS = {"copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_SUBCATS, "scan_sub"),
+                 "tradecontrol": (_TRADECONTROL_SUBCATS, "tradecontrol_sub"),
+                 "copyadmin": (_COPYADMIN_SUBCATS, "copyadmin_sub"),
+                 "settings": (_SETTINGS_SUBCATS, "settings_sub"),
+                 "broadcast": (_BROADCAST_SUBCATS, "broadcast_sub")}
+
+def _find_back_target(cmd_text):
+    """Find the correct 'Back' callback_data for a command — the immediate
+    subcategory it lives in if nested, else the top-level category."""
+    for cat_id, (subcats, cb_prefix) in _NESTED_CATS.items():
+        for sub_id, (_, cmds) in subcats.items():
+            if any(c == cmd_text for c, _, _, _ in cmds):
+                return f"{cb_prefix}:{sub_id}", cat_id
+    cat_id = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
+                   if any(c == cmd_text for c, _, _ in cmds_)), "monitor")
+    return f"help_cat:{cat_id}", cat_id
+
 def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     entry = _HELP_CATS.get(cat_id)
     if not entry:
@@ -5080,12 +5114,6 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     if admin_only and not is_admin:
         return
 
-    # Some categories are a main gate — show sub-sections instead of a flat list
-    _NESTED_CATS = {"copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_SUBCATS, "scan_sub"),
-                     "tradecontrol": (_TRADECONTROL_SUBCATS, "tradecontrol_sub"),
-                     "copyadmin": (_COPYADMIN_SUBCATS, "copyadmin_sub"),
-                     "settings": (_SETTINGS_SUBCATS, "settings_sub"),
-                     "broadcast": (_BROADCAST_SUBCATS, "broadcast_sub")}
     if cat_id in _NESTED_CATS:
         subcats, cb_prefix = _NESTED_CATS[cat_id]
         rows = [[{"text": sub_label, "callback_data": f"{cb_prefix}:{sub_id}"}]
@@ -5312,17 +5340,14 @@ def command_listener():
                             "/setsl":       "🔧 <b>Set Stop Loss</b>\n\nType the SL price:\n<i>Example: <code>62000</code></i>",
                             "/settp1":      "🎯 <b>Set TP1</b>\n\nType the TP1 price:\n<i>Example: <code>68500</code></i>",
                             "/settp2":      "🏆 <b>Set TP2</b>\n\nType the TP2 price:\n<i>Example: <code>72000</code></i>",
-                            "/alt":         "🕐 <b>Set Scan1 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>02</code></i>",
-                            "/alt2":        "🕐 <b>Set Scan2 Time</b>\n\nType the minute (00–59):\n<i>Example: <code>24</code></i>",
                         }
-                        # Find which category this command belongs to (for Back button)
-                        _cmd_cat = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
-                                         if any(c == cmd_text for c, _, _ in cmds_)), "monitor")
+                        # Find which subcategory (or top-level category) this command belongs to (for Back button)
+                        _back_cb, _cmd_cat = _find_back_target(cmd_text)
                         _back_markup = {"inline_keyboard": [[
-                            {"text": "◀️  Back", "callback_data": f"help_cat:{_cmd_cat}"}]]}
+                            {"text": "◀️  Back", "callback_data": _back_cb}]]}
 
                         if cmd_text in _INPUT_PROMPTS:
-                            pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _cmd_cat} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _cmd_cat}
+                            pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _back_cb} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _back_cb}
                             _help_edit_or_send(cb_chat_id, _INPUT_PROMPTS[cmd_text], _back_markup, message_id=cb_msg_id)
                         else:
                             # Capture the command output and edit message in-place
@@ -5351,9 +5376,10 @@ def command_listener():
                         _pm  = {"mysize_setsize": "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
                                 "mysize_setlev":  "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
                                 "mysize_setrisk": "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>"}
-                        pending_input[cb_cid] = {"cmd": _map[cb_data], "msg_id": cb_msg_id, "cat_id": "copyuser"}
+                        _ms_back_cb, _ = _find_back_target(_map[cb_data])
+                        pending_input[cb_cid] = {"cmd": _map[cb_data], "msg_id": cb_msg_id, "cat_id": _ms_back_cb}
                         _help_edit_or_send(cb_chat_id, _pm[cb_data],
-                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _ms_back_cb}]]},
                             message_id=cb_msg_id)
 
                     # ── Nocopy coin block/unblock ─────────────────────────────
@@ -5361,8 +5387,9 @@ def command_listener():
                         _nc_coin = cb_data.split(":", 1)[1]
                         _nc_action = "clear" if cb_data.startswith("nocopy_clr:") else ""
                         _nc_cmd = f"/nocopy clear {_nc_coin}" if _nc_action else f"/nocopy {_nc_coin}"
+                        _nc_back_cb, _ = _find_back_target("/nocopy")
                         cid_str = str(cb_cid)
-                        _reply_capture[cid_str] = {"texts": [], "cat_id": "copyuser"}
+                        _reply_capture[cid_str] = {"texts": [], "cat_id": _nc_back_cb}
                         handle_command(_nc_cmd, cb_chat_id, {}, sender_id=cb_cid)
                         captured = _reply_capture.pop(cid_str, {})
                         result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
@@ -5370,11 +5397,12 @@ def command_listener():
                         if cap_mkp and "inline_keyboard" in cap_mkp:
                             _help_edit_or_send(cb_chat_id, result_text, cap_mkp, message_id=cb_msg_id)
                         else:
-                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]}, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _nc_back_cb}]]}, message_id=cb_msg_id)
                     elif cb_data == "nocopy_type":
-                        pending_input[cb_cid] = {"cmd": "/nocopy", "msg_id": cb_msg_id, "cat_id": "copyuser"}
+                        _nc_back_cb, _ = _find_back_target("/nocopy")
+                        pending_input[cb_cid] = {"cmd": "/nocopy", "msg_id": cb_msg_id, "cat_id": _nc_back_cb}
                         _help_edit_or_send(cb_chat_id, "⌨️ <b>Type Coin Name</b>\n\nEnter the coin (e.g. <code>SOL</code>):",
-                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}]]},
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _nc_back_cb}]]},
                             message_id=cb_msg_id)
 
                     # ── Images ON/OFF ─────────────────────────────────────────
@@ -5549,15 +5577,16 @@ def command_listener():
                     elif cb_data.startswith("alt_loop:") or cb_data.startswith("alt_manual:"):
                         _mode, _ver = cb_data.split(":")
                         _cmd = "/alt" if _ver == "1" else "/alt2"
+                        _alt_back_cb, _ = _find_back_target(_cmd)
                         if _mode == "alt_loop":
-                            pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": None, "cat_id": "scan"}
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": None, "cat_id": _alt_back_cb}
                             send_reply(cb_chat_id,
                                 f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\n"
                                 f"Type the minute <b>(0–59)</b>:\n"
                                 f"Bot will run every hour at that minute.\n\n"
                                 f"<i>Example: type <code>2</code> → runs at 1:02, 2:02, 3:02, 4:02...</i>")
                         else:
-                            pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": None, "cat_id": "scan"}
+                            pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": None, "cat_id": _alt_back_cb}
                             send_reply(cb_chat_id,
                                 f"📋 <b>Manual Times — Scan{_ver}</b>\n\n"
                                 f"Type your specific times separated by spaces:\n\n"
@@ -5577,8 +5606,11 @@ def command_listener():
                 if cid in pending_input and not text.startswith("/"):
                     pi = pending_input[cid]
                     _pi_msg_id  = pi.get("msg_id")
-                    _pi_cat_id  = pi.get("cat_id", "monitor")
-                    _back_mkp   = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": f"help_cat:{_pi_cat_id}"}]]}
+                    _pi_cat_id  = pi.get("cat_id") or "monitor"
+                    # "cat_id" is either a full callback_data (contains ":") or a bare
+                    # top-level category id (legacy) — normalize both to a callback_data
+                    _pi_back_cb = _pi_cat_id if ":" in _pi_cat_id else f"help_cat:{_pi_cat_id}"
+                    _back_mkp   = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _pi_back_cb}]]}
 
                     if pi["cmd"] == "/connect":
                         if pi.get("step") == "secret":
