@@ -79,6 +79,24 @@ tv_bridge_state = {
 
 def now_ist():  return datetime.now(timezone.utc) + IST
 def ist_str():  return now_ist().strftime("%d %b %Y  %I:%M %p IST")
+
+def _next_schedule_times():
+    """Returns (next_btc_scan, next_scan1, next_scan2) as display strings.
+    next_btc_scan has no 'IST' suffix (caller appends it); the other two already include it."""
+    _ist_now = now_ist()
+    _now_hm  = (_ist_now.hour, _ist_now.minute)
+    _scan_hrs = {7, 11, 15, 19, 23}
+    _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs)
+                            if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)),
+                           "07:21 tomorrow")
+    def _next_slot(schedule):
+        _fut = [(h, m) for h, m in schedule if (h, m) > _now_hm]
+        if _fut:
+            _h, _m = _fut[0]
+            return f"{_h}:{_m:02d} IST"
+        _h, _m = schedule[0]
+        return f"{_h}:{_m:02d} IST (tomorrow)"
+    return _next_btc_scan, _next_slot(SCAN1_SCHEDULE), _next_slot(SCAN2_SCHEDULE)
 def get_session():
     mins = now_ist().hour * 60 + now_ist().minute
     if 450 <= mins < 990:         return "LONDON"
@@ -2776,13 +2794,31 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
+        _go_is_opus  = SCAN_MODEL == "claude-opus-4-8"
+        _go_is_fable = SCAN_MODEL == "claude-fable-5"
+        _go_model_lbl   = "Opus 4.8" if _go_is_opus else "Fable 5"
+        _go_gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
+        _go_next_btc, _go_next_s1, _go_next_s2 = _next_schedule_times()
         _ctrl_btns = {"inline_keyboard": [[
             {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
             {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
+        ], [
+            {"text": ("✅ " if _go_is_opus else "") + "🧠 Opus 4.8",  "callback_data": "model:opus"},
+            {"text": ("✅ " if _go_is_fable else "") + "🧠 Fable 5",  "callback_data": "model:fable"},
+        ], [
+            {"text": ("✅ " if not USE_AEROLINK else "") + "🔌 Direct",   "callback_data": "gateway:direct"},
+            {"text": ("✅ " if USE_AEROLINK else "") + "🔌 Aerolink", "callback_data": "gateway:aerolink"},
+        ], [
+            {"text": "◀️  Back", "callback_data": "help_main"},
         ]]}
         send_reply(chat_id,
             f"▶️ <b>Bot RUNNING</b>\n\n"
             f"All scans, monitoring and alerts active.\n\n"
+            f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
+            f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
+            f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n"
+            f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n"
+            f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n\n"
             f"<i>- CLEXER V17.8.5 -</i>", reply_markup=_ctrl_btns)
 
     elif cmd == "/demo" and is_admin:
@@ -2967,21 +3003,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 scan_lines += (f"\n\n<b>[DEMO]</b> {dc['signal']} {dc.get('symbol','?')}\n"
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
                     f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
-        _ist_now = now_ist()
-        _now_hm  = (_ist_now.hour, _ist_now.minute)
-        # Next BTC scan
-        _scan_hrs = {7, 11, 15, 19, 23}
-        _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs) if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)), "07:21 tomorrow")
-        # Next Scan1 / Scan2 — each uses its own independent schedule
-        def _next_slot(schedule):
-            _fut = [(h, m) for h, m in schedule if (h, m) > _now_hm]
-            if _fut:
-                _h, _m = _fut[0]
-                return f"{_h}:{_m:02d} IST"
-            _h, _m = schedule[0]
-            return f"{_h}:{_m:02d} IST (tomorrow)"
-        _next_scan1 = _next_slot(SCAN1_SCHEDULE)
-        _next_scan2 = _next_slot(SCAN2_SCHEDULE)
+        _next_btc_scan, _next_scan1, _next_scan2 = _next_schedule_times()
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
@@ -6198,6 +6220,18 @@ def main():
 
     # Start PAUSED - user must send /go
     bot_paused.set()
+
+    # Force the mini app live on every boot — the backend that serves it
+    # (CLEXER_API_URL) resets to maintenance-on with its own default message
+    # on every restart, so we override that here instead of waiting for
+    # an admin to manually send /miniapp resume after each deploy.
+    if CLEXER_API_URL:
+        try:
+            _hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
+            requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": False, "msg": "Live"}, headers=_hdrs, timeout=5)
+            print("  Mini app: forced LIVE on startup")
+        except Exception as e:
+            print(f"  Mini app: could not force live on startup — {e}")
 
     if TV_BRIDGE_URL:
         print("  Checking TV bridge...")
