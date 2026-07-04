@@ -190,11 +190,11 @@ def load_users():
             with open(USER_DB_FILE, "r") as f:
                 d = json.load(f)
             if isinstance(d, list):
-                registered_users = set(d)  # legacy format — just a list of ids
+                registered_users = set(int(x) for x in d)  # legacy format — just a list of ids
             else:
-                registered_users = set(d.get("users", []))
+                registered_users = set(int(x) for x in d.get("users", []))
                 user_usernames   = {str(k): v for k, v in d.get("usernames", {}).items()}
-                blocked_users    = set(d.get("blocked", []))
+                blocked_users    = set(int(x) for x in d.get("blocked", []))
     except Exception as e:
         print(f"[USERS] Load error: {e}"); registered_users = set()
 
@@ -209,6 +209,7 @@ def save_users():
     except Exception as e: print(f"[USERS] Save error: {e}")
 
 def register_user(chat_id, username=None):
+    chat_id = int(chat_id)
     changed = False
     if username and user_usernames.get(str(chat_id)) != username:
         user_usernames[str(chat_id)] = username; changed = True
@@ -234,7 +235,7 @@ def _user_dm_link(chat_id):
     uname = user_usernames.get(str(chat_id))
     if uname:
         return f'<a href="https://t.me/{uname}">@{uname}</a>'
-    return f'ID <code>{chat_id}</code> (no username yet)'
+    return f'<a href="tg://user?id={chat_id}">ID {chat_id}</a> (no username set)'
 
 def _render_user_list_text(title, ids):
     if not ids:
@@ -2077,11 +2078,12 @@ def send_to_user(chat_id, text, file_id=None, file_type=None):
             r = requests.post(f"{base}/sendMessage",
                 json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                       "disable_web_page_preview": True}, timeout=10)
+        _cid_int = int(chat_id)
         if r.status_code == 403 and "blocked" in r.text.lower():
-            if chat_id not in blocked_users:
-                blocked_users.add(chat_id); save_users()
-        elif r.status_code == 200 and chat_id in blocked_users:
-            blocked_users.discard(chat_id); save_users()  # they unblocked us
+            if _cid_int not in blocked_users:
+                blocked_users.add(_cid_int); save_users()
+        elif r.status_code == 200 and _cid_int in blocked_users:
+            blocked_users.discard(_cid_int); save_users()  # they unblocked us
         return r.status_code == 200
     except Exception as e: print(f"  [USER SEND] {chat_id}: {e}"); return False
 
@@ -5604,6 +5606,7 @@ def command_listener():
                     cb_msg_id   = cb_msg.get("message_id")
                     cb_chat_id  = cb_msg.get("chat", {}).get("id", cb_cid)
                     cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
+                    register_user(cb_cid, cb["from"].get("username"))
 
                     # Pressing ANY button cancels a stale pending text-input prompt
                     # (e.g. Loop Mode / Manual Times) so a later stray message can't
@@ -5757,7 +5760,10 @@ def command_listener():
                             "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
                         }
                         _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk"}
-                        if cmd_text in _CONFIRM_FIRST:
+                        _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen}
+                        if cmd_text in _SCREEN_CMDS and cb_is_admin:
+                            _SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
+                        elif cmd_text in _CONFIRM_FIRST:
                             _action_id, _label = _CONFIRM_FIRST[cmd_text]
                             _ask_confirm(cb_chat_id, cb_cid, _action_id, _label, _back_cb, message_id=cb_msg_id)
                         elif cmd_text in _NP_TARGETS:
