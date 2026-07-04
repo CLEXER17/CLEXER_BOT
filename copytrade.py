@@ -433,6 +433,22 @@ def _calc_qty(size_usdt: float, price: float, leverage: int) -> float:
     qty = (size_usdt * leverage) / price
     return max(round(qty, 4), 0.001)
 
+def _min_qty_risk_note(size_usdt: float, price: float, leverage: int) -> str:
+    """BingX won't place less than 0.001 BTC. If a user's margin/leverage combo
+    calls for a smaller quantity than that, the bot silently rounds UP to 0.001 —
+    which means the real position (and real max loss at SL) ends up bigger than
+    their risk setting promised. Returns a warning string when that's happening,
+    empty string otherwise."""
+    if price <= 0 or leverage <= 0:
+        return ""
+    raw_qty = (size_usdt * leverage) / price
+    if raw_qty >= 0.001:
+        return ""
+    real_margin = round((0.001 * price) / leverage, 2)
+    return (f"⚠️ Margin ${size_usdt} at {leverage}x is below BingX's 0.001 BTC minimum order size — "
+            f"the bot had to use ~${real_margin} effective margin instead, so the real max loss on "
+            f"this trade will be higher than the risk setting targets.")
+
 def _calc_pnl(side: str, entry: float, close_price: float, qty: float) -> float:
     if entry <= 0 or close_price <= 0 or qty <= 0: return 0.0
     raw = (close_price - entry) * qty if side == "BUY" else (entry - close_price) * qty
@@ -508,6 +524,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
                 lev = user.get("leverage", 10)
             qty = _calc_qty(user["size_usdt"], price, lev)
             _set_leverage(api_key, api_secret, side, lev)
+            _qty_note = _min_qty_risk_note(user["size_usdt"], price, lev)
 
             if entry_type == "MARKET":
                 pos_side_entry = "LONG" if side == "BUY" else "SHORT"
@@ -520,7 +537,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
                 })
                 if r.get("code") == 0:
                     uname = user.get("username", "?")
-                    warnings = []
+                    warnings = [f"{_qty_note} (@{uname})"] if _qty_note else []
                     half_qty = max(round(qty / 2, 4), 0.001)
 
                     # ── SL order — full qty STOP_MARKET ──
@@ -1013,7 +1030,8 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
                 user[f"{p}qty"]    = qty;    user[f"{p}limit_oid"] = limit_oid
                 _set(cid, user)
-                results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})")
+                _qty_note = _min_qty_risk_note(user["size_usdt"], entry, lev)
+                results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})" + (f"\n{_qty_note}" if _qty_note else ""))
                 continue  # SL/TP placed when limit fills via on_scan_limit_filled
 
             # Use actual filled qty from BingX (avoids rounding mismatch with very small-price coins)
@@ -1061,11 +1079,13 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
             tp_warn = ""
             if tp1 and not tp1_ok: tp_warn += " ⚠️TP1 failed"
             if tp2 and not tp2_ok: tp_warn += " ⚠️TP2 failed"
+            _qty_note = _min_qty_risk_note(user["size_usdt"], entry, lev)
             results.append(
                 f"✅ @{uname} {symbol} {side} {qty:.4f} lev={lev}x"
                 f" entry(att:{attempt}) SL=OK"
                 f" TP1={'OK' if not tp1 or tp1_ok else 'FAIL'}"
-                f" TP2={'OK' if not tp2 or tp2_ok else 'FAIL'}{tp_warn}")
+                f" TP2={'OK' if not tp2 or tp2_ok else 'FAIL'}{tp_warn}"
+                + (f"\n{_qty_note}" if _qty_note else ""))
 
         except Exception as e:
             results.append(f"❌ @{user.get('username','?')}: {e}")
