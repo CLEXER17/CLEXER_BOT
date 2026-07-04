@@ -238,13 +238,12 @@ def _user_dm_link(chat_id):
     uname = user_usernames.get(str(chat_id))
     if uname:
         return f'<a href="https://t.me/{uname}">@{uname}</a>'
-    # tg://user?id= opens the user's profile card even without a username. Telegram's
-    # client sometimes auto-detects the raw digit run as a phone number and overrides
-    # part of the link with a "copy" chip instead — a zero-width space inside the
-    # digits breaks that phone-shaped pattern match without changing what's displayed/copied.
-    _id_str = str(chat_id)
-    _id_display = _id_str[:3] + "​" + _id_str[3:] if len(_id_str) > 3 else _id_str
-    return f'<a href="tg://user?id={chat_id}">ID {_id_display}</a> (no username set)'
+    # tg://user?id= opens the user's profile card even without a username. Telegram
+    # sometimes auto-detects raw digits as a phone number and overrides the link on
+    # just that number — inconsistently, depending on the digits. Keeping the link
+    # text non-numeric ("Open Profile") sidesteps that entirely; the plain ID is
+    # shown separately afterward for reference/copying.
+    return f'<a href="tg://user?id={chat_id}">👤 Open Profile</a> — ID <code>{chat_id}</code> (no username set)'
 
 def _render_user_list_text(title, ids):
     if not ids:
