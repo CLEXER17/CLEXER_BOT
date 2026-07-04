@@ -219,6 +219,17 @@ def register_user(chat_id, username=None):
     if changed:
         save_users()
 
+def _build_users_summary():
+    _total_users  = len(registered_users)
+    _active_users = ct.active_count()
+    _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in blocked_users]
+    _blocked_str = ", ".join(_blocked_unames) if _blocked_unames else "none"
+    return (
+        f"👥 Total users: {_total_users}\n"
+        f"🟢 Using copy trade: {_active_users}\n"
+        f"🚫 Blocked bot ({len(blocked_users)}): {_blocked_str}\n"
+    )
+
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
@@ -2841,7 +2852,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
@@ -3101,15 +3112,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Copy trade: per-user for non-admin, global active users count for admin
         _user_ct = ct._get(str(chat_id))
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
-        _total_users  = len(registered_users)
-        _active_users = ct.active_count()
-        _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in blocked_users]
-        _blocked_str = ", ".join(_blocked_unames) if _blocked_unames else "none"
-        _users_summary = (
-            f"👥 Total users: {_total_users}\n"
-            f"🟢 Using copy trade: {_active_users}\n"
-            f"🚫 Blocked bot ({len(blocked_users)}): {_blocked_str}\n"
-        )
+        _users_summary = _build_users_summary()
         send_reply(chat_id,
             f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
             f"🤖 Bot:        <b>{st}</b>\n"
@@ -3595,6 +3598,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/adminlinks" and is_admin:
         send_adminlinks_screen(chat_id)
+
+    elif cmd == "/userstats" and is_admin:
+        send_reply(chat_id, "📊 <b>User Stats</b>\n\n" + _build_users_summary())
 
     elif cmd == "/channels":
         ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
@@ -5058,9 +5064,10 @@ _TRADECONTROL_SUBCATS = {
 # ─── "Copy Admin" is split into sub-sections (main gate → door) ───────────────
 _COPYADMIN_SUBCATS = {
     "directory": ("👥 User Directory", [
-        ("/allusers", "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
-        ("/users",    "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
-        ("/user",     "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
+        ("/allusers",  "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
+        ("/users",     "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
+        ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
+        ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
     ]),
     "manage": ("🛡 User Management", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
