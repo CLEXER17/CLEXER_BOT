@@ -289,6 +289,14 @@ def _set(cid: str, user: dict):
 def active_count() -> int:
     return sum(1 for u in _db.values() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin"))
 
+def reset_history(cid: str):
+    """Zero out a user's copy-trade P&L history. Their connection/settings stay untouched."""
+    user = _get(cid)
+    if not user:
+        return
+    user["history"] = {"total": 0, "profit": 0, "loss": 0, "total_pnl": 0.0, "won_usdt": 0.0, "lost_usdt": 0.0}
+    _set(cid, user)
+
 def has_active_signal() -> bool:
     return bool(_last_signal)
 
@@ -1945,6 +1953,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         wr   = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
         pnl  = h["total_pnl"]
         pnl_s = f"+${pnl:.2f} 🟢" if pnl > 0 else (f"-${abs(pnl):.2f} 🔴" if pnl < 0 else "$0.00")
+        _myh_btns = {"inline_keyboard": [[{"text": "🗑 Reset My P&L History", "callback_data": "myhistory_reset"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Copy Trade History</b>\n\n"
             f"Total trades: <b>{h['total']}</b>\n"
@@ -1953,7 +1962,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Win rate:     <b>{wr}</b>\n\n"
             f"Total PnL:    <b>{pnl_s}</b>\n\n"
             f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>")
+            f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_myh_btns)
 
     elif cmd == "/nocopy":
         user = _get(cid) or {}
