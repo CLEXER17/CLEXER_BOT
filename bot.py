@@ -256,11 +256,11 @@ pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to 
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
 _tp_state: dict = {}       # cid → {"target": "scan1"/"scan2"/"demo", "digits": [], "times": [(h,m),...], "msg_id": int}
 _pending_confirm: dict = {}  # cid → {"action": str, "label": str, "back_cb": str} — awaiting Yes/Cancel on a destructive action
-_np_state: dict = {}       # cid → {"target": "setsize"/"setleverage"/"setrisk", "digits": [], "back_cb": str}
+_np_state: dict = {}       # cid → {"target": "setsize"/"setleverage"/"setrisk", "digits": str, "back_cb": str}
 _NP_CONFIG = {
-    "setsize":     {"max_digits": 4, "label": "Margin Per Trade", "unit": "USDT", "cmd": "/setsize"},
-    "setleverage": {"max_digits": 3, "label": "Leverage",          "unit": "x",    "cmd": "/setleverage"},
-    "setrisk":     {"max_digits": 3, "label": "Auto-Risk (Max Loss)", "unit": "USDT", "cmd": "/setrisk"},
+    "setsize":     {"label": "Margin Per Trade",       "unit": "USDT", "cmd": "/setsize",     "decimals": True},
+    "setleverage": {"label": "Leverage",                "unit": "x",    "cmd": "/setleverage", "decimals": False},
+    "setrisk":     {"label": "Auto-Risk (Max Loss)",    "unit": "USDT", "cmd": "/setrisk",     "decimals": True},
 }
 
 _pp_state: dict = {}       # cid → {"action","kind","symbol","idx","digits": str, "back_cb": str} — tap price-picker
@@ -5317,24 +5317,24 @@ def _np_render(chat_id, cid, msg_id):
     if not st:
         return
     cfg = _NP_CONFIG[st["target"]]
-    digits = st["digits"]; max_d = cfg["max_digits"]
-    complete = len(digits) == max_d
-    value_str = "".join(digits) if digits else "0"
+    digits = st["digits"]
+    value_str = digits if digits else "0"
     text = (
         f"🔢 <b>Set {cfg['label']}</b>\n\n"
-        f"Entering: <code>{value_str}</code> {cfg['unit']}{'  ✅' if complete else ''}\n"
-        f"({len(digits)}/{max_d} digits)\n\n"
-        f"<i>Tap digits to build the value.</i>")
-    rows = []
-    if not complete:
-        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (1, 2, 3)])
-        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (4, 5, 6)])
-        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (7, 8, 9)])
-        rows.append([{"text": "0", "callback_data": "np_d:0"}])
-        rows.append([{"text": "◀️ Previous", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
-    else:
-        rows.append([{"text": "💾 Save", "callback_data": "np_save"}])
-        rows.append([{"text": "◀️ Previous", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
+        f"Entering: <code>{value_str}</code> {cfg['unit']}\n\n"
+        f"<i>Tap digits to build the value{' — use . for cents, e.g. 0.5' if cfg['decimals'] else ''}.</i>")
+    rows = [
+        [{"text": str(n), "callback_data": f"np_d:{n}"} for n in (1, 2, 3)],
+        [{"text": str(n), "callback_data": f"np_d:{n}"} for n in (4, 5, 6)],
+        [{"text": str(n), "callback_data": f"np_d:{n}"} for n in (7, 8, 9)],
+    ]
+    zero_row = [{"text": "0", "callback_data": "np_d:0"}]
+    if cfg["decimals"]:
+        zero_row.append({"text": ".", "callback_data": "np_d:."})
+    rows.append(zero_row)
+    rows.append([{"text": "◀️ Erase", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
+    if digits:
+        rows.insert(-1, [{"text": "💾 Save", "callback_data": "np_save"}])
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
 
 def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
@@ -5854,24 +5854,33 @@ def command_listener():
                     elif cb_data.startswith("np_d:"):
                         st = _np_state.get(str(cb_cid))
                         if st:
-                            max_d = _NP_CONFIG[st["target"]]["max_digits"]
-                            if len(st["digits"]) < max_d:
-                                st["digits"].append(cb_data.split(":", 1)[1])
+                            cfg = _NP_CONFIG[st["target"]]
+                            ch = cb_data.split(":", 1)[1]
+                            if ch == "." and (not cfg["decimals"] or "." in st["digits"]):
+                                pass
+                            elif len(st["digits"]) < 10:
+                                st["digits"] += ch
                                 _np_render(cb_chat_id, cb_cid, cb_msg_id)
                     elif cb_data == "np_prev":
                         st = _np_state.get(str(cb_cid))
                         if st and st["digits"]:
-                            st["digits"].pop()
+                            st["digits"] = st["digits"][:-1]
                             _np_render(cb_chat_id, cb_cid, cb_msg_id)
                     elif cb_data == "np_save":
                         st = _np_state.get(str(cb_cid))
                         if st:
                             cfg = _NP_CONFIG[st["target"]]
-                            if len(st["digits"]) != cfg["max_digits"]:
+                            _digits = st["digits"]
+                            try:
+                                value = float(_digits) if _digits and _digits != "." else None
+                            except ValueError:
+                                value = None
+                            if value is None:
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                                    json={"callback_query_id": cb["id"], "text": f"⚠️ Enter all {cfg['max_digits']} digits first", "show_alert": True}, timeout=5)
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Enter a value first", "show_alert": True}, timeout=5)
                                 continue
-                            value = int("".join(st["digits"]))
+                            if not cfg["decimals"]:
+                                value = int(value)
                             back_cb = st["back_cb"]
                             del _np_state[str(cb_cid)]
                             _toggle_cmd(f"{cfg['cmd']} {value}", cb_chat_id, cb_cid, cb_msg_id, back_cb)
@@ -5972,7 +5981,7 @@ def command_listener():
                             _action_id, _label = _CONFIRM_FIRST[cmd_text]
                             _ask_confirm(cb_chat_id, cb_cid, _action_id, _label, _back_cb, message_id=cb_msg_id)
                         elif cmd_text in _NP_TARGETS:
-                            _np_state[str(cb_cid)] = {"target": _NP_TARGETS[cmd_text], "digits": [], "back_cb": _back_cb}
+                            _np_state[str(cb_cid)] = {"target": _NP_TARGETS[cmd_text], "digits": "", "back_cb": _back_cb}
                             _np_render(cb_chat_id, cb_cid, cb_msg_id)
                         elif cmd_text in _INPUT_PROMPTS:
                             pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _back_cb} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _back_cb}
@@ -6003,7 +6012,7 @@ def command_listener():
                         _map = {"mysize_setsize": "setsize", "mysize_setlev": "setleverage", "mysize_setrisk": "setrisk"}
                         _cmd_map = {"mysize_setsize": "/setsize", "mysize_setlev": "/setleverage", "mysize_setrisk": "/setrisk"}
                         _ms_back_cb, _ = _find_back_target(_cmd_map[cb_data])
-                        _np_state[str(cb_cid)] = {"target": _map[cb_data], "digits": [], "back_cb": _ms_back_cb}
+                        _np_state[str(cb_cid)] = {"target": _map[cb_data], "digits": "", "back_cb": _ms_back_cb}
                         _np_render(cb_chat_id, cb_cid, cb_msg_id)
 
                     # ── Nocopy coin block/unblock ─────────────────────────────
