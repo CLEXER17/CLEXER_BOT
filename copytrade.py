@@ -765,6 +765,13 @@ def on_entry_hit(entry: float, sl: float, tp2: float):
             print(f"[CT] on_entry_hit {cid}: {e}")
 
 
+def clear_last_signal():
+    """Catch-all: clear the cached 'active signal' shown by /ctstatus. Call this from
+    every path that ends the BTC trade, so /ctstatus never shows a stale signal."""
+    global _last_signal
+    _last_signal = {}
+    _save_last_signal()
+
 def on_close_all():
     """Admin /close or structure flip — close all positions + cancel all orders."""
     results = []
@@ -783,6 +790,7 @@ def on_close_all():
         except Exception as e:
             results.append(f"❌ {cid}: {e}")
             print(f"[CT] on_close_all {cid}: {e}")
+    clear_last_signal()
     return results or ["No copy users active."]
 
 
@@ -1184,6 +1192,39 @@ def on_scan_tp2(symbol: str):
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
         _clear_scan_state(cid, user, symbol)
 
+
+def update_scan_sl(symbol: str, new_sl: float) -> list[str]:
+    """Admin custom SL edit on a specific open scan-coin trade — cancels the old
+    stop order and places a new one at new_sl for every copy user holding it."""
+    results = []
+    for cid, user, api_key, api_secret in _users_with_copy():
+        p = _pfx_for_symbol(user, symbol)
+        if not p: continue
+        try:
+            uname = user.get("username", "?")
+            trade_ps  = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
+            close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+            qty = float(user.get(f"{p}qty", 0))
+            if qty <= 0: continue
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                if o.get("type") == "STOP_MARKET":
+                    oid = str(o.get("orderId", ""))
+                    if oid:
+                        _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "orderId": oid})
+            r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                       {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                        "type": "STOP_MARKET", "quantity": round(qty, 4), "stopPrice": round(new_sl, 6)})
+            user[f"{p}sl"] = new_sl
+            _set(cid, user)
+            results.append(f"{'✅' if r.get('code')==0 else '❌'} @{uname} SL→{new_sl:,.4f}")
+        except Exception as e:
+            results.append(f"❌ {cid}: {e}")
+            print(f"[CT] update_scan_sl {cid}/{symbol}: {e}")
+    return results or ["No copy users holding this coin."]
+
+def scan_sl_to_be(symbol: str, entry: float) -> list[str]:
+    return update_scan_sl(symbol, entry)
 
 def on_scan_sl(symbol: str):
     """Scan SL hit — cancel all orders, force-close position, clear scan state."""
