@@ -230,6 +230,18 @@ def _build_users_summary():
         f"🚫 Blocked bot ({len(blocked_users)}): {_blocked_str}\n"
     )
 
+def _user_dm_link(chat_id):
+    uname = user_usernames.get(str(chat_id))
+    if uname:
+        return f'<a href="https://t.me/{uname}">@{uname}</a>'
+    return f'ID <code>{chat_id}</code> (no username yet)'
+
+def _render_user_list_text(title, ids):
+    if not ids:
+        return f"<b>{title}</b>\n\nNone."
+    lines = [f"{i+1}. {_user_dm_link(uid)}" for i, uid in enumerate(ids)]
+    return f"<b>{title} ({len(ids)})</b>\n\n" + "\n".join(lines)
+
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
@@ -3600,7 +3612,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         send_adminlinks_screen(chat_id)
 
     elif cmd == "/userstats" and is_admin:
-        send_reply(chat_id, "📊 <b>User Stats</b>\n\n" + _build_users_summary())
+        send_userstats_screen(chat_id)
 
     elif cmd == "/channels":
         ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
@@ -5311,6 +5323,29 @@ def send_adminlinks_screen(chat_id, message_id=None):
         f"{channel_line}")
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
+def send_userstats_screen(chat_id, message_id=None):
+    rows = [
+        [{"text": f"👥 Total Users ({len(registered_users)})", "callback_data": "userstats_total"}],
+        [{"text": f"🟢 Using Copy Trade ({ct.active_count()})", "callback_data": "userstats_active"}],
+        [{"text": f"🚫 Blocked Bot ({len(blocked_users)})", "callback_data": "userstats_blocked"}],
+        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+    ]
+    _help_edit_or_send(chat_id,
+        "📊 <b>User Stats</b>\n\nTap a category to see the users with DM links.",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def send_userstats_list(chat_id, kind, message_id=None):
+    if kind == "total":
+        ids = list(registered_users); title = "👥 Total Users"
+    elif kind == "active":
+        ids = ct.active_ids(); title = "🟢 Using Copy Trade"
+    else:
+        ids = list(blocked_users); title = "🚫 Blocked Bot"
+    text = _render_user_list_text(title, ids)
+    _help_edit_or_send(chat_id, text,
+        {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "userstats_open"}]]},
+        message_id=message_id)
+
 def send_go_screen(chat_id, message_id=None):
     """Renders the /go 'Bot RUNNING' screen. Its model/gateway buttons toggle
     in-place (go_model:/go_gateway:) instead of opening the separate detail screens."""
@@ -5866,6 +5901,14 @@ def command_listener():
                             _run_confirmed_action(pc["action"], cb_chat_id, cb_cid, cb_msg_id, pc["back_cb"])
                     elif cb_data == "adminlinks_open" and cb_is_admin:
                         send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "userstats_open" and cb_is_admin:
+                        send_userstats_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "userstats_total" and cb_is_admin:
+                        send_userstats_list(cb_chat_id, "total", message_id=cb_msg_id)
+                    elif cb_data == "userstats_active" and cb_is_admin:
+                        send_userstats_list(cb_chat_id, "active", message_id=cb_msg_id)
+                    elif cb_data == "userstats_blocked" and cb_is_admin:
+                        send_userstats_list(cb_chat_id, "blocked", message_id=cb_msg_id)
                     elif cb_data == "adminlinks_ca_on" and cb_is_admin:
                         global CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
                         CONTACT_ADMIN_ENABLED = True; save_settings()
