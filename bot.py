@@ -144,6 +144,9 @@ bot_stopped           = threading.Event()  # STOP: blocks new scans only, monito
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-4-8"  # switch via /model button — claude-opus-4-8 or claude-fable-5
 USE_AEROLINK           = False  # switch via /gateway button — routes calls through aerolink.lat using AEROLINK_API_KEY only
+CONTACT_ADMIN_ENABLED  = True   # shows/hides the "Contact Admin" button for users — toggled via /adminlinks
+SIGNAL_CHANNEL_ENABLED = True   # shows/hides the "Signal Channel" button for users — toggled via /adminlinks
+SIGNAL_CHANNEL_LINK    = ""     # admin-provided channel link — set/removed via /adminlinks
 last_update_id        = 0
 last_force_scan_time  = 0
 last_signal_scan_time = 0
@@ -161,6 +164,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
 registered_users: set = set()
+user_usernames: dict = {}   # chat_id (str) → @username, best-effort, for admin display
+blocked_users: set = set()  # chat_ids where sendMessage failed with "bot was blocked by the user"
 
 RATE_LIMIT_USES   = 2
 RATE_LIMIT_WINDOW = 3600
@@ -179,27 +184,52 @@ def check_rate_limit(chat_id, cmd):
     return (True, None)
 
 def load_users():
-    global registered_users
+    global registered_users, user_usernames, blocked_users
     try:
         if os.path.exists(USER_DB_FILE):
             with open(USER_DB_FILE, "r") as f:
-                registered_users = set(json.load(f))
+                d = json.load(f)
+            if isinstance(d, list):
+                registered_users = set(d)  # legacy format — just a list of ids
+            else:
+                registered_users = set(d.get("users", []))
+                user_usernames   = {str(k): v for k, v in d.get("usernames", {}).items()}
+                blocked_users    = set(d.get("blocked", []))
     except Exception as e:
         print(f"[USERS] Load error: {e}"); registered_users = set()
 
 def save_users():
     try:
-        with open(USER_DB_FILE, "w") as f: json.dump(list(registered_users), f)
+        with open(USER_DB_FILE, "w") as f:
+            json.dump({
+                "users": list(registered_users),
+                "usernames": user_usernames,
+                "blocked": list(blocked_users),
+            }, f)
     except Exception as e: print(f"[USERS] Save error: {e}")
 
-def register_user(chat_id):
+def register_user(chat_id, username=None):
+    changed = False
+    if username and user_usernames.get(str(chat_id)) != username:
+        user_usernames[str(chat_id)] = username; changed = True
+    if chat_id in blocked_users:
+        blocked_users.discard(chat_id); changed = True  # they messaged us — clearly not blocked
     if chat_id not in registered_users:
-        registered_users.add(chat_id); save_users()
+        registered_users.add(chat_id); changed = True
+    if changed:
+        save_users()
 
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
 _tp_state: dict = {}       # cid → {"target": "scan1"/"scan2"/"demo", "digits": [], "times": [(h,m),...], "msg_id": int}
+_pending_confirm: dict = {}  # cid → {"action": str, "label": str, "back_cb": str} — awaiting Yes/Cancel on a destructive action
+_np_state: dict = {}       # cid → {"target": "setsize"/"setleverage"/"setrisk", "digits": [], "back_cb": str}
+_NP_CONFIG = {
+    "setsize":     {"max_digits": 4, "label": "Margin Per Trade", "unit": "USDT", "cmd": "/setsize"},
+    "setleverage": {"max_digits": 3, "label": "Leverage",          "unit": "x",    "cmd": "/setleverage"},
+    "setrisk":     {"max_digits": 3, "label": "Auto-Risk (Max Loss)", "unit": "USDT", "cmd": "/setrisk"},
+}
 
 trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
@@ -1918,7 +1948,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -1934,6 +1964,9 @@ def load_settings():
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
             SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
             USE_AEROLINK          = False  # always OFF on startup — must re-enable via /gateway after every deploy
+            CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
+            SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
+            SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -1957,6 +1990,9 @@ def save_settings():
             "test_scan":        TEST_SCAN_ENABLED,
             "scan_model":       SCAN_MODEL,
             "use_aerolink":     USE_AEROLINK,
+            "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
+            "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
+            "signal_channel_link":    SIGNAL_CHANNEL_LINK,
         }, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
@@ -2018,11 +2054,22 @@ def send_to_user(chat_id, text, file_id=None, file_type=None):
             r = requests.post(f"{base}/sendMessage",
                 json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                       "disable_web_page_preview": True}, timeout=10)
+        if r.status_code == 403 and "blocked" in r.text.lower():
+            if chat_id not in blocked_users:
+                blocked_users.add(chat_id); save_users()
+        elif r.status_code == 200 and chat_id in blocked_users:
+            blocked_users.discard(chat_id); save_users()  # they unblocked us
         return r.status_code == 200
     except Exception as e: print(f"  [USER SEND] {chat_id}: {e}"); return False
 
-def do_broadcast(admin_chat_id, text, file_id=None, file_type=None):
-    targets = list(registered_users) + [TELEGRAM_CHANNEL_ID]
+def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all"):
+    if mode == "users":
+        targets = [u for u in registered_users if u not in blocked_users]
+    elif mode == "channels":
+        _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
+        targets = [TELEGRAM_CHANNEL_ID] + ([_ch2] if _ch2 else [])
+    else:
+        targets = [u for u in registered_users if u not in blocked_users] + [TELEGRAM_CHANNEL_ID]
     ok = 0; fail = 0
     for cid in targets:
         if send_to_user(cid, text, file_id, file_type): ok += 1
@@ -2794,11 +2841,12 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE
-    register_user(chat_id)
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
+    _uname = (message or {}).get("from", {}).get("username")
+    register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
     # In groups, chat_id is the group — check sender_id for admin
     _check_id = sender_id if sender_id else chat_id
@@ -2844,7 +2892,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         return
 
     if cmd in ("/start","/help"):
-        send_help_menu(chat_id, is_admin)
+        _hm_from = (message or {}).get("from", {})
+        _hm_uname = _hm_from.get("username") or _hm_from.get("first_name") or "there"
+        _hm_uid = _hm_from.get("id", chat_id)
+        send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
@@ -3050,6 +3101,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Copy trade: per-user for non-admin, global active users count for admin
         _user_ct = ct._get(str(chat_id))
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
+        _total_users  = len(registered_users)
+        _active_users = ct.active_count()
+        _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in blocked_users]
+        _blocked_str = ", ".join(_blocked_unames) if _blocked_unames else "none"
+        _users_summary = (
+            f"👥 Total users: {_total_users}\n"
+            f"🟢 Using copy trade: {_active_users}\n"
+            f"🚫 Blocked bot ({len(blocked_users)}): {_blocked_str}\n"
+        )
         send_reply(chat_id,
             f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
             f"🤖 Bot:        <b>{st}</b>\n"
@@ -3071,7 +3131,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"{_next_s1_line}"
             f"{_next_s2_line}"
             f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
-            + (f"👥 Users: {len(registered_users)}\n" if is_admin else "")
+            + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
             + f"\n<b>BTC Trade:</b>\n{ti}"
@@ -3140,11 +3200,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/history":
         sub = parts[1].lower() if len(parts) > 1 else "btc"
-        _hist_btns = {"inline_keyboard": [[
+        _hist_btns_rows = [[
             {"text": "📡 BTC",   "callback_data": "history_btc"},
             {"text": "🔍 Scan1", "callback_data": "history_scan1"},
             {"text": "🔍 Scan2", "callback_data": "history_scan2"},
-        ]]}
+        ]]
+        if is_admin:
+            _hist_btns_rows.append([{"text": "🗑 Reset History", "callback_data": "reset_signal_history"}])
+        _hist_btns = {"inline_keyboard": _hist_btns_rows}
         if sub in ("scan1", "scan2"):
             ver = sub[-1]
             _sh = [s for s in scan_history if str(s.get("ver","1")) == ver]
@@ -3168,9 +3231,6 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
 
     elif cmd == "/stats":
-        if parts[1:] == ["reset"] and is_admin:
-            signal_history.clear(); scan_history.clear(); save_state()
-            send_reply(chat_id, "🗑 <b>Signal history cleared</b>\n\nCSV trade log untouched.\n\n<i>- CLEXER V17.8.5 -</i>"); return
         ts = trade_stats
         btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
         btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
@@ -3178,10 +3238,12 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         s1_wr = (ts['scan1_tp1'] + ts['scan1_tp2']) / s1_total * 100
         s2_total = ts['scan2_tp1'] + ts['scan2_tp2'] + ts['scan2_sl'] or 1
         s2_wr = (ts['scan2_tp1'] + ts['scan2_tp2']) / s2_total * 100
-        _stats_btns = {"inline_keyboard": [[
-            {"text": "🏆 Win Stats",        "callback_data": "stats_win"},
-            {"text": "🗑 Reset History",     "callback_data": "stats_reset"},
-        ]]} if is_admin else None
+        _stats_btns = {"inline_keyboard": [
+            [{"text": "🔄 Refresh", "callback_data": "stats_win"}],
+            [{"text": "🗑 Reset BTC",   "callback_data": "reset_btc_stats"},
+             {"text": "🗑 Reset Scan1", "callback_data": "reset_scan1_stats"},
+             {"text": "🗑 Reset Scan2", "callback_data": "reset_scan2_stats"}],
+        ]} if is_admin else None
         send_reply(chat_id,
             f"<b>Statistics</b>\n\n"
             f"<b>BTC Trades</b>\n"
@@ -3523,8 +3585,16 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
 
     elif cmd == "/broadcast":
-        broadcast_pending[chat_id] = {"step":"waiting_message"}
-        send_reply(chat_id, "<b>Broadcast Mode</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>")
+        _bc_btns = {"inline_keyboard": [[
+            {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
+            {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
+        ], [
+            {"text": "🌍 Both (Users + Channels)", "callback_data": "broadcast_mode:all"},
+        ]]}
+        send_reply(chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?", reply_markup=_bc_btns)
+
+    elif cmd == "/adminlinks" and is_admin:
+        send_adminlinks_screen(chat_id)
 
     elif cmd == "/channels":
         ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
@@ -4795,9 +4865,11 @@ def handle_broadcast_message(chat_id, message):
     if photo:   file_id = photo[-1]["file_id"]; file_type = "photo"
     elif doc:   file_id = doc["file_id"];       file_type = "document"
     if not text and not file_id: send_reply(chat_id, "Empty. /cancel to abort."); return
+    mode = broadcast_pending.get(chat_id, {}).get("mode", "all")
     del broadcast_pending[chat_id]
-    send_reply(chat_id, f"Broadcasting to {len(registered_users)+1} targets...")
-    threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type), daemon=True).start()
+    _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[mode]
+    send_reply(chat_id, f"📢 Broadcasting to {_mode_label}...")
+    threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type, mode), daemon=True).start()
 
 # ─── HELP BUTTON MENU ────────────────────────────────────────────────────────
 # Each category: (label, admin_only, [(cmd, emoji, short_description), ...])
@@ -4918,13 +4990,13 @@ _COPYUSER_SUBCATS = {
         ("/disconnect", "🔌", "Disconnect Account", "Remove your BingX API key. Open positions stay open — manage them manually."),
     ]),
     "controls": ("⚙️ Trading Controls", [
-        ("/copytrade", "🔄", "Copy Trading On/Off", "Master switch — when ON, every CLEXER signal auto-copies to your BingX account."),
-        ("/nocopy",    "🚫", "Block a Coin",         "Stop one specific coin from ever being auto-copied, without turning off everything."),
+        ("/copytrade", "🔄", "Copy Trading On/Off", "Turns copying ON or OFF. When ON, every signal is copied to your account automatically."),
+        ("/nocopy",    "🚫", "Block a Coin",         "Skip one coin. It won't be copied, even when everything else is ON."),
     ]),
     "sizing": ("💰 Position Sizing", [
-        ("/setsize",     "💵", "Margin Per Trade", "How many USDT you put down as margin on each copied trade."),
-        ("/setleverage", "⚡", "Manual Leverage",   "Fix the leverage multiplier yourself (1x–125x) for every trade."),
-        ("/setrisk",     "🛡", "Auto-Risk Mode",    "Instead of fixed leverage, cap your max $ loss per trade — leverage adjusts automatically to the SL distance."),
+        ("/setsize",     "💵", "Margin Per Trade", "How much money (USDT) goes into each trade."),
+        ("/setleverage", "⚡", "Manual Leverage",   "Pick your own leverage (like 10x) — same on every trade."),
+        ("/setrisk",     "🛡", "Auto-Risk Mode",    "You set a max loss amount, e.g. $2. The bot then picks the right leverage for you on every trade so you never lose more than that."),
     ]),
     "reports": ("📊 Reports", [
         ("/mytrade",   "📋", "Open Position", "Shows your current live position on BingX, if any."),
@@ -5121,6 +5193,117 @@ def _help_edit_or_send(chat_id, text, markup, message_id=None):
     else:
         requests.post(f"{base}/sendMessage", json=payload, timeout=10)
 
+def _np_render(chat_id, cid, msg_id):
+    st = _np_state.get(str(cid))
+    if not st:
+        return
+    cfg = _NP_CONFIG[st["target"]]
+    digits = st["digits"]; max_d = cfg["max_digits"]
+    complete = len(digits) == max_d
+    value_str = "".join(digits) if digits else "0"
+    text = (
+        f"🔢 <b>Set {cfg['label']}</b>\n\n"
+        f"Entering: <code>{value_str}</code> {cfg['unit']}{'  ✅' if complete else ''}\n"
+        f"({len(digits)}/{max_d} digits)\n\n"
+        f"<i>Tap digits to build the value.</i>")
+    rows = []
+    if not complete:
+        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (1, 2, 3)])
+        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (4, 5, 6)])
+        rows.append([{"text": str(n), "callback_data": f"np_d:{n}"} for n in (7, 8, 9)])
+        rows.append([{"text": "0", "callback_data": "np_d:0"}])
+        rows.append([{"text": "◀️ Previous", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
+    else:
+        rows.append([{"text": "💾 Save", "callback_data": "np_save"}])
+        rows.append([{"text": "◀️ Previous", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
+
+def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
+    """Show a Yes/Cancel confirmation before running a destructive action."""
+    _pending_confirm[cid] = {"action": action_id, "back_cb": back_cb}
+    mkp = {"inline_keyboard": [[
+        {"text": "✅ Yes, confirm", "callback_data": "confirm_yes"},
+        {"text": "❌ Cancel",       "callback_data": "confirm_no"},
+    ]]}
+    text = f"⚠️ <b>Are you sure?</b>\n\n{label}\n\n<i>This cannot be undone.</i>"
+    _help_edit_or_send(chat_id, text, mkp, message_id=message_id)
+
+def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
+    """Executes the action a user just confirmed via Yes, then shows a result screen."""
+    ts = trade_stats
+    if action_id == "reset_btc_stats":
+        for k in ("total_sl","total_tp1","total_tp2","total_signals","missed_entries","stop_hunts","consecutive_sl","cooldown_scans"):
+            ts[k] = 0
+        save_state()
+        result_text = "✅ <b>BTC stats reset.</b>"
+    elif action_id == "reset_scan1_stats":
+        for k in ("scan1_sl","scan1_tp1","scan1_tp2","scan1_signals"):
+            ts[k] = 0
+        save_state()
+        result_text = "✅ <b>Scan1 stats reset.</b>"
+    elif action_id == "reset_scan2_stats":
+        for k in ("scan2_sl","scan2_tp1","scan2_tp2","scan2_signals"):
+            ts[k] = 0
+        save_state()
+        result_text = "✅ <b>Scan2 stats reset.</b>"
+    elif action_id == "reset_signal_history":
+        signal_history.clear(); scan_history.clear(); save_state()
+        result_text = "✅ <b>Signal history cleared.</b>\n\nCSV trade log untouched."
+    elif action_id.startswith("reset_pnl:"):
+        uid = action_id.split(":", 1)[1]
+        ct.reset_history(uid)
+        result_text = "✅ <b>Your P&L history has been reset.</b>"
+    elif action_id == "closescan":
+        s1 = len(scan1_trades); s2 = len(scan2_trades)
+        scan1_trades.clear(); scan2_trades.clear(); save_state()
+        result_text = f"✅ <b>Scan trades cleared</b>\n\nScan1: {s1} removed\nScan2: {s2} removed"
+    elif action_id.startswith("disconnect:"):
+        uid = action_id.split(":", 1)[1]
+        handle_command("/disconnect", chat_id, {}, sender_id=int(uid))
+        result_text = "✅ <b>Account disconnected.</b>"
+    elif action_id.startswith("kick:"):
+        uid = action_id.split(":", 1)[1]
+        handle_command(f"/kick {uid}", chat_id, {}, sender_id=cid)
+        result_text = f"✅ <b>User {uid} removed.</b>"
+    elif action_id.startswith("nocopy_blk:"):
+        coin = action_id.split(":", 1)[1]
+        handle_command(f"/nocopy {coin}", chat_id, {}, sender_id=cid)
+        result_text = f"✅ <b>{coin} blocked from auto-copy.</b>"
+    elif action_id == "remove_channel_link":
+        global SIGNAL_CHANNEL_LINK
+        SIGNAL_CHANNEL_LINK = ""; save_settings()
+        send_adminlinks_screen(chat_id, message_id=msg_id)
+        return
+    else:
+        result_text = "✅ Done."
+    _back_row = [{"text": "◀️  Back", "callback_data": back_cb}]
+    _help_edit_or_send(chat_id, result_text, {"inline_keyboard": _back_row}, message_id=msg_id)
+
+def send_adminlinks_screen(chat_id, message_id=None):
+    _ca_flag = "✅ ON" if CONTACT_ADMIN_ENABLED else "❌ OFF"
+    _sc_flag = "✅ ON" if SIGNAL_CHANNEL_ENABLED else "❌ OFF"
+    rows = [
+        [{"text": f"💬 Contact Admin  {_ca_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "adminlinks_ca_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "adminlinks_ca_off"}],
+        [{"text": f"📡 Signal Channel  {_sc_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "adminlinks_sc_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "adminlinks_sc_off"}],
+    ]
+    if SIGNAL_CHANNEL_LINK:
+        rows.append([{"text": "🗑 Remove Channel Link", "callback_data": "adminlinks_remove_channel"}])
+        channel_line = f"Current link: {SIGNAL_CHANNEL_LINK}"
+    else:
+        rows.append([{"text": "🔗 Connect Channel", "callback_data": "adminlinks_connect_channel"}])
+        channel_line = "No channel link set yet."
+    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    text = (
+        f"<b>🔗 Contact / Channel Settings</b>\n\n"
+        f"Controls whether users see the <b>Contact Admin</b> and <b>Signal Channel</b>\n"
+        f"buttons on their main /help menu.\n\n"
+        f"{channel_line}")
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+
 def send_go_screen(chat_id, message_id=None):
     """Renders the /go 'Bot RUNNING' screen. Its model/gateway buttons toggle
     in-place (go_model:/go_gateway:) instead of opening the separate detail screens."""
@@ -5158,16 +5341,35 @@ def send_go_screen(chat_id, message_id=None):
     else:
         send_reply(chat_id, text, reply_markup=_ctrl_btns)
 
-def send_help_menu(chat_id, is_admin, message_id=None):
+def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     rows = []
     for cat_id, (label, admin_only, _) in _HELP_CATS.items():
         if admin_only and not is_admin:
             continue
         rows.append([{"text": label, "callback_data": f"help_cat:{cat_id}"}])
+    _extra_row = []
+    if CONTACT_ADMIN_ENABLED and ADMIN_CHAT_ID:
+        _extra_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
+    if SIGNAL_CHANNEL_ENABLED and SIGNAL_CHANNEL_LINK:
+        _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
+    if _extra_row:
+        rows.append(_extra_row)
+    if is_admin:
+        rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
     role = "👑 Admin" if is_admin else "👤 User"
+    _greeting = f"👋 Welcome back, <b>{uname}</b>!\n\n" if uname else ""
+    _pnl_line = ""
+    if cid is not None:
+        _u_ct = ct._get(str(cid))
+        if _u_ct and _u_ct.get("connected"):
+            _h = _u_ct.get("history", {})
+            _pnl = _h.get("total_pnl", 0.0)
+            _pnl_s = f"+${_pnl:.2f} 🟢" if _pnl > 0 else (f"-${abs(_pnl):.2f} 🔴" if _pnl < 0 else "$0.00")
+            _pnl_line = f"💰 Your Copy Trade P&L: <b>{_pnl_s}</b>\n\n"
     text = (
         f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
+        f"{_greeting}{_pnl_line}"
         "Tap a category to see commands 👇"
     )
     cid_str = str(chat_id)
@@ -5213,6 +5415,28 @@ def _find_back_target(cmd_text):
     cat_id = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
                    if any(c == cmd_text for c, _, _ in cmds_)), "monitor")
     return f"help_cat:{cat_id}", cat_id
+
+def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
+    """Renders whatever screen a 'back' callback_data string points to —
+    lets code jump straight to a menu without the user tapping it themselves."""
+    if back_cb == "help_main":
+        send_help_menu(chat_id, is_admin, message_id=msg_id)
+    elif back_cb.startswith("help_cat:"):
+        send_help_category(chat_id, back_cb.split(":", 1)[1], is_admin, message_id=msg_id)
+    elif back_cb.startswith("copyuser_sub:"):
+        send_copyuser_subcat(chat_id, back_cb.split(":", 1)[1], cid, message_id=msg_id)
+    elif back_cb.startswith("scan_sub:"):
+        send_scan_subcat(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
+    elif back_cb.startswith("tradecontrol_sub:"):
+        send_tradecontrol_subcat(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
+    elif back_cb.startswith("copyadmin_sub:"):
+        _send_generic_subcat(chat_id, _COPYADMIN_SUBCATS, back_cb.split(":", 1)[1], "copyadmin", message_id=msg_id)
+    elif back_cb.startswith("settings_sub:"):
+        _send_generic_subcat(chat_id, _SETTINGS_SUBCATS, back_cb.split(":", 1)[1], "settings", message_id=msg_id)
+    elif back_cb.startswith("broadcast_sub:"):
+        _send_generic_subcat(chat_id, _BROADCAST_SUBCATS, back_cb.split(":", 1)[1], "broadcast", message_id=msg_id)
+    else:
+        send_help_menu(chat_id, is_admin, message_id=msg_id)
 
 def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     entry = _HELP_CATS.get(cat_id)
@@ -5369,7 +5593,7 @@ def command_listener():
 
                     # Help menu navigation
                     if cb_data == "help_main":
-                        send_help_menu(cb_chat_id, cb_is_admin, message_id=cb_msg_id)
+                        send_help_menu(cb_chat_id, cb_is_admin, message_id=cb_msg_id, uname=cb_uname, cid=cb_cid)
                     elif cb_data.startswith("help_cat:"):
                         cat_id = cb_data.split(":", 1)[1]
                         send_help_category(cb_chat_id, cat_id, cb_is_admin, message_id=cb_msg_id)
@@ -5443,14 +5667,40 @@ def command_listener():
                         cat = _TP_BACKCAT.get(st["target"], "scan") if st else "scan"
                         send_help_category(cb_chat_id, cat, cb_is_admin, message_id=cb_msg_id)
 
+                    elif cb_data.startswith("np_d:"):
+                        st = _np_state.get(str(cb_cid))
+                        if st:
+                            max_d = _NP_CONFIG[st["target"]]["max_digits"]
+                            if len(st["digits"]) < max_d:
+                                st["digits"].append(cb_data.split(":", 1)[1])
+                                _np_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "np_prev":
+                        st = _np_state.get(str(cb_cid))
+                        if st and st["digits"]:
+                            st["digits"].pop()
+                            _np_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "np_save":
+                        st = _np_state.get(str(cb_cid))
+                        if st:
+                            cfg = _NP_CONFIG[st["target"]]
+                            if len(st["digits"]) != cfg["max_digits"]:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": f"⚠️ Enter all {cfg['max_digits']} digits first", "show_alert": True}, timeout=5)
+                                continue
+                            value = int("".join(st["digits"]))
+                            back_cb = st["back_cb"]
+                            del _np_state[str(cb_cid)]
+                            _toggle_cmd(f"{cfg['cmd']} {value}", cb_chat_id, cb_cid, cb_msg_id, back_cb)
+                    elif cb_data == "np_back":
+                        st = _np_state.pop(str(cb_cid), None)
+                        back_cb = st["back_cb"] if st else "help_cat:copyuser"
+                        _navigate_to(back_cb, cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
+
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
                         # Check if non-admin is pressing an admin-only button
                         _INPUT_PROMPTS = {
                             "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
-                            "/setsize":     "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
-                            "/setleverage": "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
-                            "/setrisk":     "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>",
                             "/setsl":       "🔧 <b>Set Stop Loss</b>\n\nType the SL price:\n<i>Example: <code>62000</code></i>",
                             "/settp1":      "🎯 <b>Set TP1</b>\n\nType the TP1 price:\n<i>Example: <code>68500</code></i>",
                             "/settp2":      "🏆 <b>Set TP2</b>\n\nType the TP2 price:\n<i>Example: <code>72000</code></i>",
@@ -5460,7 +5710,18 @@ def command_listener():
                         _back_markup = {"inline_keyboard": [[
                             {"text": "◀️  Back", "callback_data": _back_cb}]]}
 
-                        if cmd_text in _INPUT_PROMPTS:
+                        _CONFIRM_FIRST = {
+                            "/closescan":  ("closescan", "Clear ALL open Scan1 + Scan2 trades? This closes them in the bot immediately."),
+                            "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
+                        }
+                        _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk"}
+                        if cmd_text in _CONFIRM_FIRST:
+                            _action_id, _label = _CONFIRM_FIRST[cmd_text]
+                            _ask_confirm(cb_chat_id, cb_cid, _action_id, _label, _back_cb, message_id=cb_msg_id)
+                        elif cmd_text in _NP_TARGETS:
+                            _np_state[str(cb_cid)] = {"target": _NP_TARGETS[cmd_text], "digits": [], "back_cb": _back_cb}
+                            _np_render(cb_chat_id, cb_cid, cb_msg_id)
+                        elif cmd_text in _INPUT_PROMPTS:
                             pending_input[cb_cid] = {"cmd": cmd_text, "step": "api_key", "msg_id": cb_msg_id, "cat_id": _back_cb} if cmd_text == "/connect" else {"cmd": cmd_text, "msg_id": cb_msg_id, "cat_id": _back_cb}
                             _help_edit_or_send(cb_chat_id, _INPUT_PROMPTS[cmd_text], _back_markup, message_id=cb_msg_id)
                         else:
@@ -5486,21 +5747,21 @@ def command_listener():
 
                     # ── Mysize quick-set buttons ──────────────────────────────
                     elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):
-                        _map = {"mysize_setsize": "/setsize", "mysize_setlev": "/setleverage", "mysize_setrisk": "/setrisk"}
-                        _pm  = {"mysize_setsize": "💵 <b>Set Margin Per Trade</b>\n\nType the USDT amount:\n<i>Example: <code>5</code></i>",
-                                "mysize_setlev":  "⚡ <b>Set Leverage</b>\n\nType the leverage (1–125):\n<i>Example: <code>10</code></i>",
-                                "mysize_setrisk": "🛡 <b>Set Auto-Risk</b>\n\nType your max $ loss per trade:\n<i>Example: <code>2</code></i>"}
-                        _ms_back_cb, _ = _find_back_target(_map[cb_data])
-                        pending_input[cb_cid] = {"cmd": _map[cb_data], "msg_id": cb_msg_id, "cat_id": _ms_back_cb}
-                        _help_edit_or_send(cb_chat_id, _pm[cb_data],
-                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _ms_back_cb}]]},
-                            message_id=cb_msg_id)
+                        _map = {"mysize_setsize": "setsize", "mysize_setlev": "setleverage", "mysize_setrisk": "setrisk"}
+                        _cmd_map = {"mysize_setsize": "/setsize", "mysize_setlev": "/setleverage", "mysize_setrisk": "/setrisk"}
+                        _ms_back_cb, _ = _find_back_target(_cmd_map[cb_data])
+                        _np_state[str(cb_cid)] = {"target": _map[cb_data], "digits": [], "back_cb": _ms_back_cb}
+                        _np_render(cb_chat_id, cb_cid, cb_msg_id)
 
                     # ── Nocopy coin block/unblock ─────────────────────────────
-                    elif cb_data.startswith("nocopy_blk:") or cb_data.startswith("nocopy_clr:"):
+                    elif cb_data.startswith("nocopy_blk:"):
                         _nc_coin = cb_data.split(":", 1)[1]
-                        _nc_action = "clear" if cb_data.startswith("nocopy_clr:") else ""
-                        _nc_cmd = f"/nocopy clear {_nc_coin}" if _nc_action else f"/nocopy {_nc_coin}"
+                        _nc_back_cb, _ = _find_back_target("/nocopy")
+                        _ask_confirm(cb_chat_id, cb_cid, f"nocopy_blk:{_nc_coin}",
+                            f"Block {_nc_coin} from being auto-copied?", _nc_back_cb, message_id=cb_msg_id)
+                    elif cb_data.startswith("nocopy_clr:"):
+                        _nc_coin = cb_data.split(":", 1)[1]
+                        _nc_cmd = f"/nocopy clear {_nc_coin}"
                         _nc_back_cb, _ = _find_back_target("/nocopy")
                         cid_str = str(cb_cid)
                         _reply_capture[cid_str] = {"texts": [], "cat_id": _nc_back_cb}
@@ -5579,9 +5840,61 @@ def command_listener():
                         _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_win":
                         _toggle_cmd("/stats", cb_chat_id, cb_cid, cb_msg_id, "monitor")
-                    elif cb_data == "stats_reset":
-                        if cb_is_admin:
-                            _toggle_cmd("/stats reset", cb_chat_id, cb_cid, cb_msg_id, "monitor")
+                    elif cb_data in ("reset_btc_stats", "reset_scan1_stats", "reset_scan2_stats") and cb_is_admin:
+                        _labels = {"reset_btc_stats": "Reset all BTC trade statistics?",
+                                   "reset_scan1_stats": "Reset all Scan1 trade statistics?",
+                                   "reset_scan2_stats": "Reset all Scan2 trade statistics?"}
+                        _ask_confirm(cb_chat_id, cb_cid, cb_data, _labels[cb_data], "help_cat:monitor", message_id=cb_msg_id)
+                    elif cb_data == "reset_signal_history" and cb_is_admin:
+                        _ask_confirm(cb_chat_id, cb_cid, "reset_signal_history",
+                            "Clear the Last 5 Signals history (BTC + Scan1 + Scan2)? The CSV trade log is not affected.",
+                            "help_cat:monitor", message_id=cb_msg_id)
+                    elif cb_data == "myhistory_reset":
+                        _ask_confirm(cb_chat_id, cb_cid, f"reset_pnl:{cb_cid}",
+                            "Reset your copy-trade P&L history? Your connection and settings stay unchanged.",
+                            "help_cat:copyuser", message_id=cb_msg_id)
+                    elif cb_data == "confirm_yes":
+                        pc = _pending_confirm.pop(cb_cid, None)
+                        if pc:
+                            _run_confirmed_action(pc["action"], cb_chat_id, cb_cid, cb_msg_id, pc["back_cb"])
+                    elif cb_data == "adminlinks_open" and cb_is_admin:
+                        send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_ca_on" and cb_is_admin:
+                        global CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
+                        CONTACT_ADMIN_ENABLED = True; save_settings()
+                        send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_ca_off" and cb_is_admin:
+                        CONTACT_ADMIN_ENABLED = False; save_settings()
+                        send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_sc_on" and cb_is_admin:
+                        SIGNAL_CHANNEL_ENABLED = True; save_settings()
+                        send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_sc_off" and cb_is_admin:
+                        SIGNAL_CHANNEL_ENABLED = False; save_settings()
+                        send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_remove_channel" and cb_is_admin:
+                        _ask_confirm(cb_chat_id, cb_cid, "remove_channel_link",
+                            "Remove the connected channel link? Users won't see the Signal Channel button until you set a new one.",
+                            "help_main", message_id=cb_msg_id)
+                    elif cb_data == "adminlinks_connect_channel" and cb_is_admin:
+                        pending_input[cb_cid] = {"cmd": "_adminlinks_set_channel", "msg_id": cb_msg_id, "cat_id": "help_main"}
+                        _help_edit_or_send(cb_chat_id,
+                            "🔗 <b>Connect Channel</b>\n\nPaste the channel's invite link (e.g. <code>https://t.me/yourchannel</code>):",
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "adminlinks_open"}]]},
+                            message_id=cb_msg_id)
+
+                    elif cb_data.startswith("broadcast_mode:") and cb_is_admin:
+                        _mode = cb_data.split(":", 1)[1]
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode}
+                        _mode_lbl = {"users": "Users Only", "channels": "Channels Only", "all": "Both"}[_mode]
+                        _help_edit_or_send(cb_chat_id,
+                            f"📢 <b>Broadcast — {_mode_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            None, message_id=cb_msg_id)
+                    elif cb_data == "confirm_no":
+                        pc = _pending_confirm.pop(cb_cid, None)
+                        _back_cb = pc["back_cb"] if pc else "help_main"
+                        _help_edit_or_send(cb_chat_id, "❌ Cancelled — nothing changed.",
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _back_cb}]]}, message_id=cb_msg_id)
                     elif cb_data.startswith("sync_close_btc:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
@@ -5700,7 +6013,10 @@ def command_listener():
                         handle_command(f"/user {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("kick:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/kick {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                        _kick_back, _ = _find_back_target("/kick")
+                        _ask_confirm(cb_chat_id, cb_cid, f"kick:{uid}",
+                            f"Remove user {uid}? This disconnects them and cancels any pending orders.",
+                            _kick_back, message_id=cb_msg_id)
                     elif cb_data.startswith("pauseuser:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/pauseuser {uid}", cb_chat_id, {}, sender_id=cb_cid)
@@ -5735,7 +6051,7 @@ def command_listener():
                 if not cid: continue
 
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
-                register_user(cid)
+                register_user(cid, uname if uname != "?" else None)
                 if cid in broadcast_pending and not text.startswith("/"):
                     handle_broadcast_message(cid, msg); continue
                 # Pending input — user typed value after tapping a button
@@ -5769,6 +6085,11 @@ def command_listener():
                             _help_edit_or_send(cid,
                                 "🔑 <b>Connect BingX — Step 2/2</b>\n\nNow type your <b>Secret Key</b>:",
                                 _back_mkp, message_id=_pi_msg_id)
+                    elif pi["cmd"] == "_adminlinks_set_channel":
+                        del pending_input[cid]
+                        SIGNAL_CHANNEL_LINK = text.strip()
+                        save_settings()
+                        send_adminlinks_screen(cid, message_id=_pi_msg_id)
                     else:
                         del pending_input[cid]
                         _step = pi.get("step", "")
