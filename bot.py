@@ -221,21 +221,26 @@ def register_user(chat_id, username=None):
         save_users()
 
 def _build_users_summary():
-    _total_users  = len(registered_users)
-    _active_users = ct.active_count()
-    _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in blocked_users]
+    # Negative chat_ids are groups/channels, not individual users — exclude them.
+    _real_users   = [u for u in registered_users if int(u) > 0]
+    _real_blocked = [u for u in blocked_users if int(u) > 0]
+    _total_users  = len(_real_users)
+    _active_users = len([u for u in ct.active_ids() if int(u) > 0])
+    _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in _real_blocked]
     _blocked_str = ", ".join(_blocked_unames) if _blocked_unames else "none"
     return (
         f"👥 Total users: {_total_users}\n"
         f"🟢 Using copy trade: {_active_users}\n"
-        f"🚫 Blocked bot ({len(blocked_users)}): {_blocked_str}\n"
+        f"🚫 Blocked bot ({len(_real_blocked)}): {_blocked_str}\n"
     )
 
 def _user_dm_link(chat_id):
     uname = user_usernames.get(str(chat_id))
     if uname:
         return f'<a href="https://t.me/{uname}">@{uname}</a>'
-    return f'<a href="tg://user?id={chat_id}">ID {chat_id}</a> (no username set)'
+    # No username on their account — Telegram doesn't support a working deep link to
+    # an arbitrary user by ID, so don't fake one (it just shows as a phone-number chip).
+    return f'ID {chat_id} — no username set, can\'t DM directly'
 
 def _render_user_list_text(title, ids):
     if not ids:
@@ -5326,10 +5331,14 @@ def send_adminlinks_screen(chat_id, message_id=None):
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 def send_userstats_screen(chat_id, message_id=None):
+    # Negative chat_ids are groups/channels, not individual users — exclude them.
+    _n_total  = len([u for u in registered_users if int(u) > 0])
+    _n_active = len([u for u in ct.active_ids() if int(u) > 0])
+    _n_blocked = len([u for u in blocked_users if int(u) > 0])
     rows = [
-        [{"text": f"👥 Total Users ({len(registered_users)})", "callback_data": "userstats_total"}],
-        [{"text": f"🟢 Using Copy Trade ({ct.active_count()})", "callback_data": "userstats_active"}],
-        [{"text": f"🚫 Blocked Bot ({len(blocked_users)})", "callback_data": "userstats_blocked"}],
+        [{"text": f"👥 Total Users ({_n_total})", "callback_data": "userstats_total"}],
+        [{"text": f"🟢 Using Copy Trade ({_n_active})", "callback_data": "userstats_active"}],
+        [{"text": f"🚫 Blocked Bot ({_n_blocked})", "callback_data": "userstats_blocked"}],
         [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
     ]
     _help_edit_or_send(chat_id,
@@ -5337,12 +5346,13 @@ def send_userstats_screen(chat_id, message_id=None):
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_userstats_list(chat_id, kind, message_id=None):
+    # Negative chat_ids are groups/channels, not individual users — exclude them.
     if kind == "total":
-        ids = list(registered_users); title = "👥 Total Users"
+        ids = [u for u in registered_users if int(u) > 0]; title = "👥 Total Users"
     elif kind == "active":
-        ids = ct.active_ids(); title = "🟢 Using Copy Trade"
+        ids = [u for u in ct.active_ids() if int(u) > 0]; title = "🟢 Using Copy Trade"
     else:
-        ids = list(blocked_users); title = "🚫 Blocked Bot"
+        ids = [u for u in blocked_users if int(u) > 0]; title = "🚫 Blocked Bot"
     text = _render_user_list_text(title, ids)
     _help_edit_or_send(chat_id, text,
         {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "userstats_open"}]]},
