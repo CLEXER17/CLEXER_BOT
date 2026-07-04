@@ -1804,14 +1804,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         user["username"]       = username
         _set(cid, user)
         send_reply_fn(chat_id,
-            "<b>BingX Connected!</b>\n\n"
+            "<b>BingX Connected!</b> 🎉\n\n"
             "✅ API verified\n\n"
             f"Margin per trade: <b>${user['size_usdt']} USDT</b>\n"
             f"Leverage: <b>{user['leverage']}x</b> (manual)\n\n"
-            "/copytrade on — enable auto-copy\n"
-            "/setsize 50 — change margin per trade\n"
-            "/setrisk 2 — auto-leverage (max $2 loss per trade) ⭐\n"
-            "/setleverage 10 — manual leverage\n\n"
+            "Head to your Copy Trade menu to turn on auto-copy, change your margin per trade, "
+            "set an auto-risk max loss ⭐, or set leverage manually.\n\n"
             "<i>— CLEXER V17.8.5 —</i>")
 
     elif cmd == "/disconnect":
@@ -1831,7 +1829,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user = _get(cid) or {}
             send_reply_fn(chat_id,
                 f"Current size: <b>${user.get('size_usdt',50)} USDT</b>\n\n"
-                f"Usage: /setsize 50"); return
+                f"Tap the Set Margin button and enter your new amount."); return
         try:
             size = float(parts[1])
             if size < 0.25 or size > 10000:
@@ -1843,15 +1841,15 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Size: <b>${size} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
                 f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n\n"
                 f"<i>— CLEXER V17.8.5 —</i>")
-        except: send_reply_fn(chat_id, "Usage: /setsize 50")
+        except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/setleverage":
         if len(parts) < 2:
             user = _get(cid) or {}
             send_reply_fn(chat_id,
                 f"Current leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                f"Usage: /setleverage 10\n\n"
-                f"<i>Tip: Use /setrisk to auto-set leverage by max loss per trade instead.</i>"); return
+                f"Tap the Set Leverage button to change it.\n\n"
+                f"<i>Tip: Auto-Risk sets your leverage automatically based on max loss per trade — try that instead.</i>"); return
         try:
             lev = int(parts[1])
             if lev < 1 or lev > 125:
@@ -1864,9 +1862,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"<b>Leverage Set (Manual)</b>\n\n"
                 f"Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
                 f"Exposure per trade: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
-                f"<i>Auto-risk mode disabled. Use /setrisk to enable it.</i>\n\n"
+                f"<i>Auto-risk mode disabled. Turn it back on anytime from the Auto-Risk button.</i>\n\n"
                 f"<i>— CLEXER V17.8.5 —</i>")
-        except: send_reply_fn(chat_id, "Usage: /setleverage 10")
+        except: send_reply_fn(chat_id, "Please enter a valid whole number.")
 
     elif cmd == "/setrisk":
         if len(parts) < 2:
@@ -1879,15 +1877,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     f"Max loss per trade: <b>${risk} USDT</b>\n"
                     f"Margin per trade: <b>${size} USDT</b>\n\n"
                     f"Leverage is auto-calculated each trade based on SL distance.\n\n"
-                    f"Usage: /setrisk 2  — set max $2 loss per trade\n"
-                    f"/setrisk off — disable, use manual leverage\n\n"
+                    f"Tap the Auto-Risk button to change your max loss, or turn it off there.\n\n"
                     f"<i>— CLEXER V17.8.5 —</i>")
             else:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: OFF</b>\n\n"
                     f"Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                    f"Usage: /setrisk 2  — auto-set leverage so max loss = $2 per trade\n"
-                    f"Range: $1 – $50\n\n"
+                    f"Tap the Auto-Risk button to turn it on and set your max loss per trade ($1–$50).\n\n"
                     f"<i>— CLEXER V17.8.5 —</i>")
             return
         arg = parts[1].lower()
@@ -1919,7 +1915,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Example (2% SL): leverage = {example_lev}x → max loss ≈ ${size * example_lev * 0.02:.2f}\n\n"
                 f"<i>Closer SL = higher leverage | Wider SL = lower leverage</i>\n\n"
                 f"<i>— CLEXER V17.8.5 —</i>")
-        except: send_reply_fn(chat_id, "Usage: /setrisk 2")
+        except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/copytrade":
         user = _get(cid)
@@ -1955,7 +1951,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 "Open positions remain open — manage them on BingX.\n\n"
                 "<i>— CLEXER V17.8.5 —</i>", reply_markup=_ct_btns)
         else:
-            send_reply_fn(chat_id, "Usage: /copytrade on|off", reply_markup=_ct_btns)
+            send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
 
     elif cmd == "/mytrade":
         user = _get(cid)
@@ -2127,10 +2123,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             copy_s   = "ON" if user.get("copy_on") else "OFF"
             pos_line = f"\n     Pos: {user.get('pos_side','?')}" if user.get("in_position") else ""
             paused   = " ⛔" if user.get("paused_by_admin") else ""
+            risk     = user.get("risk_usdt")
+            lev_str  = f"auto (max ${risk} loss)" if risk else f"{user.get('leverage',1)}x manual"
             lines.append(
                 f"{i}. {uname}{paused} | <code>{uid}</code>\n"
                 f"   BingX:{bingx_ok} Copy:{copy_s} | "
-                f"${user.get('size_usdt',0):.0f} {user.get('leverage',1)}x"
+                f"${user.get('size_usdt',0):.0f} {lev_str}"
                 f"{pos_line}\n")
         send_reply_fn(chat_id, "\n".join(lines))
 
@@ -2170,11 +2168,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         pnl_s = f"+${pnl:.2f} 🟢" if pnl > 0 else (f"-${abs(pnl):.2f} 🔴" if pnl < 0 else "$0.00")
         wr    = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
         paused = "\n⚠️ PAUSED BY ADMIN" if user.get("paused_by_admin") else ""
+        _risk = user.get("risk_usdt")
+        _lev_line = f"Auto-Risk: <b>max ${_risk} loss/trade</b> (leverage recalculated per trade)" if _risk else f"Leverage: <b>{user.get('leverage',1)}x manual</b>"
         send_reply_fn(chat_id,
             f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
-            f"Size: <b>${user.get('size_usdt',0)} USDT</b> | Leverage: <b>{user.get('leverage',1)}x</b>"
+            f"Size: <b>${user.get('size_usdt',0)} USDT</b> | {_lev_line}"
             f"{pos_info}\n\n"
             f"Trades: {h['total']} | Wins: {h['profit']} | Losses: {h['loss']} | WR: {wr}\n"
             f"Won:  +${h['won_usdt']:.2f}  |  Lost: -${h['lost_usdt']:.2f}\n"
