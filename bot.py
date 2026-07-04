@@ -238,9 +238,13 @@ def _user_dm_link(chat_id):
     uname = user_usernames.get(str(chat_id))
     if uname:
         return f'<a href="https://t.me/{uname}">@{uname}</a>'
-    # No username on their account — Telegram doesn't support a working deep link to
-    # an arbitrary user by ID, so don't fake one (it just shows as a phone-number chip).
-    return f'ID {chat_id} — no username set, can\'t DM directly'
+    # tg://user?id= opens the user's profile card even without a username. Telegram's
+    # client sometimes auto-detects the raw digit run as a phone number and overrides
+    # part of the link with a "copy" chip instead — a zero-width space inside the
+    # digits breaks that phone-shaped pattern match without changing what's displayed/copied.
+    _id_str = str(chat_id)
+    _id_display = _id_str[:3] + "​" + _id_str[3:] if len(_id_str) > 3 else _id_str
+    return f'<a href="tg://user?id={chat_id}">ID {_id_display}</a> (no username set)'
 
 def _render_user_list_text(title, ids):
     if not ids:
