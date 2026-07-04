@@ -289,6 +289,9 @@ def _set(cid: str, user: dict):
 def active_count() -> int:
     return sum(1 for u in _db.values() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin"))
 
+def active_ids() -> list:
+    return [cid for cid, u in _db.items() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin")]
+
 def reset_history(cid: str):
     """Zero out a user's copy-trade P&L history. Their connection/settings stay untouched."""
     user = _get(cid)
