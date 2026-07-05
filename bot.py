@@ -321,30 +321,75 @@ def _pp_render(chat_id, cid, msg_id):
         rows.insert(-1, [{"text": "💾 Save", "callback_data": "pp_save"}])
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
 
+def _get_live_price(kind, symbol):
+    """Best-effort current market price, used to block SL/TP edits that would
+    trigger the order instantly. Returns None if it can't be fetched — callers
+    should fall back to entry-only validation rather than fail the edit."""
+    try:
+        if kind == "btc":
+            return float(get_ticker()["price"])
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/price",
+                          params={"symbol": symbol}, timeout=5).json()
+        p = float((r.get("data") or {}).get("price", 0))
+        return p or None
+    except Exception:
+        return None
+
+def _validate_price_for_side(action, side, entry, price, current_price=None):
+    """A BUY's TPs must sit above both entry AND the current market price, and its
+    SL below both (reverse for a SELL) — otherwise the order would either make no
+    sense relative to your cost basis, or trigger instantly since the exchange
+    already considers the condition met. Returns (ok, reason)."""
+    is_sl = action == "setsl"
+    if side == "BUY":
+        bound = min(entry, current_price) if current_price else entry
+        bad = price >= bound if is_sl else price <= bound
+        if bad:
+            ref = "current price" if current_price and bound == current_price else "entry"
+            word = "BELOW" if is_sl else "ABOVE"
+            return False, f"{'SL' if is_sl else 'TP'} must be {word} {ref} ({bound:,.6f}) for a BUY."
+    else:  # SELL
+        bound = max(entry, current_price) if current_price else entry
+        bad = price <= bound if is_sl else price >= bound
+        if bad:
+            ref = "current price" if current_price and bound == current_price else "entry"
+            word = "ABOVE" if is_sl else "BELOW"
+            return False, f"{'SL' if is_sl else 'TP'} must be {word} {ref} ({bound:,.6f}) for a SELL."
+    return True, ""
+
 def _apply_trade_price_edit(action, kind, symbol, idx, price):
-    """Applies a setsl/settp1/settp2 edit to the picked trade. Returns True on success."""
+    """Applies a setsl/settp1/settp2 edit to the picked trade. Returns (ok, reason)."""
     if kind == "btc":
         if not active_trade.get("signal"):
-            return False
+            return False, "Trade no longer open."
+        current_price = _get_live_price("btc", symbol)
+        ok, reason = _validate_price_for_side(action, active_trade["signal"], active_trade["entry"], price, current_price)
+        if not ok:
+            return False, reason
         if action == "setsl":
             active_trade["sl"] = price; ct.on_update_sl(price)
         elif action == "settp1":
-            active_trade["tp1"] = price
+            active_trade["tp1"] = price; ct.update_tp("tp1", price)
         elif action == "settp2":
             active_trade["tp2"] = price
+            ct.update_tp("tp2", price, full_remaining=active_trade.get("tp1_hit", False))
         save_state()
-        return True
+        return True, ""
     lst = scan1_trades if kind == "scan1" else scan2_trades
     if not (0 <= idx < len(lst)) or lst[idx].get("symbol") != symbol:
-        return False
+        return False, "Trade no longer open."
+    current_price = _get_live_price(kind, symbol)
+    ok, reason = _validate_price_for_side(action, lst[idx]["signal"], lst[idx]["entry"], price, current_price)
+    if not ok:
+        return False, reason
     if action == "setsl":
         lst[idx]["sl"] = price; ct.update_scan_sl(symbol, price)
     elif action == "settp1":
-        lst[idx]["tp1"] = price
+        lst[idx]["tp1"] = price; ct.update_scan_tp(symbol, "tp1", price)
     elif action == "settp2":
-        lst[idx]["tp2"] = price
+        lst[idx]["tp2"] = price; ct.update_scan_tp(symbol, "tp2", price)
     save_state()
-    return True
+    return True, ""
 
 trade_stats = {
     "consecutive_sl": 0, "cooldown_scans": 0,
@@ -4035,20 +4080,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"<pre>{trades_str}</pre>\n\n"
                 f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
 
-    elif cmd == "/scancopy" and is_admin:
-        _sc_btns = {"inline_keyboard": [[
-            {"text": "🟢  ON",  "callback_data": "scancopy_on"},
-            {"text": "🔴  OFF", "callback_data": "scancopy_off"}]]}
-        if len(parts) < 2 or parts[1].lower() not in ("on","off"):
-            state = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
-            send_reply(chat_id,
-                f"<b>Scan Copy Trade</b>\n\nStatus: <b>{state}</b>\n\n"
-                "ON → /scan auto-places trades on copy users.\n"
-                "OFF → analysis only, no trades placed.\n\n"
-                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_sc_btns); return
-        ct.set_scan_ct(parts[1].lower() == "on")
-        state = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
-        send_reply(chat_id, f"<b>Scan Copy Trade → {state}</b>\n\n<i>— CLEXER V17.8.5 —</i>", reply_markup=_sc_btns)
+    elif cmd in ("/scancopy", "/ctpause") and is_admin:
+        send_ctpause_screen(chat_id)
 
     elif cmd in ("/readindicators", "/checktvdata") and is_admin:
         if not TV_BRIDGE_URL or not tv_bridge_state["online"]:
@@ -5128,7 +5161,7 @@ _SCAN_SUBCATS = {
     "toggles": ("⚙️ On/Off Switches", [
         ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
         ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
-        ("/scancopy",    "📋", "Scan Copy Trade",    "Turn auto-copy of scan (alt-coin) signals to users' BingX accounts on or off."),
+        ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals."),
     ]),
     "system": ("🧠 AI & Gateway", [
         ("/model",   "🧠", "AI Model",   "Switch which Claude model powers scan/BTC analysis — Opus 4.8 or Fable 5."),
@@ -5347,8 +5380,14 @@ def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
     text = f"⚠️ <b>Are you sure?</b>\n\n{label}\n\n<i>This cannot be undone.</i>"
     _help_edit_or_send(chat_id, text, mkp, message_id=message_id)
 
+def _strip_html(s: str) -> str:
+    for tag in ("<b>", "</b>", "<i>", "</i>"):
+        s = s.replace(tag, "")
+    return s.replace("&gt;", ">").replace("&lt;", "<")
+
 def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
-    """Executes the action a user just confirmed via Yes, then shows a result screen."""
+    """Executes the action a user just confirmed via Yes. Returns a short result string —
+    caller shows it as a popup and navigates back to the previous screen (no extra tap)."""
     ts = trade_stats
     if action_id == "reset_btc_stats":
         for k in ("total_sl","total_tp1","total_tp2","total_signals","missed_entries","stop_hunts","consecutive_sl","cooldown_scans"):
@@ -5427,12 +5466,21 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
     elif action_id == "remove_channel_link":
         global SIGNAL_CHANNEL_LINK
         SIGNAL_CHANNEL_LINK = ""; save_settings()
-        send_adminlinks_screen(chat_id, message_id=msg_id)
-        return
+        result_text = "✅ Channel link removed."
+    elif action_id.startswith("ctpause:"):
+        _, which = action_id.split(":", 1)
+        if which == "btc":
+            ct.set_btc_ct(not ct.BTC_CT_ENABLED)
+            result_text = f"✅ BTC copy trade turned {'ON' if ct.BTC_CT_ENABLED else 'OFF'}."
+        elif which == "scan1":
+            ct.set_scan1_ct(not ct.SCAN1_CT_ENABLED)
+            result_text = f"✅ Scan1 copy trade turned {'ON' if ct.SCAN1_CT_ENABLED else 'OFF'}."
+        else:
+            ct.set_scan2_ct(not ct.SCAN2_CT_ENABLED)
+            result_text = f"✅ Scan2 copy trade turned {'ON' if ct.SCAN2_CT_ENABLED else 'OFF'}."
     else:
         result_text = "✅ Done."
-    _back_row = [{"text": "◀️  Back", "callback_data": back_cb}]
-    _help_edit_or_send(chat_id, result_text, {"inline_keyboard": _back_row}, message_id=msg_id)
+    return result_text
 
 def send_adminlinks_screen(chat_id, message_id=None):
     _ca_flag = "✅ ON" if CONTACT_ADMIN_ENABLED else "❌ OFF"
@@ -5486,6 +5534,28 @@ def send_userstats_list(chat_id, kind, message_id=None):
     _help_edit_or_send(chat_id, text,
         {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "userstats_open"}]]},
         message_id=message_id)
+
+def send_ctpause_screen(chat_id, message_id=None):
+    _btc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
+    _scan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
+    _scan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
+    rows = [
+        [{"text": f"₿ BTC Copy Trade  {_btc_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctbtc_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctbtc_off"}],
+        [{"text": f"🔍 Scan1 Copy Trade  {_scan1_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctscan1_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctscan1_off"}],
+        [{"text": f"🔍 Scan2 Copy Trade  {_scan2_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctscan2_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctscan2_off"}],
+        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+    ]
+    _help_edit_or_send(chat_id,
+        "<b>📋 Copy Trade — By Type</b>\n\n"
+        "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals.\n"
+        "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.",
+        {"inline_keyboard": rows}, message_id=message_id)
 
 def send_go_screen(chat_id, message_id=None):
     """Renders the /go 'Bot RUNNING' screen. Its model/gateway buttons toggle
@@ -5618,6 +5688,14 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         _send_generic_subcat(chat_id, _SETTINGS_SUBCATS, back_cb.split(":", 1)[1], "settings", message_id=msg_id)
     elif back_cb.startswith("broadcast_sub:"):
         _send_generic_subcat(chat_id, _BROADCAST_SUBCATS, back_cb.split(":", 1)[1], "broadcast", message_id=msg_id)
+    elif back_cb == "adminlinks_open":
+        send_adminlinks_screen(chat_id, message_id=msg_id)
+    elif back_cb == "userstats_open":
+        send_userstats_screen(chat_id, message_id=msg_id)
+    elif back_cb.startswith("trdpick_open:"):
+        _action = back_cb.split(":", 1)[1]
+        _orig_back = _TRDPICK_BACKCB.get(str(cid), "help_cat:monitor")
+        _send_trade_pick_screen(chat_id, cid, _action, msg_id, _orig_back)
     else:
         send_help_menu(chat_id, is_admin, message_id=msg_id)
 
@@ -5940,16 +6018,21 @@ def command_listener():
                                 price = float(_digits) if _digits and _digits != "." else None
                             except ValueError:
                                 price = None
-                            if price is None:
+                            if price is None or price <= 0:
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                                    json={"callback_query_id": cb["id"], "text": "⚠️ Enter a valid price first", "show_alert": True}, timeout=5)
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Enter a valid price greater than 0", "show_alert": True}, timeout=5)
                                 continue
-                            _ok = _apply_trade_price_edit(st["action"], st["kind"], st["symbol"], st["idx"], price)
+                            _ok, _reason = _apply_trade_price_edit(st["action"], st["kind"], st["symbol"], st["idx"], price)
+                            if not _ok and _reason and "no longer open" not in _reason:
+                                # Bad price relative to entry/direction — let them retry, don't discard the picker
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": f"⚠️ {_reason}", "show_alert": True}, timeout=5)
+                                continue
                             _back_cb = st["back_cb"]
                             del _pp_state[str(cb_cid)]
                             if _ok:
                                 send_telegram(f"<b>{st['symbol']} {st['action'].upper()} -&gt; {price:,.6f}</b>\n\n<i>- CLEXER V17.8.5 -</i>")
-                            _msg = f"✅ <b>{st['symbol']} updated to {price:,.6f}</b>" if _ok else f"⚠️ {st['symbol']} trade no longer open."
+                            _msg = f"✅ <b>{st['symbol']} updated to {price:,.6f}</b>" if _ok else f"⚠️ {_reason or st['symbol'] + ' trade no longer open.'}"
                             _help_edit_or_send(cb_chat_id, _msg,
                                 {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _back_cb}]]}, message_id=cb_msg_id)
 
@@ -5969,7 +6052,8 @@ def command_listener():
                             "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
                         }
                         _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk"}
-                        _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen}
+                        _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
+                                        "/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
@@ -6073,9 +6157,19 @@ def command_listener():
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
                         _toggle_cmd(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
-                    # ── Scancopy ON/OFF ───────────────────────────────────────
-                    elif cb_data in ("scancopy_on", "scancopy_off"):
-                        _toggle_cmd(f"/scancopy {'on' if cb_data=='scancopy_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    # ── Copy Trade by type: BTC / Scan1 / Scan2 ON/OFF ────────
+                    elif cb_data == "ctbtc_on" and cb_is_admin:
+                        ct.set_btc_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctbtc_off" and cb_is_admin:
+                        ct.set_btc_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctscan1_on" and cb_is_admin:
+                        ct.set_scan1_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctscan1_off" and cb_is_admin:
+                        ct.set_scan1_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctscan2_on" and cb_is_admin:
+                        ct.set_scan2_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctscan2_off" and cb_is_admin:
+                        ct.set_scan2_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
@@ -6118,7 +6212,10 @@ def command_listener():
                     elif cb_data == "confirm_yes":
                         pc = _pending_confirm.pop(cb_cid, None)
                         if pc:
-                            _run_confirmed_action(pc["action"], cb_chat_id, cb_cid, cb_msg_id, pc["back_cb"])
+                            _result = _run_confirmed_action(pc["action"], cb_chat_id, cb_cid, cb_msg_id, pc["back_cb"])
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": _strip_html(_result)[:190], "show_alert": True}, timeout=5)
+                            _navigate_to(pc["back_cb"], cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
                     elif cb_data == "adminlinks_open" and cb_is_admin:
                         send_adminlinks_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "userstats_open" and cb_is_admin:
@@ -6163,8 +6260,9 @@ def command_listener():
                     elif cb_data == "confirm_no":
                         pc = _pending_confirm.pop(cb_cid, None)
                         _back_cb = pc["back_cb"] if pc else "help_main"
-                        _help_edit_or_send(cb_chat_id, "❌ Cancelled — nothing changed.",
-                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _back_cb}]]}, message_id=cb_msg_id)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                            json={"callback_query_id": cb["id"], "text": "❌ Cancelled — nothing changed."}, timeout=5)
+                        _navigate_to(_back_cb, cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
                     elif cb_data.startswith("sync_close_btc:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
