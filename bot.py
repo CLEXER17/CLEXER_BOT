@@ -2129,6 +2129,9 @@ def load_settings():
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
+            ct.BTC_CT_ENABLED   = d.get("btc_ct_enabled",   True)
+            ct.SCAN1_CT_ENABLED = d.get("scan1_ct_enabled", True)
+            ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", True)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -2155,6 +2158,9 @@ def save_settings():
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
+            "btc_ct_enabled":   ct.BTC_CT_ENABLED,
+            "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
+            "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
         }, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
@@ -6161,17 +6167,17 @@ def command_listener():
 
                     # ── Copy Trade by type: BTC / Scan1 / Scan2 ON/OFF ────────
                     elif cb_data == "ctbtc_on" and cb_is_admin:
-                        ct.set_btc_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_btc_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctbtc_off" and cb_is_admin:
-                        ct.set_btc_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_btc_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctscan1_on" and cb_is_admin:
-                        ct.set_scan1_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_scan1_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctscan1_off" and cb_is_admin:
-                        ct.set_scan1_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_scan1_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctscan2_on" and cb_is_admin:
-                        ct.set_scan2_ct(True); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_scan2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctscan2_off" and cb_is_admin:
-                        ct.set_scan2_ct(False); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                        ct.set_scan2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
