@@ -38,7 +38,10 @@ CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
-SCAN_CT_ENABLED = True   # toggle with /scancopy on|off
+SCAN_CT_ENABLED = True   # legacy combined flag — kept for backward compat, no longer gates anything
+BTC_CT_ENABLED   = True  # toggle with /ctpause btc|on|off — copy trade for BTC signals
+SCAN1_CT_ENABLED = True  # toggle with /ctpause scan1|on|off — copy trade for Scan1 signals
+SCAN2_CT_ENABLED = True  # toggle with /ctpause scan2|on|off — copy trade for Scan2 signals
 
 def _now_ist() -> str:
     return (datetime.now(timezone.utc) + IST).strftime("%d %b %I:%M %p IST")
@@ -485,6 +488,8 @@ def on_signal(signal: dict, price: float) -> list[str]:
     Returns list of result strings for admin notification.
     """
     global _last_signal
+    if not BTC_CT_ENABLED:
+        return ["[CT] BTC copy trade is OFF"]
     side        = signal["signal"]          # "BUY" or "SELL"
     entry       = float(signal["entry"])
     sl          = float(signal["sl"])
@@ -613,7 +618,11 @@ def on_signal(signal: dict, price: float) -> list[str]:
 
 
 def on_tp1(entry: float, tp1: float = 0):
-    """TP1 hit — cancel TP1 order, close 50% at market, move position SL to breakeven."""
+    """TP1 hit — move SL to breakeven on the remaining position.
+    BingX's own TP1 TAKE_PROFIT_MARKET order (placed at entry time) already closes
+    50% automatically the instant price touches it. We only close manually as a
+    fallback if that order somehow didn't fire — never unconditionally, or we'd
+    double-close (BingX's 50% + our own 50% = the whole position gone)."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         try:
@@ -622,22 +631,42 @@ def on_tp1(entry: float, tp1: float = 0):
             full_qty   = user.get("pos_qty", 0.001)
             half_qty   = max(round(full_qty / 2, 4), 0.001)
 
-            # Cancel TP1 order and OLD SL order
+            # Cancel TP1 order and OLD SL order first
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
 
-            # Close 50% at market
-            _place_order(api_key, api_secret, close_side, "MARKET", half_qty,
-                         position_side=pos_side)
+            # Check actual remaining position — BingX's TP1 order may have already closed 50%
+            time.sleep(1)
+            pos_r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {"symbol": BINGX_SYMBOL})
+            actual_qty = 0.0
+            _pos_data = pos_r.get("data") or []
+            _pos_list = _pos_data if isinstance(_pos_data, list) else _pos_data.get("positions", [])
+            for pos in _pos_list:
+                if isinstance(pos, dict) and pos.get("positionSide") == pos_side:
+                    actual_qty = abs(float(pos.get("positionAmt", 0)))
+                    break
+            print(f"[CT] on_tp1 {cid}: stored_qty={full_qty} actual_qty={actual_qty}")
 
-            # Record TP1 PnL
             close_price = tp1 if tp1 > 0 else entry
+            if actual_qty >= full_qty * 0.75:
+                # BingX's TP1 order didn't fire — close 50% manually
+                _place_order(api_key, api_secret, close_side, "MARKET", half_qty, position_side=pos_side)
+                remaining_qty = max(round(full_qty - half_qty, 4), 0.0001)
+            elif actual_qty >= 0.0001:
+                # BingX already closed ~50% via TP1 order — use the real remaining size
+                remaining_qty = round(actual_qty, 4)
+            else:
+                # Position fully closed already (both halves gone some other way)
+                print(f"[CT] on_tp1 {cid}: position already fully closed, skipping BE SL")
+                user["tp1_order_id"] = ""; user["in_position"] = False; user["pos_side"] = ""
+                _set(cid, user)
+                continue
+
+            # Record TP1 PnL on the 50% that closed
             pnl = _calc_pnl(user["pos_side"], entry, close_price, half_qty)
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
-            # Remaining qty after closing half (use actual remainder, not half_qty again)
-            remaining_qty = max(round(full_qty - half_qty, 4), 0.0001)
             # BE SL slightly inside entry so BingX accepts (SL must be < current price for LONG)
             be_sl_price = round(entry * 0.999, 2) if user["pos_side"] == "BUY" else round(entry * 1.001, 2)
             be_sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
@@ -648,9 +677,9 @@ def on_tp1(entry: float, tp1: float = 0):
 
             user["tp1_order_id"] = ""
             user["sl_order_id"]  = be_sl_oid
-            user["pos_qty"]      = half_qty
+            user["pos_qty"]      = remaining_qty
             _set(cid, user)
-            print(f"[CT] on_tp1 {cid}: closed {half_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
+            print(f"[CT] on_tp1 {cid}: remaining={remaining_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
         except Exception as e:
             print(f"[CT] on_tp1 {cid}: {e}")
 
@@ -882,6 +911,18 @@ def set_scan_ct(enabled: bool):
     global SCAN_CT_ENABLED
     SCAN_CT_ENABLED = enabled
 
+def set_btc_ct(enabled: bool):
+    global BTC_CT_ENABLED
+    BTC_CT_ENABLED = enabled
+
+def set_scan1_ct(enabled: bool):
+    global SCAN1_CT_ENABLED
+    SCAN1_CT_ENABLED = enabled
+
+def set_scan2_ct(enabled: bool):
+    global SCAN2_CT_ENABLED
+    SCAN2_CT_ENABLED = enabled
+
 def is_scan_tp1_hit(symbol: str) -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
     for cid, user, _, _ in _users_with_copy():
@@ -896,8 +937,11 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
     Place a scan-sourced trade (alt coin) for all copy users.
     ver is passed inside signal_dict["ver"]: 1→s1_* slot, 2→scan_* slot
     """
-    if not SCAN_CT_ENABLED:
-        return ["[CT] scan copy trade is OFF (/scancopy on to enable)"]
+    ver = signal_dict.get("ver")
+    if ver == 1 and not SCAN1_CT_ENABLED:
+        return ["[CT] Scan1 copy trade is OFF"]
+    if ver == 2 and not SCAN2_CT_ENABLED:
+        return ["[CT] Scan2 copy trade is OFF"]
 
     with _scan_signal_lock:
         return _on_scan_signal_inner(signal_dict, symbol, price)
@@ -1245,6 +1289,80 @@ def update_scan_sl(symbol: str, new_sl: float) -> list[str]:
 
 def scan_sl_to_be(symbol: str, entry: float) -> list[str]:
     return update_scan_sl(symbol, entry)
+
+def update_scan_tp(symbol: str, which: str, new_price: float) -> list[str]:
+    """Admin custom TP1/TP2 edit on a specific open scan-coin trade — cancels the
+    existing take-profit order(s) and re-places at the (possibly just-edited)
+    TP1/TP2 prices for every copy user holding it."""
+    results = []
+    for cid, user, api_key, api_secret in _users_with_copy():
+        p = _pfx_for_symbol(user, symbol)
+        if not p: continue
+        try:
+            uname = user.get("username", "?")
+            trade_ps   = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
+            close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+            qty = float(user.get(f"{p}qty", 0))
+            if qty <= 0: continue
+            tp1_hit = user.get(f"{p}tp1_hit", False)
+            user[f"{p}{which}"] = new_price
+            new_tp1 = user.get(f"{p}tp1", 0)
+            new_tp2 = user.get(f"{p}tp2", 0)
+            for o in _get_open_orders(api_key, api_secret, symbol):
+                if o.get("type") == "TAKE_PROFIT_MARKET":
+                    oid = str(o.get("orderId", ""))
+                    if oid:
+                        _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "orderId": oid})
+            ok = True
+            if tp1_hit:
+                if new_tp2:
+                    r = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                                "type": "TAKE_PROFIT_MARKET", "quantity": round(qty, 4), "stopPrice": round(new_tp2, 6)})
+                    ok = r.get("code") == 0
+            else:
+                half = max(round(qty / 2, 4), 0.0001)
+                if new_tp1:
+                    r1 = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                                {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                                 "type": "TAKE_PROFIT_MARKET", "quantity": half, "stopPrice": round(new_tp1, 6)})
+                    ok = ok and r1.get("code") == 0
+                if new_tp2:
+                    r2 = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                                {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                                 "type": "TAKE_PROFIT_MARKET", "quantity": half, "stopPrice": round(new_tp2, 6)})
+                    ok = ok and r2.get("code") == 0
+            _set(cid, user)
+            results.append(f"{'✅' if ok else '❌'} @{uname} {which.upper()}→{new_price:,.6f}")
+        except Exception as e:
+            results.append(f"❌ {cid}: {e}")
+            print(f"[CT] update_scan_tp {cid}/{symbol}: {e}")
+    return results or ["No copy users holding this coin."]
+
+def update_tp(which: str, new_price: float, full_remaining: bool = False) -> list[str]:
+    """Admin custom TP1/TP2 edit for the single active BTC trade — cancels the
+    existing TP order and re-places it at the new price for every user in position."""
+    field = "tp1_order_id" if which == "tp1" else "tp_order_id"
+    results = []
+    for cid, user, api_key, api_secret in _users_with_copy():
+        if not user.get("in_position"): continue
+        try:
+            uname = user.get("username", "?")
+            trade_ps   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
+            close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+            qty = float(user.get("pos_qty", 0.001))
+            place_qty = qty if full_remaining else max(round(qty / 2, 4), 0.0001)
+            _cancel_order(api_key, api_secret, user.get(field, ""))
+            r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                             place_qty, stop_price=new_price, position_side=trade_ps)
+            user[field] = str((r.get("data") or {}).get("order", {}).get("orderId", ""))
+            _set(cid, user)
+            results.append(f"{'✅' if r.get('code')==0 else '❌'} @{uname} {which.upper()}→{new_price:,.2f}")
+        except Exception as e:
+            results.append(f"❌ {cid}: {e}")
+            print(f"[CT] update_tp {cid}: {e}")
+    return results or ["No users in position."]
 
 def on_scan_sl(symbol: str):
     """Scan SL hit — cancel all orders, force-close position, clear scan state."""
