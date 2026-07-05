@@ -3258,7 +3258,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _charts_flag = "✅ ON"  if SEND_CHARTS                       else "❌ OFF"
         _news_flag   = "✅ ON"  if SEND_NEWS                         else "❌ OFF"
         _btcmode_lbl = "V7 Classic" if BTC_PROMPT_MODE == "V7" else "V9 Current"
-        _scancopy_flag = "✅ ON" if ct.SCAN_CT_ENABLED else "❌ OFF"
+        _ctbtc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
+        _ctscan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
+        _ctscan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
         _model_lbl   = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
         _gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
         # Copy trade: per-user for non-admin, global active users count for admin
@@ -3277,7 +3279,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             )
             + f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
             + (
-                f"📋 Scan Copy:  <b>{_scancopy_flag}</b>\n"
+                f"📋 Copy Trade — BTC:{_ctbtc_flag} Scan1:{_ctscan1_flag} Scan2:{_ctscan2_flag}\n"
                 f"🖼  Charts:     <b>{_charts_flag}</b>\n"
                 f"📰 News:       <b>{_news_flag}</b>\n"
                 if is_admin else ""
