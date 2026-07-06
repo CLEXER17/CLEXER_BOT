@@ -2410,14 +2410,38 @@ def _build_vip_csv(vip_start: str, vip_end: str) -> bytes:
         w.writerow({k: r.get(k, "") for k in fieldnames})
     return buf.getvalue().encode("utf-8")
 
-def _expire_vip_user(cid: str, user: dict):
-    vip_start = user.get("vip_start", ""); vip_end = user.get("vip_end", "")
-    user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""
-    ct._set(cid, user)
+def _send_vip_renew_reminder(cid: str, user: dict):
     _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": int(cid), "text": "⏰ <b>Your VIP has expired</b>\n\nContact admin to renew.",
+            json={"chat_id": int(cid),
+                  "text": "⏰ <b>Your VIP expired</b>\n\nRenew within 24 hours or you'll be removed from "
+                          "VIP and the VIP channel.",
+                  "parse_mode": "HTML", "reply_markup": _mkp}, timeout=10)
+    except Exception as e:
+        print(f"  [VIP EXPIRE] reminder {cid}: {e}")
+
+def _kick_from_vip_channels(cid: str):
+    for c in CHANNELS:
+        if c.get("tier") != "vip" or not c.get("id"):
+            continue
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/banChatMember",
+                json={"chat_id": c["id"], "user_id": int(cid)}, timeout=10)
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/unbanChatMember",
+                json={"chat_id": c["id"], "user_id": int(cid), "only_if_banned": True}, timeout=10)
+        except Exception as e:
+            print(f"  [VIP EXPIRE] kick {cid} from {c.get('id')}: {e}")
+
+def _expire_vip_user(cid: str, user: dict):
+    vip_start = user.get("vip_start", ""); vip_end = user.get("vip_end", "")
+    user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""; user["vip_grace_notified_at"] = 0
+    ct._set(cid, user)
+    _kick_from_vip_channels(cid)
+    _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": int(cid), "text": "⏰ <b>Your VIP has expired</b>\n\nYou've been removed from the VIP channel. Contact admin to renew.",
                   "parse_mode": "HTML", "reply_markup": _mkp}, timeout=10)
     except Exception as e:
         print(f"  [VIP EXPIRE] notify {cid}: {e}")
@@ -2431,6 +2455,10 @@ def _expire_vip_user(cid: str, user: dict):
             print(f"  [VIP EXPIRE] csv {cid}: {e}")
 
 def _check_vip_expiries():
+    """Runs hourly. The day after vip_end, sends a renew-or-be-removed reminder and
+    starts a 24h grace clock — if still expired 24h later, actually downgrades and
+    kicks them from any VIP channels. Renewing (a new /setvip) resets vip_end into
+    the future, so this loop naturally stops flagging them once they're no longer expired."""
     today = (datetime.now(timezone.utc) + IST).date()
     for cid, user in list(ct._db.items()):
         if user.get("tier") != "vip" or not user.get("vip_end"):
@@ -2440,7 +2468,14 @@ def _check_vip_expiries():
             end_date = datetime(int(y), int(m), int(d)).date()
         except Exception:
             continue
-        if today > end_date:
+        if today <= end_date:
+            continue
+        notified_at = user.get("vip_grace_notified_at")
+        if not notified_at:
+            user["vip_grace_notified_at"] = time.time()
+            ct._set(cid, user)
+            _send_vip_renew_reminder(cid, user)
+        elif time.time() - notified_at >= 86400:
             _expire_vip_user(cid, user)
 
 def send_to_user(chat_id, text, file_id=None, file_type=None):
@@ -5882,15 +5917,29 @@ def send_channel_picker_result(chat_id, tier, message_id=None):
                 text += "\n\n<i>No public join link set for it yet — ask the admin.</i>"
             rows.append([{"text": "◀️  Back", "callback_data": "chanpick_open"}])
     else:
-        text = (
-            "⭐ <b>VIP Channel</b>\n\n"
-            "Get every signal, no limits — BTC, Scan1, and Scan2, the moment they fire.\n\n"
-            "VIP access is activated by the admin. Tap below to request it.")
-        rows = [
-            [{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}] if ADMIN_CHAT_ID else [],
-            [{"text": "◀️  Back", "callback_data": "chanpick_open"}],
-        ]
-        rows = [r for r in rows if r]
+        _u = ct._get(str(chat_id))
+        _is_vip = bool(_u and _u.get("tier") == "vip")
+        vip_chans = [c for c in CHANNELS if c.get("tier") == "vip" and c.get("link")]
+        if _is_vip and vip_chans:
+            text = (
+                "⭐ <b>VIP Channel</b>\n\n"
+                "You're VIP — tap below to request to join. Your request is approved automatically.")
+            rows = [[{"text": c.get("label") or "Join", "url": c["link"]}] for c in vip_chans]
+            rows.append([{"text": "◀️  Back", "callback_data": "chanpick_open"}])
+        else:
+            text = (
+                "⭐ <b>VIP Channel</b>\n\n"
+                "Get every signal, no limits — BTC, Scan1, and Scan2, the moment they fire.\n\n"
+                "VIP access is activated by the admin. Tap below to request it.")
+            rows = [
+                [{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}] if ADMIN_CHAT_ID else [],
+            ]
+            if CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID:
+                _co_uname = user_usernames.get(str(CO_ADMIN_CHAT_ID))
+                _co_url = f"https://t.me/{_co_uname}" if _co_uname else f"tg://user?id={CO_ADMIN_CHAT_ID}"
+                rows.append([{"text": "💬 Contact Co-Admin for VIP", "url": _co_url}])
+            rows.append([{"text": "◀️  Back", "callback_data": "chanpick_open"}])
+            rows = [r for r in rows if r]
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 def send_channelmgmt_screen(chat_id, message_id=None):
@@ -6254,7 +6303,7 @@ def command_listener():
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request"]}, timeout=25)
             data = r.json()
             if not data.get("ok"): time.sleep(5); continue
             for upd in data.get("result", []):
@@ -6741,10 +6790,10 @@ def command_listener():
                         pending_input[cb_cid] = {"cmd": "_chrm_add", "msg_id": cb_msg_id, "cat_id": "channelmgmt_open", "tier": _tier}
                         _help_edit_or_send(cb_chat_id,
                             f"➕ <b>Add {'VIP' if _tier=='vip' else 'Free'} Channel</b>\n\n"
-                            f"Add this bot as admin to the channel, then send:\n"
-                            f"<code>CHANNEL_ID</code> (for sending signals) — and optionally its public "
-                            f"invite link after a space, so users can tap to join it, e.g.\n"
-                            f"<code>-1001234567890 https://t.me/yourchannel</code>",
+                            f"Add this bot as admin to the channel, then send its <b>public link</b>, e.g.\n"
+                            f"<code>https://t.me/yourchannel</code>\n\n"
+                            f"If it's a <b>private</b> channel (invite-link only, no public username), send its "
+                            f"numeric ID instead — forward any message from it to @userinfobot to get that ID.",
                             {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "channelmgmt_open"}]]},
                             message_id=cb_msg_id)
                     elif cb_data.startswith("chrm_remove:") and cb_is_admin:
@@ -6996,6 +7045,37 @@ def command_listener():
                                 f"<i>Example: <code>2.02 2.23 14.25 15.26 15.46</code></i>")
                     continue
 
+                # Auto-approve/decline VIP channel join requests — only current VIP
+                # tier users get let in automatically; everyone else is declined.
+                jr = upd.get("chat_join_request")
+                if jr:
+                    _jr_chat_id = jr["chat"]["id"]
+                    _jr_user_id = jr["from"]["id"]
+                    _jr_uname   = jr["from"].get("username", "?")
+                    _is_vip_chan = any(str(c.get("id","")).lstrip("@") == str(_jr_chat_id) or
+                                       str(c.get("id","")) == f"@{jr['chat'].get('username','')}"
+                                       for c in CHANNELS if c.get("tier") == "vip")
+                    _u = ct._get(str(_jr_user_id))
+                    _requester_is_vip = bool(_u and _u.get("tier") == "vip")
+                    try:
+                        if _is_vip_chan and _requester_is_vip:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/approveChatJoinRequest",
+                                json={"chat_id": _jr_chat_id, "user_id": _jr_user_id}, timeout=10)
+                            send_to_user(_jr_user_id, "✅ <b>Welcome to the VIP channel!</b> Your request was auto-approved.")
+                            print(f"  [VIP CHANNEL] approved @{_jr_uname} ({_jr_user_id})")
+                        elif _is_vip_chan:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/declineChatJoinRequest",
+                                json={"chat_id": _jr_chat_id, "user_id": _jr_user_id}, timeout=10)
+                            _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": _jr_user_id,
+                                      "text": "⭐ This channel is VIP-only. Contact admin to activate VIP first.",
+                                      "reply_markup": _mkp}, timeout=10)
+                            print(f"  [VIP CHANNEL] declined @{_jr_uname} ({_jr_user_id}) — not VIP")
+                    except Exception as e:
+                        print(f"  [VIP CHANNEL] join request error: {e}")
+                    continue
+
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
@@ -7042,13 +7122,27 @@ def command_listener():
                         save_settings()
                         send_adminlinks_screen(cid, message_id=_pi_msg_id)
                     elif pi["cmd"] == "_chrm_add":
-                        del pending_input[cid]
                         _parts_in = text.strip().split()
-                        _cid_txt = _parts_in[0] if _parts_in else text.strip()
-                        _link_txt = _parts_in[1] if len(_parts_in) > 1 else ""
-                        CHANNELS.append({"id": _cid_txt, "tier": pi["tier"], "label": _cid_txt, "link": _link_txt})
-                        save_settings()
-                        send_channelmgmt_screen(cid, message_id=_pi_msg_id)
+                        _id_tok = next((p for p in _parts_in if p.lstrip("-").isdigit()), None)
+                        _link_tok = next((p for p in _parts_in if p.startswith("http")), "")
+                        if not _id_tok and _link_tok:
+                            # Public channel link (t.me/username) — Telegram lets a bot send
+                            # via "@username" directly, no separate numeric ID needed.
+                            _uname_part = _link_tok.rstrip("/").split("/")[-1]
+                            if _uname_part and not _uname_part.startswith(("+", "joinchat")):
+                                _id_tok = f"@{_uname_part.lstrip('@')}"
+                        if not _id_tok:
+                            send_reply(cid,
+                                "⚠️ That looks like a private invite link with no public username, so I can't "
+                                "derive a send-target from it. Forward any message from the channel to "
+                                "@userinfobot to get its numeric ID (looks like -1001234567890), then send "
+                                "it here — optionally with the link after it.",
+                                reply_markup=_back_mkp)
+                        else:
+                            del pending_input[cid]
+                            CHANNELS.append({"id": _id_tok, "tier": pi["tier"], "label": _id_tok, "link": _link_tok})
+                            save_settings()
+                            send_channelmgmt_screen(cid, message_id=_pi_msg_id)
                     elif pi["cmd"] == "_vip_manual_date":
                         del pending_input[cid]
                         vst = pi["vip"]
