@@ -152,6 +152,8 @@ TEST_MODEL     = "claude-opus-4-8"  # /test /demo model  — set via /aiconfig
 TEST_AEROLINK  = False              # /test /demo gateway — set via /aiconfig
 ZONE_ENTRY_ENABLED = False  # Scan1/Scan2 entry style — MARKET (instant) vs ZONE (limit order at a price range's midpoint). Set via /entrystyle
 _ZONE_BAND_PCT = 0.008      # zone width — ±0.8% around the computed entry price
+CO_ADMIN_CHAT_ID  = ""    # a single trusted friend who gets ONE extra permission: /tradelog. No user mgmt, no billing, no resets, no broadcast.
+CO_ADMIN_ENABLED  = False # ON = the co-admin permission is active AND their contact button shows next to Contact Admin
 CONTACT_ADMIN_ENABLED  = True   # shows/hides the "Contact Admin" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_ENABLED = True   # shows/hides the "Signal Channel" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_LINK    = ""     # admin-provided channel link — set/removed via /adminlinks
@@ -216,6 +218,9 @@ def save_users():
             }, f)
     except Exception as e: print(f"[USERS] Save error: {e}")
 
+def is_co_admin(chat_id) -> bool:
+    return bool(CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID and str(chat_id) == str(CO_ADMIN_CHAT_ID))
+
 def register_user(chat_id, username=None):
     chat_id = int(chat_id)
     changed = False
@@ -269,6 +274,7 @@ _NP_CONFIG = {
     "setsize":     {"label": "Margin Per Trade",       "unit": "USDT", "cmd": "/setsize",     "decimals": True},
     "setleverage": {"label": "Leverage",                "unit": "x",    "cmd": "/setleverage", "decimals": False},
     "setrisk":     {"label": "Auto-Risk (Max Loss)",    "unit": "USDT", "cmd": "/setrisk",     "decimals": True},
+    "tp1size":     {"label": "TP1 Close %",             "unit": "%",    "cmd": "/tp1size",     "decimals": False},
 }
 
 _pp_state: dict = {}       # cid → {"action","kind","symbol","idx","digits": str, "back_cb": str} — tap price-picker
@@ -323,10 +329,11 @@ def _pp_render(chat_id, cid, msg_id):
         [{"text": str(n), "callback_data": f"pp_d:{n}"} for n in (4, 5, 6)],
         [{"text": str(n), "callback_data": f"pp_d:{n}"} for n in (7, 8, 9)],
         [{"text": "0", "callback_data": "pp_d:0"}, {"text": ".", "callback_data": "pp_d:."}],
+        [{"text": "⌨️ Type Instead", "callback_data": "pp_manual"}],
         [{"text": "◀️ Erase", "callback_data": "pp_prev"}, {"text": "🚫 Back", "callback_data": "pp_back"}],
     ]
     if st["digits"]:
-        rows.insert(-1, [{"text": "💾 Save", "callback_data": "pp_save"}])
+        rows.insert(-2, [{"text": "💾 Save", "callback_data": "pp_save"}])
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
 
 def _get_live_price(kind, symbol):
@@ -2126,7 +2133,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -2149,6 +2156,9 @@ def load_settings():
             SCAN2_AEROLINK = False
             TEST_AEROLINK  = False
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
+            CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
+            CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
+            ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -2182,6 +2192,9 @@ def save_settings():
             "scan2_model":      SCAN2_MODEL,
             "test_model":       TEST_MODEL,
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
+            "co_admin_chat_id": CO_ADMIN_CHAT_ID,
+            "co_admin_enabled": CO_ADMIN_ENABLED,
+            "tp1_close_pct": ct.TP1_CLOSE_PCT,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -3056,7 +3069,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
@@ -3067,7 +3080,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     _check_id = sender_id if sender_id else chat_id
     is_admin = (str(_check_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
 
-    if cmd in ADMIN_COMMANDS and not is_admin:
+    if cmd in ADMIN_COMMANDS and not is_admin and not (cmd == "/tradelog" and is_co_admin(_check_id)):
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see your commands."); return
 
     # -- Copy trade commands (user + admin) -----------------------------------
@@ -3814,6 +3827,25 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/entrystyle" and is_admin:
         send_entrystyle_screen(chat_id)
 
+    elif cmd == "/coadmin" and is_admin:
+        send_coadmin_screen(chat_id)
+
+    elif cmd == "/tp1size" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>TP1 Close %</b>\n\nCurrent: <b>{ct.TP1_CLOSE_PCT}%</b> closes at TP1, the rest rides to TP2.\n\n"
+                f"Use the tap keypad or type a number 1–99.")
+            return
+        try:
+            pct = float(parts[1])
+            if pct < 1 or pct > 99:
+                send_reply(chat_id, "TP1 close % must be between 1 and 99."); return
+            ct.TP1_CLOSE_PCT = pct
+            save_settings()
+            send_reply(chat_id, f"<b>TP1 Close % Set</b>\n\n{pct}% closes at TP1, {100-pct}% rides to TP2.")
+        except ValueError:
+            send_reply(chat_id, "Please enter a valid number 1–99.")
+
     elif cmd == "/channels":
         ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
         s1 = "PAUSED" if channel_paused["1"] else "ACTIVE"
@@ -4021,7 +4053,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"✅ <b>Demo → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd_btns); return
 
-    elif cmd == "/tradelog" and is_admin:
+    elif cmd == "/tradelog" and (is_admin or is_co_admin(chat_id)):
         if not os.path.exists(TRADE_LOG_CSV):
             send_reply(chat_id, "📂 No trade history yet. Trades are logged automatically after first signal."); return
         try:
@@ -5195,6 +5227,7 @@ _TRADECONTROL_SUBCATS = {
         ("/setsl",   "🔧", "Set Custom SL",        "Pick any open trade, then tap in a new stop-loss price for it."),
         ("/settp1",  "🎯", "Set Custom TP1",       "Pick any open trade, then tap in a new first take-profit price for it."),
         ("/settp2",  "🏆", "Set Custom TP2",       "Pick any open trade, then tap in a new final take-profit price for it."),
+        ("/tp1size", "📐", "TP1 Close %",          "How much of the position closes at TP1 (default 50%) — the rest rides to TP2."),
     ]),
     "close": ("❌ Close Positions", [
         ("/close",      "❌", "Close BTC Trade",     "Manually closes the currently active BTC trade right now."),
@@ -5219,6 +5252,7 @@ _COPYADMIN_SUBCATS = {
     "manage": ("🛡 User Management", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
         ("/pauseuser", "⏸", "Pause / Unpause",   "Pause or resume a specific user's copy trading without removing them."),
+        ("/coadmin",   "🤝", "Co-Admin",          "Give one trusted user CSV-only access — no user management, billing, or resets."),
     ]),
     "sync": ("🔄 Sync & Recovery", [
         ("/ctstatus",  "🔍", "Failed Users",      "Shows users whose copy trade failed, plus the active signal."),
@@ -5381,9 +5415,10 @@ def _np_render(chat_id, cid, msg_id):
     if cfg["decimals"]:
         zero_row.append({"text": ".", "callback_data": "np_d:."})
     rows.append(zero_row)
+    rows.append([{"text": "⌨️ Type Instead", "callback_data": "np_manual"}])
     rows.append([{"text": "◀️ Erase", "callback_data": "np_prev"}, {"text": "🚫 Back", "callback_data": "np_back"}])
     if digits:
-        rows.insert(-1, [{"text": "💾 Save", "callback_data": "np_save"}])
+        rows.insert(-2, [{"text": "💾 Save", "callback_data": "np_save"}])
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
 
 def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
@@ -5596,6 +5631,40 @@ def send_entrystyle_screen(chat_id, message_id=None):
         "does, the position stays unfilled on BingX (this applies to Scan1/Scan2 only).",
         {"inline_keyboard": rows}, message_id=message_id)
 
+def send_coadmin_screen(chat_id, message_id=None):
+    global CO_ADMIN_CHAT_ID
+    _flag = "✅ ON" if CO_ADMIN_ENABLED else "❌ OFF"
+    _uname = user_usernames.get(str(CO_ADMIN_CHAT_ID), "")
+    _who = f"@{_uname}" if _uname else (str(CO_ADMIN_CHAT_ID) if CO_ADMIN_CHAT_ID else "not set")
+    rows = [
+        [{"text": f"Co-Admin: {_who}  {_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON", "callback_data": "coadmin_on"}, {"text": "🔴 Turn OFF", "callback_data": "coadmin_off"}],
+        [{"text": "👤 Choose Co-Admin", "callback_data": "coadmin_pick"}],
+        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+    ]
+    _help_edit_or_send(chat_id,
+        "<b>🤝 Co-Admin</b>\n\n"
+        "Give one trusted person a single extra permission: viewing the Trade History CSV "
+        "(<code>/tradelog</code>). They get NO other admin power — can't see/manage users, "
+        "can't see billing, can't reset or close anything. When ON, their contact also "
+        "appears next to Contact Admin for regular users.",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def send_coadmin_pick_screen(chat_id, message_id=None):
+    ids = [u for u in registered_users if int(u) > 0]
+    if not ids:
+        _help_edit_or_send(chat_id, "No registered users yet.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "coadmin_open"}]]}, message_id=message_id)
+        return
+    rows = []
+    for uid in ids:
+        uname = user_usernames.get(str(uid))
+        label = f"@{uname}" if uname else f"ID {uid}"
+        rows.append([{"text": label, "callback_data": f"coadmin_set:{uid}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "coadmin_open"}])
+    _help_edit_or_send(chat_id, "<b>👤 Choose Co-Admin</b>\n\nTap the user to grant Trade History CSV access:",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_ctpause_screen(chat_id, message_id=None):
     _btc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
     _scan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
@@ -5664,6 +5733,10 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     _extra_row = []
     if CONTACT_ADMIN_ENABLED and ADMIN_CHAT_ID:
         _extra_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
+    if CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID:
+        _co_uname = user_usernames.get(str(CO_ADMIN_CHAT_ID))
+        _co_url = f"https://t.me/{_co_uname}" if _co_uname else f"tg://user?id={CO_ADMIN_CHAT_ID}"
+        _extra_row.append({"text": "💬 Contact Co-Admin", "url": _co_url})
     if SIGNAL_CHANNEL_ENABLED and SIGNAL_CHANNEL_LINK:
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
@@ -5762,6 +5835,8 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         send_aiconfig_type_screen(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
     elif back_cb == "entrystyle_open":
         send_entrystyle_screen(chat_id, message_id=msg_id)
+    elif back_cb == "coadmin_open":
+        send_coadmin_screen(chat_id, message_id=msg_id)
     elif back_cb.startswith("trdpick_open:"):
         _action = back_cb.split(":", 1)[1]
         _orig_back = _TRDPICK_BACKCB.get(str(cid), "help_cat:monitor")
@@ -6039,6 +6114,15 @@ def command_listener():
                         st = _np_state.pop(str(cb_cid), None)
                         back_cb = st["back_cb"] if st else "help_cat:copyuser"
                         _navigate_to(back_cb, cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
+                    elif cb_data == "np_manual":
+                        st = _np_state.pop(str(cb_cid), None)
+                        if st:
+                            cfg = _NP_CONFIG[st["target"]]
+                            pending_input[cb_cid] = {"cmd": cfg["cmd"], "msg_id": cb_msg_id, "cat_id": st["back_cb"]}
+                            _help_edit_or_send(cb_chat_id,
+                                f"⌨️ <b>Type {cfg['label']}</b>\n\nSend the value as a message (e.g. <code>{'2.5' if cfg['decimals'] else '50'}</code>):",
+                                {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": st["back_cb"]}]]},
+                                message_id=cb_msg_id)
 
                     # ── Trade picker (SL/TP/close on any open trade) ──────────
                     elif cb_data.startswith("trdpick_open:") and cb_is_admin:
@@ -6083,6 +6167,15 @@ def command_listener():
                         st = _pp_state.pop(str(cb_cid), None)
                         back_cb = st["back_cb"] if st else "help_cat:monitor"
                         _navigate_to(back_cb, cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
+                    elif cb_data == "pp_manual":
+                        st = _pp_state.pop(str(cb_cid), None)
+                        if st:
+                            label = {"setsl": "Stop Loss", "settp1": "TP1", "settp2": "TP2"}[st["action"]]
+                            pending_input[cb_cid] = {"cmd": "_pp_manual", "msg_id": cb_msg_id, "cat_id": st["back_cb"], "pp": st}
+                            _help_edit_or_send(cb_chat_id,
+                                f"⌨️ <b>Type {label} — {st['symbol']}</b>\n\nSend the price as a message (e.g. <code>62000</code>):",
+                                {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": st["back_cb"]}]]},
+                                message_id=cb_msg_id)
                     elif cb_data == "pp_save":
                         st = _pp_state.get(str(cb_cid))
                         if st:
@@ -6124,10 +6217,11 @@ def command_listener():
                             "/closescan":  ("closescan", "Clear ALL open Scan1 + Scan2 trades? This closes them in the bot immediately."),
                             "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
                         }
-                        _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk"}
+                        _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size"}
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
                                         "/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
-                                        "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen}
+                                        "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
+                                        "/coadmin": send_coadmin_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
@@ -6319,6 +6413,22 @@ def command_listener():
                             TEST_MODEL = _model_val; TEST_AEROLINK = _aero_val
                         save_settings()
                         send_aiconfig_type_screen(cb_chat_id, _kind, message_id=cb_msg_id)
+                    elif cb_data == "coadmin_open" and cb_is_admin:
+                        send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "coadmin_on" and cb_is_admin:
+                        global CO_ADMIN_ENABLED
+                        CO_ADMIN_ENABLED = True; save_settings()
+                        send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "coadmin_off" and cb_is_admin:
+                        CO_ADMIN_ENABLED = False; save_settings()
+                        send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "coadmin_pick" and cb_is_admin:
+                        send_coadmin_pick_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("coadmin_set:") and cb_is_admin:
+                        global CO_ADMIN_CHAT_ID
+                        CO_ADMIN_CHAT_ID = cb_data.split(":", 1)[1]
+                        save_settings()
+                        send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("entrystyle:") and cb_is_admin:
                         global ZONE_ENTRY_ENABLED
                         ZONE_ENTRY_ENABLED = (cb_data.split(":", 1)[1] == "zone")
@@ -6554,6 +6664,27 @@ def command_listener():
                         SIGNAL_CHANNEL_LINK = text.strip()
                         save_settings()
                         send_adminlinks_screen(cid, message_id=_pi_msg_id)
+                    elif pi["cmd"] == "_pp_manual":
+                        del pending_input[cid]
+                        ppst = pi["pp"]
+                        try:
+                            price = float(text.strip())
+                        except ValueError:
+                            price = None
+                        if price is None or price <= 0:
+                            send_reply(cid, "⚠️ Enter a valid price greater than 0.", reply_markup=_back_mkp)
+                        else:
+                            _ok, _reason = _apply_trade_price_edit(ppst["action"], ppst["kind"], ppst["symbol"], ppst["idx"], price)
+                            if not _ok and _reason and "no longer open" not in _reason:
+                                send_reply(cid, f"⚠️ {_reason}", reply_markup=_back_mkp)
+                            else:
+                                if _ok:
+                                    send_telegram(f"<b>{ppst['symbol']} {ppst['action'].upper()} -&gt; {price:,.6f}</b>\n\n<i>🛡️ Capital protected</i>")
+                                _msg = f"✅ <b>{ppst['symbol']} updated to {price:,.6f}</b>" if _ok else f"⚠️ {_reason or ppst['symbol'] + ' trade no longer open.'}"
+                                if _pi_msg_id:
+                                    _help_edit_or_send(cid, _msg, _back_mkp, message_id=_pi_msg_id)
+                                else:
+                                    send_reply(cid, _msg, reply_markup=_back_mkp)
                     else:
                         del pending_input[cid]
                         _step = pi.get("step", "")
@@ -6749,8 +6880,7 @@ def _demo_monitor_loop():
                             f"──────────────────────\n"
                             f"Price @ TP2: <b>{cp:,.6g}</b>\n"
                             f"Entry: {entry:,.6g} → TP2: {tp2:,.6g}\n"
-                            f"Result: <b>FULL WIN</b>\n\n"
-                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
+                            f"Result: <b>FULL WIN</b>")
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
@@ -6764,8 +6894,7 @@ def _demo_monitor_loop():
                             f"──────────────────────\n"
                             f"Price @ {lbl}: <b>{cp:,.6g}</b>\n"
                             f"Entry: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}\n"
-                            f"Result: <b>{result}</b>\n\n"
-                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
+                            f"Result: <b>{result}</b>")
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -6779,8 +6908,7 @@ def _demo_monitor_loop():
                             f"──────────────────────\n"
                             f"Price @ TP1: <b>{cp:,.6g}</b>\n"
                             f"50% closed. BE SL → <b>{be_sl_price:,.6g}</b>\n"
-                            f"Runner TP2: {tp2:,.6g}\n\n"
-                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
+                            f"Runner TP2: {tp2:,.6g}")
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
@@ -6791,8 +6919,7 @@ def _demo_monitor_loop():
                             f"──────────────────────\n"
                             f"1H elapsed — no TP1/SL hit.\n"
                             f"Exit @ <b>{cp:,.6g}</b> | P/L: <b>{pnl:+.2f}%</b>\n"
-                            f"Entry: {entry:,.6g}\n\n"
-                            f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>")
+                            f"Entry: {entry:,.6g}")
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
@@ -7042,8 +7169,7 @@ def _run_test_scan(cid, scan_ver: int):
             demo_msg = (
                 f"<b>📣 [DEMO] {coin}-USDT</b>\n"
                 f"<b>{'─'*22}</b>\n\n"
-                f" TEST SIGNAL — SCALP V1\n"
-                f"  🕐 {ist_str()}\n\n"
+                f" TEST SIGNAL — SCALP V1\n\n"
                 f"{arrow} — <b>MARKET ENTRY</b>\n\n"
                 f"🎯 Entry:      <b>{scan_entry:,.4g}</b>\n"
                 f"🛑 SL:         <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
@@ -7051,9 +7177,7 @@ def _run_test_scan(cid, scan_ver: int):
                 f"💰 TP1:       <b>{scan_tp1:,.4g}</b>\n"
                 f"🏆 TP2:       <b>{scan_tp2:,.4g}</b>\n"
                 f"📊 RR:        <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
-                f"⏰ Timeout: 1H | move_age: {age}c\n\n"
-                f"✨ <i>- CLEXER SCALP V1 [DEMO] -</i>\n"
-                f"⚠️ <i>No real trade placed</i>"
+                f"⏰ Timeout: 1H | move_age: {age}c"
             )
             send_telegram(demo_msg)
 
