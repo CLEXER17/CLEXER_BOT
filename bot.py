@@ -3313,6 +3313,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     if cmd in ADMIN_COMMANDS and not is_scanadmin:
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see your commands."); return
 
+    if cmd == "/setvip" and is_admin and len(parts) < 2:
+        send_vip_pick_screen(chat_id)
+        return
+    if cmd == "/setfree" and is_admin and len(parts) < 2:
+        send_free_pick_screen(chat_id)
+        return
+
     # -- Copy trade commands (user + admin) -----------------------------------
     if ct.is_ct_command(cmd, is_admin):
         uname = (message.get("from",{}).get("username","?") if message else "?")
@@ -6003,6 +6010,46 @@ def send_coadmin_pick_screen(chat_id, message_id=None):
     _help_edit_or_send(chat_id, "<b>👤 Choose Co-Admin</b>\n\nTap the user to grant Trade History CSV access:",
         {"inline_keyboard": rows}, message_id=message_id)
 
+def send_vip_pick_screen(chat_id, message_id=None):
+    ids = [u for u in registered_users if int(u) > 0]
+    if not ids:
+        _help_edit_or_send(chat_id, "No registered users yet.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}]]}, message_id=message_id)
+        return
+    rows = []
+    for uid in ids:
+        uname = user_usernames.get(str(uid))
+        _u_ct = ct._get(str(uid))
+        tier_tag = ""
+        if _u_ct:
+            tier_tag = "  ⭐" if _u_ct.get("tier", "vip") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
+        label = (f"@{uname}" if uname else f"ID {uid}") + tier_tag
+        rows.append([{"text": label, "callback_data": f"vip_pick:{uid}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
+    _help_edit_or_send(chat_id,
+        "⭐ <b>Promote to VIP</b>\n\nChoose any registered user — they don't need to have connected BingX yet:",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def send_free_pick_screen(chat_id, message_id=None):
+    ids = [u for u in registered_users if int(u) > 0]
+    if not ids:
+        _help_edit_or_send(chat_id, "No registered users yet.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}]]}, message_id=message_id)
+        return
+    rows = []
+    for uid in ids:
+        uname = user_usernames.get(str(uid))
+        _u_ct = ct._get(str(uid))
+        tier_tag = ""
+        if _u_ct:
+            tier_tag = "  ⭐" if _u_ct.get("tier", "vip") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
+        label = (f"@{uname}" if uname else f"ID {uid}") + tier_tag
+        rows.append([{"text": label, "callback_data": f"free_set:{uid}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
+    _help_edit_or_send(chat_id,
+        "🆓 <b>Demote to Free</b>\n\nChoose any registered user:",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_ctpause_screen(chat_id, message_id=None):
     _btc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
     _scan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
@@ -6982,7 +7029,8 @@ def command_listener():
                         handle_command(f"/pauseuser {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("free_set:") and cb_is_admin:
                         uid = cb_data.split(":", 1)[1]
-                        handle_command(f"/setfree {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                        _tgt_uname = user_usernames.get(str(uid), str(uid))
+                        handle_command(f"/setfree {uid} {_tgt_uname}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("vip_pick:") and cb_is_admin:
                         uid = cb_data.split(":", 1)[1]
                         _vip_state[str(cb_cid)] = {"uid": uid, "stage": "start", "digits": "", "start": ""}
@@ -7018,7 +7066,8 @@ def command_listener():
                                 _vip_render(cb_chat_id, cb_cid, cb_msg_id)
                             else:
                                 _vip_state.pop(str(cb_cid), None)
-                                handle_command(f"/setvip {st['uid']} {st['start']} {date_str}", cb_chat_id, {}, sender_id=cb_cid)
+                                _tgt_uname = user_usernames.get(str(st["uid"]), str(st["uid"]))
+                                handle_command(f"/setvip {st['uid']} {st['start']} {date_str} {_tgt_uname}", cb_chat_id, {}, sender_id=cb_cid)
                                 _navigate_to("help_cat:copyadmin", cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
                     elif cb_data.startswith("ctretry:"):
                         uid = cb_data.split(":")[1]
@@ -7132,12 +7181,12 @@ def command_listener():
                             if _uname_part and not _uname_part.startswith(("+", "joinchat")):
                                 _id_tok = f"@{_uname_part.lstrip('@')}"
                         if not _id_tok:
-                            send_reply(cid,
-                                "⚠️ That looks like a private invite link with no public username, so I can't "
-                                "derive a send-target from it. Forward any message from the channel to "
-                                "@userinfobot to get its numeric ID (looks like -1001234567890), then send "
-                                "it here — optionally with the link after it.",
-                                reply_markup=_back_mkp)
+                            _help_edit_or_send(cid,
+                                "⚠️ <b>That looks like a private invite link with no public username</b>\n\n"
+                                "Forward any message from the channel to @userinfobot to get its numeric ID "
+                                "(looks like <code>-1001234567890</code>), then send it here — optionally "
+                                "with the link after it.",
+                                _back_mkp, message_id=_pi_msg_id)
                         else:
                             del pending_input[cid]
                             CHANNELS.append({"id": _id_tok, "tier": pi["tier"], "label": _id_tok, "link": _link_tok})
@@ -7154,7 +7203,8 @@ def command_listener():
                             _vip_state[str(cid)] = {"uid": vst["uid"], "stage": "end", "digits": "", "start": _txt}
                             _vip_render(cid, cid, _pi_msg_id)
                         else:
-                            handle_command(f"/setvip {vst['uid']} {vst['start']} {_txt}", cid, {}, sender_id=cid)
+                            _tgt_uname = user_usernames.get(str(vst["uid"]), str(vst["uid"]))
+                            handle_command(f"/setvip {vst['uid']} {vst['start']} {_txt} {_tgt_uname}", cid, {}, sender_id=cid)
                             _navigate_to("help_cat:copyadmin", cid, cid, _pi_msg_id, True)
                     elif pi["cmd"] == "_pp_manual":
                         del pending_input[cid]
