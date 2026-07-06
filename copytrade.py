@@ -2404,9 +2404,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, "⭐ <b>Promote to VIP</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
         if len(parts) < 4:
             send_reply_fn(chat_id, "Usage: /setvip <chat_id> <DD.MM.YYYY start> <DD.MM.YYYY end>"); return
-        target = str(parts[1]); user = _db.get(target)
-        if not user:
-            send_reply_fn(chat_id, f"User {target} not found."); return
+        target = str(parts[1])
+        user = _db.get(target) or _default_user(parts[4] if len(parts) > 4 else target)
         import re as _re
         if not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[2]) or not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[3]):
             send_reply_fn(chat_id, "Dates must be DD.MM.YYYY, e.g. 17.08.2026"); return
@@ -2420,10 +2419,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         if len(parts) < 2:
             rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"free_set:{uid}"}] for uid, u in list(_db.items())]
             send_reply_fn(chat_id, "🆓 <b>Demote to Free</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
-        target = str(parts[1]); user = _db.get(target)
-        if not user:
-            send_reply_fn(chat_id, f"User {target} not found."); return
-        user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""
+        target = str(parts[1])
+        user = _db.get(target) or _default_user(parts[2] if len(parts) > 2 else target)
+        user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""; user["vip_grace_notified_at"] = 0
         _set(target, user)
         send_reply_fn(chat_id, f"<b>🆓 @{user.get('username','?')} set to Free tier</b>\n\n<i>🛡️ Capital protected</i>")
 
