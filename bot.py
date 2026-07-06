@@ -298,15 +298,15 @@ def is_co_admin(chat_id) -> bool:
 
 def _co_admin_allowed_commands() -> set:
     """Co-admin's permission set = every command in Scan Control + Trade Control
-    (force scans, BTC scan control, SL/TP/close on any trade) — nothing from
-    Copy Admin (user mgmt), Settings, Broadcast, or billing/report screens stay
-    admin-only via the explicit exclusion below."""
+    (force scans, BTC scan control, SL/TP/close on any trade), plus /tradelog
+    specifically. Nothing from Copy Admin (user mgmt), Settings, Broadcast, or
+    billing/report screens — those stay admin-only."""
     cmds = set()
     for subcats in (_SCAN_SUBCATS, _TRADECONTROL_SUBCATS):
         for _label, entries in subcats.values():
             for entry in entries:
                 cmds.add(entry[0])
-    cmds.discard("/report")  # billing/API cost stays admin-only
+    cmds.add("/tradelog")
     return cmds
 
 def register_user(chat_id, username=None):
@@ -2266,13 +2266,13 @@ def load_settings():
             SCAN2_AUTO_ENABLED    = d.get("scan2_auto",          False)
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
             SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
-            USE_AEROLINK          = False  # always OFF on startup — must re-enable via /gateway after every deploy
+            USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
             SCAN1_MODEL    = d.get("scan1_model", SCAN1_MODEL)
             SCAN2_MODEL    = d.get("scan2_model", SCAN2_MODEL)
             TEST_MODEL     = d.get("test_model",  TEST_MODEL)
-            SCAN1_AEROLINK = False  # all Aerolink gateways always reset OFF on startup for safety
-            SCAN2_AEROLINK = False
-            TEST_AEROLINK  = False
+            SCAN1_AEROLINK = d.get("scan1_aerolink", SCAN1_AEROLINK)
+            SCAN2_AEROLINK = d.get("scan2_aerolink", SCAN2_AEROLINK)
+            TEST_AEROLINK  = d.get("test_aerolink",  TEST_AEROLINK)
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
             CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
@@ -2313,6 +2313,9 @@ def save_settings():
             "scan1_model":      SCAN1_MODEL,
             "scan2_model":      SCAN2_MODEL,
             "test_model":       TEST_MODEL,
+            "scan1_aerolink":   SCAN1_AEROLINK,
+            "scan2_aerolink":   SCAN2_AEROLINK,
+            "test_aerolink":    TEST_AEROLINK,
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
@@ -3523,6 +3526,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Copy trade: per-user for non-admin, global active users count for admin
         _user_ct = ct._get(str(chat_id))
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
+        _tier_val = (_user_ct or {}).get("tier", "vip")
+        _tier_tag = ("⭐ VIP" + (f" (until {_user_ct['vip_end']})" if _user_ct and _user_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
         _users_summary = _build_users_summary()
         send_reply(chat_id,
             f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
@@ -3535,6 +3540,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 if is_admin else ""
             )
             + f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
+            + (f"🏷 Tier:        <b>{_tier_tag}</b>\n" if _user_ct else "")
             + (
                 f"📋 Copy Trade — BTC:{_ctbtc_flag} Scan1:{_ctscan1_flag} Scan2:{_ctscan2_flag}\n"
                 f"🖼  Charts:     <b>{_charts_flag}</b>\n"
@@ -5421,16 +5427,15 @@ _SCAN_SUBCATS = {
         ("/altdemo", "⏰", "Demo/Test Times",   "Edit the exact hour:minute slots the demo scan fires at."),
     ]),
     "run": ("🔍 Run Now", [
-        ("/scan",  "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
-        ("/scan1", "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
-        ("/scan2", "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
-        ("/test",  "🧪", "Run Demo Scan",       "Fires a demo/test scan now — signals only, no real trades."),
-        ("/demo",  "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
+        ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
+        ("/scan1",  "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
+        ("/scan2",  "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
+        ("/signal", "⚡", "Force BTC Scan",       "Runs a BTC signal analysis immediately, outside the schedule."),
+        ("/test",   "🧪", "Run Demo Scan",       "Fires a demo/test scan now — signals only, no real trades."),
+        ("/demo",   "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
     ]),
-    "data": ("📊 Data & Settings", [
-        ("/tradelog", "📥", "Trade History CSV", "Download the full trade log as a CSV file."),
-        ("/report",   "📊", "API Cost Report",   "Daily Claude API token usage and cost breakdown."),
-        ("/coin",     "🪙", "Coin Lookup",       "Type any coin's name and the bot finds and analyzes it for you."),
+    "lookup": ("🪙 Coin Lookup", [
+        ("/coin", "🪙", "Coin Lookup", "Type any coin's name and the bot finds and analyzes it for you."),
     ]),
 }
 
@@ -5449,9 +5454,7 @@ _TRADECONTROL_SUBCATS = {
         ("/closescan",  "🗑", "Clear All Scan Trades","Force-closes every open Scan1/Scan2 trade on BingX for all copy users, then clears them from the bot."),
     ]),
     "actions": ("⚡ Other Actions", [
-        ("/signal",  "⚡", "Force BTC Scan",         "Runs a BTC signal analysis immediately, outside the schedule."),
-        ("/resetsl", "🔄", "Reset SL Streak",        "Clears the consecutive-SL counter and any active cooldown."),
-        ("/cancel",  "⛔", "Cancel Broadcast",       "Cancels a broadcast message that's pending confirmation."),
+        ("/resetsl", "🔄", "Reset SL Streak", "Clears the consecutive-SL counter and any active cooldown."),
     ]),
 }
 
@@ -5463,12 +5466,16 @@ _COPYADMIN_SUBCATS = {
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
         ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
     ]),
-    "manage": ("🛡 User Management", [
+    "manage": ("🛡 Moderation", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
         ("/pauseuser", "⏸", "Pause / Unpause",   "Pause or resume a specific user's copy trading without removing them."),
-        ("/coadmin",   "🤝", "Co-Admin",          "Give one trusted user Scan + Trade Control access — no user management, billing, or resets."),
+    ]),
+    "tiers": ("⭐ VIP & Tiers", [
         ("/setvip",    "⭐", "Promote to VIP",     "Give a user VIP for a date range — they get every signal (tap or type the dates)."),
         ("/setfree",   "🆓", "Set to Free",        "Downgrade a user to Free tier — they only copy the signals shared to the free channel."),
+    ]),
+    "coadmin": ("🤝 Co-Admin", [
+        ("/coadmin",   "🤝", "Co-Admin",          "Give one trusted user Scan + Trade Control access — no user management, billing, or resets."),
     ]),
     "sync": ("🔄 Sync & Recovery", [
         ("/ctstatus",  "🔍", "Failed Users",      "Shows users whose copy trade failed, plus the active signal."),
@@ -5512,6 +5519,10 @@ _SETTINGS_SUBCATS = {
     "extras": ("📰 Extras", [
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
+    ]),
+    "data": ("📊 Data & Reports", [
+        ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
+        ("/report",   "📊", "API Cost Report",   "Daily Claude API token usage and cost breakdown, across every feature."),
     ]),
 }
 
@@ -5887,12 +5898,12 @@ def send_channelmgmt_screen(chat_id, message_id=None):
     for i, c in enumerate(CHANNELS):
         tag = "⭐ VIP" if c.get("tier") == "vip" else "🆓 FREE"
         label = c.get("label") or c.get("id", "?")
-        rows.append([{"text": f"{tag}  {label}", "callback_data": "noop"},
-                     {"text": "🗑", "callback_data": f"chrm_remove:{i}"}])
+        rows.append([{"text": f"{tag} · {label}", "callback_data": "noop"}])
+        rows.append([{"text": "🗑 Remove", "callback_data": f"chrm_remove:{i}"}])
     rows.append([{"text": "➕ Add VIP Channel", "callback_data": "chrm_add:vip"}])
     rows.append([{"text": "➕ Add Free Channel", "callback_data": "chrm_add:free"}])
-    rows.append([{"text": f"🔢 Free Daily Limit: {FREE_SIGNAL_DAILY_LIMIT}", "callback_data": "help_cmd:/freelimit"}])
-    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    rows.append([{"text": f"🔢 Free Daily Limit: {FREE_SIGNAL_DAILY_LIMIT}", "callback_data": "freelimit_open"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "broadcast_sub:channels"}])
     _help_edit_or_send(chat_id,
         "<b>📡 Channels — VIP / Free</b>\n\n"
         "Add as many VIP or Free channels as you want. VIP channels get every signal. "
@@ -6023,14 +6034,14 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
-    if CHANNELS:
-        rows.append([{"text": "🆓⭐ Free / VIP Channels", "callback_data": "chanpick_open"}])
+    rows.append([{"text": "🆓⭐ Free / VIP Channels", "callback_data": "chanpick_open"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
     role = "👑 Admin" if is_admin else "👤 User"
     _greeting = f"👋 Welcome back, <b>{uname}</b>!\n\n" if uname else ""
     _pnl_line = ""
+    _tier_line = ""
     if cid is not None:
         _u_ct = ct._get(str(cid))
         if _u_ct and _u_ct.get("connected"):
@@ -6038,9 +6049,13 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
             _pnl = _h.get("total_pnl", 0.0)
             _pnl_s = f"+${_pnl:.2f} 🟢" if _pnl > 0 else (f"-${abs(_pnl):.2f} 🔴" if _pnl < 0 else "$0.00")
             _pnl_line = f"💰 Your Copy Trade P&L: <b>{_pnl_s}</b>\n\n"
+        if _u_ct:
+            _tier_val = _u_ct.get("tier", "vip")
+            _tag = ("⭐ VIP" + (f" (until {_u_ct['vip_end']})" if _u_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
+            _tier_line = f"🏷 Your Tier: <b>{_tag}</b>\n\n"
     text = (
         f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
-        f"{_greeting}{_pnl_line}"
+        f"{_greeting}{_tier_line}{_pnl_line}"
         "Tap a category to see commands 👇"
     )
     cid_str = str(chat_id)
@@ -6713,6 +6728,9 @@ def command_listener():
                     elif cb_data == "coadmin_off" and cb_is_admin:
                         CO_ADMIN_ENABLED = False; save_settings()
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "freelimit_open" and cb_is_admin:
+                        _np_state[str(cb_cid)] = {"target": "freelimit", "digits": "", "back_cb": "channelmgmt_open"}
+                        _np_render(cb_chat_id, cb_cid, cb_msg_id)
                     elif cb_data == "chanpick_open":
                         send_channel_picker_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("chanpick:"):
