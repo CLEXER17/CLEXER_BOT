@@ -256,6 +256,7 @@ def _default_user(username: str = "?") -> dict:
         "tier":           "vip",  # "vip" or "free" — set via /setvip /setfree; new users default VIP so nothing breaks silently
         "vip_start":      "",     # "DD.MM.YYYY" — only meaningful when tier == "vip" with an expiry
         "vip_end":        "",     # "DD.MM.YYYY" — VIP auto-downgrades to free after this date
+        "vip_grace_notified_at": 0,  # set once the 24h renew-or-removed reminder has been sent
     }
 
 
@@ -2409,7 +2410,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         import re as _re
         if not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[2]) or not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[3]):
             send_reply_fn(chat_id, "Dates must be DD.MM.YYYY, e.g. 17.08.2026"); return
-        user["tier"] = "vip"; user["vip_start"] = parts[2]; user["vip_end"] = parts[3]
+        user["tier"] = "vip"; user["vip_start"] = parts[2]; user["vip_end"] = parts[3]; user["vip_grace_notified_at"] = 0
         _set(target, user)
         send_reply_fn(chat_id,
             f"<b>⭐ @{user.get('username','?')} promoted to VIP</b>\n\n"
