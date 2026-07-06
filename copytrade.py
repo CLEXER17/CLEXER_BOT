@@ -253,6 +253,9 @@ def _default_user(username: str = "?") -> dict:
                            "total_pnl": 0.0, "won_usdt": 0.0, "lost_usdt": 0.0},
         "paused_by_admin": False,
         "joined":         _now_ist(),
+        "tier":           "vip",  # "vip" or "free" — set via /setvip /setfree; new users default VIP so nothing breaks silently
+        "vip_start":      "",     # "DD.MM.YYYY" — only meaningful when tier == "vip" with an expiry
+        "vip_end":        "",     # "DD.MM.YYYY" — VIP auto-downgrades to free after this date
     }
 
 
@@ -476,11 +479,15 @@ def _record_pnl(user: dict, pnl: float):
 
 # ─── COPY TRADE MIRROR ACTIONS ────────────────────────────────────────────────
 
-def _users_with_copy() -> list[tuple[str, dict, str, str]]:
-    """Yield (cid, user, api_key, api_secret) for all active copy users."""
+def _users_with_copy(share_free: bool = True) -> list[tuple[str, dict, str, str]]:
+    """Yield (cid, user, api_key, api_secret) for all active copy users.
+    share_free=False excludes free-tier users — used when a signal didn't make
+    today's free-channel quota, so free users only ever copy what free channels got."""
     out = []
     for cid, user in list(_db.items()):
         if not user.get("copy_on") or not user.get("connected") or user.get("paused_by_admin"):
+            continue
+        if not share_free and user.get("tier", "vip") == "free":
             continue
         try:
             out.append((cid, user, _decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"])))
@@ -488,11 +495,13 @@ def _users_with_copy() -> list[tuple[str, dict, str, str]]:
             print(f"[CT] decrypt error {cid}: {e}")
     return out
 
-def on_signal(signal: dict, price: float) -> list[str]:
+def on_signal(signal: dict, price: float, share_free: bool = True) -> list[str]:
     """
     Called when bot generates BUY/SELL signal.
     MARKET entry  → open position + set SL + set TP2
     PULLBACK entry → place limit order at entry level
+    share_free: whether today's free-channel quota was met for this signal —
+    free-tier users only copy when True.
     Returns list of result strings for admin notification.
     """
     global _last_signal
@@ -522,7 +531,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
     }
     _save_last_signal()
 
-    for cid, user, api_key, api_secret in _users_with_copy():
+    for cid, user, api_key, api_secret in _users_with_copy(share_free):
         try:
             # Skip if user blocked BTC copy (/nocopy BTC)
             nocopy = set(user.get("nocopy_coins", []))
@@ -940,10 +949,11 @@ def is_scan_tp1_hit(symbol: str) -> bool:
     return False
 
 
-def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
+def on_scan_signal(signal_dict: dict, symbol: str, price: float, share_free: bool = True) -> list[str]:
     """
     Place a scan-sourced trade (alt coin) for all copy users.
     ver is passed inside signal_dict["ver"]: 1→s1_* slot, 2→scan_* slot
+    share_free: whether today's free-channel quota was met — free-tier users only copy when True.
     """
     ver = signal_dict.get("ver")
     if ver == 1 and not SCAN1_CT_ENABLED:
@@ -952,10 +962,10 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float) -> list[str]:
         return ["[CT] Scan2 copy trade is OFF"]
 
     with _scan_signal_lock:
-        return _on_scan_signal_inner(signal_dict, symbol, price)
+        return _on_scan_signal_inner(signal_dict, symbol, price, share_free)
 
 
-def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[str]:
+def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_free: bool = True) -> list[str]:
 
     ver        = int(signal_dict.get("ver", 2))   # 1=scan1 slot, 2=scan2 slot
     side       = signal_dict["signal"]
@@ -969,7 +979,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
     trade_side = side
     results    = []
 
-    for cid, user, api_key, api_secret in _users_with_copy():
+    for cid, user, api_key, api_secret in _users_with_copy(share_free):
         try:
             # Find a free slot for this scan version
             p = _free_slot(user, ver)
@@ -1896,7 +1906,7 @@ CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage", "/se
                      "/copytrade", "/mytrade", "/mysize", "/myhistory",
                      "/nocopy"}
 CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
-                     "/ctretry", "/ctstatus", "/ctclose"}
+                     "/ctretry", "/ctstatus", "/ctclose", "/setvip", "/setfree"}
 
 def is_ct_command(cmd: str, is_admin: bool) -> bool:
     if cmd in CT_USER_COMMANDS: return True
@@ -2251,8 +2261,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             paused   = " ⛔" if user.get("paused_by_admin") else ""
             risk     = user.get("risk_usdt")
             lev_str  = f"auto (max ${risk} loss)" if risk else f"{user.get('leverage',1)}x manual"
+            tier     = user.get("tier", "vip")
+            tier_tag = "⭐ VIP" if tier == "vip" else "🆓 FREE"
             lines.append(
-                f"{i}. {uname}{paused} | <code>{uid}</code>\n"
+                f"{i}. {uname}{paused} | <code>{uid}</code>  {tier_tag}\n"
                 f"   BingX:{bingx_ok} Copy:{copy_s} | "
                 f"${user.get('size_usdt',0):.0f} {lev_str}"
                 f"{pos_line}\n")
@@ -2296,8 +2308,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         paused = "\n⚠️ PAUSED BY ADMIN" if user.get("paused_by_admin") else ""
         _risk = user.get("risk_usdt")
         _lev_line = f"Auto-Risk: <b>max ${_risk} loss/trade</b> (leverage recalculated per trade)" if _risk else f"Leverage: <b>{user.get('leverage',1)}x manual</b>"
+        _tier = user.get("tier", "vip")
+        _tier_line = "⭐ <b>VIP</b>" + (f" (until {user['vip_end']})" if user.get("vip_end") else "") if _tier == "vip" else "🆓 <b>FREE</b>"
         send_reply_fn(chat_id,
             f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
+            f"Tier: {_tier_line}\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
             f"Size: <b>${user.get('size_usdt',0)} USDT</b> | {_lev_line}"
@@ -2346,6 +2361,35 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"<b>User {state}</b>\n\n"
             f"@{user.get('username','?')} (ID:{target})\n\n"
             f"<i>🛡️ Capital protected</i>")
+
+    elif cmd == "/setvip" and is_admin:
+        if len(parts) < 2:
+            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"vip_pick:{uid}"}] for uid, u in list(_db.items())]
+            send_reply_fn(chat_id, "⭐ <b>Promote to VIP</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
+        if len(parts) < 4:
+            send_reply_fn(chat_id, "Usage: /setvip <chat_id> <DD.MM.YYYY start> <DD.MM.YYYY end>"); return
+        target = str(parts[1]); user = _db.get(target)
+        if not user:
+            send_reply_fn(chat_id, f"User {target} not found."); return
+        import re as _re
+        if not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[2]) or not _re.match(r"^\d{2}\.\d{2}\.\d{4}$", parts[3]):
+            send_reply_fn(chat_id, "Dates must be DD.MM.YYYY, e.g. 17.08.2026"); return
+        user["tier"] = "vip"; user["vip_start"] = parts[2]; user["vip_end"] = parts[3]
+        _set(target, user)
+        send_reply_fn(chat_id,
+            f"<b>⭐ @{user.get('username','?')} promoted to VIP</b>\n\n"
+            f"From <b>{parts[2]}</b> to <b>{parts[3]}</b>\n\n<i>🛡️ Capital protected</i>")
+
+    elif cmd == "/setfree" and is_admin:
+        if len(parts) < 2:
+            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"free_set:{uid}"}] for uid, u in list(_db.items())]
+            send_reply_fn(chat_id, "🆓 <b>Demote to Free</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
+        target = str(parts[1]); user = _db.get(target)
+        if not user:
+            send_reply_fn(chat_id, f"User {target} not found."); return
+        user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""
+        _set(target, user)
+        send_reply_fn(chat_id, f"<b>🆓 @{user.get('username','?')} set to Free tier</b>\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/ctstatus" and is_admin:
         # Show failed copy users and current active signal
