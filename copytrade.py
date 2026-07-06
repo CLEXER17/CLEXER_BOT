@@ -38,6 +38,14 @@ CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
+TP1_CLOSE_PCT = 50  # % of the position closed at TP1 — rest rides to TP2. Set via /tp1size (tap or type).
+
+def _tp1_split(qty: float) -> tuple[float, float]:
+    """Splits a position size into (tp1_qty, tp2_qty) per TP1_CLOSE_PCT."""
+    tp1_qty = max(round(qty * (TP1_CLOSE_PCT / 100), 4), 0.0001)
+    tp2_qty = max(round(qty - tp1_qty, 4), 0.0001)
+    return tp1_qty, tp2_qty
+
 SCAN_CT_ENABLED = True   # legacy combined flag — kept for backward compat, no longer gates anything
 BTC_CT_ENABLED   = True  # toggle with /ctpause btc|on|off — copy trade for BTC signals
 SCAN1_CT_ENABLED = True  # toggle with /ctpause scan1|on|off — copy trade for Scan1 signals
@@ -543,7 +551,7 @@ def on_signal(signal: dict, price: float) -> list[str]:
                 if r.get("code") == 0:
                     uname = user.get("username", "?")
                     warnings = [f"{_qty_note} (@{uname})"] if _qty_note else []
-                    half_qty = max(round(qty / 2, 4), 0.001)
+                    tp1_qty, tp2_qty = _tp1_split(qty)
 
                     # ── SL order — full qty STOP_MARKET ──
                     sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
@@ -553,17 +561,17 @@ def on_signal(signal: dict, price: float) -> list[str]:
                     if not sl_ok:
                         warnings.append(f"⚠️ SL FAILED @{uname}: {sl_r.get('msg','?')}")
 
-                    # ── TP1 order — 50% qty at tp1 price ──
+                    # ── TP1 order — TP1_CLOSE_PCT% of qty at tp1 price ──
                     tp1_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                          half_qty, stop_price=tp1, position_side=trade_ps)
+                                          tp1_qty, stop_price=tp1, position_side=trade_ps)
                     tp1_ok = tp1_r.get("code") == 0
                     tp1_oid = str((tp1_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     if not tp1_ok:
                         warnings.append(f"⚠️ TP1 FAILED @{uname}: {tp1_r.get('msg','?')}")
 
-                    # ── TP2 order — remaining 50% qty at tp2 price ──
+                    # ── TP2 order — remaining qty at tp2 price ──
                     tp2_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                          half_qty, stop_price=tp2, position_side=trade_ps)
+                                          tp2_qty, stop_price=tp2, position_side=trade_ps)
                     tp2_ok = tp2_r.get("code") == 0
                     tp2_oid = str((tp2_r.get("data") or {}).get("order", {}).get("orderId", ""))
                     if not tp2_ok:
@@ -629,13 +637,13 @@ def on_tp1(entry: float, tp1: float = 0):
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             full_qty   = user.get("pos_qty", 0.001)
-            half_qty   = max(round(full_qty / 2, 4), 0.001)
+            tp1_qty, tp2_qty = _tp1_split(full_qty)
 
             # Cancel TP1 order and OLD SL order first
             _cancel_order(api_key, api_secret, user.get("tp1_order_id", ""))
             _cancel_order(api_key, api_secret, user.get("sl_order_id", ""))
 
-            # Check actual remaining position — BingX's TP1 order may have already closed 50%
+            # Check actual remaining position — BingX's TP1 order may have already closed its share
             time.sleep(1)
             pos_r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {"symbol": BINGX_SYMBOL})
             actual_qty = 0.0
@@ -648,22 +656,22 @@ def on_tp1(entry: float, tp1: float = 0):
             print(f"[CT] on_tp1 {cid}: stored_qty={full_qty} actual_qty={actual_qty}")
 
             close_price = tp1 if tp1 > 0 else entry
-            if actual_qty >= full_qty * 0.75:
-                # BingX's TP1 order didn't fire — close 50% manually
-                _place_order(api_key, api_secret, close_side, "MARKET", half_qty, position_side=pos_side)
-                remaining_qty = max(round(full_qty - half_qty, 4), 0.0001)
+            # actual_qty close to full_qty (within half the TP1 share) means BingX's TP1 order didn't fire
+            if actual_qty >= full_qty - (tp1_qty / 2):
+                _place_order(api_key, api_secret, close_side, "MARKET", tp1_qty, position_side=pos_side)
+                remaining_qty = max(round(full_qty - tp1_qty, 4), 0.0001)
             elif actual_qty >= 0.0001:
-                # BingX already closed ~50% via TP1 order — use the real remaining size
+                # BingX already closed its share via the TP1 order — use the real remaining size
                 remaining_qty = round(actual_qty, 4)
             else:
-                # Position fully closed already (both halves gone some other way)
+                # Position fully closed already (both parts gone some other way)
                 print(f"[CT] on_tp1 {cid}: position already fully closed, skipping BE SL")
                 user["tp1_order_id"] = ""; user["in_position"] = False; user["pos_side"] = ""
                 _set(cid, user)
                 continue
 
-            # Record TP1 PnL on the 50% that closed
-            pnl = _calc_pnl(user["pos_side"], entry, close_price, half_qty)
+            # Record TP1 PnL on the portion that closed
+            pnl = _calc_pnl(user["pos_side"], entry, close_price, tp1_qty)
             _record_pnl(user, pnl)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
@@ -1082,7 +1090,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
             filled_qty = float(((entry_r.get("data") or {}).get("order") or {}).get("executedQty") or qty)
             if filled_qty > 0:
                 qty = round(filled_qty, 4)
-            half = max(round(qty / 2, 4), 0.0001)
+            tp1_qty, tp2_qty = _tp1_split(qty)
 
             # ── Step 3: MARKET filled — place SL+TP (60s retry, backup logic) ───
             sl_ok = tp1_ok = tp2_ok = False
@@ -1096,10 +1104,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                     if not sl_ok:
                         print(f"  [CT] @{uname} SL attempt {sl_attempt} FAIL: {sl_r.get('msg','')}")
                 if not tp1_ok and tp1:
-                    tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1, ps=trade_ps)
+                    tp1_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", tp1_qty, sp=tp1, ps=trade_ps)
                     tp1_ok = tp1_r.get("code") == 0
                 if not tp2_ok and tp2:
-                    tp2_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2, ps=trade_ps)
+                    tp2_r = _place_alt(close_side, "TAKE_PROFIT_MARKET", tp2_qty, sp=tp2, ps=trade_ps)
                     tp2_ok = tp2_r.get("code") == 0
                 if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
                     break
@@ -1322,16 +1330,16 @@ def update_scan_tp(symbol: str, which: str, new_price: float) -> list[str]:
                                 "type": "TAKE_PROFIT_MARKET", "quantity": round(qty, 4), "stopPrice": round(new_tp2, 6)})
                     ok = r.get("code") == 0
             else:
-                half = max(round(qty / 2, 4), 0.0001)
+                tp1_qty, tp2_qty = _tp1_split(qty)
                 if new_tp1:
                     r1 = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
                                 {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                                 "type": "TAKE_PROFIT_MARKET", "quantity": half, "stopPrice": round(new_tp1, 6)})
+                                 "type": "TAKE_PROFIT_MARKET", "quantity": tp1_qty, "stopPrice": round(new_tp1, 6)})
                     ok = ok and r1.get("code") == 0
                 if new_tp2:
                     r2 = _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
                                 {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                                 "type": "TAKE_PROFIT_MARKET", "quantity": half, "stopPrice": round(new_tp2, 6)})
+                                 "type": "TAKE_PROFIT_MARKET", "quantity": tp2_qty, "stopPrice": round(new_tp2, 6)})
                     ok = ok and r2.get("code") == 0
             _set(cid, user)
             results.append(f"{'✅' if ok else '❌'} @{uname} {which.upper()}→{new_price:,.6f}")
@@ -1400,7 +1408,7 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
             uname = user.get("username", "?")
             qty = float(user.get("scan_qty", 0))
             if qty <= 0: continue
-            half = max(round(qty / 2, 4), 0.0001)
+            tp1_qty, tp2_qty = _tp1_split(qty)
 
             def _p(s, ot, q, sp=0):
                 params = {"symbol": symbol, "side": s, "positionSide": trade_ps,
@@ -1420,10 +1428,10 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
                     if not sl_ok:
                         print(f"  [CT] @{uname} LIMIT-fill SL attempt {attempt}: {r.get('msg','')}")
                 if not tp1_ok and tp1:
-                    r = _p(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1)
+                    r = _p(close_side, "TAKE_PROFIT_MARKET", tp1_qty, sp=tp1)
                     tp1_ok = r.get("code") == 0
                 if not tp2_ok and tp2:
-                    r = _p(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2)
+                    r = _p(close_side, "TAKE_PROFIT_MARKET", tp2_qty, sp=tp2)
                     tp2_ok = r.get("code") == 0
                 if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
                     break
@@ -1727,7 +1735,7 @@ def monitor_sl_tp(notify_fn=None):
                 tp_ords = [o for o in open_orders if o.get("type")=="TAKE_PROFIT_MARKET" and o.get("positionSide")==pos_side]
                 has_tp1 = len(tp_ords) >= 1
                 has_tp2 = len(tp_ords) >= 2
-                half = max(round(pos_amt / 2, 4), 0.0001)
+                tp1_qty, tp2_qty = _tp1_split(pos_amt)
                 placed = []
 
                 if not has_sl:
@@ -1741,7 +1749,7 @@ def monitor_sl_tp(notify_fn=None):
                 if not has_tp1 and tp1_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
-                        "type": "TAKE_PROFIT_MARKET", "quantity": half,
+                        "type": "TAKE_PROFIT_MARKET", "quantity": tp1_qty,
                         "stopPrice": round(tp1_price, 6),
                     })
                     placed.append(f"TP1 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
@@ -1749,7 +1757,7 @@ def monitor_sl_tp(notify_fn=None):
                 if not has_tp2 and tp2_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
                         "symbol": sym, "side": close_side, "positionSide": pos_side,
-                        "type": "TAKE_PROFIT_MARKET", "quantity": half,
+                        "type": "TAKE_PROFIT_MARKET", "quantity": tp2_qty,
                         "stopPrice": round(tp2_price, 6),
                     })
                     placed.append(f"TP2 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
@@ -2418,7 +2426,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 try:
                     lev = _calc_auto_leverage(user["size_usdt"], risk, entry, sl) if risk else user.get("leverage", 10)
                     qty = _calc_qty(user["size_usdt"], entry, lev)
-                    half = max(round(qty / 2, 4), 0.001)
+                    tp1_qty, tp2_qty = _tp1_split(qty)
 
                     lev_r = _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
                                    {"symbol": sym, "side": trade_ps, "leverage": lev})
@@ -2428,7 +2436,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                             if _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret,
                                       {"symbol": sym, "side": trade_ps, "leverage": try_lev}).get("code") == 0:
                                 lev = try_lev; qty = _calc_qty(user["size_usdt"], entry, lev)
-                                half = max(round(qty / 2, 4), 0.001); break
+                                tp1_qty, tp2_qty = _tp1_split(qty); break
 
                     def _alt(s, ot, q, sp=0, ps=""):
                         ps = ps or trade_ps
@@ -2450,9 +2458,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                                 sl_ok = sl_r.get("code") == 0
                                 if not sl_ok: print(f"  [CT] scan retry SL attempt {attempt}: {sl_r.get('msg','')}")
                             if tp1 and not tp1_ok:
-                                tp1_ok = _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp1).get("code") == 0
+                                tp1_ok = _alt(close_side, "TAKE_PROFIT_MARKET", tp1_qty, sp=tp1).get("code") == 0
                             if tp2 and not tp2_ok:
-                                tp2_ok = _alt(close_side, "TAKE_PROFIT_MARKET", half, sp=tp2).get("code") == 0
+                                tp2_ok = _alt(close_side, "TAKE_PROFIT_MARKET", tp2_qty, sp=tp2).get("code") == 0
                             if sl_ok and (tp1_ok or not tp1) and (tp2_ok or not tp2):
                                 break
                             time.sleep(6)
@@ -2467,7 +2475,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                         user["scan_symbol"] = sym; user["scan_side"] = side
                         user["scan_entry"] = entry; user["scan_sl"] = sl
                         user["scan_tp1"] = tp1; user["scan_tp2"] = tp2
-                        user["scan_qty"] = half if tp1_hit else qty  # if TP1 already hit, only 50% remains
+                        user["scan_qty"] = tp2_qty if tp1_hit else qty  # if TP1 already hit, only the TP2 share remains
                         _set(target, user)
                         warn = ("" if tp1_ok else " ⚠️TP1 failed") + ("" if tp2_ok else " ⚠️TP2 failed")
                         results.append(f"✅ {sym} {side} {qty:.4f} lev={lev}x{warn}")
@@ -2515,7 +2523,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 live_price = _last_signal["price"]
 
             qty      = _calc_qty(user["size_usdt"], live_price, lev)
-            half_qty = max(round(qty / 2, 4), 0.001)
+            tp1_qty, tp2_qty = _tp1_split(qty)
             _set_leverage(api_key, api_secret, side, lev)
 
             tp1 = float(_last_signal.get("tp1", 0))
@@ -2524,9 +2532,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 sl_r   = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
                                       qty, stop_price=sl, position_side=trade_ps)
                 tp1_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                      half_qty, stop_price=tp1, position_side=trade_ps) if tp1 else {}
+                                      tp1_qty, stop_price=tp1, position_side=trade_ps) if tp1 else {}
                 tp2_r  = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                      half_qty, stop_price=tp2, position_side=trade_ps)
+                                      tp2_qty, stop_price=tp2, position_side=trade_ps)
                 user["in_position"]    = True
                 user["pos_side"]       = side
                 user["pos_qty"]        = qty
