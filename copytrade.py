@@ -1067,7 +1067,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float) -> list[
                 )
                 continue
 
-            if entry_type == "LIMIT":
+            if entry_type != "MARKET":
                 limit_oid = str((entry_r.get("data") or {}).get("order", {}).get("orderId", ""))
                 user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
                 user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
@@ -1928,7 +1928,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Leverage: <b>{user['leverage']}x</b> (manual)\n\n"
             "Head to your Copy Trade menu to turn on auto-copy, change your margin per trade, "
             "set an auto-risk max loss ⭐, or set leverage manually.\n\n"
-            "<i>— CLEXER V17.8.5 —</i>")
+            "<i>🛡️ Capital protected</i>")
 
     elif cmd == "/disconnect":
         user = _get(cid)
@@ -1940,7 +1940,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id,
             "<b>Disconnected</b>\n\n"
             "BingX API keys removed. Open positions remain open — manage them manually.\n\n"
-            "<i>— CLEXER V17.8.5 —</i>")
+            "<i>🛡️ Capital protected</i>")
 
     elif cmd == "/setsize":
         if len(parts) < 2:
@@ -1958,7 +1958,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"<b>Trade Size Set</b>\n\n"
                 f"Size: <b>${size} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
                 f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n\n"
-                f"<i>— CLEXER V17.8.5 —</i>")
+                f"<i>🛡️ Capital protected</i>")
         except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/setleverage":
@@ -1981,7 +1981,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
                 f"Exposure per trade: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
                 f"<i>Auto-risk mode disabled. Turn it back on anytime from the Auto-Risk button.</i>\n\n"
-                f"<i>— CLEXER V17.8.5 —</i>")
+                f"<i>🛡️ Capital protected</i>")
         except: send_reply_fn(chat_id, "Please enter a valid whole number.")
 
     elif cmd == "/setrisk":
@@ -1996,13 +1996,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     f"Margin per trade: <b>${size} USDT</b>\n\n"
                     f"Leverage is auto-calculated each trade based on SL distance.\n\n"
                     f"Tap the Auto-Risk button to change your max loss, or turn it off there.\n\n"
-                    f"<i>— CLEXER V17.8.5 —</i>")
+                    f"<i>🛡️ Capital protected</i>")
             else:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: OFF</b>\n\n"
                     f"Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
                     f"Tap the Auto-Risk button to turn it on and set your max loss per trade ($1–$50).\n\n"
-                    f"<i>— CLEXER V17.8.5 —</i>")
+                    f"<i>🛡️ Capital protected</i>")
             return
         arg = parts[1].lower()
         if arg == "off":
@@ -2012,7 +2012,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id,
                 f"<b>Auto-Risk Mode: OFF</b>\n\n"
                 f"Using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                f"<i>— CLEXER V17.8.5 —</i>")
+                f"<i>🛡️ Capital protected</i>")
             return
         try:
             risk = float(arg)
@@ -2032,7 +2032,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Leverage is auto-calculated per trade based on SL distance.\n"
                 f"Example (2% SL): leverage = {example_lev}x → max loss ≈ ${size * example_lev * 0.02:.2f}\n\n"
                 f"<i>Closer SL = higher leverage | Wider SL = lower leverage</i>\n\n"
-                f"<i>— CLEXER V17.8.5 —</i>")
+                f"<i>🛡️ Capital protected</i>")
         except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/copytrade":
@@ -2047,7 +2047,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"<b>Copy Trade</b>\n\nStatus: <b>{st}</b>\n\n"
                 f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | Leverage: <b>{user.get('leverage', 10)}x</b>\n\n"
                 f""
-                f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_ct_btns); return
+                f"<i>🛡️ Capital protected</i>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
             send_reply_fn(chat_id,
                 "Connect BingX first:\n<code>/connect API_KEY API_SECRET</code>"); return
@@ -2061,13 +2061,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"Auto-copying all CLEXER signals.\n"
                 f"Size: <b>${user['size_usdt']} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n\n"
                 "<b>⚠️ Warning:</b> Real money. You are responsible for your trades.\n\n"
-                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_ct_btns)
+                "<i>🛡️ Capital protected</i>", reply_markup=_ct_btns)
         elif state == "off":
             user["copy_on"] = False; _set(cid, user)
             send_reply_fn(chat_id,
                 "<b>Copy Trade OFF ❌</b>\n\nNo more auto-copies.\n"
                 "Open positions remain open — manage them on BingX.\n\n"
-                "<i>— CLEXER V17.8.5 —</i>", reply_markup=_ct_btns)
+                "<i>🛡️ Capital protected</i>", reply_markup=_ct_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
 
@@ -2082,7 +2082,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
             pos = _get_position(api_key, api_secret)
             if not pos:
-                send_reply_fn(chat_id, "<b>No Open Position</b>\n\nYou don't have an open position yet.\n\n<i>— CLEXER V17.8.5 —</i>")
+                send_reply_fn(chat_id, "<b>No Open Position</b>\n\nYou don't have an open position yet.\n\n<i>🛡️ Capital protected</i>")
             else:
                 amt   = float(pos.get("positionAmt", 0))
                 pnl   = float(pos.get("unrealizedProfit", 0))
@@ -2096,7 +2096,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     f"Entry:    <b>{entry:,.2f}</b>\n"
                     f"Leverage: <b>{lev}x</b>\n"
                     f"PnL:      <b>{pnl_s}</b>\n\n"
-                    f"<i>— CLEXER V17.8.5 —</i>")
+                    f"<i>🛡️ Capital protected</i>")
         except Exception as e:
             send_reply_fn(chat_id, f"Error: {e}")
 
@@ -2122,7 +2122,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Margin per trade: <b>${size} USDT</b>\n"
             f"{lev_line}\n"
             f"{exp_line}\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_size_btns)
+            f"<i>🛡️ Capital protected</i>", reply_markup=_size_btns)
 
     elif cmd == "/myhistory":
         user = _get(cid) or {}
@@ -2140,7 +2140,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Win rate:     <b>{wr}</b>\n\n"
             f"Total PnL:    <b>{pnl_s}</b>\n\n"
             f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>", reply_markup=_myh_btns)
+            f"<i>🛡️ Capital protected</i>", reply_markup=_myh_btns)
 
     elif cmd == "/nocopy":
         user = _get(cid) or {}
@@ -2229,7 +2229,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Copy trade active:  {active}\n"
             f"In position now:    {in_pos}\n"
             f"Total exposure:     <b>${exposure:,.0f}</b>\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>")
+            f"<i>🛡️ Capital protected</i>")
 
     elif cmd == "/users" and is_admin:
         if not _db:
@@ -2298,7 +2298,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Won:  +${h['won_usdt']:.2f}  |  Lost: -${h['lost_usdt']:.2f}\n"
             f"Total PnL: <b>{pnl_s}</b>\n\n"
             f"Joined: {user.get('joined','?')}\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>")
+            f"<i>🛡️ Capital protected</i>")
 
     elif cmd == "/kick" and is_admin:
         if len(parts) < 2:
@@ -2317,7 +2317,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"<b>User Removed</b>\n\n"
             f"@{user.get('username','?')} (ID:{target})\n"
             f"Orders cancelled. API keys deleted.\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>")
+            f"<i>🛡️ Capital protected</i>")
 
     elif cmd == "/pauseuser" and is_admin:
         if len(parts) < 2:
@@ -2337,7 +2337,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id,
             f"<b>User {state}</b>\n\n"
             f"@{user.get('username','?')} (ID:{target})\n\n"
-            f"<i>— CLEXER V17.8.5 —</i>")
+            f"<i>🛡️ Capital protected</i>")
 
     elif cmd == "/ctstatus" and is_admin:
         # Show failed copy users and current active signal
@@ -2356,13 +2356,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         else:
             sig_info = "\n\n<b>No active signal</b> — /ctretry will be blocked."
         if not failed:
-            send_reply_fn(chat_id, f"<b>Copy Trade Status</b>\n\nNo failed copies.{sig_info}\n\n<i>— CLEXER V17.8.5 —</i>")
+            send_reply_fn(chat_id, f"<b>Copy Trade Status</b>\n\nNo failed copies.{sig_info}\n\n<i>🛡️ Capital protected</i>")
             return
         lines = [f"<b>Failed Copy Users ({len(failed)})</b>"]
         for cid, u in failed:
             lines.append(f"- @{u.get('username','?')} | ID: <code>{cid}</code>\n"
                          f"  Use: /ctretry {cid}")
-        send_reply_fn(chat_id, "\n".join(lines) + sig_info + "\n\n<i>— CLEXER V17.8.5 —</i>")
+        send_reply_fn(chat_id, "\n".join(lines) + sig_info + "\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/ctretry" and is_admin:
         """Retry copy trade for a specific user.
@@ -2477,7 +2477,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     results.append(f"❌ {sym}: {e}")
 
             send_reply_fn(chat_id,
-                f"<b>Scan Retry — @{uname}</b>\n\n" + "\n".join(results) + "\n\n<i>— CLEXER V17.8.5 —</i>")
+                f"<b>Scan Retry — @{uname}</b>\n\n" + "\n".join(results) + "\n\n<i>🛡️ Capital protected</i>")
             return
 
         # ── BTC RETRY (existing logic below) ──────────────────────────────────
@@ -2485,7 +2485,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id,
                 "<b>Retry Blocked</b>\n\n"
                 "No active BTC signal — trade already closed or no signal yet.\n\n"
-                "<i>— CLEXER V17.8.5 —</i>"); return
+                "<i>🛡️ Capital protected</i>"); return
 
         if user.get("in_position"):
             send_reply_fn(chat_id, f"@{user.get('username','?')} already in BTC position — no retry needed."); return
@@ -2542,14 +2542,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     f"SL:  {sl:,.0f} (100%)\n"
                     f"TP1: {tp1:,.0f} (50%)\n"
                     f"TP2: {tp2:,.0f} (50%)\n\n"
-                    f"<i>— CLEXER V17.8.5 —</i>")
+                    f"<i>🛡️ Capital protected</i>")
             else:
                 err = r.get("msg", "unknown error")
                 send_reply_fn(chat_id,
                     f"<b>Retry Failed</b>\n\n"
                     f"❌ @{user.get('username','?')}: {err}\n\n"
                     f"Check their BingX margin balance.\n\n"
-                    f"<i>— CLEXER V17.8.5 —</i>")
+                    f"<i>🛡️ Capital protected</i>")
         except Exception as e:
             send_reply_fn(chat_id, f"❌ Retry error: {e}")
             print(f"[CT] /ctretry {target}: {e}")
@@ -2564,7 +2564,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             target = str(parts[1])
             ok, msg = on_close_user(target)
             send_reply_fn(chat_id,
-                f"<b>CT Close</b>\n\n{'✅' if ok else '❌'} {msg}\n\n<i>— CLEXER V17.8.5 —</i>")
+                f"<b>CT Close</b>\n\n{'✅' if ok else '❌'} {msg}\n\n<i>🛡️ Capital protected</i>")
         else:
             # Close all copy trade positions
             results = []
@@ -2572,11 +2572,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 ok, msg = on_close_user(cid)
                 results.append(f"{'✅' if ok else '❌'} {msg}")
             if not results:
-                send_reply_fn(chat_id, "<b>CT Close All</b>\n\nNo active copy users.\n\n<i>— CLEXER V17.8.5 —</i>")
+                send_reply_fn(chat_id, "<b>CT Close All</b>\n\nNo active copy users.\n\n<i>🛡️ Capital protected</i>")
             else:
                 send_reply_fn(chat_id,
                     f"<b>CT Close All</b>\n\n" + "\n".join(results) +
-                    f"\n\n<i>— CLEXER V17.8.5 —</i>")
+                    f"\n\n<i>🛡️ Capital protected</i>")
 
     else:
         send_reply_fn(chat_id, f"Unknown command: {cmd}")
