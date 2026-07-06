@@ -1546,6 +1546,21 @@ def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: s
                    "stopPrice": round(sl_price, 6)})
 
 
+def _fetch_bingx_realized_pnl(api_key: str, api_secret: str, days: int = 90) -> float:
+    """Sum of realized PnL from BingX's own income history — the actual money moved
+    on the account, independent of whatever the bot's own event tracking recorded."""
+    try:
+        start_ms = int((time.time() - days * 86400) * 1000)
+        r = _bingx("GET", "/openApi/swap/v2/user/income", api_key, api_secret,
+                   {"incomeType": "REALIZED_PNL", "startTime": start_ms, "limit": 1000})
+        if r.get("code") != 0:
+            return None
+        rows = r.get("data") or []
+        return round(sum(float(row.get("income", 0)) for row in rows), 4)
+    except Exception as e:
+        print(f"[CT] _fetch_bingx_realized_pnl: {e}")
+        return None
+
 def _get_open_orders(api_key: str, api_secret: str, symbol: str) -> list:
     """Fetch all open orders for a symbol."""
     r = _bingx("GET", "/openApi/swap/v2/trade/openOrders", api_key, api_secret,
@@ -2149,6 +2164,15 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         wr   = f"{h['profit']/h['total']*100:.0f}%" if h["total"] else "—"
         pnl  = h["total_pnl"]
         pnl_s = f"+${pnl:.2f} 🟢" if pnl > 0 else (f"-${abs(pnl):.2f} 🔴" if pnl < 0 else "$0.00")
+        _bingx_pnl_line = ""
+        if user.get("connected"):
+            try:
+                _bx_pnl = _fetch_bingx_realized_pnl(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
+                if _bx_pnl is not None:
+                    _bx_s = f"+${_bx_pnl:.2f} 🟢" if _bx_pnl > 0 else (f"-${abs(_bx_pnl):.2f} 🔴" if _bx_pnl < 0 else "$0.00")
+                    _bingx_pnl_line = f"BingX Realized PnL (last 90d): <b>{_bx_s}</b>\n\n"
+            except Exception as e:
+                print(f"[CT] /myhistory bingx pnl fetch: {e}")
         _myh_btns = {"inline_keyboard": [[{"text": "🗑 Reset My P&L History", "callback_data": "myhistory_reset"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Copy Trade History</b>\n\n"
@@ -2156,7 +2180,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Wins:         <b>{h['profit']}</b>  (+${h['won_usdt']:.2f})\n"
             f"Losses:       <b>{h['loss']}</b>  (-${h['lost_usdt']:.2f})\n"
             f"Win rate:     <b>{wr}</b>\n\n"
-            f"Total PnL:    <b>{pnl_s}</b>\n\n"
+            f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
+            f"{_bingx_pnl_line}"
             f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
             f"<i>🛡️ Capital protected</i>", reply_markup=_myh_btns)
 
@@ -2310,6 +2335,15 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _lev_line = f"Auto-Risk: <b>max ${_risk} loss/trade</b> (leverage recalculated per trade)" if _risk else f"Leverage: <b>{user.get('leverage',1)}x manual</b>"
         _tier = user.get("tier", "vip")
         _tier_line = "⭐ <b>VIP</b>" + (f" (until {user['vip_end']})" if user.get("vip_end") else "") if _tier == "vip" else "🆓 <b>FREE</b>"
+        _bingx_pnl_line = ""
+        if user.get("connected"):
+            try:
+                _bx_pnl = _fetch_bingx_realized_pnl(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
+                if _bx_pnl is not None:
+                    _bx_s = f"+${_bx_pnl:.2f} 🟢" if _bx_pnl > 0 else (f"-${abs(_bx_pnl):.2f} 🔴" if _bx_pnl < 0 else "$0.00")
+                    _bingx_pnl_line = f"BingX Realized PnL (last 90d): <b>{_bx_s}</b>\n"
+            except Exception as e:
+                print(f"[CT] /user bingx pnl fetch: {e}")
         send_reply_fn(chat_id,
             f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
             f"Tier: {_tier_line}\n"
@@ -2319,7 +2353,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"{pos_info}\n\n"
             f"Trades: {h['total']} | Wins: {h['profit']} | Losses: {h['loss']} | WR: {wr}\n"
             f"Won:  +${h['won_usdt']:.2f}  |  Lost: -${h['lost_usdt']:.2f}\n"
-            f"Total PnL: <b>{pnl_s}</b>\n\n"
+            f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
+            f"{_bingx_pnl_line}\n"
             f"Joined: {user.get('joined','?')}\n\n"
             f"<i>🛡️ Capital protected</i>")
 
