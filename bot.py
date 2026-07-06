@@ -6038,7 +6038,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
-    role = "👑 Admin" if is_admin else "👤 User"
+    _is_co = is_co_admin(cid) if cid is not None else False
+    role = "👑 Admin" if is_admin else ("🤝 Co-Admin" if _is_co else "👤 User")
     _greeting = f"👋 Welcome back, <b>{uname}</b>!\n\n" if uname else ""
     _pnl_line = ""
     _tier_line = ""
@@ -6107,7 +6108,7 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
     """Renders whatever screen a 'back' callback_data string points to —
     lets code jump straight to a menu without the user tapping it themselves."""
     if back_cb == "help_main":
-        send_help_menu(chat_id, is_admin, message_id=msg_id)
+        send_help_menu(chat_id, is_admin, message_id=msg_id, cid=cid)
     elif back_cb.startswith("help_cat:"):
         send_help_category(chat_id, back_cb.split(":", 1)[1], is_admin, message_id=msg_id)
     elif back_cb.startswith("copyuser_sub:"):
@@ -6145,7 +6146,7 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         _orig_back = _TRDPICK_BACKCB.get(str(cid), "help_cat:monitor")
         _send_trade_pick_screen(chat_id, cid, _action, msg_id, _orig_back)
     else:
-        send_help_menu(chat_id, is_admin, message_id=msg_id)
+        send_help_menu(chat_id, is_admin, message_id=msg_id, cid=cid)
 
 def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     entry = _HELP_CATS.get(cat_id)
