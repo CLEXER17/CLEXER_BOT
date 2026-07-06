@@ -154,6 +154,81 @@ ZONE_ENTRY_ENABLED = False  # Scan1/Scan2 entry style — MARKET (instant) vs ZO
 _ZONE_BAND_PCT = 0.008      # zone width — ±0.8% around the computed entry price
 CO_ADMIN_CHAT_ID  = ""    # a single trusted friend who gets ONE extra permission: /tradelog. No user mgmt, no billing, no resets, no broadcast.
 CO_ADMIN_ENABLED  = False # ON = the co-admin permission is active AND their contact button shows next to Contact Admin
+# ─── VIP / Free channels + user tiers ──────────────────────────────────────
+CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
+FREE_SIGNAL_DAILY_LIMIT = 0   # max signals shared to free channels/users per day (0 = none shared)
+_free_signal_tracker = {"date": "", "count": 0}  # resets automatically when the IST date rolls over
+
+def _channels_by_tier(tier: str) -> list:
+    return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id")]
+
+def _in_free_window() -> bool:
+    now = datetime.now(timezone.utc) + IST
+    return 6 <= now.hour < 19  # 06:00–19:00 IST
+
+def _free_quota_available() -> bool:
+    global _free_signal_tracker
+    now = datetime.now(timezone.utc) + IST
+    today = now.strftime("%Y-%m-%d")
+    if _free_signal_tracker.get("date") != today:
+        _free_signal_tracker = {"date": today, "count": 0}
+    return _in_free_window() and _free_signal_tracker["count"] < FREE_SIGNAL_DAILY_LIMIT
+
+def _consume_free_quota():
+    _free_signal_tracker["count"] = _free_signal_tracker.get("count", 0) + 1
+
+def send_to_tier_channels(text: str, share_free: bool):
+    """Sends to every registered VIP channel always, and to FREE channels only
+    if share_free is True (the daily quota decision made once per signal)."""
+    for cid in _channels_by_tier("vip"):
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+        except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
+    if share_free:
+        for cid in _channels_by_tier("free"):
+            try:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
+
+ACTIVE_PROFILE = "mine"   # "mine" or "coadmin" — which scan-settings snapshot is currently live
+_SETTINGS_PROFILES = {"mine": {}, "coadmin": {}}  # each holds a snapshot of every setting co-admin can touch
+
+def _snapshot_scan_settings() -> dict:
+    return {
+        "scan_model": SCAN_MODEL, "use_aerolink": USE_AEROLINK,
+        "scan1_model": SCAN1_MODEL, "scan1_aerolink": SCAN1_AEROLINK,
+        "scan2_model": SCAN2_MODEL, "scan2_aerolink": SCAN2_AEROLINK,
+        "test_model": TEST_MODEL, "test_aerolink": TEST_AEROLINK,
+        "zone_entry_enabled": ZONE_ENTRY_ENABLED,
+        "tp1_close_pct": ct.TP1_CLOSE_PCT,
+        "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
+        "test_scan": TEST_SCAN_ENABLED, "btc_analysis": btc_analysis_enabled,
+        "scan1_schedule": list(SCAN1_SCHEDULE), "scan2_schedule": list(SCAN2_SCHEDULE),
+        "scan1_test_schedule": list(SCAN1_TEST_SCHEDULE),
+        "btc_ct_enabled": ct.BTC_CT_ENABLED, "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
+        "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
+    }
+
+def _apply_scan_settings(d: dict):
+    global SCAN_MODEL, USE_AEROLINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK
+    global TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
+    global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE
+    if not d:
+        return  # nothing snapshotted yet for this profile — leave current values as-is
+    SCAN_MODEL = d.get("scan_model", SCAN_MODEL); USE_AEROLINK = d.get("use_aerolink", USE_AEROLINK)
+    SCAN1_MODEL = d.get("scan1_model", SCAN1_MODEL); SCAN1_AEROLINK = d.get("scan1_aerolink", SCAN1_AEROLINK)
+    SCAN2_MODEL = d.get("scan2_model", SCAN2_MODEL); SCAN2_AEROLINK = d.get("scan2_aerolink", SCAN2_AEROLINK)
+    TEST_MODEL = d.get("test_model", TEST_MODEL); TEST_AEROLINK = d.get("test_aerolink", TEST_AEROLINK)
+    ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", ZONE_ENTRY_ENABLED)
+    ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
+    SCAN1_AUTO_ENABLED = d.get("scan1_auto", SCAN1_AUTO_ENABLED); SCAN2_AUTO_ENABLED = d.get("scan2_auto", SCAN2_AUTO_ENABLED)
+    TEST_SCAN_ENABLED = d.get("test_scan", TEST_SCAN_ENABLED); btc_analysis_enabled = d.get("btc_analysis", btc_analysis_enabled)
+    SCAN1_SCHEDULE = d.get("scan1_schedule", SCAN1_SCHEDULE); SCAN2_SCHEDULE = d.get("scan2_schedule", SCAN2_SCHEDULE)
+    SCAN1_TEST_SCHEDULE = d.get("scan1_test_schedule", SCAN1_TEST_SCHEDULE)
+    ct.BTC_CT_ENABLED = d.get("btc_ct_enabled", ct.BTC_CT_ENABLED); ct.SCAN1_CT_ENABLED = d.get("scan1_ct_enabled", ct.SCAN1_CT_ENABLED)
+    ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", ct.SCAN2_CT_ENABLED)
 CONTACT_ADMIN_ENABLED  = True   # shows/hides the "Contact Admin" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_ENABLED = True   # shows/hides the "Signal Channel" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_LINK    = ""     # admin-provided channel link — set/removed via /adminlinks
@@ -221,6 +296,19 @@ def save_users():
 def is_co_admin(chat_id) -> bool:
     return bool(CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID and str(chat_id) == str(CO_ADMIN_CHAT_ID))
 
+def _co_admin_allowed_commands() -> set:
+    """Co-admin's permission set = every command in Scan Control + Trade Control
+    (force scans, BTC scan control, SL/TP/close on any trade) — nothing from
+    Copy Admin (user mgmt), Settings, Broadcast, or billing/report screens stay
+    admin-only via the explicit exclusion below."""
+    cmds = set()
+    for subcats in (_SCAN_SUBCATS, _TRADECONTROL_SUBCATS):
+        for _label, entries in subcats.values():
+            for entry in entries:
+                cmds.add(entry[0])
+    cmds.discard("/report")  # billing/API cost stays admin-only
+    return cmds
+
 def register_user(chat_id, username=None):
     chat_id = int(chat_id)
     changed = False
@@ -275,9 +363,39 @@ _NP_CONFIG = {
     "setleverage": {"label": "Leverage",                "unit": "x",    "cmd": "/setleverage", "decimals": False},
     "setrisk":     {"label": "Auto-Risk (Max Loss)",    "unit": "USDT", "cmd": "/setrisk",     "decimals": True},
     "tp1size":     {"label": "TP1 Close %",             "unit": "%",    "cmd": "/tp1size",     "decimals": False},
+    "freelimit":   {"label": "Free Channel Daily Limit", "unit": "signals/day", "cmd": "/freelimit", "decimals": False},
 }
 
 _pp_state: dict = {}       # cid → {"action","kind","symbol","idx","digits": str, "back_cb": str} — tap price-picker
+_vip_state: dict = {}      # cid → {"uid","stage":"start"/"end","digits":str,"start":str} — VIP date-range tap-picker
+
+def _vip_render(chat_id, cid, msg_id):
+    st = _vip_state.get(str(cid))
+    if not st:
+        return
+    label = "Start Date" if st["stage"] == "start" else "End Date"
+    d = st["digits"]
+    disp = d
+    if len(d) > 2: disp = d[:2] + "." + d[2:]
+    if len(d) > 4: disp = disp[:5] + "." + d[4:]
+    text = (
+        f"📅 <b>VIP {label}</b>\n\n"
+        f"Entering: <code>{disp or '—'}</code>\n\n"
+        f"<i>Tap 8 digits: DD MM YYYY (e.g. 17082026 for 17.08.2026)</i>")
+    rows = [
+        [{"text": str(n), "callback_data": f"vip_d:{n}"} for n in (1, 2, 3)],
+        [{"text": str(n), "callback_data": f"vip_d:{n}"} for n in (4, 5, 6)],
+        [{"text": str(n), "callback_data": f"vip_d:{n}"} for n in (7, 8, 9)],
+        [{"text": "0", "callback_data": "vip_d:0"}],
+        [{"text": "⌨️ Type Instead", "callback_data": "vip_manual"}],
+        [{"text": "◀️ Erase", "callback_data": "vip_prev"}, {"text": "🚫 Back", "callback_data": "vip_back"}],
+    ]
+    if len(d) == 8:
+        rows.insert(-1, [{"text": "💾 Next" if st["stage"] == "start" else "💾 Save", "callback_data": "vip_save"}])
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=msg_id)
+
+def _digits_to_date(d: str) -> str:
+    return f"{d[0:2]}.{d[2:4]}.{d[4:8]}"
 _TRDPICK_BACKCB: dict = {} # cid → back_cb of the menu the trade-picker was opened from
 _TRDPICK_LABELS = {
     "sltobe":     "🛡 Move SL to Breakeven",
@@ -2133,7 +2251,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -2159,6 +2277,10 @@ def load_settings():
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
             CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
             ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
+            ACTIVE_PROFILE = d.get("active_profile", "mine")
+            _SETTINGS_PROFILES = d.get("settings_profiles", {"mine": {}, "coadmin": {}})
+            CHANNELS = d.get("channels", [])
+            FREE_SIGNAL_DAILY_LIMIT = d.get("free_signal_daily_limit", 0)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -2195,6 +2317,10 @@ def save_settings():
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
             "tp1_close_pct": ct.TP1_CLOSE_PCT,
+            "active_profile": ACTIVE_PROFILE,
+            "settings_profiles": _SETTINGS_PROFILES,
+            "channels": CHANNELS,
+            "free_signal_daily_limit": FREE_SIGNAL_DAILY_LIMIT,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -2248,6 +2374,71 @@ def send_reply(chat_id, text, reply_markup=None):
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=payload, timeout=10)
     except Exception as e: print(f"  [REPLY ERROR] {e}")
+
+def _build_vip_csv(vip_start: str, vip_end: str) -> bytes:
+    """Filtered trade-log CSV for a VIP's membership window — excludes signal_time
+    and entry_trigger_time columns per admin's request, only date-filters by them."""
+    import csv, io
+    try:
+        d1, m1, y1 = vip_start.split("."); start_dt = datetime(int(y1), int(m1), int(d1))
+        d2, m2, y2 = vip_end.split(".");   end_dt = datetime(int(y2), int(m2), int(d2), 23, 59, 59)
+    except Exception:
+        return b""
+    if not os.path.exists(TRADE_LOG_CSV):
+        return b""
+    with open(TRADE_LOG_CSV, "r") as f:
+        rows = list(csv.DictReader(f))
+    out_rows = []
+    for r in rows:
+        st = (r.get("signal_time") or "").replace(" IST", "").strip()
+        try:
+            dt = datetime.strptime(st, "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        if start_dt <= dt <= end_dt:
+            out_rows.append(r)
+    if not out_rows:
+        return b""
+    fieldnames = [h for h in _CSV_HEADERS if h not in ("signal_time", "entry_trigger_time")]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    w.writeheader()
+    for r in out_rows:
+        w.writerow({k: r.get(k, "") for k in fieldnames})
+    return buf.getvalue().encode("utf-8")
+
+def _expire_vip_user(cid: str, user: dict):
+    vip_start = user.get("vip_start", ""); vip_end = user.get("vip_end", "")
+    user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""
+    ct._set(cid, user)
+    _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": int(cid), "text": "⏰ <b>Your VIP has expired</b>\n\nContact admin to renew.",
+                  "parse_mode": "HTML", "reply_markup": _mkp}, timeout=10)
+    except Exception as e:
+        print(f"  [VIP EXPIRE] notify {cid}: {e}")
+    csv_bytes = _build_vip_csv(vip_start, vip_end)
+    if csv_bytes:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+                data={"chat_id": int(cid), "caption": f"Your VIP trade history: {vip_start} to {vip_end}"},
+                files={"document": ("vip_trades.csv", csv_bytes, "text/csv")}, timeout=30)
+        except Exception as e:
+            print(f"  [VIP EXPIRE] csv {cid}: {e}")
+
+def _check_vip_expiries():
+    today = (datetime.now(timezone.utc) + IST).date()
+    for cid, user in list(ct._db.items()):
+        if user.get("tier") != "vip" or not user.get("vip_end"):
+            continue
+        try:
+            d, m, y = user["vip_end"].split(".")
+            end_date = datetime(int(y), int(m), int(d)).date()
+        except Exception:
+            continue
+        if today > end_date:
+            _expire_vip_user(cid, user)
 
 def send_to_user(chat_id, text, file_id=None, file_type=None):
     try:
@@ -3069,10 +3260,10 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -3080,7 +3271,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     _check_id = sender_id if sender_id else chat_id
     is_admin = (str(_check_id)==str(ADMIN_CHAT_ID)) if ADMIN_CHAT_ID else True
 
-    if cmd in ADMIN_COMMANDS and not is_admin and not (cmd == "/tradelog" and is_co_admin(_check_id)):
+    is_scanadmin = is_admin or (is_co_admin(_check_id) and cmd in _co_admin_allowed_commands())
+    if cmd in ADMIN_COMMANDS and not is_scanadmin:
         send_reply(chat_id, "<b>Admin only.</b>\n\nUse /help to see your commands."); return
 
     # -- Copy trade commands (user + admin) -----------------------------------
@@ -3129,7 +3321,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         bot_paused.clear(); bot_stopped.clear()
         send_go_screen(chat_id)
 
-    elif cmd == "/demo" and is_admin:
+    elif cmd == "/demo" and is_scanadmin:
         """
         /demo btc buy entry 66000 tp1 67000 tp2 68000 sl 65500  → open fake BTC trade
         /demo tp1        → simulate TP1 hit  (SL→BE)
@@ -3821,16 +4013,16 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/userstats" and is_admin:
         send_userstats_screen(chat_id)
 
-    elif cmd == "/aiconfig" and is_admin:
+    elif cmd == "/aiconfig" and is_scanadmin:
         send_aiconfig_screen(chat_id)
 
-    elif cmd == "/entrystyle" and is_admin:
+    elif cmd == "/entrystyle" and is_scanadmin:
         send_entrystyle_screen(chat_id)
 
     elif cmd == "/coadmin" and is_admin:
         send_coadmin_screen(chat_id)
 
-    elif cmd == "/tp1size" and is_admin:
+    elif cmd == "/tp1size" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
                 f"<b>TP1 Close %</b>\n\nCurrent: <b>{ct.TP1_CLOSE_PCT}%</b> closes at TP1, the rest rides to TP2.\n\n"
@@ -3845,6 +4037,25 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"<b>TP1 Close % Set</b>\n\n{pct}% closes at TP1, {100-pct}% rides to TP2.")
         except ValueError:
             send_reply(chat_id, "Please enter a valid number 1–99.")
+
+    elif cmd == "/freelimit" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>Free Channel Daily Limit</b>\n\nCurrent: <b>{FREE_SIGNAL_DAILY_LIMIT}</b> signals/day "
+                f"(window 06:00–19:00 IST)\n\nUse the tap keypad or type a number 0–50.")
+            return
+        try:
+            n = int(parts[1])
+            if n < 0 or n > 50:
+                send_reply(chat_id, "Limit must be 0–50."); return
+            FREE_SIGNAL_DAILY_LIMIT = n
+            save_settings()
+            send_reply(chat_id, f"<b>Free Channel Daily Limit Set</b>\n\n{n} signals/day, 06:00–19:00 IST.")
+        except ValueError:
+            send_reply(chat_id, "Please enter a valid whole number.")
+
+    elif cmd == "/channelmgmt" and is_admin:
+        send_channelmgmt_screen(chat_id)
 
     elif cmd == "/channels":
         ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
@@ -3894,7 +4105,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
 
-    elif cmd == "/closetrade" and is_admin:
+    elif cmd == "/closetrade" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
                 "<b>Close Trade</b>\n\n"
@@ -3932,7 +4143,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
             send_reply(chat_id, reply + "\n\n<i>🛡️ Capital protected</i>")
 
-    elif cmd == "/closescan" and is_admin:
+    elif cmd == "/closescan" and is_scanadmin:
         s1 = len(scan1_trades); s2 = len(scan2_trades)
         _syms = {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
         for _sym in _syms:
@@ -3942,7 +4153,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"✅ <b>Scan trades cleared</b>\n\n"
             f"Scan1: {s1} removed\nScan2: {s2} removed\nClosed on BingX: {', '.join(_syms) if _syms else 'none'}\n\n<i>🛡️ Capital protected</i>")
 
-    elif cmd == "/alt" and is_admin:
+    elif cmd == "/alt" and is_scanadmin:
         _alt_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:1"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:1"},
@@ -3983,7 +4194,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt_btns); return
 
-    elif cmd == "/alt2" and is_admin:
+    elif cmd == "/alt2" and is_scanadmin:
         _alt2_btns = {"inline_keyboard": [[
             {"text": "🔁  Loop Mode (every hour)", "callback_data": "alt_loop:2"},
             {"text": "📋  Manual Times",           "callback_data": "alt_manual:2"},
@@ -4021,7 +4232,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt2_btns); return
 
-    elif cmd == "/altdemo" and is_admin:
+    elif cmd == "/altdemo" and is_scanadmin:
         _altd_btns = {"inline_keyboard": [[
             {"text": "📋  Manual Times", "callback_data": "alt_manual:3"},
         ], [
@@ -4118,7 +4329,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"❌ Error: {e}")
         return
 
-    elif cmd == "/test" and is_admin:
+    elif cmd == "/test" and is_scanadmin:
         global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
         _test_btns = {"inline_keyboard": [
@@ -4172,7 +4383,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"<pre>{trades_str}</pre>\n\n"
                 f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
 
-    elif cmd in ("/scancopy", "/ctpause") and is_admin:
+    elif cmd in ("/scancopy", "/ctpause") and is_scanadmin:
         send_ctpause_screen(chat_id)
 
     elif cmd in ("/readindicators", "/checktvdata") and is_admin:
@@ -4435,7 +4646,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"Scan now uses BingX candles directly.\n"
                 f"TV bridge not needed. Works anytime.")
 
-    elif cmd in ("/scan", "/scan1", "/scan2", "/scantoggle") and is_admin:
+    elif cmd in ("/scan", "/scan1", "/scan2", "/scantoggle") and is_scanadmin:
         if cmd == "/scantoggle":
             _arg = parts[1].lower() if len(parts) > 1 else ""
             if _arg == "scan1on":
@@ -4940,14 +5151,17 @@ Reasoning: [one line]"""
                         trade_stats["scan_signals"] += 1
                         trade_stats[f"scan{scan_ver}_signals"] += 1
                         save_state()
+                        _share_free = _free_quota_available()
+                        if _share_free: _consume_free_quota()
                         send_telegram(fmt_scan_signal(slot_data))
+                        send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
                             "tp1_price": scan_tp1, "tp2_price": scan_tp2,
                             "entry_trigger_time": _ist_str_now(), "result": "open"})
                         sd["ver"] = scan_ver
-                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp)
+                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _share_free)
                         send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
                         # Send skip summary explaining why previous coins were skipped
                         if skip_log:
@@ -5032,7 +5246,7 @@ Reasoning: [one line]"""
             f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.\n\n"
             f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
 
-    elif cmd == "/coin" and is_admin:
+    elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
                 "🪙 <b>Coin Lookup</b>\n\n"
@@ -5252,7 +5466,9 @@ _COPYADMIN_SUBCATS = {
     "manage": ("🛡 User Management", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
         ("/pauseuser", "⏸", "Pause / Unpause",   "Pause or resume a specific user's copy trading without removing them."),
-        ("/coadmin",   "🤝", "Co-Admin",          "Give one trusted user CSV-only access — no user management, billing, or resets."),
+        ("/coadmin",   "🤝", "Co-Admin",          "Give one trusted user Scan + Trade Control access — no user management, billing, or resets."),
+        ("/setvip",    "⭐", "Promote to VIP",     "Give a user VIP for a date range — they get every signal (tap or type the dates)."),
+        ("/setfree",   "🆓", "Set to Free",        "Downgrade a user to Free tier — they only copy the signals shared to the free channel."),
     ]),
     "sync": ("🔄 Sync & Recovery", [
         ("/ctstatus",  "🔍", "Failed Users",      "Shows users whose copy trade failed, plus the active signal."),
@@ -5309,6 +5525,7 @@ _BROADCAST_SUBCATS = {
         ("/channels",      "📡", "Channel Status",    "Show the current status of all connected signal channels."),
         ("/pausechannel",  "⏸", "Pause a Channel",   "Stop signals from being sent to a specific channel."),
         ("/resumechannel", "▶️", "Resume a Channel",  "Re-enable signals for a specific channel."),
+        ("/channelmgmt",   "⭐", "VIP / Free Channels","Add/remove any number of VIP or Free channels and set the free daily signal limit."),
     ]),
 }
 
@@ -5631,23 +5848,84 @@ def send_entrystyle_screen(chat_id, message_id=None):
         "does, the position stays unfilled on BingX (this applies to Scan1/Scan2 only).",
         {"inline_keyboard": rows}, message_id=message_id)
 
+def send_channel_picker_screen(chat_id, message_id=None):
+    rows = [
+        [{"text": "🆓 Free Channel", "callback_data": "chanpick:free"}],
+        [{"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}],
+        [{"text": "◀️  Back", "callback_data": "help_main"}],
+    ]
+    _help_edit_or_send(chat_id,
+        "<b>📡 Signal Channels</b>\n\nChoose which one you want to join:",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def send_channel_picker_result(chat_id, tier, message_id=None):
+    if tier == "free":
+        chans = [c for c in CHANNELS if c.get("tier") == "free" and c.get("id")]
+        if not chans:
+            text = "🆓 <b>Free Channel</b>\n\nNo free channel is set up yet — check back later."
+            rows = [[{"text": "◀️  Back", "callback_data": "chanpick_open"}]]
+        else:
+            text = "🆓 <b>Free Channel</b>\n\nA limited number of signals per day, shared with everyone:"
+            rows = [[{"text": c.get("label") or "Join", "url": c["link"]}] for c in chans if c.get("link")]
+            if not rows:
+                text += "\n\n<i>No public join link set for it yet — ask the admin.</i>"
+            rows.append([{"text": "◀️  Back", "callback_data": "chanpick_open"}])
+    else:
+        text = (
+            "⭐ <b>VIP Channel</b>\n\n"
+            "Get every signal, no limits — BTC, Scan1, and Scan2, the moment they fire.\n\n"
+            "VIP access is activated by the admin. Tap below to request it.")
+        rows = [
+            [{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}] if ADMIN_CHAT_ID else [],
+            [{"text": "◀️  Back", "callback_data": "chanpick_open"}],
+        ]
+        rows = [r for r in rows if r]
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+
+def send_channelmgmt_screen(chat_id, message_id=None):
+    rows = []
+    for i, c in enumerate(CHANNELS):
+        tag = "⭐ VIP" if c.get("tier") == "vip" else "🆓 FREE"
+        label = c.get("label") or c.get("id", "?")
+        rows.append([{"text": f"{tag}  {label}", "callback_data": "noop"},
+                     {"text": "🗑", "callback_data": f"chrm_remove:{i}"}])
+    rows.append([{"text": "➕ Add VIP Channel", "callback_data": "chrm_add:vip"}])
+    rows.append([{"text": "➕ Add Free Channel", "callback_data": "chrm_add:free"}])
+    rows.append([{"text": f"🔢 Free Daily Limit: {FREE_SIGNAL_DAILY_LIMIT}", "callback_data": "help_cmd:/freelimit"}])
+    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    _help_edit_or_send(chat_id,
+        "<b>📡 Channels — VIP / Free</b>\n\n"
+        "Add as many VIP or Free channels as you want. VIP channels get every signal. "
+        "Free channels only get up to your daily limit, between 06:00–19:00 IST — "
+        "free-tier bot users copy exactly the same signals the free channels got.",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_coadmin_screen(chat_id, message_id=None):
     global CO_ADMIN_CHAT_ID
     _flag = "✅ ON" if CO_ADMIN_ENABLED else "❌ OFF"
     _uname = user_usernames.get(str(CO_ADMIN_CHAT_ID), "")
     _who = f"@{_uname}" if _uname else (str(CO_ADMIN_CHAT_ID) if CO_ADMIN_CHAT_ID else "not set")
+    _profile_lbl = "👤 My Settings" if ACTIVE_PROFILE == "mine" else "🤝 Co-Admin's Settings"
+    _switch_to_lbl = "🤝 Co-Admin's" if ACTIVE_PROFILE == "mine" else "👤 My"
     rows = [
         [{"text": f"Co-Admin: {_who}  {_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON", "callback_data": "coadmin_on"}, {"text": "🔴 Turn OFF", "callback_data": "coadmin_off"}],
         [{"text": "👤 Choose Co-Admin", "callback_data": "coadmin_pick"}],
+        [{"text": f"Active: {_profile_lbl}", "callback_data": "noop"}],
+        [{"text": f"🔀 Switch to {_switch_to_lbl} Settings", "callback_data": "profile_switch"}],
         [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>🤝 Co-Admin</b>\n\n"
-        "Give one trusted person a single extra permission: viewing the Trade History CSV "
-        "(<code>/tradelog</code>). They get NO other admin power — can't see/manage users, "
-        "can't see billing, can't reset or close anything. When ON, their contact also "
-        "appears next to Contact Admin for regular users.",
+        "Gives one trusted person control of Scan Control + Trade Control — force scans, "
+        "BTC/Scan1/Scan2 on-off, AI model &amp; gateway per type, entry style, TP1%, schedules, "
+        "SL/TP/close on any trade, and the Trade History CSV. They still can't see/manage users, "
+        "see billing, reset anything, broadcast, or touch this Co-Admin screen. Their contact "
+        "shows next to Contact Admin while ON.\n\n"
+        "<b>🔀 Switch Settings</b> swaps between two remembered configs — yours and the "
+        "co-admin's — of everything above (model, gateway, entry style, TP1%, schedules, "
+        "on/off toggles). Switching saves your current setup before loading the other one, "
+        "so nothing is lost either way.",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_coadmin_pick_screen(chat_id, message_id=None):
@@ -5725,10 +6003,14 @@ def send_go_screen(chat_id, message_id=None):
         send_reply(chat_id, text, reply_markup=_ctrl_btns)
 
 def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
+    _sees_scanadmin_cats = is_admin or is_co_admin(cid if cid is not None else chat_id)
     rows = []
     for cat_id, (label, admin_only, _) in _HELP_CATS.items():
         if admin_only and not is_admin:
-            continue
+            if cat_id in ("scan", "tradecontrol") and _sees_scanadmin_cats:
+                pass  # co-admin can see these two rooms
+            else:
+                continue
         rows.append([{"text": label, "callback_data": f"help_cat:{cat_id}"}])
     _extra_row = []
     if CONTACT_ADMIN_ENABLED and ADMIN_CHAT_ID:
@@ -5741,6 +6023,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
+    if CHANNELS:
+        rows.append([{"text": "🆓⭐ Free / VIP Channels", "callback_data": "chanpick_open"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
@@ -5837,6 +6121,10 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         send_entrystyle_screen(chat_id, message_id=msg_id)
     elif back_cb == "coadmin_open":
         send_coadmin_screen(chat_id, message_id=msg_id)
+    elif back_cb == "channelmgmt_open":
+        send_channelmgmt_screen(chat_id, message_id=msg_id)
+    elif back_cb == "chanpick_open":
+        send_channel_picker_screen(chat_id, message_id=msg_id)
     elif back_cb.startswith("trdpick_open:"):
         _action = back_cb.split(":", 1)[1]
         _orig_back = _TRDPICK_BACKCB.get(str(cid), "help_cat:monitor")
@@ -5849,7 +6137,7 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     if not entry:
         return
     label, admin_only, cmds = entry
-    if admin_only and not is_admin:
+    if admin_only and not is_admin and not (cat_id in ("scan", "tradecontrol") and is_co_admin(chat_id)):
         return
 
     if cat_id in _NESTED_CATS:
@@ -5968,6 +6256,7 @@ def command_listener():
                     cb_msg_id   = cb_msg.get("message_id")
                     cb_chat_id  = cb_msg.get("chat", {}).get("id", cb_cid)
                     cb_is_admin = str(cb_cid) == str(ADMIN_CHAT_ID)
+                    cb_is_scanadmin = cb_is_admin or is_co_admin(cb_cid)
                     register_user(cb_cid, cb["from"].get("username"))
 
                     # Pressing ANY button cancels a stale pending text-input prompt
@@ -6007,10 +6296,10 @@ def command_listener():
                     elif cb_data.startswith("copyuser_sub:"):
                         sub_id = cb_data.split(":", 1)[1]
                         send_copyuser_subcat(cb_chat_id, sub_id, cb_cid, message_id=cb_msg_id)
-                    elif cb_data.startswith("scan_sub:") and cb_is_admin:
+                    elif cb_data.startswith("scan_sub:") and cb_is_scanadmin:
                         sub_id = cb_data.split(":", 1)[1]
                         send_scan_subcat(cb_chat_id, sub_id, message_id=cb_msg_id)
-                    elif cb_data.startswith("tradecontrol_sub:") and cb_is_admin:
+                    elif cb_data.startswith("tradecontrol_sub:") and cb_is_scanadmin:
                         sub_id = cb_data.split(":", 1)[1]
                         send_tradecontrol_subcat(cb_chat_id, sub_id, message_id=cb_msg_id)
                     elif cb_data.startswith("copyadmin_sub:") and cb_is_admin:
@@ -6026,21 +6315,21 @@ def command_listener():
                         sub_id = cb_data.split(":", 1)[1]
                         _send_generic_subcat(cb_chat_id, _TV_SUBCATS, sub_id, "tv", message_id=cb_msg_id)
 
-                    elif cb_data.startswith("tp_start:") and cb_is_admin:
+                    elif cb_data.startswith("tp_start:") and cb_is_scanadmin:
                         target = cb_data.split(":", 1)[1]
                         _tp_state[str(cb_cid)] = {"target": target, "digits": [], "times": [], "msg_id": cb_msg_id}
                         _tp_render(cb_chat_id, cb_cid, cb_msg_id)
-                    elif cb_data.startswith("tp_d:") and cb_is_admin:
+                    elif cb_data.startswith("tp_d:") and cb_is_scanadmin:
                         st = _tp_state.get(str(cb_cid))
                         if st and len(st["digits"]) < 4:
                             st["digits"].append(cb_data.split(":", 1)[1])
                             _tp_render(cb_chat_id, cb_cid, cb_msg_id)
-                    elif cb_data == "tp_prev" and cb_is_admin:
+                    elif cb_data == "tp_prev" and cb_is_scanadmin:
                         st = _tp_state.get(str(cb_cid))
                         if st and st["digits"]:
                             st["digits"].pop()
                             _tp_render(cb_chat_id, cb_cid, cb_msg_id)
-                    elif cb_data == "tp_next" and cb_is_admin:
+                    elif cb_data == "tp_next" and cb_is_scanadmin:
                         st = _tp_state.get(str(cb_cid))
                         if st and len(st["digits"]) == 4:
                             h = int("".join(st["digits"][0:2])); m = int("".join(st["digits"][2:4]))
@@ -6052,7 +6341,7 @@ def command_listener():
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                     json={"callback_query_id": cb["id"], "text": "⚠️ Invalid time — hour must be 00-23, minute 00-59",
                                           "show_alert": True}, timeout=5)
-                    elif cb_data == "tp_save" and cb_is_admin:
+                    elif cb_data == "tp_save" and cb_is_scanadmin:
                         st = _tp_state.get(str(cb_cid))
                         if st:
                             if len(st["digits"]) == 4:
@@ -6072,7 +6361,7 @@ def command_listener():
                             applycmd = _TP_APPLYCMD[st["target"]]
                             del _tp_state[str(cb_cid)]
                             _toggle_cmd(f"{applycmd} {times_str}", cb_chat_id, cb_cid, cb_msg_id, _TP_BACKCAT[st["target"]])
-                    elif cb_data == "tp_back" and cb_is_admin:
+                    elif cb_data == "tp_back" and cb_is_scanadmin:
                         st = _tp_state.pop(str(cb_cid), None)
                         cat = _TP_BACKCAT.get(st["target"], "scan") if st else "scan"
                         send_help_category(cb_chat_id, cat, cb_is_admin, message_id=cb_msg_id)
@@ -6125,11 +6414,11 @@ def command_listener():
                                 message_id=cb_msg_id)
 
                     # ── Trade picker (SL/TP/close on any open trade) ──────────
-                    elif cb_data.startswith("trdpick_open:") and cb_is_admin:
+                    elif cb_data.startswith("trdpick_open:") and cb_is_scanadmin:
                         _action = cb_data.split(":", 1)[1]
                         _orig_back = _TRDPICK_BACKCB.get(str(cb_cid), "help_cat:monitor")
                         _send_trade_pick_screen(cb_chat_id, cb_cid, _action, cb_msg_id, _orig_back)
-                    elif cb_data.startswith("trdpick:") and cb_is_admin:
+                    elif cb_data.startswith("trdpick:") and cb_is_scanadmin:
                         _, _action, _kind, _idx_str = cb_data.split(":", 3)
                         _idx = int(_idx_str)
                         _trades = _all_open_trades()
@@ -6217,16 +6506,18 @@ def command_listener():
                             "/closescan":  ("closescan", "Clear ALL open Scan1 + Scan2 trades? This closes them in the bot immediately."),
                             "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
                         }
-                        _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size"}
+                        _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size", "/freelimit": "freelimit"}
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
-                                        "/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
-                                        "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
-                                        "/coadmin": send_coadmin_screen}
+                                        "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
+                        _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
+                                             "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
                             _SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
-                        elif cmd_text in _TRDPICK_TARGETS and cb_is_admin:
+                        elif cmd_text in _SCAN_SCREEN_CMDS and cb_is_scanadmin:
+                            _SCAN_SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
+                        elif cmd_text in _TRDPICK_TARGETS and cb_is_scanadmin:
                             _TRDPICK_BACKCB[str(cb_cid)] = _back_cb
                             _send_trade_pick_screen(cb_chat_id, cb_cid, _TRDPICK_TARGETS[cmd_text], cb_msg_id, _back_cb)
                         elif cmd_text in _CONFIRM_FIRST:
@@ -6326,24 +6617,24 @@ def command_listener():
                         _toggle_cmd(f"/btcmode {'on' if cb_data=='btcmode_v7' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── Copy Trade by type: BTC / Scan1 / Scan2 ON/OFF ────────
-                    elif cb_data == "ctbtc_on" and cb_is_admin:
+                    elif cb_data == "ctbtc_on" and cb_is_scanadmin:
                         ct.set_btc_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data == "ctbtc_off" and cb_is_admin:
+                    elif cb_data == "ctbtc_off" and cb_is_scanadmin:
                         ct.set_btc_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data == "ctscan1_on" and cb_is_admin:
+                    elif cb_data == "ctscan1_on" and cb_is_scanadmin:
                         ct.set_scan1_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data == "ctscan1_off" and cb_is_admin:
+                    elif cb_data == "ctscan1_off" and cb_is_scanadmin:
                         ct.set_scan1_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data == "ctscan2_on" and cb_is_admin:
+                    elif cb_data == "ctscan2_on" and cb_is_scanadmin:
                         ct.set_scan2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data == "ctscan2_off" and cb_is_admin:
+                    elif cb_data == "ctscan2_off" and cb_is_scanadmin:
                         ct.set_scan2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
                         _toggle_cmd(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
-                    elif cb_data in ("btca_on", "btca_off") and cb_is_admin:
+                    elif cb_data in ("btca_on", "btca_off") and cb_is_scanadmin:
                         global btc_analysis_enabled
                         btc_analysis_enabled = (cb_data == "btca_on")
                         save_settings()
@@ -6394,11 +6685,11 @@ def command_listener():
                         send_userstats_list(cb_chat_id, "active", message_id=cb_msg_id)
                     elif cb_data == "userstats_blocked" and cb_is_admin:
                         send_userstats_list(cb_chat_id, "blocked", message_id=cb_msg_id)
-                    elif cb_data == "aicfg_open" and cb_is_admin:
+                    elif cb_data == "aicfg_open" and cb_is_scanadmin:
                         send_aiconfig_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data.startswith("aicfg_open:") and cb_is_admin:
+                    elif cb_data.startswith("aicfg_open:") and cb_is_scanadmin:
                         send_aiconfig_type_screen(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
-                    elif cb_data.startswith("aicfg_set:") and cb_is_admin:
+                    elif cb_data.startswith("aicfg_set:") and cb_is_scanadmin:
                         global SCAN_MODEL, USE_AEROLINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK
                         _, _kind, _gw, _mdl = cb_data.split(":", 3)
                         _model_val = "claude-opus-4-8" if _mdl == "opus" else "claude-fable-5"
@@ -6422,14 +6713,41 @@ def command_listener():
                     elif cb_data == "coadmin_off" and cb_is_admin:
                         CO_ADMIN_ENABLED = False; save_settings()
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "chanpick_open":
+                        send_channel_picker_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("chanpick:"):
+                        send_channel_picker_result(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
+                    elif cb_data.startswith("chrm_add:") and cb_is_admin:
+                        _tier = cb_data.split(":", 1)[1]
+                        pending_input[cb_cid] = {"cmd": "_chrm_add", "msg_id": cb_msg_id, "cat_id": "channelmgmt_open", "tier": _tier}
+                        _help_edit_or_send(cb_chat_id,
+                            f"➕ <b>Add {'VIP' if _tier=='vip' else 'Free'} Channel</b>\n\n"
+                            f"Add this bot as admin to the channel, then send:\n"
+                            f"<code>CHANNEL_ID</code> (for sending signals) — and optionally its public "
+                            f"invite link after a space, so users can tap to join it, e.g.\n"
+                            f"<code>-1001234567890 https://t.me/yourchannel</code>",
+                            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "channelmgmt_open"}]]},
+                            message_id=cb_msg_id)
+                    elif cb_data.startswith("chrm_remove:") and cb_is_admin:
+                        _idx = int(cb_data.split(":", 1)[1])
+                        if 0 <= _idx < len(CHANNELS):
+                            CHANNELS.pop(_idx); save_settings()
+                        send_channelmgmt_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_pick" and cb_is_admin:
                         send_coadmin_pick_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "profile_switch" and cb_is_admin:
+                        global ACTIVE_PROFILE
+                        _SETTINGS_PROFILES[ACTIVE_PROFILE] = _snapshot_scan_settings()
+                        ACTIVE_PROFILE = "coadmin" if ACTIVE_PROFILE == "mine" else "mine"
+                        _apply_scan_settings(_SETTINGS_PROFILES.get(ACTIVE_PROFILE, {}))
+                        save_settings()
+                        send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("coadmin_set:") and cb_is_admin:
                         global CO_ADMIN_CHAT_ID
                         CO_ADMIN_CHAT_ID = cb_data.split(":", 1)[1]
                         save_settings()
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
-                    elif cb_data.startswith("entrystyle:") and cb_is_admin:
+                    elif cb_data.startswith("entrystyle:") and cb_is_scanadmin:
                         global ZONE_ENTRY_ENABLED
                         ZONE_ENTRY_ENABLED = (cb_data.split(":", 1)[1] == "zone")
                         save_settings()
@@ -6572,11 +6890,11 @@ def command_listener():
 
                     elif cb_data == "noop":
                         pass
-                    elif cb_data == "test_on" and cb_is_admin:
+                    elif cb_data == "test_on" and cb_is_scanadmin:
                         _toggle_cmd("/test on", cb_chat_id, cb_cid, cb_msg_id, "scan")
-                    elif cb_data == "test_off" and cb_is_admin:
+                    elif cb_data == "test_off" and cb_is_scanadmin:
                         _toggle_cmd("/test off", cb_chat_id, cb_cid, cb_msg_id, "scan")
-                    elif cb_data == "test_run" and cb_is_admin:
+                    elif cb_data == "test_run" and cb_is_scanadmin:
                         _toggle_cmd("/test run", cb_chat_id, cb_cid, cb_msg_id, "scan")
                     elif cb_data.startswith("pausech:"):
                         _toggle_cmd(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
@@ -6594,6 +6912,46 @@ def command_listener():
                     elif cb_data.startswith("pauseuser:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/pauseuser {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("free_set:") and cb_is_admin:
+                        uid = cb_data.split(":", 1)[1]
+                        handle_command(f"/setfree {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data.startswith("vip_pick:") and cb_is_admin:
+                        uid = cb_data.split(":", 1)[1]
+                        _vip_state[str(cb_cid)] = {"uid": uid, "stage": "start", "digits": "", "start": ""}
+                        _vip_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data.startswith("vip_d:") and cb_is_admin:
+                        st = _vip_state.get(str(cb_cid))
+                        if st and len(st["digits"]) < 8:
+                            st["digits"] += cb_data.split(":", 1)[1]
+                            _vip_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "vip_prev" and cb_is_admin:
+                        st = _vip_state.get(str(cb_cid))
+                        if st and st["digits"]:
+                            st["digits"] = st["digits"][:-1]
+                            _vip_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "vip_back" and cb_is_admin:
+                        _vip_state.pop(str(cb_cid), None)
+                        _navigate_to("help_cat:copyadmin", cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
+                    elif cb_data == "vip_manual" and cb_is_admin:
+                        st = _vip_state.pop(str(cb_cid), None)
+                        if st:
+                            label = "Start Date" if st["stage"] == "start" else "End Date"
+                            pending_input[cb_cid] = {"cmd": "_vip_manual_date", "msg_id": cb_msg_id, "cat_id": "help_cat:copyadmin", "vip": st}
+                            _help_edit_or_send(cb_chat_id,
+                                f"⌨️ <b>Type VIP {label}</b>\n\nSend as <code>DD.MM.YYYY</code> (e.g. <code>17.08.2026</code>):",
+                                {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}]]},
+                                message_id=cb_msg_id)
+                    elif cb_data == "vip_save" and cb_is_admin:
+                        st = _vip_state.get(str(cb_cid))
+                        if st and len(st["digits"]) == 8:
+                            date_str = _digits_to_date(st["digits"])
+                            if st["stage"] == "start":
+                                st["start"] = date_str; st["stage"] = "end"; st["digits"] = ""
+                                _vip_render(cb_chat_id, cb_cid, cb_msg_id)
+                            else:
+                                _vip_state.pop(str(cb_cid), None)
+                                handle_command(f"/setvip {st['uid']} {st['start']} {date_str}", cb_chat_id, {}, sender_id=cb_cid)
+                                _navigate_to("help_cat:copyadmin", cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
                     elif cb_data.startswith("ctretry:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctretry {uid}", cb_chat_id, {}, sender_id=cb_cid)
@@ -6664,6 +7022,27 @@ def command_listener():
                         SIGNAL_CHANNEL_LINK = text.strip()
                         save_settings()
                         send_adminlinks_screen(cid, message_id=_pi_msg_id)
+                    elif pi["cmd"] == "_chrm_add":
+                        del pending_input[cid]
+                        _parts_in = text.strip().split()
+                        _cid_txt = _parts_in[0] if _parts_in else text.strip()
+                        _link_txt = _parts_in[1] if len(_parts_in) > 1 else ""
+                        CHANNELS.append({"id": _cid_txt, "tier": pi["tier"], "label": _cid_txt, "link": _link_txt})
+                        save_settings()
+                        send_channelmgmt_screen(cid, message_id=_pi_msg_id)
+                    elif pi["cmd"] == "_vip_manual_date":
+                        del pending_input[cid]
+                        vst = pi["vip"]
+                        _txt = text.strip()
+                        import re as _vre
+                        if not _vre.match(r"^\d{2}\.\d{2}\.\d{4}$", _txt):
+                            send_reply(cid, "⚠️ Format must be DD.MM.YYYY, e.g. 17.08.2026", reply_markup=_back_mkp)
+                        elif vst["stage"] == "start":
+                            _vip_state[str(cid)] = {"uid": vst["uid"], "stage": "end", "digits": "", "start": _txt}
+                            _vip_render(cid, cid, _pi_msg_id)
+                        else:
+                            handle_command(f"/setvip {vst['uid']} {vst['start']} {_txt}", cid, {}, sender_id=cid)
+                            _navigate_to("help_cat:copyadmin", cid, cid, _pi_msg_id, True)
                     elif pi["cmd"] == "_pp_manual":
                         del pending_input[cid]
                         ppst = pi["pp"]
@@ -7241,6 +7620,16 @@ def main():
         else:
             print("  TV bridge OFFLINE - Binance fallback")
 
+    def _vip_expiry_loop():
+        time.sleep(60)
+        while True:
+            try:
+                _check_vip_expiries()
+            except Exception as e:
+                print(f"[VIP] expiry check error: {e}")
+            time.sleep(3600)  # hourly is plenty for a date-based expiry
+    threading.Thread(target=_vip_expiry_loop, daemon=True).start()
+
     threading.Thread(target=command_listener, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
 
@@ -7437,8 +7826,11 @@ def main():
             if not active_trade["signal"]:
                 signal = analyze_with_claude(ticker, data, validate_trade=False)
                 if signal and not signal.get("_hold"):
-                    send_telegram(fmt_signal(signal)); set_trade(signal)
-                    results = ct.on_signal(signal, price)
+                    _share_free = _free_quota_available()
+                    if _share_free: _consume_free_quota()
+                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    set_trade(signal)
+                    results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
                     if signal.get("entry_type", "MARKET") == "MARKET":
                         send_telegram(
@@ -7489,8 +7881,12 @@ def main():
                             f"💡 Why: <i>{flip_reason[:200]}</i>\n\n"
                             f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
                         ct.on_close_all()
-                        reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
-                        ct.on_signal(signal, price)
+                        reset_trade(); time.sleep(1)
+                        _share_free = _free_quota_available()
+                        if _share_free: _consume_free_quota()
+                        send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                        set_trade(signal)
+                        ct.on_signal(signal, price, _share_free)
                 else:
                     if forced:
                         send_telegram(f"<b>Trade Update</b>  {ist_str()}\n\n"
@@ -7499,8 +7895,12 @@ def main():
                             f"Bias confirmed.\n\n<i>🛡️ Capital protected</i>")
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
-                    reset_trade(); time.sleep(1); send_telegram(fmt_signal(signal)); set_trade(signal)
-                    results = ct.on_signal(signal, price)
+                    reset_trade(); time.sleep(1)
+                    _share_free = _free_quota_available()
+                    if _share_free: _consume_free_quota()
+                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    set_trade(signal)
+                    results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]
                     fail = [r for r in results if r.startswith("❌")]
                     send_admin(f"📋 <b>Copy Trade - Flip Signal</b>\n\n{signal['signal']} @ {signal['entry']:,.0f}\n✅ {len(ok)} | ❌ {len(fail)}\n{''.join(fail)}")
