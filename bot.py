@@ -5952,9 +5952,8 @@ def send_channel_picker_result(chat_id, tier, message_id=None):
 def send_channelmgmt_screen(chat_id, message_id=None):
     rows = []
     for i, c in enumerate(CHANNELS):
-        tag = "⭐ VIP" if c.get("tier") == "vip" else "🆓 FREE"
-        label = c.get("label") or c.get("id", "?")
-        rows.append([{"text": f"{tag} · {label}", "callback_data": "noop"}])
+        label = c.get("label") or (("⭐ VIP" if c.get("tier") == "vip" else "🆓 Free") + f" · {c.get('id','?')}")
+        rows.append([{"text": label, "callback_data": "noop"}])
         rows.append([{"text": "🗑 Remove", "callback_data": f"chrm_remove:{i}"}])
     rows.append([{"text": "➕ Add VIP Channel", "callback_data": "chrm_add:vip"}])
     rows.append([{"text": "➕ Add Free Channel", "callback_data": "chrm_add:free"}])
@@ -7189,7 +7188,9 @@ def command_listener():
                                 _back_mkp, message_id=_pi_msg_id)
                         else:
                             del pending_input[cid]
-                            CHANNELS.append({"id": _id_tok, "tier": pi["tier"], "label": _id_tok, "link": _link_tok})
+                            _n = sum(1 for c in CHANNELS if c.get("tier") == pi["tier"]) + 1
+                            _friendly = f"{'⭐ VIP' if pi['tier']=='vip' else '🆓 Free'} Tier {_n}"
+                            CHANNELS.append({"id": _id_tok, "tier": pi["tier"], "label": _friendly, "link": _link_tok})
                             save_settings()
                             send_channelmgmt_screen(cid, message_id=_pi_msg_id)
                     elif pi["cmd"] == "_vip_manual_date":
