@@ -2470,7 +2470,7 @@ def _style_keyboard(markup, rotate=True):
                 continue
             label = btn["text"]
             if "style" not in btn:
-                if any(label.strip().endswith(n) for n in _STYLE_NONE_LABELS):
+                if btn.get("callback_data") == "noop" or any(label.strip().endswith(n) for n in _STYLE_NONE_LABELS):
                     pass
                 elif any(h in label for h in _STYLE_SUCCESS_HINTS):
                     btn["style"] = "success"
