@@ -229,6 +229,7 @@ def _consume_free_quota():
 def send_to_tier_channels(text: str, share_free: bool):
     """Sends to every registered VIP channel always, and to FREE channels only
     if share_free is True (the daily quota decision made once per signal)."""
+    text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
