@@ -234,16 +234,26 @@ def send_to_tier_channels(text: str, share_free: bool):
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
-            if not r.json().get("ok"):
-                print(f"  [TIER CHANNEL] vip {cid} rejected: {r.json().get('description')}")
+            rj = r.json()
+            if not rj.get("ok"):
+                print(f"  [TIER CHANNEL] vip {cid} rejected: {rj.get('description')}")
+            else:
+                _ents = rj.get("result", {}).get("entities", [])
+                _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
+                print(f"  [TIER CHANNEL DEBUG] vip {cid}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities")
         except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
     if share_free:
         for cid in _channels_by_tier("free"):
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
-                if not r.json().get("ok"):
-                    print(f"  [TIER CHANNEL] free {cid} rejected: {r.json().get('description')}")
+                rj = r.json()
+                if not rj.get("ok"):
+                    print(f"  [TIER CHANNEL] free {cid} rejected: {rj.get('description')}")
+                else:
+                    _ents = rj.get("result", {}).get("entities", [])
+                    _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
+                    print(f"  [TIER CHANNEL DEBUG] free {cid}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities")
             except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
 
 ACTIVE_PROFILE = "mine"   # "mine" or "coadmin" — which scan-settings snapshot is currently live
