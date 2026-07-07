@@ -2549,6 +2549,7 @@ def send_telegram(text, include_ch2=True):
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
+        _test_true_forward_once(text, cid)
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text,
