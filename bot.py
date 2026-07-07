@@ -2444,15 +2444,22 @@ def _apply_premium_emojis(text: str) -> str:
 
 _STYLE_SUCCESS_HINTS = ("Turn ON", "🟢", "Yes, confirm", "Adopt", "💾 Save", "✅")
 _STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "❌ Close", "🗑", "🚫", "❌")
+# Exact buttons that should never get a color — plain settings/nav entries, not ON/OFF actions
+_STYLE_NONE_LABELS = (
+    "Set Custom SL", "Set Custom TP1", "Set Custom TP2", "TP1 Close %", "Trailing SL",
+    "My Copy Trade", "Trade Control", "Copy Admin", "TV & Advanced", "Broadcast & Channels",
+    "Contact/Channel Settings", "Active BTC + all scan trades", "Current BTC price",
+    "London / NY / Sleep session", "Last 5 signals", "Other Actions",
+)
 
 _STYLE_ROTATION = ("primary", "success", "danger")  # Bot API 9.4 defines only these 3 — no orange/pink/custom hex exists
 
-def _style_keyboard(markup, rotate=False):
+def _style_keyboard(markup, rotate=True):
     """Adds Bot API 9.4 button `style` — green for positive/confirm actions,
-    red for destructive/off/cancel ones. Plain nav/info/settings buttons get
-    no style (default look) unless rotate=True (used only for the top-level
-    /help category menu, so it isn't monotone there). Buttons that already
-    set a style are left untouched."""
+    red for destructive/off/cancel ones, and (when rotate=True, the default)
+    blue/green/red cycling for everything else so menus aren't monotone.
+    A small exact-label exclusion list opts specific buttons out entirely.
+    Buttons that already set a style are left untouched."""
     if not markup or "inline_keyboard" not in markup:
         return markup
     _nav_i = 0
@@ -2462,7 +2469,9 @@ def _style_keyboard(markup, rotate=False):
                 continue
             label = btn["text"]
             if "style" not in btn:
-                if any(h in label for h in _STYLE_SUCCESS_HINTS):
+                if any(label.strip().endswith(n) for n in _STYLE_NONE_LABELS):
+                    pass
+                elif any(h in label for h in _STYLE_SUCCESS_HINTS):
                     btn["style"] = "success"
                 elif any(h in label for h in _STYLE_DANGER_HINTS):
                     btn["style"] = "danger"
@@ -5813,7 +5822,7 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
         merged = [_back_row]
     _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id)
 
-def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=False):
+def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     text = _apply_premium_emojis(text)
     markup = _style_keyboard(markup, rotate=rotate)
