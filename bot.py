@@ -2,7 +2,7 @@
 CLEXER Signal Bot V17.8.5
 """
 
-import os, time, json, base64, requests, anthropic, threading, re, subprocess
+import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
@@ -2250,11 +2250,11 @@ def _fmt_compare_result(sig, label):
     if s == "WAIT":
         return (f"<b>[{label}]</b> ⏸ WAIT\n"
                 f"Bias: {sig.get('bias','?')} | Conf: {sig.get('confidence','?')}\n"
-                f"<i>{sig.get('reasoning','')[:120]}</i>")
+                f"<i>{_html.escape(sig.get('reasoning','')[:120])}</i>")
     if s == "HOLD":
         return (f"<b>[{label}]</b> 🔒 HOLD\n"
                 f"4H: {sig.get('structure_4h','?')} | Conf: {sig.get('confidence','?')}\n"
-                f"<i>{sig.get('reasoning','')[:120]}</i>")
+                f"<i>{_html.escape(sig.get('reasoning','')[:120])}</i>")
     e = "🟢" if s == "BUY" else "🔴"
     entry = float(sig.get("entry", 0)); sl = float(sig.get("sl", 0)); tp1 = float(sig.get("tp1", 0)); tp2 = float(sig.get("tp2", 0))
     return (f"<b>[{label}]</b> {e} <b>{s}</b>\n"
@@ -2262,7 +2262,7 @@ def _fmt_compare_result(sig, label):
             f"SL: {sl:,.0f} | TP1: {tp1:,.0f} | TP2: {tp2:,.0f}\n"
             f"R:R: {sig.get('rr','?')} | Conf: {sig.get('confidence','?')}\n"
             f"4H: {sig.get('structure_4h','?')}\n"
-            f"<i>{sig.get('reasoning','')[:150]}</i>")
+            f"<i>{_html.escape(sig.get('reasoning','')[:150])}</i>")
 
 # --- PRICE / DETECTION HELPERS ------------------------------------------------
 def price_only_advice(price):
@@ -2746,9 +2746,9 @@ def fmt_signal(s):
         f"💰 TP1     <b>{s['tp1']:,.0f}</b>\n"
         f"🏆 TP2     <b>{s['tp2']:,.0f}</b>\n"
         f"⚖️ R:R     <b>{s.get('rr','-')}</b>\n\n"
-        + (f"🌐 Weekly: <i>{wk}</i>\n" if wk else "")
-        + (f"📊 4H:     <i>{s4h}</i>\n" if s4h else "")
-        + (f"📍 Zone:   <i>{ez}</i>\n"  if ez else "")
+        + (f"🌐 Weekly: <i>{_html.escape(wk)}</i>\n" if wk else "")
+        + (f"📊 4H:     <i>{_html.escape(s4h)}</i>\n" if s4h else "")
+        + (f"📍 Zone:   <i>{_html.escape(ez)}</i>\n"  if ez else "")
         + f"\n✨ <i>🛡️ Capital protected</i>")
 
 def fmt_update(status, price=None):
@@ -5359,7 +5359,7 @@ Reasoning: [one line]"""
                     send_reply(cid,
                         f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
                         f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
-                        f"<pre>{analysis[:900]}</pre>\n\n"
+                        f"<pre>{_html.escape(analysis[:900])}</pre>\n\n"
                         f"🛡️ <i>Capital protected</i>")
 
                     if scan_signal_val == "WAIT":
@@ -5602,7 +5602,7 @@ Reasoning: [one line]"""
                     f"Price:  <b>${price:,.6g}</b>  ({change:+.2f}%)\n"
                     f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
                     f"Vol:   ${vol/1e6:.1f}M\n\n"
-                    f"<b>Claude Analysis:</b>\n<i>{analysis[:900]}</i>\n\n"
+                    f"<b>Claude Analysis:</b>\n<i>{_html.escape(analysis[:900])}</i>\n\n"
                     f"<i>🛡️ Capital protected</i>")
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
@@ -7951,7 +7951,7 @@ def _run_test_scan(cid, scan_ver: int):
                 f"{emoji} <b>[TEST] {chosen_sym}</b>  {ist_str()}\n\n"
                 f"Price: <b>{cp:,.6g}</b> ({candidate['change']:+.2f}%)\n"
                 f"move_age: {age} candles\n\n"
-                f"<pre>{_preview[:600]}</pre>\n\n"
+                f"<pre>{_html.escape(_preview[:600])}</pre>\n\n"
                 f"<i>- CLEXER SCALP V1 TEST -</i>")
 
             if scan_signal_val == "WAIT":
@@ -8305,7 +8305,7 @@ def main():
                     send_admin(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
-                        f"<i>{signal.get('reasoning','Structure intact')[:250]}</i>\n\n<i>🛡️ Capital protected</i>")
+                        f"<i>{_html.escape(signal.get('reasoning','Structure intact')[:250])}</i>\n\n<i>🛡️ Capital protected</i>")
                 elif signal["signal"] != t["signal"]:
                     # Only flip if entry has already been hit — never flip a pending trade
                     if not t["entry_hit"]:
@@ -8316,7 +8316,7 @@ def main():
                         log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
                         send_telegram(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
-                            f"💡 Why: <i>{flip_reason[:200]}</i>\n\n"
+                            f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
                             f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
                         ct.on_close_all()
                         reset_trade(); time.sleep(1)
