@@ -232,14 +232,18 @@ def send_to_tier_channels(text: str, share_free: bool):
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
         try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+            if not r.json().get("ok"):
+                print(f"  [TIER CHANNEL] vip {cid} rejected: {r.json().get('description')}")
         except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
     if share_free:
         for cid in _channels_by_tier("free"):
             try:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+                if not r.json().get("ok"):
+                    print(f"  [TIER CHANNEL] free {cid} rejected: {r.json().get('description')}")
             except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
 
 ACTIVE_PROFILE = "mine"   # "mine" or "coadmin" — which scan-settings snapshot is currently live
