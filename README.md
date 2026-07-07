@@ -1,17 +1,23 @@
-[README.md](https://github.com/user-attachments/files/29726401/README.md)
+[README.md](https://github.com/user-attachments/files/29726468/README.md)
 <div align="center">
 
-# ⚡ CLEXER V17.8.5
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,50:302B63,100:6B46C1&height=220&section=header&text=CLEXER%20V17.8.5&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=AI-Powered%20Trading%20Signal%20%26%20Copy-Trade%20Engine&descAlignY=55&descSize=20" width="100%"/>
 
-### AI-Powered BTC & Alt-Coin Signal Engine — with Live BingX Copy Trading
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=24&duration=2600&pause=900&color=9D7BFF&center=true&vCenter=true&width=700&lines=%F0%9F%95%AF%EF%B8%8F+Scanning+BTC+%2B+Alt-Coins+24%2F7;%F0%9F%A4%96+Claude-Powered+Signal+Analysis;%F0%9F%93%88+Auto-Executing+on+BingX;%F0%9F%9B%A1%EF%B8%8F+Risk-Managed+%7C+VIP%2FFree+Tiered" alt="typing-svg" />
 
-*Claude-driven multi-timeframe analysis → Telegram signals → automatic BingX execution*
+<br/>
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
 [![Claude](https://img.shields.io/badge/Claude-Opus%204.8%20%7C%20Fable%205-6B46C1?style=for-the-badge&logo=anthropic&logoColor=white)](https://www.anthropic.com/)
-[![BingX](https://img.shields.io/badge/BingX-Perpetual%20Futures-4C1D95?style=for-the-badge)](https://bingx.com/)
+[![BingX](https://img.shields.io/badge/BingX-Perpetual%20Futures-4C1D95?style=for-the-badge&logo=binance&logoColor=white)](https://bingx.com/)
 [![Railway](https://img.shields.io/badge/Deploy-Railway-8B5CF6?style=for-the-badge&logo=railway&logoColor=white)](https://railway.app/)
+
+<br/>
+
+```
+📊 4H ▲▲▼▲  |  1H ▲▲▲▼  |  5M ▲▼▲▲     🤖 CLEXER SCANNING...     🟢 BUY  🛑 SL  🎯 TP1  🏆 TP2
+```
 
 </div>
 
@@ -162,8 +168,12 @@ python bot.py
 
 <div align="center">
 
----
+```
+🕯️ ▂▅▇█▇▅▂  ▁▃▆█▆▃▁  ▂▄▇█▇▄▂     🤖 SIGNAL LOCKED     ⚡ EXECUTING ON BINGX ⚡
+```
 
 *Built for speed, safety, and signal quality.*
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6B46C1,50:302B63,100:0F0C29&height=120&section=footer" width="100%"/>
 
 </div>
