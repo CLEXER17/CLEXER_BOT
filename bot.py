@@ -2391,8 +2391,41 @@ def save_settings():
 
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
+# Premium (Telegram Premium) animated emoji IDs — rendered via <tg-emoji emoji-id="…">
+# HTML tag so they coexist with existing parse_mode="HTML" formatting. Falls back to
+# the plain emoji glyph automatically for non-Premium viewers.
+PREMIUM_EMOJI_MAP = {
+    "🟢": "5215685881989442149", "🔴": "4926956800005112527",
+    "🛑": "5366040905927113475", "🎯": "5461009483314517035",
+    "🏆": "5188344996356448758", "✅": "6120713655366455614",
+    "❌": "6120660741369369103", "🚫": "5240241223632954241",
+    "🚨": "5395695537687123235", "🚀": "6221996895535896347",
+    "💰": "6224365445445590974", "🤖": "5197252827247841976",
+    "📊": "5231200819986047254", "📡": "6174682466356303760",
+    "⏰": "5213349767672769194", "🕐": "5363857580777029543",
+    "🕦": "5933544413740403607", "🛡": "6070930852647278292",
+    "📌": "5193159135004211919", "💬": "5233376087777501917",
+    "✨": "5325547803936572038", "🎉": "5208895581644140071",
+    "🔺": "5980787993139481991", "🗂": "5332586662629227075",
+    "▶️": "5264919878082509254", "👏": "5357052372600250759",
+    "😭": "5339386257283764734", "💀": "5379930048478330552",
+    "📣": "5215668805199473901",
+}
+PREMIUM_EMOJIS_ENABLED = True
+
+def _apply_premium_emojis(text: str) -> str:
+    """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
+    version; everyone else still sees the plain glyph (Telegram's own fallback)."""
+    if not PREMIUM_EMOJIS_ENABLED or not text:
+        return text
+    for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
+        if glyph in text:
+            text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
+    return text
+
 def send_telegram(text, include_ch2=True):
     success = False
+    text = _apply_premium_emojis(text)
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
         if not cid: continue
@@ -2409,6 +2442,7 @@ def send_telegram(text, include_ch2=True):
 def send_admin(text):
     """Send message to admin DM only (not channel)."""
     if not ADMIN_CHAT_ID: return
+    text = _apply_premium_emojis(text)
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ADMIN_CHAT_ID, "text": text,
@@ -2419,6 +2453,7 @@ _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing
 
 def send_reply(chat_id, text, reply_markup=None):
     cid_str = str(chat_id)
+    text = _apply_premium_emojis(text)
     if cid_str in _reply_capture:
         _reply_capture[cid_str]["texts"].append(text)
         if reply_markup:
@@ -5719,6 +5754,7 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
 
 def _help_edit_or_send(chat_id, text, markup, message_id=None):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    text = _apply_premium_emojis(text)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "reply_markup": markup, "disable_web_page_preview": True}
     if message_id:
