@@ -2445,14 +2445,16 @@ def _apply_premium_emojis(text: str) -> str:
 _STYLE_SUCCESS_HINTS = ("Turn ON", "🟢", "Yes, confirm", "Adopt", "💾 Save", "✅")
 _STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "Close", "🗑", "🚫", "❌")
 
+_STYLE_ROTATION = ("primary", "success", "danger")  # Bot API 9.4 defines only these 3 — no orange/pink/custom hex exists
+
 def _style_keyboard(markup):
     """Adds Bot API 9.4 button `style` to every button — green for positive/
-    confirm actions, red for destructive/off/cancel ones, blue for everything
-    else (nav, main actions, informational). Telegram only defines these 3
-    colors — there's no wider palette. Buttons that already set a style are
-    left untouched."""
+    confirm actions, red for destructive/off/cancel ones. Plain nav/info
+    buttons (no ON/OFF meaning) rotate through all 3 colors so the menu
+    isn't monotone. Buttons that already set a style are left untouched."""
     if not markup or "inline_keyboard" not in markup:
         return markup
+    _nav_i = 0
     for row in markup["inline_keyboard"]:
         for btn in row:
             if "text" not in btn:
@@ -2464,11 +2466,15 @@ def _style_keyboard(markup):
                 elif any(h in label for h in _STYLE_DANGER_HINTS):
                     btn["style"] = "danger"
                 else:
-                    btn["style"] = "primary"
+                    btn["style"] = _STYLE_ROTATION[_nav_i % 3]
+                    _nav_i += 1
             if PREMIUM_EMOJIS_ENABLED and "icon_custom_emoji_id" not in btn:
                 for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
                     if label.strip().startswith(glyph):
                         btn["icon_custom_emoji_id"] = emoji_id
+                        # Icon already shows the glyph — drop the duplicate from the label
+                        stripped = label.replace(glyph, "", 1).strip()
+                        btn["text"] = stripped if stripped else label
                         break
     return markup
 
