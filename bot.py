@@ -2443,15 +2443,16 @@ def _apply_premium_emojis(text: str) -> str:
     return text
 
 _STYLE_SUCCESS_HINTS = ("Turn ON", "🟢", "Yes, confirm", "Adopt", "💾 Save", "✅")
-_STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "Close", "🗑", "🚫", "❌")
+_STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "❌ Close", "🗑", "🚫", "❌")
 
 _STYLE_ROTATION = ("primary", "success", "danger")  # Bot API 9.4 defines only these 3 — no orange/pink/custom hex exists
 
-def _style_keyboard(markup):
-    """Adds Bot API 9.4 button `style` to every button — green for positive/
-    confirm actions, red for destructive/off/cancel ones. Plain nav/info
-    buttons (no ON/OFF meaning) rotate through all 3 colors so the menu
-    isn't monotone. Buttons that already set a style are left untouched."""
+def _style_keyboard(markup, rotate=False):
+    """Adds Bot API 9.4 button `style` — green for positive/confirm actions,
+    red for destructive/off/cancel ones. Plain nav/info/settings buttons get
+    no style (default look) unless rotate=True (used only for the top-level
+    /help category menu, so it isn't monotone there). Buttons that already
+    set a style are left untouched."""
     if not markup or "inline_keyboard" not in markup:
         return markup
     _nav_i = 0
@@ -2465,7 +2466,7 @@ def _style_keyboard(markup):
                     btn["style"] = "success"
                 elif any(h in label for h in _STYLE_DANGER_HINTS):
                     btn["style"] = "danger"
-                else:
+                elif rotate:
                     btn["style"] = _STYLE_ROTATION[_nav_i % 3]
                     _nav_i += 1
             if PREMIUM_EMOJIS_ENABLED and "icon_custom_emoji_id" not in btn:
@@ -5812,10 +5813,10 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
         merged = [_back_row]
     _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id)
 
-def _help_edit_or_send(chat_id, text, markup, message_id=None):
+def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=False):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     text = _apply_premium_emojis(text)
-    markup = _style_keyboard(markup)
+    markup = _style_keyboard(markup, rotate=rotate)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "reply_markup": markup, "disable_web_page_preview": True}
     if message_id:
@@ -6349,7 +6350,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     cid_str = str(chat_id)
     if message_id:
         # Editing existing message (e.g. Back button press) — no dedup needed
-        _help_edit_or_send(chat_id, text, markup, message_id)
+        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
     else:
         # New /help command — delete previous help message first (clean chat)
         old_msg_id = _last_help_msg.get(cid_str)
@@ -6362,7 +6363,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         # Send fresh help menu and track its message_id
         base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
         payload = {"chat_id": chat_id, "text": _apply_premium_emojis(text), "parse_mode": "HTML",
-                   "reply_markup": _style_keyboard(markup), "disable_web_page_preview": True}
+                   "reply_markup": _style_keyboard(markup, rotate=True), "disable_web_page_preview": True}
         try:
             r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
             new_msg_id = r.json().get("result", {}).get("message_id")
