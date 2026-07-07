@@ -2460,11 +2460,11 @@ def _style_keyboard(markup):
             label = btn["text"]
             if "style" not in btn:
                 if any(h in label for h in _STYLE_SUCCESS_HINTS):
-                    btn["style"] = "bg_success"
+                    btn["style"] = "success"
                 elif any(h in label for h in _STYLE_DANGER_HINTS):
-                    btn["style"] = "bg_danger"
+                    btn["style"] = "danger"
                 else:
-                    btn["style"] = "bg_primary"
+                    btn["style"] = "primary"
             if PREMIUM_EMOJIS_ENABLED and "icon_custom_emoji_id" not in btn:
                 for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
                     if label.strip().startswith(glyph):
@@ -5855,8 +5855,8 @@ def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
     """Show a Yes/Cancel confirmation before running a destructive action."""
     _pending_confirm[cid] = {"action": action_id, "back_cb": back_cb}
     mkp = {"inline_keyboard": [[
-        {"text": "✅ Yes, confirm", "callback_data": "confirm_yes", "style": "bg_success"},
-        {"text": "❌ Cancel",       "callback_data": "confirm_no",  "style": "bg_danger"},
+        {"text": "✅ Yes, confirm", "callback_data": "confirm_yes", "style": "success"},
+        {"text": "❌ Cancel",       "callback_data": "confirm_no",  "style": "danger"},
     ]]}
     text = f"⚠️ <b>Are you sure?</b>\n\n{label}\n\n<i>This cannot be undone.</i>"
     _help_edit_or_send(chat_id, text, mkp, message_id=message_id)
