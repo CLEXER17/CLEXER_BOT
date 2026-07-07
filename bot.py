@@ -6332,7 +6332,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
-    rows.append([{"text": "🆓⭐ Free / VIP Channels", "callback_data": "chanpick_open"}])
+    rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
+                 {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
