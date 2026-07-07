@@ -245,6 +245,9 @@ def _send_to_channel_via_forward(text: str, dest_chat_id, tag: str):
             print(f"  [FORWARD TRICK] {tag} staging failed: {rj_stage.get('description')}")
             return False
         stage_msg_id = rj_stage["result"]["message_id"]
+        _stage_ents = rj_stage.get("result", {}).get("entities", [])
+        _stage_ce = [e for e in _stage_ents if e.get("type") == "custom_emoji"]
+        print(f"  [FORWARD TRICK DEBUG] {tag} STAGING (admin DM): {len(_stage_ce)} custom_emoji of {len(_stage_ents)} total | has_tg_emoji_tag_in_source_text={'<tg-emoji' in text}")
         r_copy = requests.post(f"{base}/copyMessage",
             json={"chat_id": dest_chat_id, "from_chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=10)
         rj_copy = r_copy.json()
