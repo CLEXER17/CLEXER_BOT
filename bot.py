@@ -2442,6 +2442,36 @@ def _apply_premium_emojis(text: str) -> str:
         text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
     return text
 
+_STYLE_SUCCESS_HINTS = ("Turn ON", "🟢", "Yes, confirm", "Adopt", "💾 Save", "✅")
+_STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "Close", "🗑", "🚫", "❌")
+
+def _style_keyboard(markup):
+    """Adds Bot API 9.4 button `style` to every button — green for positive/
+    confirm actions, red for destructive/off/cancel ones, blue for everything
+    else (nav, main actions, informational). Telegram only defines these 3
+    colors — there's no wider palette. Buttons that already set a style are
+    left untouched."""
+    if not markup or "inline_keyboard" not in markup:
+        return markup
+    for row in markup["inline_keyboard"]:
+        for btn in row:
+            if "text" not in btn:
+                continue
+            label = btn["text"]
+            if "style" not in btn:
+                if any(h in label for h in _STYLE_SUCCESS_HINTS):
+                    btn["style"] = "bg_success"
+                elif any(h in label for h in _STYLE_DANGER_HINTS):
+                    btn["style"] = "bg_danger"
+                else:
+                    btn["style"] = "bg_primary"
+            if "icon_custom_emoji_id" not in btn:
+                for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
+                    if label.strip().startswith(glyph):
+                        btn["icon_custom_emoji_id"] = emoji_id
+                        break
+    return markup
+
 def send_telegram(text, include_ch2=True):
     success = False
     text = _apply_premium_emojis(text)
@@ -2473,6 +2503,7 @@ _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing
 def send_reply(chat_id, text, reply_markup=None):
     cid_str = str(chat_id)
     text = _apply_premium_emojis(text)
+    reply_markup = _style_keyboard(reply_markup)
     if cid_str in _reply_capture:
         _reply_capture[cid_str]["texts"].append(text)
         if reply_markup:
@@ -5774,6 +5805,7 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
 def _help_edit_or_send(chat_id, text, markup, message_id=None):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     text = _apply_premium_emojis(text)
+    markup = _style_keyboard(markup)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "reply_markup": markup, "disable_web_page_preview": True}
     if message_id:
@@ -5815,8 +5847,8 @@ def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
     """Show a Yes/Cancel confirmation before running a destructive action."""
     _pending_confirm[cid] = {"action": action_id, "back_cb": back_cb}
     mkp = {"inline_keyboard": [[
-        {"text": "✅ Yes, confirm", "callback_data": "confirm_yes"},
-        {"text": "❌ Cancel",       "callback_data": "confirm_no"},
+        {"text": "✅ Yes, confirm", "callback_data": "confirm_yes", "style": "bg_success"},
+        {"text": "❌ Cancel",       "callback_data": "confirm_no",  "style": "bg_danger"},
     ]]}
     text = f"⚠️ <b>Are you sure?</b>\n\n{label}\n\n<i>This cannot be undone.</i>"
     _help_edit_or_send(chat_id, text, mkp, message_id=message_id)
