@@ -2072,8 +2072,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
     elif cmd == "/copytrade":
         user = _get(cid)
         _ct_btns = {"inline_keyboard": [[
-            {"text": "🟢  Turn ON",  "callback_data": "copytrade_on",  "style": "bg_success"},
-            {"text": "🔴  Turn OFF", "callback_data": "copytrade_off", "style": "bg_danger"}]]}
+            {"text": "🟢  Turn ON",  "callback_data": "copytrade_on",  "style": "success"},
+            {"text": "🔴  Turn OFF", "callback_data": "copytrade_off", "style": "danger"}]]}
         if len(parts) < 2:
             user = user or {}
             st = "✅ ON" if user.get("copy_on") else "❌ OFF"
