@@ -226,6 +226,39 @@ def _free_quota_available() -> bool:
 def _consume_free_quota():
     _free_signal_tracker["count"] = _free_signal_tracker.get("count", 0) + 1
 
+_FORWARD_TEST_DONE = False  # one-shot test flag — true forwardMessage vs copyMessage for custom_emoji survival
+
+def _test_true_forward_once(text: str, dest_chat_id):
+    """One-time diagnostic: stage in admin DM, then use real forwardMessage
+    (not copyMessage) to relay into dest_chat_id. forwardMessage keeps a
+    'Forwarded from' label and relays at a lower level than copyMessage,
+    which might not re-validate/strip entities the same way. Logs result."""
+    global _FORWARD_TEST_DONE
+    if _FORWARD_TEST_DONE or not ADMIN_CHAT_ID:
+        return
+    _FORWARD_TEST_DONE = True
+    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    try:
+        r_stage = requests.post(f"{base}/sendMessage",
+            json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": True}, timeout=10)
+        rj_stage = r_stage.json()
+        if not rj_stage.get("ok"):
+            print(f"  [TRUE FORWARD TEST] staging failed: {rj_stage.get('description')}")
+            return
+        stage_msg_id = rj_stage["result"]["message_id"]
+        r_fwd = requests.post(f"{base}/forwardMessage",
+            json={"chat_id": dest_chat_id, "from_chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=10)
+        rj_fwd = r_fwd.json()
+        if not rj_fwd.get("ok"):
+            print(f"  [TRUE FORWARD TEST] forward rejected: {rj_fwd.get('description')}")
+            return
+        _ents = rj_fwd.get("result", {}).get("entities", [])
+        _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
+        print(f"  [TRUE FORWARD TEST] {dest_chat_id}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities (via real forwardMessage, kept in admin DM for reference — NOT auto-deleted)")
+    except Exception as e:
+        print(f"  [TRUE FORWARD TEST] {dest_chat_id}: {e}")
+
 def send_to_tier_channels(text: str, share_free: bool):
     """Sends to every registered VIP channel always, and to FREE channels only
     if share_free is True (the daily quota decision made once per signal).
@@ -235,6 +268,7 @@ def send_to_tier_channels(text: str, share_free: bool):
     This is a platform-level restriction, not something fixable here."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
+        _test_true_forward_once(text, cid)
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
