@@ -2428,7 +2428,7 @@ PREMIUM_EMOJI_MAP = {
     "📰": "5257952710983955418", "📥": "6073143860316344247",
     "🔗": "5271604874419647061",
 }
-PREMIUM_EMOJIS_ENABLED = False  # disabled: unverified emoji IDs can silently break every send (see incident below)
+PREMIUM_EMOJIS_ENABLED = True
 
 def _apply_premium_emojis(text: str) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
@@ -2493,9 +2493,11 @@ def send_admin(text):
     if not ADMIN_CHAT_ID: return
     text = _apply_premium_emojis(text)
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ADMIN_CHAT_ID, "text": text,
                   "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+        if not r.json().get("ok"):
+            print(f"  [ADMIN MSG ERROR] Telegram rejected: {r.json().get('description')}")
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
