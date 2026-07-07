@@ -2428,7 +2428,7 @@ PREMIUM_EMOJI_MAP = {
     "📰": "5257952710983955418", "📥": "6073143860316344247",
     "🔗": "5271604874419647061",
 }
-PREMIUM_EMOJIS_ENABLED = True
+PREMIUM_EMOJIS_ENABLED = False  # disabled: unverified emoji IDs can silently break every send (see incident below)
 
 def _apply_premium_emojis(text: str) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
@@ -2465,7 +2465,7 @@ def _style_keyboard(markup):
                     btn["style"] = "bg_danger"
                 else:
                     btn["style"] = "bg_primary"
-            if "icon_custom_emoji_id" not in btn:
+            if PREMIUM_EMOJIS_ENABLED and "icon_custom_emoji_id" not in btn:
                 for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
                     if label.strip().startswith(glyph):
                         btn["icon_custom_emoji_id"] = emoji_id
@@ -2514,8 +2514,10 @@ def send_reply(chat_id, text, reply_markup=None):
                    "parse_mode": "HTML", "disable_web_page_preview": True}
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=payload, timeout=10)
+        if not r.json().get("ok"):
+            print(f"  [REPLY ERROR] Telegram rejected: {r.json().get('description')}")
     except Exception as e: print(f"  [REPLY ERROR] {e}")
 
 def _build_vip_csv(vip_start: str, vip_end: str) -> bytes:
@@ -5811,11 +5813,17 @@ def _help_edit_or_send(chat_id, text, markup, message_id=None):
     if message_id:
         payload["message_id"] = message_id
         try:
-            requests.post(f"{base}/editMessageText", json=payload, timeout=10)
-        except Exception:
+            r = requests.post(f"{base}/editMessageText", json=payload, timeout=10)
+            if not r.json().get("ok") and "message is not modified" not in r.json().get("description", ""):
+                print(f"  [HELP EDIT ERROR] Telegram rejected: {r.json().get('description')}")
+                requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+        except Exception as e:
+            print(f"  [HELP EDIT ERROR] {e}")
             requests.post(f"{base}/sendMessage", json=payload, timeout=10)
     else:
-        requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+        r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+        if not r.json().get("ok"):
+            print(f"  [HELP SEND ERROR] Telegram rejected: {r.json().get('description')}")
 
 def _np_render(chat_id, cid, msg_id):
     st = _np_state.get(str(cid))
