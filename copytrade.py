@@ -1770,7 +1770,7 @@ def monitor_sl_tp(notify_fn=None):
                         "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
                         "stopPrice": round(sl_price, 6),
                     })
-                    placed.append(f"SL {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
+                    placed.append(f"SL {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:250]}")
 
                 if not has_tp1 and tp1_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
@@ -1778,7 +1778,7 @@ def monitor_sl_tp(notify_fn=None):
                         "type": "TAKE_PROFIT_MARKET", "quantity": tp1_qty,
                         "stopPrice": round(tp1_price, 6),
                     })
-                    placed.append(f"TP1 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
+                    placed.append(f"TP1 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:250]}")
 
                 if not has_tp2 and tp2_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
@@ -1786,7 +1786,7 @@ def monitor_sl_tp(notify_fn=None):
                         "type": "TAKE_PROFIT_MARKET", "quantity": tp2_qty,
                         "stopPrice": round(tp2_price, 6),
                     })
-                    placed.append(f"TP2 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:30]}")
+                    placed.append(f"TP2 {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:250]}")
 
                 if placed:
                     msg = f"🔧 @{uname} {sym}: {', '.join(placed)}"
