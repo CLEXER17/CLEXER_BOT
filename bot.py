@@ -226,12 +226,29 @@ def _free_quota_available() -> bool:
 def _consume_free_quota():
     _free_signal_tracker["count"] = _free_signal_tracker.get("count", 0) + 1
 
-def _send_via_true_forward(text: str, dest_chat_id, tag: str) -> bool:
+_BOT_USERNAME = None
+
+def _get_bot_username():
+    global _BOT_USERNAME
+    if _BOT_USERNAME:
+        return _BOT_USERNAME
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe", timeout=10)
+        rj = r.json()
+        if rj.get("ok"):
+            _BOT_USERNAME = rj["result"]["username"]
+    except Exception as e:
+        print(f"  [GETME ERROR] {e}")
+    return _BOT_USERNAME
+
+def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: bool = False) -> bool:
     """Real fix for the custom_emoji-in-channels restriction: stage the message
     silently in the admin DM (muted, deleted right after), then use a genuine
     forwardMessage (not copyMessage — confirmed different: forwardMessage keeps
     a low-level relay that preserves custom_emoji entities, copyMessage/direct
-    sendMessage both strip them). Returns True if delivered via forward."""
+    sendMessage both strip them). Returns True if delivered via forward.
+    If with_bot_button, sends a small follow-up message with an 'Open Bot' link —
+    forwardMessage itself can't carry a reply_markup, so this is a second message."""
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     if not ADMIN_CHAT_ID:
         return False
@@ -254,6 +271,13 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str) -> bool:
         _ents = rj_fwd.get("result", {}).get("entities", [])
         _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: delivered, {len(_ce)} custom_emoji of {len(_ents)} total entities")
+        if with_bot_button:
+            _uname = _get_bot_username()
+            if _uname:
+                requests.post(f"{base}/sendMessage",
+                    json={"chat_id": dest_chat_id, "text": "👇 Copy this trade automatically",
+                          "reply_markup": {"inline_keyboard": [[{"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}"}]]}},
+                    timeout=10)
         return True
     except Exception as e:
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
@@ -266,7 +290,7 @@ def send_to_tier_channels(text: str, share_free: bool):
     to a direct send only if the forward relay itself fails."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
-        if _send_via_true_forward(text, cid, "vip"):
+        if _send_via_true_forward(text, cid, "vip", with_bot_button=True):
             continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -277,7 +301,7 @@ def send_to_tier_channels(text: str, share_free: bool):
         except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
     if share_free:
         for cid in _channels_by_tier("free"):
-            if _send_via_true_forward(text, cid, "free"):
+            if _send_via_true_forward(text, cid, "free", with_bot_button=True):
                 continue
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -2538,7 +2562,7 @@ def _style_keyboard(markup, rotate=True):
                         break
     return markup
 
-def send_telegram(text, include_ch2=True):
+def send_telegram(text, include_ch2=True, with_bot_button=True):
     success = False
     text = _apply_premium_emojis(text)
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
@@ -2546,7 +2570,7 @@ def send_telegram(text, include_ch2=True):
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
-        if _send_via_true_forward(text, cid, f"legacy-ch{key}"):
+        if _send_via_true_forward(text, cid, f"legacy-ch{key}", with_bot_button=with_bot_button):
             success = True; continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -5422,7 +5446,7 @@ Reasoning: [one line]"""
                         save_state()
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        send_telegram(fmt_scan_signal(slot_data))
+                        send_telegram(fmt_scan_signal(slot_data), with_bot_button=True)
                         send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
@@ -7995,7 +8019,7 @@ def _run_test_scan(cid, scan_ver: int):
                 f"📊 RR:        <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
                 f"⏰ Timeout: 1H | move_age: {age}c"
             )
-            send_telegram(demo_msg)
+            send_telegram(demo_msg, with_bot_button=True)
 
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
@@ -8265,7 +8289,7 @@ def main():
                 if signal and not signal.get("_hold"):
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal)
                     results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
@@ -8321,7 +8345,7 @@ def main():
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                        send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
                         set_trade(signal)
                         ct.on_signal(signal, price, _share_free)
                 else:
@@ -8335,7 +8359,7 @@ def main():
                     reset_trade(); time.sleep(1)
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal)
                     results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]
