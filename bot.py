@@ -154,6 +154,55 @@ ZONE_ENTRY_ENABLED = False  # Scan1/Scan2 entry style — MARKET (instant) vs ZO
 _ZONE_BAND_PCT = 0.008      # zone width — ±0.8% around the computed entry price
 CO_ADMIN_CHAT_ID  = ""    # a single trusted friend who gets ONE extra permission: /tradelog. No user mgmt, no billing, no resets, no broadcast.
 CO_ADMIN_ENABLED  = False # ON = the co-admin permission is active AND their contact button shows next to Contact Admin
+TRAIL_SL_BTC   = False  # Trailing SL — halfway to TP1, move SL to halfway toward entry. Set via /trailsl
+TRAIL_SL_SCAN1 = False
+TRAIL_SL_SCAN2 = False
+
+def _apply_trail_sl(ver: int, t: dict, price: float):
+    """Fixed 50/50 rule: once price reaches the halfway point to TP1, move SL to
+    the halfway point between the original SL and entry — locks in more capital
+    without waiting for TP1 itself. Runs once per trade (trail_sl_moved guards it)."""
+    if t.get("trail_sl_moved") or t.get("tp1_hit"):
+        return
+    enabled = TRAIL_SL_SCAN1 if ver == 1 else TRAIL_SL_SCAN2
+    if not enabled:
+        return
+    entry = t["entry"]; tp1 = t["tp1"]; sig = t["signal"]
+    orig_sl = t.get("trail_sl_orig", t["sl"])
+    t["trail_sl_orig"] = orig_sl
+    midpoint_price = (entry + tp1) / 2
+    hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
+    if not hit:
+        return
+    new_sl = (orig_sl + entry) / 2
+    t["sl"] = new_sl
+    t["trail_sl_moved"] = True
+    ct.update_scan_sl(t["symbol"], new_sl)
+    save_state()
+    send_telegram(
+        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  Scan{ver}\n\n"
+        f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
+        f"<i>🛡️ Capital protected</i>")
+
+def _apply_trail_sl_btc(price: float):
+    if not TRAIL_SL_BTC or active_trade.get("trail_sl_moved") or active_trade.get("tp1_hit"):
+        return
+    entry = active_trade["entry"]; tp1 = active_trade["tp1"]; sig = active_trade["signal"]
+    orig_sl = active_trade.get("trail_sl_orig", active_trade["sl"])
+    active_trade["trail_sl_orig"] = orig_sl
+    midpoint_price = (entry + tp1) / 2
+    hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
+    if not hit:
+        return
+    new_sl = (orig_sl + entry) / 2
+    active_trade["sl"] = new_sl
+    active_trade["trail_sl_moved"] = True
+    ct.on_update_sl(new_sl)
+    save_active_trade()
+    send_telegram(
+        f"🛡️ <b>Trailing SL — BTC</b>\n\n"
+        f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.0f} → {new_sl:,.0f}</b> to lock in more capital.\n\n"
+        f"<i>🛡️ Capital protected</i>")
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 0   # max signals shared to free channels/users per day (0 = none shared)
@@ -2251,7 +2300,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2
     try:
         if os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
@@ -2281,6 +2330,9 @@ def load_settings():
             _SETTINGS_PROFILES = d.get("settings_profiles", {"mine": {}, "coadmin": {}})
             CHANNELS = d.get("channels", [])
             FREE_SIGNAL_DAILY_LIMIT = d.get("free_signal_daily_limit", 0)
+            TRAIL_SL_BTC   = d.get("trail_sl_btc", False)
+            TRAIL_SL_SCAN1 = d.get("trail_sl_scan1", False)
+            TRAIL_SL_SCAN2 = d.get("trail_sl_scan2", False)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -2324,6 +2376,9 @@ def save_settings():
             "settings_profiles": _SETTINGS_PROFILES,
             "channels": CHANNELS,
             "free_signal_daily_limit": FREE_SIGNAL_DAILY_LIMIT,
+            "trail_sl_btc": TRAIL_SL_BTC,
+            "trail_sl_scan1": TRAIL_SL_SCAN1,
+            "trail_sl_scan2": TRAIL_SL_SCAN2,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -2644,6 +2699,9 @@ def run_tick_check():
                     f"✨ <i>🛡️ Capital protected</i>")
             return False
 
+        _apply_trail_sl_btc(price)
+        sl = active_trade["sl"]
+
         # TP2 — use candle high/low to catch spike
         tp2_hit = (sig=="BUY" and check_high >= tp2) or (sig=="SELL" and check_low <= tp2)
         if tp2_hit:
@@ -2947,6 +3005,9 @@ def _tick_one(ver: int, t: dict) -> bool:
                     check_high = max(check_high, _wick_high)
                     check_low  = min(check_low, _wick_low)
         print(f"  [SCAN{ver} {sym}] {sig} price:{price:.4g} H:{check_high:.4g} L:{check_low:.4g}")
+
+        _apply_trail_sl(ver, t, price)
+        sl = t["sl"]
 
         # All entries are MARKET — entry_hit is always True from creation.
         # Nothing to wait for. SL/TP monitoring starts immediately.
@@ -3298,7 +3359,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS
@@ -4069,6 +4130,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/coadmin" and is_admin:
         send_coadmin_screen(chat_id)
+
+    elif cmd == "/trailsl" and is_scanadmin:
+        send_trailsl_screen(chat_id)
 
     elif cmd == "/tp1size" and is_scanadmin:
         if len(parts) < 2:
@@ -5489,6 +5553,7 @@ _TRADECONTROL_SUBCATS = {
         ("/settp1",  "🎯", "Set Custom TP1",       "Pick any open trade, then tap in a new first take-profit price for it."),
         ("/settp2",  "🏆", "Set Custom TP2",       "Pick any open trade, then tap in a new final take-profit price for it."),
         ("/tp1size", "📐", "TP1 Close %",          "How much of the position closes at TP1 (default 50%) — the rest rides to TP2."),
+        ("/trailsl", "🛡️", "Trailing SL",          "At the halfway point to TP1, auto-move SL to the halfway point toward entry — locks in more capital early."),
     ]),
     "close": ("❌ Close Positions", [
         ("/close",      "❌", "Close BTC Trade",     "Manually closes the currently active BTC trade right now."),
@@ -5966,6 +6031,30 @@ def send_channelmgmt_screen(chat_id, message_id=None):
         "free-tier bot users copy exactly the same signals the free channels got.",
         {"inline_keyboard": rows}, message_id=message_id)
 
+def send_trailsl_screen(chat_id, message_id=None):
+    _btc_flag   = "✅ ON" if TRAIL_SL_BTC   else "❌ OFF"
+    _scan1_flag = "✅ ON" if TRAIL_SL_SCAN1 else "❌ OFF"
+    _scan2_flag = "✅ ON" if TRAIL_SL_SCAN2 else "❌ OFF"
+    rows = [
+        [{"text": f"₿ BTC  {_btc_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_btc_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_btc_off"}],
+        [{"text": f"🔍 Scan1  {_scan1_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_scan1_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_scan1_off"}],
+        [{"text": f"🔍 Scan2  {_scan2_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_scan2_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_scan2_off"}],
+        [{"text": "◀️  Back", "callback_data": "tradecontrol_sub:levels"}],
+    ]
+    _help_edit_or_send(chat_id,
+        "<b>🛡️ Trailing SL</b>\n\n"
+        "Once price reaches the halfway point to TP1, SL automatically moves to the halfway "
+        "point between the original SL and entry — locking in more capital before TP1 even hits.\n\n"
+        "Example: Entry 10, TP1 18, SL 6 → at price 14, SL moves to 8.\n\n"
+        "Turn on independently for BTC, Scan1, and Scan2.",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_coadmin_screen(chat_id, message_id=None):
     global CO_ADMIN_CHAT_ID
     _flag = "✅ ON" if CO_ADMIN_ENABLED else "❌ OFF"
@@ -6232,6 +6321,8 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         send_entrystyle_screen(chat_id, message_id=msg_id)
     elif back_cb == "coadmin_open":
         send_coadmin_screen(chat_id, message_id=msg_id)
+    elif back_cb == "trailsl_open":
+        send_trailsl_screen(chat_id, message_id=msg_id)
     elif back_cb == "channelmgmt_open":
         send_channelmgmt_screen(chat_id, message_id=msg_id)
     elif back_cb == "chanpick_open":
@@ -6621,7 +6712,8 @@ def command_listener():
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
                                         "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
-                                             "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen}
+                                             "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
+                                             "/trailsl": send_trailsl_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
@@ -6815,6 +6907,21 @@ def command_listener():
                             TEST_MODEL = _model_val; TEST_AEROLINK = _aero_val
                         save_settings()
                         send_aiconfig_type_screen(cb_chat_id, _kind, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_btc_on" and cb_is_scanadmin:
+                        global TRAIL_SL_BTC
+                        TRAIL_SL_BTC = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_btc_off" and cb_is_scanadmin:
+                        TRAIL_SL_BTC = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_scan1_on" and cb_is_scanadmin:
+                        global TRAIL_SL_SCAN1
+                        TRAIL_SL_SCAN1 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_scan1_off" and cb_is_scanadmin:
+                        TRAIL_SL_SCAN1 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_scan2_on" and cb_is_scanadmin:
+                        global TRAIL_SL_SCAN2
+                        TRAIL_SL_SCAN2 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_scan2_off" and cb_is_scanadmin:
+                        TRAIL_SL_SCAN2 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_open" and cb_is_admin:
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_on" and cb_is_admin:
