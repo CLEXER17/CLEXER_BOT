@@ -1106,7 +1106,7 @@ def fetch_spaceman_levels() -> dict:
 
         # Quarterly + Yearly — use calendar boundaries from timestamps
         import datetime as _dt
-        now_utc   = _dt.datetime.utcnow()
+        now_utc   = _dt.datetime.now(_dt.timezone.utc)
         cur_year  = now_utc.year
         cur_month = now_utc.month
         cur_qnum  = (cur_month - 1) // 3  # 0=Q1,1=Q2,2=Q3,3=Q4
@@ -1114,7 +1114,7 @@ def fetch_spaceman_levels() -> dict:
         def _bar_dt(b):
             ts = b["t"]
             if ts > 1e12: ts = ts / 1000
-            return _dt.datetime.utcfromtimestamp(ts)
+            return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc)
 
         def _qnum(b):
             return (_bar_dt(b).month - 1) // 3
@@ -3036,7 +3036,7 @@ def _wick_check_since_entry(sym: str, created_at: float):
     if not created_at:
         return None, None
     try:
-        entry_dt = datetime.utcfromtimestamp(created_at) + IST
+        entry_dt = datetime.fromtimestamp(created_at, timezone.utc).replace(tzinfo=None) + IST
         rounded_min = (entry_dt.minute // 15) * 15
         start_dt = entry_dt.replace(minute=rounded_min, second=0, microsecond=0)
         elapsed_min = (now_ist() - start_dt).total_seconds() / 60
@@ -6345,8 +6345,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
                 pass
         # Send fresh help menu and track its message_id
         base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                   "reply_markup": markup, "disable_web_page_preview": True}
+        payload = {"chat_id": chat_id, "text": _apply_premium_emojis(text), "parse_mode": "HTML",
+                   "reply_markup": _style_keyboard(markup), "disable_web_page_preview": True}
         try:
             r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
             new_msg_id = r.json().get("result", {}).get("message_id")
@@ -6938,8 +6938,8 @@ def command_listener():
                             _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\nScheduled scans paused.\n\n<i>🛡️ Capital protected</i>"
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
-                                  "text": _btca_text, "parse_mode": "HTML",
-                                  "reply_markup": _btca_mkp}, timeout=10)
+                                  "text": _apply_premium_emojis(_btca_text), "parse_mode": "HTML",
+                                  "reply_markup": _style_keyboard(_btca_mkp)}, timeout=10)
                     elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
                         sub = cb_data.replace("history_", "")
                         _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
@@ -7142,8 +7142,8 @@ def command_listener():
                             f"<i>🛡️ Capital protected</i>")
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
-                                  "text": _model_text, "parse_mode": "HTML",
-                                  "reply_markup": _model_mkp}, timeout=10)
+                                  "text": _apply_premium_emojis(_model_text), "parse_mode": "HTML",
+                                  "reply_markup": _style_keyboard(_model_mkp)}, timeout=10)
 
                     elif cb_data.startswith("gateway:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
@@ -7172,8 +7172,8 @@ def command_listener():
                             f"<i>🛡️ Capital protected</i>")
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
-                                  "text": _gw_text, "parse_mode": "HTML",
-                                  "reply_markup": _gw_mkp}, timeout=10)
+                                  "text": _apply_premium_emojis(_gw_text), "parse_mode": "HTML",
+                                  "reply_markup": _style_keyboard(_gw_mkp)}, timeout=10)
 
                     elif cb_data.startswith("go_model:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
