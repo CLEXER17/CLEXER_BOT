@@ -226,62 +226,59 @@ def _free_quota_available() -> bool:
 def _consume_free_quota():
     _free_signal_tracker["count"] = _free_signal_tracker.get("count", 0) + 1
 
-_FORWARD_TEST_DONE = False  # one-shot test flag — true forwardMessage vs copyMessage for custom_emoji survival
-
-def _test_true_forward_once(text: str, dest_chat_id):
-    """One-time diagnostic: stage in admin DM, then use real forwardMessage
-    (not copyMessage) to relay into dest_chat_id. forwardMessage keeps a
-    'Forwarded from' label and relays at a lower level than copyMessage,
-    which might not re-validate/strip entities the same way. Logs result."""
-    global _FORWARD_TEST_DONE
-    if _FORWARD_TEST_DONE or not ADMIN_CHAT_ID:
-        return
-    _FORWARD_TEST_DONE = True
+def _send_via_true_forward(text: str, dest_chat_id, tag: str) -> bool:
+    """Real fix for the custom_emoji-in-channels restriction: stage the message
+    silently in the admin DM (muted, deleted right after), then use a genuine
+    forwardMessage (not copyMessage — confirmed different: forwardMessage keeps
+    a low-level relay that preserves custom_emoji entities, copyMessage/direct
+    sendMessage both strip them). Returns True if delivered via forward."""
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    if not ADMIN_CHAT_ID:
+        return False
     try:
         r_stage = requests.post(f"{base}/sendMessage",
             json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True}, timeout=10)
+                  "disable_web_page_preview": True, "disable_notification": True}, timeout=10)
         rj_stage = r_stage.json()
         if not rj_stage.get("ok"):
-            print(f"  [TRUE FORWARD TEST] staging failed: {rj_stage.get('description')}")
-            return
+            print(f"  [TRUE FORWARD] {tag} staging failed: {rj_stage.get('description')}")
+            return False
         stage_msg_id = rj_stage["result"]["message_id"]
         r_fwd = requests.post(f"{base}/forwardMessage",
             json={"chat_id": dest_chat_id, "from_chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=10)
         rj_fwd = r_fwd.json()
+        requests.post(f"{base}/deleteMessage", json={"chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=5)
         if not rj_fwd.get("ok"):
-            print(f"  [TRUE FORWARD TEST] forward rejected: {rj_fwd.get('description')}")
-            return
+            print(f"  [TRUE FORWARD] {tag} {dest_chat_id} rejected: {rj_fwd.get('description')}")
+            return False
         _ents = rj_fwd.get("result", {}).get("entities", [])
         _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
-        print(f"  [TRUE FORWARD TEST] {dest_chat_id}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities (via real forwardMessage, kept in admin DM for reference — NOT auto-deleted)")
+        print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: delivered, {len(_ce)} custom_emoji of {len(_ents)} total entities")
+        return True
     except Exception as e:
-        print(f"  [TRUE FORWARD TEST] {dest_chat_id}: {e}")
+        print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
+        return False
 
 def send_to_tier_channels(text: str, share_free: bool):
     """Sends to every registered VIP channel always, and to FREE channels only
     if share_free is True (the daily quota decision made once per signal).
-    Note: custom_emoji entities are confirmed stripped by Telegram for channel
-    destinations (both direct sendMessage and the copyMessage relay trick were
-    tested — both strip them), so channels always show the plain emoji fallback.
-    This is a platform-level restriction, not something fixable here."""
+    Uses the true-forwardMessage relay so custom_emoji survives; falls back
+    to a direct send only if the forward relay itself fails."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
-        _test_true_forward_once(text, cid)
+        if _send_via_true_forward(text, cid, "vip"):
+            continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
             rj = r.json()
             if not rj.get("ok"):
                 print(f"  [TIER CHANNEL] vip {cid} rejected: {rj.get('description')}")
-            else:
-                _ents = rj.get("result", {}).get("entities", [])
-                _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
-                print(f"  [TIER CHANNEL DEBUG] vip {cid}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities")
         except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
     if share_free:
         for cid in _channels_by_tier("free"):
+            if _send_via_true_forward(text, cid, "free"):
+                continue
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
@@ -2549,7 +2546,8 @@ def send_telegram(text, include_ch2=True):
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
-        _test_true_forward_once(text, cid)
+        if _send_via_true_forward(text, cid, f"legacy-ch{key}"):
+            success = True; continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={"chat_id": cid, "text": text,
