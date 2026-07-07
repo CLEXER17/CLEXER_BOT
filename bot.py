@@ -273,11 +273,15 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: delivered, {len(_ce)} custom_emoji of {len(_ents)} total entities")
         if with_bot_button:
             _uname = _get_bot_username()
-            if _uname:
-                requests.post(f"{base}/sendMessage",
-                    json={"chat_id": dest_chat_id, "text": "👇 Copy this trade automatically",
-                          "reply_markup": {"inline_keyboard": [[{"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}"}]]}},
+            fwd_msg_id = rj_fwd.get("result", {}).get("message_id")
+            if _uname and fwd_msg_id:
+                r_kb = requests.post(f"{base}/editMessageReplyMarkup",
+                    json={"chat_id": dest_chat_id, "message_id": fwd_msg_id,
+                          "reply_markup": {"inline_keyboard": [[
+                              {"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"}]]}},
                     timeout=10)
+                if not r_kb.json().get("ok"):
+                    print(f"  [TRUE FORWARD BUTTON] {tag} {dest_chat_id} attach failed: {r_kb.json().get('description')}")
         return True
     except Exception as e:
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
