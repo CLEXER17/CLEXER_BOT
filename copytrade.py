@@ -738,8 +738,11 @@ def on_tp2(entry: float = 0, tp2: float = 0):
     return results or ["No users in position."]
 
 
-def on_sl(entry: float = 0, sl: float = 0):
-    """SL hit — force-close position on BingX, cancel open TP orders, update records."""
+def on_sl(entry: float = 0, sl: float = 0, tp1_hit: bool = False):
+    """SL hit — force-close position on BingX, cancel open TP orders, update records.
+    tp1_hit=True means this SL is actually a breakeven exit (SL was moved to entry
+    after TP1 already banked a partial win) — not a genuine loss, so it must not
+    count toward the loss stat even though the mechanism firing it is the SL order."""
     global _last_signal
     results = []
     for cid, user, api_key, api_secret in _users_with_copy():
@@ -768,10 +771,14 @@ def on_sl(entry: float = 0, sl: float = 0):
         if entry > 0 and sl > 0:
             pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl)
+            user["history"]["total"] += 1
+            if not tp1_hit:
+                user["history"]["loss"] += 1
+            # else: breakeven exit after a partial win — neither a win nor a loss,
+            # so it's excluded from both buckets rather than skewing the win rate
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
-        user["history"]["total"] += 1; user["history"]["loss"] += 1
         _set(cid, user)
     _last_signal = {}
     _save_last_signal()
@@ -1241,6 +1248,14 @@ def on_scan_tp1(symbol: str):
                 })
                 print(f"[CT] on_scan_tp1 {cid} {symbol}: TP2@{tp2} code={tp2_r.get('code')} msg={tp2_r.get('msg','')}")
 
+            # Record PnL for the portion that actually closed at TP1
+            tp1_price  = float(user.get(f"{p}tp1", 0))
+            closed_qty = round(qty - remaining_qty, 4)
+            if tp1_price and closed_qty > 0:
+                pnl = _calc_pnl(side, entry_price, tp1_price, closed_qty)
+                _record_pnl(user, pnl)
+                user["history"]["total"] += 1; user["history"]["profit"] += 1
+
             user[f"{p}qty"]     = remaining_qty
             user[f"{p}sl"]      = be_sl_price
             user[f"{p}tp1_hit"] = True
@@ -1273,6 +1288,16 @@ def on_scan_tp2(symbol: str):
             print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
+        try:
+            entry_price = float(user.get(f"{p}entry", 0))
+            tp2_price   = float(user.get(f"{p}tp2", 0))
+            remaining_qty = float(user.get(f"{p}qty", 0))
+            if entry_price and tp2_price and remaining_qty > 0:
+                pnl = _calc_pnl(user[f"{p}side"], entry_price, tp2_price, remaining_qty)
+                _record_pnl(user, pnl)
+                user["history"]["total"] += 1; user["history"]["profit"] += 1
+        except Exception as e:
+            print(f"[CT] on_scan_tp2 {cid} {symbol} pnl record: {e}")
         _clear_scan_state(cid, user, symbol)
 
 
@@ -1406,6 +1431,21 @@ def on_scan_sl(symbol: str):
             print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
+        try:
+            entry_price = float(user.get(f"{p}entry", 0))
+            sl_price    = float(user.get(f"{p}sl", 0))  # already BE-adjusted if TP1 had hit
+            close_qty   = float(user.get(f"{p}qty", 0))
+            tp1_hit     = bool(user.get(f"{p}tp1_hit", False))
+            if entry_price and sl_price and close_qty > 0:
+                pnl = _calc_pnl(user[f"{p}side"], entry_price, sl_price, close_qty)
+                _record_pnl(user, pnl)
+                user["history"]["total"] += 1
+                if not tp1_hit:
+                    user["history"]["loss"] += 1
+                # else: breakeven exit after a partial win — not a loss, excluded
+                # from both buckets rather than skewing the win rate
+        except Exception as e:
+            print(f"[CT] on_scan_sl {cid} {symbol} pnl record: {e}")
         _clear_scan_state(cid, user, symbol)
 
 
@@ -1940,14 +1980,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
     if cmd == "/connect":
         if len(parts) < 3:
             send_reply_fn(chat_id,
-                "<b>Connect BingX</b>\n\nUsage:\n<code>/connect API_KEY API_SECRET</code>\n\n"
-                "⚠️ Use <b>read + trade</b> permissions only.\nNEVER enable withdrawal on the key.")
+                "<b>Connect BingX</b>\n\n<blockquote>Usage:\n<code>/connect API_KEY API_SECRET</code>\n\n"
+                "⚠️ Use <b>read + trade</b> permissions only.\nNEVER enable withdrawal on the key.</blockquote>")
             return
         api_key = parts[1]; api_secret = parts[2]
         send_reply_fn(chat_id, "Testing API key...")
         ok, err = _test_api(api_key, api_secret)
         if not ok:
-            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n{err}\n\nCheck key + secret and try again.")
+            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n<blockquote>{err}\n\nCheck key + secret and try again.</blockquote>")
             return
         user = _get(cid) or _default_user(username)
         user["api_key_enc"]    = _encrypt(api_key)
@@ -1957,12 +1997,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _set(cid, user)
         send_reply_fn(chat_id,
             "<b>BingX Connected!</b> 🎉\n\n"
-            "✅ API verified\n\n"
+            "<blockquote>✅ API verified\n\n"
             f"Margin per trade: <b>${user['size_usdt']} USDT</b>\n"
             f"Leverage: <b>{user['leverage']}x</b> (manual)\n\n"
             "Head to your Copy Trade menu to turn on auto-copy, change your margin per trade, "
             "set an auto-risk max loss ⭐, or set leverage manually.\n\n"
-            "<i>🛡️ Capital protected</i>")
+            "<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/disconnect":
         user = _get(cid)
@@ -1973,8 +2013,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _set(cid, user)
         send_reply_fn(chat_id,
             "<b>Disconnected</b>\n\n"
-            "BingX API keys removed. Open positions remain open — manage them manually.\n\n"
-            "<i>🛡️ Capital protected</i>")
+            "<blockquote>BingX API keys removed. Open positions remain open — manage them manually.\n\n"
+            "<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setsize":
         if len(parts) < 2:
@@ -1990,9 +2030,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user["size_usdt"] = size; _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Trade Size Set</b>\n\n"
-                f"Size: <b>${size} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
+                f"<blockquote>Size: <b>${size} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
                 f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n\n"
-                f"<i>🛡️ Capital protected</i>")
+                f"<i>🛡️ Capital protected</i></blockquote>")
         except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/setleverage":
@@ -2012,10 +2052,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Leverage Set (Manual)</b>\n\n"
-                f"Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
+                f"<blockquote>Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
                 f"Exposure per trade: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
                 f"<i>Auto-risk mode disabled. Turn it back on anytime from the Auto-Risk button.</i>\n\n"
-                f"<i>🛡️ Capital protected</i>")
+                f"<i>🛡️ Capital protected</i></blockquote>")
         except: send_reply_fn(chat_id, "Please enter a valid whole number.")
 
     elif cmd == "/setrisk":
@@ -2026,17 +2066,17 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             if risk:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
-                    f"Max loss per trade: <b>${risk} USDT</b>\n"
+                    f"<blockquote>Max loss per trade: <b>${risk} USDT</b>\n"
                     f"Margin per trade: <b>${size} USDT</b>\n\n"
                     f"Leverage is auto-calculated each trade based on SL distance.\n\n"
                     f"Tap the Auto-Risk button to change your max loss, or turn it off there.\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                    f"<i>🛡️ Capital protected</i></blockquote>")
             else:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: OFF</b>\n\n"
-                    f"Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
+                    f"<blockquote>Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
                     f"Tap the Auto-Risk button to turn it on and set your max loss per trade ($1–$50).\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                    f"<i>🛡️ Capital protected</i></blockquote>")
             return
         arg = parts[1].lower()
         if arg == "off":
@@ -2045,8 +2085,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Auto-Risk Mode: OFF</b>\n\n"
-                f"Using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                f"<i>🛡️ Capital protected</i>")
+                f"<blockquote>Using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
+                f"<i>🛡️ Capital protected</i></blockquote>")
             return
         try:
             risk = float(arg)
@@ -2060,13 +2100,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             example_lev = _calc_auto_leverage(size, risk, 100, 98)  # 2% SL example
             send_reply_fn(chat_id,
                 f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
-                f"Max loss per trade: <b>${risk} USDT</b>\n"
+                f"<blockquote>Max loss per trade: <b>${risk} USDT</b>\n"
                 f"Margin per trade: <b>${size} USDT</b>\n\n"
                 f"<b>How it works:</b>\n"
                 f"Leverage is auto-calculated per trade based on SL distance.\n"
                 f"Example (2% SL): leverage = {example_lev}x → max loss ≈ ${size * example_lev * 0.02:.2f}\n\n"
                 f"<i>Closer SL = higher leverage | Wider SL = lower leverage</i>\n\n"
-                f"<i>🛡️ Capital protected</i>")
+                f"<i>🛡️ Capital protected</i></blockquote>")
         except: send_reply_fn(chat_id, "Please enter a valid number.")
 
     elif cmd == "/copytrade":
@@ -2078,10 +2118,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user = user or {}
             st = "✅ ON" if user.get("copy_on") else "❌ OFF"
             send_reply_fn(chat_id,
-                f"<b>Copy Trade</b>\n\nStatus: <b>{st}</b>\n\n"
+                f"<b>Copy Trade</b>\n\n<blockquote>Status: <b>{st}</b>\n\n"
                 f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | Leverage: <b>{user.get('leverage', 10)}x</b>\n\n"
                 f""
-                f"<i>🛡️ Capital protected</i>", reply_markup=_ct_btns); return
+                f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
             send_reply_fn(chat_id,
                 "Connect BingX first:\n<code>/connect API_KEY API_SECRET</code>"); return
@@ -2092,16 +2132,17 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user["copy_on"] = True; _set(cid, user)
             send_reply_fn(chat_id,
                 "<b>Copy Trade ON ✅</b>\n\n"
+                "<blockquote>"
                 f"Auto-copying all CLEXER signals.\n"
                 f"Size: <b>${user['size_usdt']} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n\n"
                 "<b>⚠️ Warning:</b> Real money. You are responsible for your trades.\n\n"
-                "<i>🛡️ Capital protected</i>", reply_markup=_ct_btns)
+                "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         elif state == "off":
             user["copy_on"] = False; _set(cid, user)
             send_reply_fn(chat_id,
-                "<b>Copy Trade OFF ❌</b>\n\nNo more auto-copies.\n"
+                "<b>Copy Trade OFF ❌</b>\n\n<blockquote>No more auto-copies.\n"
                 "Open positions remain open — manage them on BingX.\n\n"
-                "<i>🛡️ Capital protected</i>", reply_markup=_ct_btns)
+                "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
 
@@ -2110,13 +2151,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         if not user or not user.get("connected"):
             _connect_btn = {"inline_keyboard": [[{"text": "🔗  Connect Account", "callback_data": "help_cmd:/connect"}]]}
             send_reply_fn(chat_id,
-                "<b>No Account Connected</b>\n\nConnect your BingX account to see your open position.",
+                "<b>No Account Connected</b>\n\n<blockquote>Connect your BingX account to see your open position.</blockquote>",
                 reply_markup=_connect_btn); return
         try:
             api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
             pos = _get_position(api_key, api_secret)
             if not pos:
-                send_reply_fn(chat_id, "<b>No Open Position</b>\n\nYou don't have an open position yet.\n\n<i>🛡️ Capital protected</i>")
+                send_reply_fn(chat_id, "<b>No Open Position</b>\n\n<blockquote>You don't have an open position yet.\n\n<i>🛡️ Capital protected</i></blockquote>")
             else:
                 amt   = float(pos.get("positionAmt", 0))
                 pnl   = float(pos.get("unrealizedProfit", 0))
@@ -2126,11 +2167,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 pnl_s = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
                 send_reply_fn(chat_id,
                     f"<b>Your BingX Position</b>\n\n"
-                    f"{'🟢' if side=='LONG' else '🔴'} {side} {abs(amt):.4f} BTC\n\n"
+                    f"<blockquote>{'🟢' if side=='LONG' else '🔴'} {side} {abs(amt):.4f} BTC\n\n"
                     f"Entry:    <b>{entry:,.2f}</b>\n"
                     f"Leverage: <b>{lev}x</b>\n"
                     f"PnL:      <b>{pnl_s}</b>\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                    f"<i>🛡️ Capital protected</i></blockquote>")
         except Exception as e:
             send_reply_fn(chat_id, f"Error: {e}")
 
@@ -2151,12 +2192,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             [{"text": "🛡  Set Risk",     "callback_data": "mysize_setrisk"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Settings</b>\n\n"
-            f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
+            f"<blockquote>BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: <b>{'✅ ON' if user.get('copy_on') else '❌ OFF'}</b>\n"
             f"Margin per trade: <b>${size} USDT</b>\n"
             f"{lev_line}\n"
             f"{exp_line}\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_size_btns)
+            f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_size_btns)
 
     elif cmd == "/myhistory":
         user = _get(cid) or {}
@@ -2177,14 +2218,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _myh_btns = {"inline_keyboard": [[{"text": "🗑 Reset My P&L History", "callback_data": "myhistory_reset"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Copy Trade History</b>\n\n"
-            f"Total trades: <b>{h['total']}</b>\n"
+            f"<blockquote>Total trades: <b>{h['total']}</b>\n"
             f"Wins:         <b>{h['profit']}</b>  (+${h['won_usdt']:.2f})\n"
             f"Losses:       <b>{h['loss']}</b>  (-${h['lost_usdt']:.2f})\n"
             f"Win rate:     <b>{wr}</b>\n\n"
             f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
             f"{_bingx_pnl_line}"
             f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_myh_btns)
+            f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_myh_btns)
 
     elif cmd == "/nocopy":
         user = _get(cid) or {}
@@ -2226,8 +2267,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             blocked_str = (", ".join(f"<b>{c}</b>" for c in nocopy)) if nocopy else "<i>none</i>"
             text = (
                 f"🚫 <b>No-Copy Settings</b>\n\n"
-                f"Currently blocked: {blocked_str}\n\n"
-                f"<i>Tap a coin to block/unblock it.\nBlocked coins: bot skips signal, you trade manually.</i>"
+                f"<blockquote>Currently blocked: {blocked_str}\n\n"
+                f"<i>Tap a coin to block/unblock it.\nBlocked coins: bot skips signal, you trade manually.</i></blockquote>"
             )
             send_reply_fn(chat_id, text, reply_markup={"inline_keyboard": rows})
 
@@ -2238,7 +2279,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             target = parts[2].upper() if len(parts) > 2 else ""
             if target == "ALL":
                 user["nocopy_coins"] = []; _set(cid, user)
-                send_reply_fn(chat_id, "✅ <b>All coins unblocked.</b>\n\nAll signals will be copied again.")
+                send_reply_fn(chat_id, "✅ <b>All coins unblocked.</b>\n\n<blockquote>All signals will be copied again.</blockquote>")
             elif target:
                 if target in nocopy:
                     nocopy.remove(target); user["nocopy_coins"] = nocopy; _set(cid, user)
@@ -2254,8 +2295,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             nocopy.append(arg); user["nocopy_coins"] = nocopy; _set(cid, user)
         coins_str = ", ".join(f"<b>{c}</b>" for c in nocopy)
         send_reply_fn(chat_id,
-            f"🚫 <b>{arg} blocked</b>\n\nCurrently blocked: {coins_str}\n\n"
-            f"To unblock: <code>/nocopy clear {arg}</code>")
+            f"🚫 <b>{arg} blocked</b>\n\n<blockquote>Currently blocked: {coins_str}\n\n"
+            f"To unblock: <code>/nocopy clear {arg}</code></blockquote>")
 
     # ── ADMIN COMMANDS ────────────────────────────────────────────────────────
 
@@ -2268,12 +2309,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         in_pos    = sum(1 for u in _db.values() if u.get("in_position"))
         send_reply_fn(chat_id,
             f"<b>Users Summary</b>\n\n"
-            f"Total registered:   {total}\n"
+            f"<blockquote>Total registered:   {total}\n"
             f"BingX connected:    {connected}\n"
             f"Copy trade active:  {active}\n"
             f"In position now:    {in_pos}\n"
             f"Total exposure:     <b>${exposure:,.0f}</b>\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/users" and is_admin:
         if not _db:
@@ -2347,7 +2388,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 print(f"[CT] /user bingx pnl fetch: {e}")
         send_reply_fn(chat_id,
             f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
-            f"Tier: {_tier_line}\n"
+            f"<blockquote>Tier: {_tier_line}\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
             f"Size: <b>${user.get('size_usdt',0)} USDT</b> | {_lev_line}"
@@ -2357,7 +2398,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
             f"{_bingx_pnl_line}\n"
             f"Joined: {user.get('joined','?')}\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/kick" and is_admin:
         if len(parts) < 2:
@@ -2374,9 +2415,9 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             del _db[target]; _save()
         send_reply_fn(chat_id,
             f"<b>User Removed</b>\n\n"
-            f"@{user.get('username','?')} (ID:{target})\n"
+            f"<blockquote>@{user.get('username','?')} (ID:{target})\n"
             f"Orders cancelled. API keys deleted.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/pauseuser" and is_admin:
         if len(parts) < 2:
@@ -2395,13 +2436,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         state = "PAUSED ⛔" if user["paused_by_admin"] else "UNPAUSED ✅"
         send_reply_fn(chat_id,
             f"<b>User {state}</b>\n\n"
-            f"@{user.get('username','?')} (ID:{target})\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"<blockquote>@{user.get('username','?')} (ID:{target})\n\n"
+            f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setvip" and is_admin:
         if len(parts) < 2:
             rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"vip_pick:{uid}"}] for uid, u in list(_db.items())]
-            send_reply_fn(chat_id, "⭐ <b>Promote to VIP</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
+            send_reply_fn(chat_id, "⭐ <b>Promote to VIP</b>\n\n<blockquote>Choose a user:</blockquote>", reply_markup={"inline_keyboard": rows} if rows else None); return
         if len(parts) < 4:
             send_reply_fn(chat_id, "Usage: /setvip <chat_id> <DD.MM.YYYY start> <DD.MM.YYYY end>"); return
         target = str(parts[1])
@@ -2413,17 +2454,17 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _set(target, user)
         send_reply_fn(chat_id,
             f"<b>⭐ @{user.get('username','?')} promoted to VIP</b>\n\n"
-            f"From <b>{parts[2]}</b> to <b>{parts[3]}</b>\n\n<i>🛡️ Capital protected</i>")
+            f"<blockquote>From <b>{parts[2]}</b> to <b>{parts[3]}</b>\n\n<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setfree" and is_admin:
         if len(parts) < 2:
             rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"free_set:{uid}"}] for uid, u in list(_db.items())]
-            send_reply_fn(chat_id, "🆓 <b>Demote to Free</b>\n\nChoose a user:", reply_markup={"inline_keyboard": rows} if rows else None); return
+            send_reply_fn(chat_id, "🆓 <b>Demote to Free</b>\n\n<blockquote>Choose a user:</blockquote>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1])
         user = _db.get(target) or _default_user(parts[2] if len(parts) > 2 else target)
         user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""; user["vip_grace_notified_at"] = 0
         _set(target, user)
-        send_reply_fn(chat_id, f"<b>🆓 @{user.get('username','?')} set to Free tier</b>\n\n<i>🛡️ Capital protected</i>")
+        send_reply_fn(chat_id, f"<b>🆓 @{user.get('username','?')} set to Free tier</b>\n\n<blockquote><i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/ctstatus" and is_admin:
         # Show failed copy users and current active signal
@@ -2442,7 +2483,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         else:
             sig_info = "\n\n<b>No active signal</b> — /ctretry will be blocked."
         if not failed:
-            send_reply_fn(chat_id, f"<b>Copy Trade Status</b>\n\nNo failed copies.{sig_info}\n\n<i>🛡️ Capital protected</i>")
+            send_reply_fn(chat_id, f"<b>Copy Trade Status</b>\n\n<blockquote>No failed copies.{sig_info}\n\n<i>🛡️ Capital protected</i></blockquote>")
             return
         lines = [f"<b>Failed Copy Users ({len(failed)})</b>"]
         for cid, u in failed:
@@ -2563,15 +2604,15 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     results.append(f"❌ {sym}: {e}")
 
             send_reply_fn(chat_id,
-                f"<b>Scan Retry — @{uname}</b>\n\n" + "\n".join(results) + "\n\n<i>🛡️ Capital protected</i>")
+                f"<b>Scan Retry — @{uname}</b>\n\n<blockquote>" + "\n".join(results) + "\n\n<i>🛡️ Capital protected</i></blockquote>")
             return
 
         # ── BTC RETRY (existing logic below) ──────────────────────────────────
         if not _last_signal:
             send_reply_fn(chat_id,
                 "<b>Retry Blocked</b>\n\n"
-                "No active BTC signal — trade already closed or no signal yet.\n\n"
-                "<i>🛡️ Capital protected</i>"); return
+                "<blockquote>No active BTC signal — trade already closed or no signal yet.\n\n"
+                "<i>🛡️ Capital protected</i></blockquote>"); return
 
         if user.get("in_position"):
             send_reply_fn(chat_id, f"@{user.get('username','?')} already in BTC position — no retry needed."); return
@@ -2624,18 +2665,18 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 _set(target, user)
                 send_reply_fn(chat_id,
                     f"<b>Retry Successful!</b>\n\n"
-                    f"✅ @{user.get('username','?')} entered {side} {qty} BTC\n\n"
+                    f"<blockquote>✅ @{user.get('username','?')} entered {side} {qty} BTC\n\n"
                     f"SL:  {sl:,.0f} (100%)\n"
                     f"TP1: {tp1:,.0f} (50%)\n"
                     f"TP2: {tp2:,.0f} (50%)\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                    f"<i>🛡️ Capital protected</i></blockquote>")
             else:
                 err = r.get("msg", "unknown error")
                 send_reply_fn(chat_id,
                     f"<b>Retry Failed</b>\n\n"
-                    f"❌ @{user.get('username','?')}: {err}\n\n"
+                    f"<blockquote>❌ @{user.get('username','?')}: {err}\n\n"
                     f"Check their BingX margin balance.\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                    f"<i>🛡️ Capital protected</i></blockquote>")
         except Exception as e:
             send_reply_fn(chat_id, f"❌ Retry error: {e}")
             print(f"[CT] /ctretry {target}: {e}")
@@ -2650,7 +2691,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             target = str(parts[1])
             ok, msg = on_close_user(target)
             send_reply_fn(chat_id,
-                f"<b>CT Close</b>\n\n{'✅' if ok else '❌'} {msg}\n\n<i>🛡️ Capital protected</i>")
+                f"<b>CT Close</b>\n\n<blockquote>{'✅' if ok else '❌'} {msg}\n\n<i>🛡️ Capital protected</i></blockquote>")
         else:
             # Close all copy trade positions
             results = []
@@ -2658,11 +2699,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 ok, msg = on_close_user(cid)
                 results.append(f"{'✅' if ok else '❌'} {msg}")
             if not results:
-                send_reply_fn(chat_id, "<b>CT Close All</b>\n\nNo active copy users.\n\n<i>🛡️ Capital protected</i>")
+                send_reply_fn(chat_id, "<b>CT Close All</b>\n\n<blockquote>No active copy users.\n\n<i>🛡️ Capital protected</i></blockquote>")
             else:
                 send_reply_fn(chat_id,
-                    f"<b>CT Close All</b>\n\n" + "\n".join(results) +
-                    f"\n\n<i>🛡️ Capital protected</i>")
+                    f"<b>CT Close All</b>\n\n<blockquote>" + "\n".join(results) +
+                    f"\n\n<i>🛡️ Capital protected</i></blockquote>")
 
     else:
         send_reply_fn(chat_id, f"Unknown command: {cmd}")
