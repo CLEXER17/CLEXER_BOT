@@ -2941,14 +2941,28 @@ def send_to_user(chat_id, text, file_id=None, file_type=None):
         return r.status_code == 200
     except Exception as e: print(f"  [USER SEND] {chat_id}: {e}"); return False
 
-def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all"):
+def _all_broadcast_channel_targets() -> list:
+    """Every channel/group the bot can broadcast to — legacy channels + every
+    VIP/Free tier channel. Returns [(id, label), ...]."""
+    out = []
+    if TELEGRAM_CHANNEL_ID: out.append((TELEGRAM_CHANNEL_ID, "📡 Signal Channel 1"))
+    _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
+    if _ch2: out.append((_ch2, "📡 Signal Channel 2"))
+    for c in CHANNELS:
+        if c.get("id"):
+            out.append((c["id"], c.get("label") or (("⭐ VIP" if c.get("tier")=="vip" else "🆓 Free") + f" · {c['id']}")))
+    return out
+
+def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", channel_targets=None):
+    """channel_targets: optional explicit list of channel/group chat_ids to use
+    instead of the legacy-only default — set by the new multi-select picker."""
     if mode == "users":
         targets = [u for u in registered_users if u not in blocked_users]
     elif mode == "channels":
-        _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
-        targets = [TELEGRAM_CHANNEL_ID] + ([_ch2] if _ch2 else [])
+        targets = channel_targets if channel_targets is not None else [cid for cid, _ in _all_broadcast_channel_targets()]
     else:
-        targets = [u for u in registered_users if u not in blocked_users] + [TELEGRAM_CHANNEL_ID]
+        _chan = channel_targets if channel_targets is not None else [cid for cid, _ in _all_broadcast_channel_targets()]
+        targets = [u for u in registered_users if u not in blocked_users] + _chan
     ok = 0; fail = 0
     for cid in targets:
         if send_to_user(cid, text, file_id, file_type): ok += 1
@@ -5864,6 +5878,8 @@ Reasoning: [one line]"""
     else:
         send_reply(chat_id, f"Unknown: {cmd}\n/help")
 
+_bc_picker_state: dict = {}  # chat_id str -> {"text","file_id","file_type","mode","selected": set()}
+
 def handle_broadcast_message(chat_id, message):
     text = message.get("text") or message.get("caption") or ""
     photo = message.get("photo"); doc = message.get("document")
@@ -5873,9 +5889,38 @@ def handle_broadcast_message(chat_id, message):
     if not text and not file_id: send_reply(chat_id, "Empty. /cancel to abort."); return
     mode = broadcast_pending.get(chat_id, {}).get("mode", "all")
     del broadcast_pending[chat_id]
-    _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[mode]
-    send_reply(chat_id, f"📢 Broadcasting to {_mode_label}...")
-    threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type, mode), daemon=True).start()
+    if mode == "users":
+        _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[mode]
+        send_reply(chat_id, f"📢 Broadcasting to {_mode_label}...")
+        threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type, mode), daemon=True).start()
+        return
+    all_targets = _all_broadcast_channel_targets()
+    _bc_picker_state[str(chat_id)] = {
+        "text": text, "file_id": file_id, "file_type": file_type, "mode": mode,
+        "selected": {cid for cid, _ in all_targets},  # pre-select all by default
+    }
+    _send_broadcast_picker(chat_id)
+
+def _send_broadcast_picker(chat_id, message_id=None):
+    st = _bc_picker_state.get(str(chat_id))
+    if not st: return
+    all_targets = _all_broadcast_channel_targets()
+    if not all_targets:
+        send_reply(chat_id, "⚠️ No channels are set up yet — add one via /channelmgmt or /adminlinks first.")
+        _bc_picker_state.pop(str(chat_id), None)
+        return
+    rows = []
+    for cid, label in all_targets:
+        mark = "✅" if cid in st["selected"] else "⬜"
+        rows.append([{"text": f"{mark} {label}", "callback_data": f"bctgl:{cid}"}])
+    rows.append([
+        {"text": "◀️ Previous", "callback_data": "bcprev"},
+        {"text": "🚫 Back",     "callback_data": "bcback"},
+        {"text": "✅ Send",     "callback_data": "bcsend"},
+    ])
+    n = len(st["selected"])
+    text = f"📢 <b>Choose channels/groups</b>\n\n{n} of {len(all_targets)} selected. Tap to toggle."
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 # ─── HELP BUTTON MENU ────────────────────────────────────────────────────────
 # Each category: (label, admin_only, [(cmd, emoji, short_description), ...])
@@ -7420,11 +7465,52 @@ def command_listener():
 
                     elif cb_data.startswith("broadcast_mode:") and cb_is_admin:
                         _mode = cb_data.split(":", 1)[1]
-                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode}
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
                         _mode_lbl = {"users": "Users Only", "channels": "Channels Only", "all": "Both"}[_mode]
                         _help_edit_or_send(cb_chat_id,
                             f"📢 <b>Broadcast — {_mode_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("bctgl:") and cb_is_admin:
+                        _tgl_id = cb_data.split(":", 1)[1]
+                        st = _bc_picker_state.get(str(cb_chat_id))
+                        if st:
+                            if _tgl_id in st["selected"]: st["selected"].discard(_tgl_id)
+                            else: st["selected"].add(_tgl_id)
+                            _send_broadcast_picker(cb_chat_id, message_id=cb_msg_id)
+
+                    elif cb_data == "bcprev" and cb_is_admin:
+                        st = _bc_picker_state.pop(str(cb_chat_id), None)
+                        _mode = st["mode"] if st else "all"
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
+                        _mode_lbl = {"users": "Users Only", "channels": "Channels Only", "all": "Both"}[_mode]
+                        _help_edit_or_send(cb_chat_id,
+                            f"📢 <b>Broadcast — {_mode_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            None, message_id=cb_msg_id)
+
+                    elif cb_data == "bcback" and cb_is_admin:
+                        _bc_picker_state.pop(str(cb_chat_id), None)
+                        broadcast_pending.pop(cb_chat_id, None)
+                        _bc_btns = {"inline_keyboard": [[
+                            {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
+                            {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
+                        ], [
+                            {"text": "🌍 Both (Users + Channels)", "callback_data": "broadcast_mode:all"},
+                        ]]}
+                        _help_edit_or_send(cb_chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?",
+                            _bc_btns, message_id=cb_msg_id)
+
+                    elif cb_data == "bcsend" and cb_is_admin:
+                        st = _bc_picker_state.pop(str(cb_chat_id), None)
+                        if not st:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Nothing to send — start over.", "show_alert": True}, timeout=5)
+                        else:
+                            _sel = list(st["selected"])
+                            _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[st["mode"]]
+                            _help_edit_or_send(cb_chat_id, f"📢 Broadcasting to {_mode_label} ({len(_sel)} channels)...", None, message_id=cb_msg_id)
+                            threading.Thread(target=do_broadcast,
+                                args=(cb_chat_id, st["text"], st["file_id"], st["file_type"], st["mode"], _sel), daemon=True).start()
                     elif cb_data == "confirm_no":
                         pc = _pending_confirm.pop(cb_cid, None)
                         _back_cb = pc["back_cb"] if pc else "help_main"
