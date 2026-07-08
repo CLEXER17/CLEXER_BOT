@@ -2809,13 +2809,17 @@ _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing
 
 def send_reply(chat_id, text, reply_markup=None):
     cid_str = str(chat_id)
-    text = _apply_premium_emojis(text)
-    reply_markup = _style_keyboard(reply_markup)
     if cid_str in _reply_capture:
+        # Captured (not actually sent yet) — store raw text. The eventual
+        # _help_edit_or_send() call that delivers it applies premium-emoji
+        # processing exactly once; pre-applying here too caused double-wrapping
+        # (e.g. "🔀 🔀 BingX").
         _reply_capture[cid_str]["texts"].append(text)
         if reply_markup:
             _reply_capture[cid_str]["markup"] = reply_markup
         return
+    text = _apply_premium_emojis(text)
+    reply_markup = _style_keyboard(reply_markup)
     try:
         payload = {"chat_id": chat_id, "text": text,
                    "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -3168,8 +3172,9 @@ def run_tick_check():
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>", include_ch2=_sl_in_ch2)
             else:
                 send_telegram(fmt_update("SL_HIT"), include_ch2=_sl_in_ch2)
-            _track_daily_result(SYMBOL, "SL")
-            ct.on_sl(entry, sl); reset_trade(); return True
+            if not active_trade.get("tp1_hit", False):
+                _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+            ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
 
@@ -3537,8 +3542,9 @@ def run_price_check():
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
-            _track_daily_result(SYMBOL, "SL")
-            ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0)); reset_trade(); return True
+            if not active_trade.get("tp1_hit", False):
+                _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+            ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
             trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
@@ -3893,7 +3899,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             elif raw in ("sl", "sl hit"):
                 sig = ct._last_signal
                 if not sig: send_reply(chat_id, "❌ No active demo signal."); return
-                results = ct.on_sl(sig.get("entry",0), sig.get("sl",0))
+                results = ct.on_sl(sig.get("entry",0), sig.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False))
                 send_reply(chat_id, f"<b>DEMO SL HIT</b>\n{_fmt(results)}")
 
             elif raw == "btc close":
@@ -3993,9 +3999,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
         ]]}
         if btc_analysis_enabled:
-            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>🛡️ Capital protected</i>"
+            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n<i>🛡️ Capital protected</i></blockquote>"
         else:
-            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\nScheduled scans paused.\n\n<i>🛡️ Capital protected</i>"
+            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n<i>🛡️ Capital protected</i></blockquote>"
         send_reply(chat_id, _btca_text, reply_markup=_btca_mkp)
 
     elif cmd == "/tvstatus":
@@ -6236,7 +6242,7 @@ def _ask_confirm(chat_id, cid, action_id, label, back_cb, message_id=None):
         {"text": "✅ Yes, confirm", "callback_data": "confirm_yes", "style": "success"},
         {"text": "❌ Cancel",       "callback_data": "confirm_no",  "style": "danger"},
     ]]}
-    text = f"⚠️ <b>Are you sure?</b>\n\n{label}\n\n<i>This cannot be undone.</i>"
+    text = f"⚠️ <b>Are you sure?</b>\n\n<blockquote>{label}\n\n<i>This cannot be undone.</i></blockquote>"
     _help_edit_or_send(chat_id, text, mkp, message_id=message_id)
 
 def _strip_html(s: str) -> str:
@@ -6361,9 +6367,9 @@ def send_adminlinks_screen(chat_id, message_id=None):
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     text = (
         f"<b>🔗 Contact / Channel Settings</b>\n\n"
-        f"Controls whether users see the <b>Contact Admin</b> and <b>Signal Channel</b>\n"
+        f"<blockquote>Controls whether users see the <b>Contact Admin</b> and <b>Signal Channel</b>\n"
         f"buttons on their main /help menu.\n\n"
-        f"{channel_line}")
+        f"{channel_line}</blockquote>")
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
 
 def send_userstats_screen(chat_id, message_id=None):
@@ -6378,7 +6384,7 @@ def send_userstats_screen(chat_id, message_id=None):
         [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
     ]
     _help_edit_or_send(chat_id,
-        "📊 <b>User Stats</b>\n\nTap a category to see the users with DM links.",
+        "📊 <b>User Stats</b>\n\n<blockquote>Tap a category to see the users with DM links.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_userstats_list(chat_id, kind, message_id=None):
@@ -6405,8 +6411,8 @@ def send_aiconfig_screen(chat_id, message_id=None):
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     _help_edit_or_send(chat_id,
         "<b>🧠 AI Model & Gateway — Per Scan Type</b>\n\n"
-        "BTC, Scan1, Scan2, and Test/Demo each pick their own model + gateway independently.\n"
-        "Tap a type below to change its combo.",
+        "<blockquote>BTC, Scan1, Scan2, and Test/Demo each pick their own model + gateway independently.\n"
+        "Tap a type below to change its combo.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_aiconfig_type_screen(chat_id, kind, message_id=None):
@@ -6420,7 +6426,7 @@ def send_aiconfig_type_screen(chat_id, kind, message_id=None):
         [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{kind}:aerolink:fable"}],
         [{"text": "◀️  Back", "callback_data": "aicfg_open"}],
     ]
-    _help_edit_or_send(chat_id, f"<b>{label} — AI Model &amp; Gateway</b>\n\nChoose a combo:",
+    _help_edit_or_send(chat_id, f"<b>{label} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_entrystyle_screen(chat_id, message_id=None):
@@ -6432,11 +6438,11 @@ def send_entrystyle_screen(chat_id, message_id=None):
     ]
     _help_edit_or_send(chat_id,
         "<b>🎯 Scan Entry Style</b>\n\n"
-        "<b>Market Entry</b> — places the trade instantly at the current price.\n\n"
+        "<blockquote><b>Market Entry</b> — places the trade instantly at the current price.\n\n"
         "<b>Zone Entry</b> — shows a price range (like a signal-channel style zone) and "
         "places a single LIMIT order at the zone's midpoint for every copy user. "
         "The order only fills if price actually trades back into that zone — if it never "
-        "does, the position stays unfilled on BingX (this applies to Scan1/Scan2 only).",
+        "does, the position stays unfilled on BingX (this applies to Scan1/Scan2 only).</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_channel_picker_screen(chat_id, message_id=None):
@@ -6446,17 +6452,17 @@ def send_channel_picker_screen(chat_id, message_id=None):
         [{"text": "◀️  Back", "callback_data": "help_main"}],
     ]
     _help_edit_or_send(chat_id,
-        "<b>📡 Signal Channels</b>\n\nChoose which one you want to join:",
+        "<b>📡 Signal Channels</b>\n\n<blockquote>Choose which one you want to join:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_channel_picker_result(chat_id, tier, message_id=None):
     if tier == "free":
         chans = [c for c in CHANNELS if c.get("tier") == "free" and c.get("id")]
         if not chans:
-            text = "🆓 <b>Free Channel</b>\n\nNo free channel is set up yet — check back later."
+            text = "🆓 <b>Free Channel</b>\n\n<blockquote>No free channel is set up yet — check back later.</blockquote>"
             rows = [[{"text": "◀️  Back", "callback_data": "chanpick_open"}]]
         else:
-            text = "🆓 <b>Free Channel</b>\n\nA limited number of signals per day, shared with everyone:"
+            text = "🆓 <b>Free Channel</b>\n\n<blockquote>A limited number of signals per day, shared with everyone:</blockquote>"
             rows = [[{"text": c.get("label") or "Join", "url": c["link"]}] for c in chans if c.get("link")]
             if not rows:
                 text += "\n\n<i>No public join link set for it yet — ask the admin.</i>"
@@ -6468,14 +6474,14 @@ def send_channel_picker_result(chat_id, tier, message_id=None):
         if _is_vip and vip_chans:
             text = (
                 "⭐ <b>VIP Channel</b>\n\n"
-                "You're VIP — tap below to request to join. Your request is approved automatically.")
+                "<blockquote>You're VIP — tap below to request to join. Your request is approved automatically.</blockquote>")
             rows = [[{"text": c.get("label") or "Join", "url": c["link"]}] for c in vip_chans]
             rows.append([{"text": "◀️  Back", "callback_data": "chanpick_open"}])
         else:
             text = (
                 "⭐ <b>VIP Channel</b>\n\n"
-                "Get every signal, no limits — BTC, Scan1, and Scan2, the moment they fire.\n\n"
-                "VIP access is activated by the admin. Tap below to request it.")
+                "<blockquote>Get every signal, no limits — BTC, Scan1, and Scan2, the moment they fire.\n\n"
+                "VIP access is activated by the admin. Tap below to request it.</blockquote>")
             rows = [
                 [{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}] if ADMIN_CHAT_ID else [],
             ]
@@ -6499,9 +6505,9 @@ def send_channelmgmt_screen(chat_id, message_id=None):
     rows.append([{"text": "◀️  Back", "callback_data": "broadcast_sub:channels"}])
     _help_edit_or_send(chat_id,
         "<b>📡 Channels — VIP / Free</b>\n\n"
-        "Add as many VIP or Free channels as you want. VIP channels get every signal. "
+        "<blockquote>Add as many VIP or Free channels as you want. VIP channels get every signal. "
         "Free channels only get up to your daily limit, between 06:00–19:00 IST — "
-        "free-tier bot users copy exactly the same signals the free channels got.",
+        "free-tier bot users copy exactly the same signals the free channels got.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_trailsl_screen(chat_id, message_id=None):
@@ -6522,10 +6528,10 @@ def send_trailsl_screen(chat_id, message_id=None):
     ]
     _help_edit_or_send(chat_id,
         "<b>🛡️ Trailing SL</b>\n\n"
-        "Once price reaches the halfway point to TP1, SL automatically moves to the halfway "
+        "<blockquote>Once price reaches the halfway point to TP1, SL automatically moves to the halfway "
         "point between the original SL and entry — locking in more capital before TP1 even hits.\n\n"
         "Example: Entry 10, TP1 18, SL 6 → at price 14, SL moves to 8.\n\n"
-        "Turn on independently for BTC, Scan1, and Scan2.",
+        "Turn on independently for BTC, Scan1, and Scan2.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_coadmin_screen(chat_id, message_id=None):
@@ -6545,7 +6551,7 @@ def send_coadmin_screen(chat_id, message_id=None):
     ]
     _help_edit_or_send(chat_id,
         "<b>🤝 Co-Admin</b>\n\n"
-        "Gives one trusted person control of Scan Control + Trade Control — force scans, "
+        "<blockquote>Gives one trusted person control of Scan Control + Trade Control — force scans, "
         "BTC/Scan1/Scan2 on-off, AI model &amp; gateway per type, entry style, TP1%, schedules, "
         "SL/TP/close on any trade, and the Trade History CSV. They still can't see/manage users, "
         "see billing, reset anything, broadcast, or touch this Co-Admin screen. Their contact "
@@ -6553,7 +6559,7 @@ def send_coadmin_screen(chat_id, message_id=None):
         "<b>🔀 Switch Settings</b> swaps between two remembered configs — yours and the "
         "co-admin's — of everything above (model, gateway, entry style, TP1%, schedules, "
         "on/off toggles). Switching saves your current setup before loading the other one, "
-        "so nothing is lost either way.",
+        "so nothing is lost either way.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_coadmin_pick_screen(chat_id, message_id=None):
@@ -6568,7 +6574,7 @@ def send_coadmin_pick_screen(chat_id, message_id=None):
         label = f"@{uname}" if uname else f"ID {uid}"
         rows.append([{"text": label, "callback_data": f"coadmin_set:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "coadmin_open"}])
-    _help_edit_or_send(chat_id, "<b>👤 Choose Co-Admin</b>\n\nTap the user to grant Trade History CSV access:",
+    _help_edit_or_send(chat_id, "<b>👤 Choose Co-Admin</b>\n\n<blockquote>Tap the user to grant Trade History CSV access:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_vip_pick_screen(chat_id, message_id=None):
@@ -6588,7 +6594,7 @@ def send_vip_pick_screen(chat_id, message_id=None):
         rows.append([{"text": label, "callback_data": f"vip_pick:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
     _help_edit_or_send(chat_id,
-        "⭐ <b>Promote to VIP</b>\n\nChoose any registered user — they don't need to have connected BingX yet:",
+        "⭐ <b>Promote to VIP</b>\n\n<blockquote>Choose any registered user — they don't need to have connected BingX yet:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_free_pick_screen(chat_id, message_id=None):
@@ -6608,7 +6614,7 @@ def send_free_pick_screen(chat_id, message_id=None):
         rows.append([{"text": label, "callback_data": f"free_set:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
     _help_edit_or_send(chat_id,
-        "🆓 <b>Demote to Free</b>\n\nChoose any registered user:",
+        "🆓 <b>Demote to Free</b>\n\n<blockquote>Choose any registered user:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_ctpause_screen(chat_id, message_id=None):
@@ -6629,8 +6635,8 @@ def send_ctpause_screen(chat_id, message_id=None):
     ]
     _help_edit_or_send(chat_id,
         "<b>📋 Copy Trade — By Type</b>\n\n"
-        "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals.\n"
-        "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.",
+        "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals.\n"
+        "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_go_screen(chat_id, message_id=None):
@@ -6658,13 +6664,13 @@ def send_go_screen(chat_id, message_id=None):
     ]]}
     text = (
         f"▶️ <b>Bot RUNNING</b>\n\n"
-        f"All scans, monitoring and alerts active.\n\n"
+        f"<blockquote>All scans, monitoring and alerts active.\n\n"
         f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
         f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
         f"{_go_btc_line}"
         f"{_go_s1_line}"
         f"{_go_s2_line}\n"
-        f"<i>🛡️ Capital protected</i>")
+        f"<i>🛡️ Capital protected</i></blockquote>")
     if message_id:
         _help_edit_or_send(chat_id, text, _ctrl_btns, message_id=message_id)
     else:
@@ -6822,7 +6828,7 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
                 for sub_id, (sub_label, _) in subcats.items()]
         rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
         markup = {"inline_keyboard": rows}
-        text = f"<b>{label}</b>\n\n<i>Pick a section 👇</i>"
+        text = f"<b>{label}</b>\n\n<blockquote>Pick a section 👇</blockquote>"
         _help_edit_or_send(chat_id, text, markup, message_id)
         return
 
@@ -6831,7 +6837,7 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
         rows.append([{"text": f"{emoji}  {desc}", "callback_data": f"help_cmd:{cmd}"}])
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
-    text = f"<b>{label}</b>\n\n<i>Tap any command to run it instantly 👇</i>"
+    text = f"<b>{label}</b>\n\n<blockquote>Tap any command to run it instantly 👇</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
@@ -6855,7 +6861,7 @@ def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
         desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}])
     markup = {"inline_keyboard": rows}
-    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 def send_scan_subcat(chat_id, sub_id, message_id=None):
@@ -6870,7 +6876,7 @@ def send_scan_subcat(chat_id, sub_id, message_id=None):
         desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:scan"}])
     markup = {"inline_keyboard": rows}
-    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 def send_tradecontrol_subcat(chat_id, sub_id, message_id=None):
@@ -6885,7 +6891,7 @@ def send_tradecontrol_subcat(chat_id, sub_id, message_id=None):
         desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:tradecontrol"}])
     markup = {"inline_keyboard": rows}
-    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
@@ -6900,7 +6906,7 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
         desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": f"help_cat:{back_cat}"}])
     markup = {"inline_keyboard": rows}
-    text = f"<b>{label}</b>\n\n" + "\n\n".join(desc_lines)
+    text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
 # ─── END HELP MENU ────────────────────────────────────────────────────────────
@@ -7322,9 +7328,9 @@ def command_listener():
                             {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
                         ]]}
                         if btc_analysis_enabled:
-                            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>🛡️ Capital protected</i>"
+                            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n<i>🛡️ Capital protected</i></blockquote>"
                         else:
-                            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\nScheduled scans paused.\n\n<i>🛡️ Capital protected</i>"
+                            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n<i>🛡️ Capital protected</i></blockquote>"
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_btca_text), "parse_mode": "HTML",
