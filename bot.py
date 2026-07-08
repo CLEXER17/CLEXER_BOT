@@ -895,12 +895,25 @@ def _claude_text(msg):
             return block.text.strip()
     return ""
 
+# Specific scheduled slots that always run on Direct + Opus 4.8, regardless of the
+# admin's normal /aiconfig setting for that scan type — everything else keeps using
+# whatever gateway/model is currently configured (Aerolink, as usual). Set right
+# before the auto-trigger fires and cleared right after that scan cycle finishes.
+_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23)}
+_DEMO_SCAN1_SPECIAL_TIMES = {(3,24), (8,24), (15,8), (17,10)}
+_force_direct_48_scan2 = False
+_force_direct_48_demo1 = False
+
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
     has its own independent model + gateway choice, set via /aiconfig."""
+    if kind == "scan2" and _force_direct_48_scan2: return "claude-opus-4-8"
+    if kind == "test" and _force_direct_48_demo1: return "claude-opus-4-8"
     return {"btc": SCAN_MODEL, "scan1": SCAN1_MODEL, "scan2": SCAN2_MODEL, "test": TEST_MODEL}.get(kind, SCAN_MODEL)
 
 def _ai_aerolink(kind: str = "btc") -> bool:
+    if kind == "scan2" and _force_direct_48_scan2: return False
+    if kind == "test" and _force_direct_48_demo1: return False
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
 def _claude_client(kind: str = "btc"):
@@ -5652,7 +5665,13 @@ Reasoning: [one line]"""
                         slot_data["share_free"] = _share_free
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M")
                         send_telegram(fmt_scan_signal(slot_data), with_bot_button=True)
-                        send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
+                        # Scan1 always goes to Free/VIP channels; Scan2 only at its 6 whitelisted
+                        # slot times (unconditionally, bypassing the daily free-quota gate) —
+                        # everything else stays on the legacy channel only.
+                        if scan_ver == 1:
+                            send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
+                        elif scan_ver == 2 and _force_direct_48_scan2:
+                            send_to_tier_channels(fmt_scan_signal(slot_data), True)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
@@ -7790,7 +7809,7 @@ _scan_cycle_lock   = __import__("threading").Lock()
 
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
-    global _scan_cycle_placed
+    global _scan_cycle_placed, _force_direct_48_scan2
     lbl = "V1" if scan_ver == 1 else "V2"
     send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>🛡️ Capital protected</i>")
     # Clear cycle dedup set when scan1 starts (scan1 always starts first)
@@ -7798,7 +7817,11 @@ def _run_auto_scan(cid, scan_ver=2):
         with _scan_cycle_lock:
             _scan_cycle_placed.clear()
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
-    handle_command(cmd, cid)
+    try:
+        handle_command(cmd, cid)
+    finally:
+        if scan_ver == 2:
+            _force_direct_48_scan2 = False
 
 # ══════════════════════════════════════════════════════════
 # TEST MODE — CLEXER SCALP v1 (demo only, no copytrade)
@@ -7973,6 +7996,16 @@ def _demo_monitor_loop():
                         if t in demo_scan2_trades: demo_scan2_trades.remove(t)
         except Exception as _e:
             print(f"  [DEMO MONITOR] Error: {_e}")
+
+def _run_test_scan_and_clear_flag(cid, scan_ver: int):
+    """Wrapper for the auto-scheduled Demo Scan1 trigger — ensures
+    _force_direct_48_demo1 always clears afterward, regardless of which
+    exit path _run_test_scan takes (slots full, no coins, error, etc.)."""
+    global _force_direct_48_demo1
+    try:
+        _run_test_scan(cid, scan_ver)
+    finally:
+        _force_direct_48_demo1 = False
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. No copytrade."""
@@ -8225,6 +8258,10 @@ def _run_test_scan(cid, scan_ver: int):
                 f"⏰ Timeout: 1H | move_age: {age}c"
             )
             send_telegram(demo_msg, with_bot_button=True)
+            # Demo Scan1 only reaches Free/VIP channels at its 4 whitelisted slot times
+            # (unconditionally) — everything else stays on the legacy channel only.
+            if scan_ver == 1 and _force_direct_48_demo1:
+                send_to_tier_channels(demo_msg, True)
 
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
@@ -8420,6 +8457,8 @@ def main():
                     _scan1_triggered_today.add((_cur_hm, 2))
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
+                        global _force_direct_48_scan2
+                        _force_direct_48_scan2 = _cur_hm in _SCAN2_SPECIAL_TIMES
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # Test demo: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
@@ -8427,7 +8466,9 @@ def main():
                 _test_triggered_today.add(_cur_hm)
                 print(f"  [TEST-SCAN] Demo scan at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
                 if ADMIN_CHAT_ID:
-                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 1), daemon=True).start()
+                    global _force_direct_48_demo1
+                    _force_direct_48_demo1 = _cur_hm in _DEMO_SCAN1_SPECIAL_TIMES
+                    threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
