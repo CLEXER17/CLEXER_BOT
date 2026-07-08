@@ -322,11 +322,12 @@ def send_to_tier_channels(text: str, share_free: bool):
             except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
 
 def _all_channel_ids() -> list:
-    """Every destination CLEXER posts signals to — legacy channels + all VIP/Free tier channels."""
+    """Every destination CLEXER posts signals to — legacy channels (skipping
+    any that are currently paused via /pausechannel) + all VIP/Free tier channels."""
     ids = []
-    if TELEGRAM_CHANNEL_ID: ids.append(("legacy1", TELEGRAM_CHANNEL_ID))
+    if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"): ids.append(("legacy1", TELEGRAM_CHANNEL_ID))
     _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
-    if _ch2: ids.append(("legacy2", _ch2))
+    if _ch2 and not channel_paused.get("2"): ids.append(("legacy2", _ch2))
     for cid in _channels_by_tier("vip"): ids.append(("vip", cid))
     for cid in _channels_by_tier("free"): ids.append(("free", cid))
     return ids
@@ -375,7 +376,8 @@ def _send_tp1_streak_promo():
 
 def _send_sl_reassurance():
     """Sent every real SL loss (not breakeven) — with premium emoji via the
-    true-forward relay, since it's meant to feel like a genuine channel post."""
+    true-forward relay, since it's meant to feel like a genuine channel post.
+    No buttons — buttons are TP-only, per admin's instruction."""
     text = _apply_premium_emojis(
         "🛑 Stop Loss Hit\n\n"
         "Not every trade is a winner, and that's part of professional trading.\n\n"
@@ -385,14 +387,20 @@ def _send_sl_reassurance():
         "💎 Crypto Clexer focuses on strategy, discipline, and long-term results."
     )
     for _tag, cid in _all_channel_ids():
-        if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}"):
+        if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
             try:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
             except Exception as e: print(f"  [SL REASSURE] {_tag} {cid}: {e}")
 
 def _send_tp2_congrats():
-    """Sent every TP2 hit — plain emoji, direct send (no forward needed)."""
+    """Sent every TP2 hit — plain emoji, direct send (no forward needed),
+    with both Open Bot + Contact Admin buttons (TP-only, per instruction)."""
+    _uname = _get_bot_username()
+    btns = []
+    if _uname: btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
+    if ADMIN_CHAT_ID: btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
+    mkp = {"inline_keyboard": [btns]} if btns else None
     text = (
         "🎯 TP2 HIT! ✅🔥\n\n"
         "Another target achieved successfully! Congratulations to everyone who stayed patient and trusted the setup.\n\n"
@@ -402,8 +410,9 @@ def _send_tp2_congrats():
     )
     for _tag, cid in _all_channel_ids():
         try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": cid, "text": text}, timeout=10)
+            payload = {"chat_id": cid, "text": text}
+            if mkp: payload["reply_markup"] = mkp
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         except Exception as e: print(f"  [TP2 CONGRATS] {_tag} {cid}: {e}")
 
 def _notify_free_late(symbol: str, trade: dict, result: str):
