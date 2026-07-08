@@ -296,7 +296,7 @@ def send_to_tier_channels(text: str, share_free: bool):
     to a direct send only if the forward relay itself fails."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
-        if _send_via_true_forward(text, cid, "vip", with_bot_button=True):
+        if _send_via_true_forward(text, cid, "vip"):
             continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -307,7 +307,7 @@ def send_to_tier_channels(text: str, share_free: bool):
         except Exception as e: print(f"  [TIER CHANNEL] vip {cid}: {e}")
     if share_free:
         for cid in _channels_by_tier("free"):
-            if _send_via_true_forward(text, cid, "free", with_bot_button=True):
+            if _send_via_true_forward(text, cid, "free"):
                 continue
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -2703,6 +2703,7 @@ PREMIUM_EMOJI_MAP = {
     "📸": "5235837920081887219", "📱": "5819062970998590994",
     "📰": "5257952710983955418", "📥": "6073143860316344247",
     "🔗": "5271604874419647061",
+    "💎": "6122857771760094969", "🔎": "5017088445353296841",
 }
 PREMIUM_EMOJIS_ENABLED = True
 
@@ -2764,7 +2765,7 @@ def _style_keyboard(markup, rotate=True):
                         break
     return markup
 
-def send_telegram(text, include_ch2=True, with_bot_button=True):
+def send_telegram(text, include_ch2=True, with_bot_button=False):
     success = False
     text = _apply_premium_emojis(text)
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
@@ -2851,11 +2852,12 @@ def _build_vip_csv(vip_start: str, vip_end: str) -> bytes:
 def _send_vip_renew_reminder(cid: str, user: dict):
     _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": int(cid),
+        _payload = {"chat_id": int(cid),
                   "text": "⏰ <b>Your VIP expired</b>\n\nRenew within 24 hours or you'll be removed from "
                           "VIP and the VIP channel.",
-                  "parse_mode": "HTML", "reply_markup": _mkp}, timeout=10)
+                  "parse_mode": "HTML"}
+        if _mkp: _payload["reply_markup"] = _mkp
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=_payload, timeout=10)
     except Exception as e:
         print(f"  [VIP EXPIRE] reminder {cid}: {e}")
 
@@ -2878,9 +2880,10 @@ def _expire_vip_user(cid: str, user: dict):
     _kick_from_vip_channels(cid)
     _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": int(cid), "text": "⏰ <b>Your VIP has expired</b>\n\nYou've been removed from the VIP channel. Contact admin to renew.",
-                  "parse_mode": "HTML", "reply_markup": _mkp}, timeout=10)
+        _payload = {"chat_id": int(cid), "text": "⏰ <b>Your VIP has expired</b>\n\nYou've been removed from the VIP channel. Contact admin to renew.",
+                  "parse_mode": "HTML"}
+        if _mkp: _payload["reply_markup"] = _mkp
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=_payload, timeout=10)
     except Exception as e:
         print(f"  [VIP EXPIRE] notify {cid}: {e}")
     csv_bytes = _build_vip_csv(vip_start, vip_end)
@@ -3962,6 +3965,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _btca_mkp = {"inline_keyboard": [[
             {"text": "🟢 Enable Analysis",  "callback_data": "btca_on"},
             {"text": "🔴 Disable Analysis", "callback_data": "btca_off"},
+        ], [
+            {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
         ]]}
         if btc_analysis_enabled:
             _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>🛡️ Capital protected</i>"
@@ -5664,7 +5669,7 @@ Reasoning: [one line]"""
                         if _share_free: _consume_free_quota()
                         slot_data["share_free"] = _share_free
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M")
-                        send_telegram(fmt_scan_signal(slot_data), with_bot_button=True)
+                        send_telegram(fmt_scan_signal(slot_data))
                         # Scan1 always goes to Free/VIP channels; Scan2 only at its 6 whitelisted
                         # slot times (unconditionally, bypassing the daily free-quota gate) —
                         # everything else stays on the legacy channel only.
@@ -6127,7 +6132,7 @@ def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True):
     text = _apply_premium_emojis(text)
     markup = _style_keyboard(markup, rotate=rotate)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-               "reply_markup": markup, "disable_web_page_preview": True}
+               "reply_markup": markup or {"inline_keyboard": []}, "disable_web_page_preview": True}
     if message_id:
         payload["message_id"] = message_id
         try:
@@ -6673,7 +6678,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         # Send fresh help menu and track its message_id
         base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
         payload = {"chat_id": chat_id, "text": _apply_premium_emojis(text), "parse_mode": "HTML",
-                   "reply_markup": _style_keyboard(markup, rotate=True), "disable_web_page_preview": True}
+                   "reply_markup": _style_keyboard(markup, rotate=True) or {"inline_keyboard": []}, "disable_web_page_preview": True}
         try:
             r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
             new_msg_id = r.json().get("result", {}).get("message_id")
@@ -7258,6 +7263,8 @@ def command_listener():
                         _btca_mkp = {"inline_keyboard": [[
                             {"text": "🟢 Enable Analysis",  "callback_data": "btca_on"},
                             {"text": "🔴 Disable Analysis", "callback_data": "btca_off"},
+                        ], [
+                            {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
                         ]]}
                         if btc_analysis_enabled:
                             _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\nScheduled scans active.\n\n<i>🛡️ Capital protected</i>"
@@ -7636,10 +7643,11 @@ def command_listener():
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/declineChatJoinRequest",
                                 json={"chat_id": _jr_chat_id, "user_id": _jr_user_id}, timeout=10)
                             _mkp = {"inline_keyboard": [[{"text": "💬 Contact Admin for VIP", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]} if ADMIN_CHAT_ID else None
+                            _jr_payload = {"chat_id": _jr_user_id,
+                                      "text": "⭐ This channel is VIP-only. Contact admin to activate VIP first."}
+                            if _mkp: _jr_payload["reply_markup"] = _mkp
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                                json={"chat_id": _jr_user_id,
-                                      "text": "⭐ This channel is VIP-only. Contact admin to activate VIP first.",
-                                      "reply_markup": _mkp}, timeout=10)
+                                json=_jr_payload, timeout=10)
                             print(f"  [VIP CHANNEL] declined @{_jr_uname} ({_jr_user_id}) — not VIP")
                     except Exception as e:
                         print(f"  [VIP CHANNEL] join request error: {e}")
@@ -8257,7 +8265,7 @@ def _run_test_scan(cid, scan_ver: int):
                 f"📊 RR:        <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
                 f"⏰ Timeout: 1H | move_age: {age}c"
             )
-            send_telegram(demo_msg, with_bot_button=True)
+            send_telegram(demo_msg)
             # Demo Scan1 only reaches Free/VIP channels at its 4 whitelisted slot times
             # (unconditionally) — everything else stays on the legacy channel only.
             if scan_ver == 1 and _force_direct_48_demo1:
@@ -8536,7 +8544,7 @@ def main():
                 if signal and not signal.get("_hold"):
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
@@ -8592,7 +8600,7 @@ def main():
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
+                        send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
                         set_trade(signal, _share_free)
                         ct.on_signal(signal, price, _share_free)
                 else:
@@ -8606,7 +8614,7 @@ def main():
                     reset_trade(); time.sleep(1)
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    send_telegram(fmt_signal(signal)); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]
