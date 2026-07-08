@@ -180,7 +180,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     ct.update_scan_sl(t["symbol"], new_sl)
     save_state()
     send_telegram(
-        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  Scan{ver}\n\n"
+        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  S{ver}\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
 
@@ -272,16 +272,18 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
         _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: delivered, {len(_ce)} custom_emoji of {len(_ents)} total entities")
         if with_bot_button:
+            # Telegram confirmed-rejects editMessageReplyMarkup on forwarded messages
+            # ("message can't be edited") — a button can't be merged into the forwarded
+            # message itself, so this has to be a separate follow-up message.
             _uname = _get_bot_username()
-            fwd_msg_id = rj_fwd.get("result", {}).get("message_id")
-            if _uname and fwd_msg_id:
-                r_kb = requests.post(f"{base}/editMessageReplyMarkup",
-                    json={"chat_id": dest_chat_id, "message_id": fwd_msg_id,
+            if _uname:
+                r_btn = requests.post(f"{base}/sendMessage",
+                    json={"chat_id": dest_chat_id, "text": "👇 Copy this trade automatically",
                           "reply_markup": {"inline_keyboard": [[
                               {"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"}]]}},
                     timeout=10)
-                if not r_kb.json().get("ok"):
-                    print(f"  [TRUE FORWARD BUTTON] {tag} {dest_chat_id} attach failed: {r_kb.json().get('description')}")
+                if not r_btn.json().get("ok"):
+                    print(f"  [TRUE FORWARD BUTTON] {tag} {dest_chat_id} failed: {r_btn.json().get('description')}")
         return True
     except Exception as e:
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
@@ -318,6 +320,179 @@ def send_to_tier_channels(text: str, share_free: bool):
                     _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
                     print(f"  [TIER CHANNEL DEBUG] free {cid}: {len(_ce)} custom_emoji entities echoed back of {len(_ents)} total entities")
             except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
+
+def _all_channel_ids() -> list:
+    """Every destination CLEXER posts signals to — legacy channels + all VIP/Free tier channels."""
+    ids = []
+    if TELEGRAM_CHANNEL_ID: ids.append(("legacy1", TELEGRAM_CHANNEL_ID))
+    _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
+    if _ch2: ids.append(("legacy2", _ch2))
+    for cid in _channels_by_tier("vip"): ids.append(("vip", cid))
+    for cid in _channels_by_tier("free"): ids.append(("free", cid))
+    return ids
+
+# ─── Daily TP1/TP2/SL tracker — drives the streak promo, SL reassurance, and
+# end-of-day recap. Resets automatically on IST date rollover. ────────────────
+_daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "tp1_promo_sent": False, "trades": []}
+_daily_summary_last_sent_date = ""
+
+def _reset_daily_tracker_if_needed():
+    global _daily_tracker
+    today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
+    if _daily_tracker["date"] != today:
+        _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "tp1_promo_sent": False, "trades": []}
+
+def _send_tp1_streak_promo():
+    """After the 3rd TP1 of the day closes, post a VIP-conversion promo —
+    plain emoji (none needed), native buttons (no forward trick required
+    since there's no custom emoji to preserve here)."""
+    _uname = _get_bot_username()
+    btns = []
+    if _uname:
+        btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
+    if ADMIN_CHAT_ID:
+        btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
+    mkp = {"inline_keyboard": [btns]} if btns else None
+    text = (
+        "🎯 TP1 HIT! ✅\n\n"
+        "Another trade closed successfully. Congratulations to everyone who followed the setup! 🔥\n\n"
+        "This is just a glimpse of what our community receives.\n\n"
+        "👑 Crypto Clexer VIP members get:\n"
+        "• High-quality trade setups\n"
+        "• Entry, Targets & Stop-Loss\n"
+        "• Real-time trade updates\n"
+        "• Risk management guidance\n"
+        "• Priority market analysis\n\n"
+        "If you're serious about improving your trading and want access to our premium content, DM me now to learn how to join the VIP community.\n\n"
+        "📩 Limited VIP access available."
+    )
+    for _tag, cid in _all_channel_ids():
+        try:
+            payload = {"chat_id": cid, "text": text, "disable_web_page_preview": True}
+            if mkp: payload["reply_markup"] = mkp
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
+        except Exception as e: print(f"  [TP1 PROMO] {_tag} {cid}: {e}")
+
+def _send_sl_reassurance():
+    """Sent every real SL loss (not breakeven) — with premium emoji via the
+    true-forward relay, since it's meant to feel like a genuine channel post."""
+    text = _apply_premium_emojis(
+        "🛑 Stop Loss Hit\n\n"
+        "Not every trade is a winner, and that's part of professional trading.\n\n"
+        "✅ Losses are controlled through proper risk management.\n"
+        "📊 We stay disciplined, protect our capital, and move on to the next opportunity.\n\n"
+        "The goal isn't to win every trade—it's to stay consistently profitable over time.\n\n"
+        "💎 Crypto Clexer focuses on strategy, discipline, and long-term results."
+    )
+    for _tag, cid in _all_channel_ids():
+        if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}"):
+            try:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
+            except Exception as e: print(f"  [SL REASSURE] {_tag} {cid}: {e}")
+
+def _send_tp2_congrats():
+    """Sent every TP2 hit — plain emoji, direct send (no forward needed)."""
+    text = (
+        "🎯 TP2 HIT! ✅🔥\n\n"
+        "Another target achieved successfully! Congratulations to everyone who stayed patient and trusted the setup.\n\n"
+        "📈 TP1 ✅\n"
+        "🎯 TP2 ✅\n\n"
+        "This is the level of precision we aim to deliver consistently through disciplined analysis and risk management."
+    )
+    for _tag, cid in _all_channel_ids():
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": cid, "text": text}, timeout=10)
+        except Exception as e: print(f"  [TP2 CONGRATS] {_tag} {cid}: {e}")
+
+def _notify_free_late(symbol: str, trade: dict, result: str):
+    """If this trade was VIP-only at entry (daily free quota was already used
+    up, so Free never saw it), and it just hit TP1/TP2, let Free-tier viewers
+    know what they missed — plain emoji, native buttons, quoting exactly when
+    the original VIP-only signal went out."""
+    if trade.get("share_free", True):
+        return  # already shared to Free at entry — no catch-up needed
+    free_chans = _channels_by_tier("free")
+    if not free_chans:
+        return
+    entry_ts = trade.get("entry_time_str", "")
+    label = "TP1" if result == "TP1" else "TP2"
+    _uname = _get_bot_username()
+    btns = []
+    if _uname: btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
+    if ADMIN_CHAT_ID: btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
+    mkp = {"inline_keyboard": [btns]} if btns else None
+    text = (
+        f"🎯 <b>{label} HIT!</b> — #{symbol}\n\n"
+        f"<blockquote>This signal was provided in VIP at {entry_ts}</blockquote>"
+    )
+    for cid in free_chans:
+        try:
+            payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
+            if mkp: payload["reply_markup"] = mkp
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
+        except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
+
+def _send_daily_summary():
+    """End-of-day recap — every TP1/TP2/SL from today, with premium emoji via forward."""
+    trades = _daily_tracker.get("trades", [])
+    if not trades:
+        return
+    tp2_list = [t for t in trades if t["result"] == "TP2"]
+    tp1_list = [t for t in trades if t["result"] == "TP1"]
+    sl_list  = [t for t in trades if t["result"] == "SL"]
+    lines = [f"📊 <b>Daily Recap — {_daily_tracker['date']}</b>\n"]
+    if tp2_list:
+        lines.append("🏆 <b>TP2 Hit:</b>")
+        lines += [f"✅ {t['symbol']} — {t['time']}" for t in tp2_list]
+        lines.append("")
+    if tp1_list:
+        lines.append("💰 <b>TP1 Hit:</b>")
+        lines += [f"🎯 {t['symbol']} — {t['time']}" for t in tp1_list]
+        lines.append("")
+    if sl_list:
+        lines.append("🛑 <b>SL Hit:</b>")
+        lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
+    text = _apply_premium_emojis("\n".join(lines))
+    for _tag, cid in _all_channel_ids():
+        if not _send_via_true_forward(text, cid, f"daily-summary-{_tag}"):
+            try:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
+            except Exception as e: print(f"  [DAILY SUMMARY] {_tag} {cid}: {e}")
+
+def _track_daily_result(symbol: str, result: str):
+    """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
+    Drives the 3rd-TP1-of-the-day promo, the per-SL reassurance post, the
+    per-TP2 congrats post, and feeds the end-of-day recap."""
+    _reset_daily_tracker_if_needed()
+    key = result.lower()
+    _daily_tracker[key] = _daily_tracker.get(key, 0) + 1
+    _daily_tracker["trades"].append({"symbol": symbol, "result": result, "time": ist_str()})
+    if result == "TP1" and _daily_tracker["tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
+        _daily_tracker["tp1_promo_sent"] = True
+        _send_tp1_streak_promo()
+    elif result == "SL":
+        _send_sl_reassurance()
+    elif result == "TP2":
+        _send_tp2_congrats()
+
+def _daily_summary_loop():
+    """Background thread — fires the end-of-day recap once, shortly after
+    midnight IST, then resets the tracker for the new day."""
+    global _daily_summary_last_sent_date
+    while True:
+        try:
+            now = datetime.now(timezone.utc) + IST
+            if now.hour == 0 and now.minute < 5:
+                today_marker = now.strftime("%Y-%m-%d")
+                if _daily_summary_last_sent_date != today_marker and _daily_tracker.get("trades"):
+                    _send_daily_summary()
+                    _daily_summary_last_sent_date = today_marker
+        except Exception as e:
+            print(f"  [DAILY SUMMARY LOOP] {e}")
+        time.sleep(120)
 
 ACTIVE_PROFILE = "mine"   # "mine" or "coadmin" — which scan-settings snapshot is currently live
 _SETTINGS_PROFILES = {"mine": {}, "coadmin": {}}  # each holds a snapshot of every setting co-admin can touch
@@ -869,7 +1044,7 @@ def reset_trade():
     ct.clear_last_signal()  # every path that ends the BTC trade funnels through here —
                             # keeps /ctstatus from showing a stale "Active Signal"
 
-def set_trade(s: dict):
+def set_trade(s: dict, share_free: bool = True):
     global active_trade
     with trade_lock:
         active_trade = {
@@ -880,6 +1055,7 @@ def set_trade(s: dict):
             "entry_hit": s.get("entry_type", "MARKET") == "MARKET",
             "entry_time": time.time(),   # used to clip price range checks to post-entry only
             "sl_wicked": False, "scan_count": 0,
+            "share_free": share_free, "entry_time_str": (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M"),
         }
     trade_stats["total_signals"] += 1
     signal_history.append({
@@ -2895,6 +3071,8 @@ def run_tick_check():
             send_telegram(f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
+            _track_daily_result(SYMBOL, "TP2")
+            _notify_free_late(SYMBOL, active_trade, "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
 
         # TP1 — use candle high/low
@@ -2909,6 +3087,8 @@ def run_tick_check():
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
+                _track_daily_result(SYMBOL, "TP1")
+                _notify_free_late(SYMBOL, active_trade, "TP1")
 
         # SL — use candle low/high to catch wick SL hits
         sl_margin = 80
@@ -2939,6 +3119,7 @@ def run_tick_check():
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>", include_ch2=_sl_in_ch2)
             else:
                 send_telegram(fmt_update("SL_HIT"), include_ch2=_sl_in_ch2)
+            _track_daily_result(SYMBOL, "SL")
             ct.on_sl(entry, sl); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -3037,7 +3218,7 @@ def fmt_scan_signal(t: dict) -> str:
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = f"#ID{int(t.get('created_at', time.time()))}"
         return (
-            f"📩 <b>#{coin}USDT</b>  Scan{ver} | Mid-Term\n\n"
+            f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term\n\n"
             f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
             f"⏳ Signal Details:\n"
             f"Target 1: <b>{tp1:,.4g}</b>\n"
@@ -3052,7 +3233,7 @@ def fmt_scan_signal(t: dict) -> str:
     return (
         f"<b>📣 #{coin}-USDT</b>\n"
         f"<b>{'─'*22}</b>\n\n"
-        f" SCAN SIGNAL  |  <b>Scan{ver}</b>\n"
+        f" SCAN SIGNAL  |  <b>S{ver}</b>\n"
         f"  🕐 {ist_str()}\n\n"
         f"{arrow} — <b>MARKET ENTRY</b>\n\n"
         f"🎯 Entry: <b>{entry:,.4g}</b>\n"
@@ -3065,7 +3246,7 @@ def fmt_scan_signal(t: dict) -> str:
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     if t is None: t = scan_active_trade
     sym  = f"#{t.get('symbol','?')}"; sig = t.get("signal","?")
-    ver_lbl = f"Scan{t.get('ver', 1)}"
+    ver_lbl = f"S{t.get('ver', 1)}"
     entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
     msgs = {
         "ENTRY_HIT": (
@@ -3211,6 +3392,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
+            _track_daily_result(sym, "TP2")
+            _notify_free_late(sym, t, "TP2")
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
@@ -3227,6 +3410,8 @@ def _tick_one(ver: int, t: dict) -> bool:
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
+                _track_daily_result(sym, "TP1")
+                _notify_free_late(sym, t, "TP1")
 
         sl_margin = sl * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
@@ -3241,6 +3426,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
+            if result == "SL":
+                _track_daily_result(sym, "SL")
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -3278,7 +3465,7 @@ def run_price_check():
         if status == "TP2_HIT":
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", "hit during 1H check")
-            ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0)); send_telegram(fmt_update("TP2_HIT")); reset_trade(); return True
+            ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0)); send_telegram(fmt_update("TP2_HIT")); _track_daily_result(SYMBOL, "TP2"); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
@@ -3301,6 +3488,7 @@ def run_price_check():
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
             else:
                 send_telegram(fmt_update("SL_HIT"))
+            _track_daily_result(SYMBOL, "SL")
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
@@ -3308,6 +3496,8 @@ def run_price_check():
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             send_telegram(fmt_update("TP1_HIT"))
+            _track_daily_result(SYMBOL, "TP1")
+            _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_telegram(fmt_update("STOP_HUNT"))
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
             log_trade_outcome(status, ""); ct.on_cancel_limits()
@@ -5450,6 +5640,8 @@ Reasoning: [one line]"""
                         save_state()
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
+                        slot_data["share_free"] = _share_free
+                        slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M")
                         send_telegram(fmt_scan_signal(slot_data), with_bot_button=True)
                         send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
@@ -8013,7 +8205,7 @@ def _run_test_scan(cid, scan_ver: int):
             demo_msg = (
                 f"<b>📣 [DEMO] {coin}-USDT</b>\n"
                 f"<b>{'─'*22}</b>\n\n"
-                f" TEST SIGNAL — SCALP V1\n\n"
+                f" TEST SIGNAL — SCALP V1  |  <b>TS{scan_ver}</b>\n\n"
                 f"{arrow} — <b>MARKET ENTRY</b>\n\n"
                 f"🎯 Entry:      <b>{scan_entry:,.4g}</b>\n"
                 f"🛑 SL:         <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
@@ -8094,6 +8286,7 @@ def main():
                 print(f"[VIP] expiry check error: {e}")
             time.sleep(3600)  # hourly is plenty for a date-based expiry
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
+    threading.Thread(target=_daily_summary_loop, daemon=True).start()
 
     threading.Thread(target=command_listener, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
@@ -8294,7 +8487,7 @@ def main():
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
                     send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
-                    set_trade(signal)
+                    set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
                     if signal.get("entry_type", "MARKET") == "MARKET":
@@ -8350,7 +8543,7 @@ def main():
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
                         send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
-                        set_trade(signal)
+                        set_trade(signal, _share_free)
                         ct.on_signal(signal, price, _share_free)
                 else:
                     if forced:
@@ -8364,7 +8557,7 @@ def main():
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
                     send_telegram(fmt_signal(signal), with_bot_button=True); send_to_tier_channels(fmt_signal(signal), _share_free)
-                    set_trade(signal)
+                    set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]
                     fail = [r for r in results if r.startswith("❌")]
