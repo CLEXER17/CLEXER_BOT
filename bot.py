@@ -367,17 +367,26 @@ def _send_tp1_streak_promo():
         "If you're serious about improving your trading and want access to our premium content, DM me now to learn how to join the VIP community.\n\n"
         "📩 Limited VIP access available."
     )
-    for _tag, cid in _all_channel_ids():
+    for cid in _channels_by_tier("free"):
         try:
             payload = {"chat_id": cid, "text": text, "disable_web_page_preview": True}
             if mkp: payload["reply_markup"] = mkp
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
-        except Exception as e: print(f"  [TP1 PROMO] {_tag} {cid}: {e}")
+        except Exception as e: print(f"  [TP1 PROMO] free {cid}: {e}")
+
+def _free_and_vip_channel_ids() -> list:
+    """Free + VIP tier channels only — excludes the Signal (legacy) channel.
+    Used for messages that should reach both tiers but not the Signal channel."""
+    ids = []
+    for cid in _channels_by_tier("vip"): ids.append(("vip", cid))
+    for cid in _channels_by_tier("free"): ids.append(("free", cid))
+    return ids
 
 def _send_sl_reassurance():
     """Sent every real SL loss (not breakeven) — with premium emoji via the
     true-forward relay, since it's meant to feel like a genuine channel post.
-    No buttons — buttons are TP-only, per admin's instruction."""
+    No buttons — buttons are TP-only, per admin's instruction.
+    Free + VIP only — not the Signal channel."""
     text = _apply_premium_emojis(
         "🛑 Stop Loss Hit\n\n"
         "Not every trade is a winner, and that's part of professional trading.\n\n"
@@ -386,7 +395,7 @@ def _send_sl_reassurance():
         "The goal isn't to win every trade—it's to stay consistently profitable over time.\n\n"
         "💎 Crypto Clexer focuses on strategy, discipline, and long-term results."
     )
-    for _tag, cid in _all_channel_ids():
+    for _tag, cid in _free_and_vip_channel_ids():
         if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
             try:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -408,12 +417,12 @@ def _send_tp2_congrats():
         "🎯 TP2 ✅\n\n"
         "This is the level of precision we aim to deliver consistently through disciplined analysis and risk management."
     )
-    for _tag, cid in _all_channel_ids():
+    for cid in _channels_by_tier("free"):
         try:
             payload = {"chat_id": cid, "text": text}
             if mkp: payload["reply_markup"] = mkp
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
-        except Exception as e: print(f"  [TP2 CONGRATS] {_tag} {cid}: {e}")
+        except Exception as e: print(f"  [TP2 CONGRATS] free {cid}: {e}")
 
 def _notify_free_late(symbol: str, trade: dict, result: str):
     """If this trade was VIP-only at entry (daily free quota was already used
@@ -444,7 +453,8 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
 def _send_daily_summary():
-    """End-of-day recap — every TP1/TP2/SL from today, with premium emoji via forward."""
+    """End-of-day recap — every TP1/TP2/SL from today, with premium emoji via
+    forward. Free + VIP only — not the Signal channel."""
     trades = _daily_tracker.get("trades", [])
     if not trades:
         return
@@ -464,7 +474,7 @@ def _send_daily_summary():
         lines.append("🛑 <b>SL Hit:</b>")
         lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
     text = _apply_premium_emojis("\n".join(lines))
-    for _tag, cid in _all_channel_ids():
+    for _tag, cid in _free_and_vip_channel_ids():
         if not _send_via_true_forward(text, cid, f"daily-summary-{_tag}"):
             try:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -6704,8 +6714,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
             _tier_line = f"🏷 Your Tier: <b>{_tag}</b>\n\n"
     text = (
         f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
-        f"{_greeting}{_tier_line}{_pnl_line}"
-        "Tap a category to see commands 👇"
+        f"<blockquote>{_greeting}{_tier_line}{_pnl_line}"
+        "Tap a category to see commands 👇</blockquote>"
     )
     cid_str = str(chat_id)
     if message_id:
@@ -8015,6 +8025,7 @@ def _demo_monitor_loop():
                     tp1hit = t.get("tp1_hit", False)
                     be_sl  = float(t.get("be_sl", 0))
                     created = float(t.get("created_at", now))
+                    tier_routed = t.get("tier_routed", False)
 
                     if not sym or not entry: continue
                     cp = get_bingx_price(sym)
@@ -8037,12 +8048,14 @@ def _demo_monitor_loop():
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        send_telegram(
+                        _msg = (
                             f"{arrow} <b>[DEMO] {coin}-USDT — TP2 HIT ✅</b>\n"
                             f"──────────────────────\n"
                             f"Price @ TP2: <b>{cp:,.6g}</b>\n"
                             f"Entry: {entry:,.6g} → TP2: {tp2:,.6g}\n"
                             f"Result: <b>FULL WIN</b>")
+                        send_telegram(_msg)
+                        if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
@@ -8051,12 +8064,14 @@ def _demo_monitor_loop():
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":be_sl if tp1hit and be_sl else sl,
                             "tp1_price":tp1,"tp2_price":tp2})
-                        send_telegram(
+                        _msg = (
                             f"{arrow} <b>[DEMO] {coin}-USDT — {lbl} HIT ❌</b>\n"
                             f"──────────────────────\n"
                             f"Price @ {lbl}: <b>{cp:,.6g}</b>\n"
                             f"Entry: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}\n"
                             f"Result: <b>{result}</b>")
+                        send_telegram(_msg)
+                        if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -8065,23 +8080,27 @@ def _demo_monitor_loop():
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
-                        send_telegram(
+                        _msg = (
                             f"{arrow} <b>[DEMO] {coin}-USDT — TP1 HIT 🎯</b>\n"
                             f"──────────────────────\n"
                             f"Price @ TP1: <b>{cp:,.6g}</b>\n"
                             f"50% closed. BE SL → <b>{be_sl_price:,.6g}</b>\n"
                             f"Runner TP2: {tp2:,.6g}")
+                        send_telegram(_msg)
+                        if tier_routed: send_to_tier_channels(_msg, True)
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        send_telegram(
+                        _msg = (
                             f"{arrow} <b>[DEMO] {coin}-USDT — TIMEOUT ⏰</b>\n"
                             f"──────────────────────\n"
                             f"1H elapsed — no TP1/SL hit.\n"
                             f"Exit @ <b>{cp:,.6g}</b> | P/L: <b>{pnl:+.2f}%</b>\n"
                             f"Entry: {entry:,.6g}")
+                        send_telegram(_msg)
+                        if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
@@ -8362,6 +8381,7 @@ def _run_test_scan(cid, scan_ver: int):
                 "entry": scan_entry, "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
                 "tp1_hit": False, "be_sl": 0, "created_at": time.time(),
                 "scan_ver": scan_ver,
+                "tier_routed": scan_ver == 1 and _force_direct_48_demo1,
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
