@@ -340,17 +340,18 @@ def _all_channel_ids() -> list:
 
 # ─── Daily TP1/TP2/SL tracker — drives the streak promo, SL reassurance, and
 # end-of-day recap. Resets automatically on IST date rollover. ────────────────
-_daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "tp1_promo_sent": False, "trades": []}
+_daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
 _daily_summary_last_sent_date = ""
 
 def _reset_daily_tracker_if_needed():
     global _daily_tracker
     today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
     if _daily_tracker["date"] != today:
-        _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "tp1_promo_sent": False, "trades": []}
+        _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
 
-def _send_tp1_streak_promo():
-    """After the 3rd TP1 of the day closes, post a VIP-conversion promo —
+def _send_tp1_streak_promo(symbol: str, detail: dict):
+    """After the 3rd TP1 of the day that was actually shown in the Free channel
+    closes, post a VIP-conversion promo with that real trade's details —
     plain emoji (none needed), native buttons (no forward trick required
     since there's no custom emoji to preserve here)."""
     _uname = _get_bot_username()
@@ -360,9 +361,17 @@ def _send_tp1_streak_promo():
     if ADMIN_CHAT_ID:
         btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
     mkp = {"inline_keyboard": [btns]} if btns else None
+    coin = symbol.replace("-USDT", "").replace("USDT", "")
+    tag = detail.get("tag", "?"); side = detail.get("side", "?")
+    tp1 = detail.get("tp1", 0); sl_be = detail.get("sl_be", 0); tp2 = detail.get("tp2", 0)
+    arrow = "🟢" if side == "BUY" else "🔴"
     text = (
-        "🎯 TP1 HIT! ✅\n\n"
-        "Another trade closed successfully. Congratulations to everyone who followed the setup! 🔥\n\n"
+        f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>  🕐 {ist_str()}\n"
+        f"{arrow} {side}\n"
+        f"✅ TP1: <b>{tp1:,.4g}</b>\n"
+        f"🛡 SL moved to BE: <b>{sl_be:,.4g}</b>\n"
+        f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n"
+        "Another TAKE PROFIT closed successfully. Congratulations to everyone who followed the setup! 🔥\n\n"
         "This is just a glimpse of what our community receives.\n\n"
         "👑 Crypto Clexer VIP members get:\n"
         "• High-quality trade setups\n"
@@ -388,20 +397,37 @@ def _free_and_vip_channel_ids() -> list:
     for cid in _channels_by_tier("free"): ids.append(("free", cid))
     return ids
 
-def _send_sl_reassurance():
-    """Sent every real SL loss (not breakeven) — with premium emoji via the
-    true-forward relay, since it's meant to feel like a genuine channel post.
-    No buttons — buttons are TP-only, per admin's instruction.
-    Free + VIP only — not the Signal channel."""
+def _sl_reassurance_channels(tier_routed: bool, share_free: bool) -> list:
+    """Which channels should get the SL reassurance post, mirroring exactly
+    where this trade's entry was shown. Signal-only entries get none."""
+    if not tier_routed:
+        return []
+    if share_free:
+        return _free_and_vip_channel_ids()
+    return [("vip", cid) for cid in _channels_by_tier("vip")]
+
+def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list):
+    """Sent every real SL loss (not breakeven) — only to the tiers that actually
+    received this trade's entry (Signal-only entries get nothing here; the
+    Signal channel keeps its own separate SL message, unchanged).
+    No buttons — buttons are TP-only, per admin's instruction."""
+    if not channels:
+        return
+    coin = symbol.replace("-USDT", "").replace("USDT", "")
+    try:
+        entry_str = f"{float(entry_price):,.4g}"
+    except Exception:
+        entry_str = str(entry_price)
     text = _apply_premium_emojis(
-        "🛑 <b>Stop Loss Hit</b>\n\n"
+        f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>  🕐 {ist_str()}\n"
+        f"❌ Loss on {side} @ {entry_str}\n\n"
         "<blockquote>Not every trade is a winner, and that's part of professional trading.\n\n"
         "✅ Losses are controlled through proper risk management.\n"
         "📊 We stay disciplined, protect our capital, and move on to the next opportunity.\n\n"
         "The goal isn't to win every trade—it's to stay consistently profitable over time.\n\n"
         "💎 Crypto Clexer focuses on strategy, discipline, and long-term results.</blockquote>"
     )
-    for _tag, cid in _free_and_vip_channel_ids():
+    for _tag, cid in channels:
         if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
             try:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -506,19 +532,22 @@ def _send_daily_summary():
                     json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
             except Exception as e: print(f"  [DAILY SUMMARY] {_tag} {cid}: {e}")
 
-def _track_daily_result(symbol: str, result: str):
+def _track_daily_result(symbol: str, result: str, free_shown: bool = False, tp1_detail: dict = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
-    Drives the 3rd-TP1-of-the-day promo, the per-SL reassurance post, the
-    per-TP2 congrats post, and feeds the end-of-day recap."""
+    Drives the 3rd-Free-TP1-of-the-day promo, the per-TP2 congrats post, and
+    feeds the end-of-day recap.
+    free_shown: True if this result was actually visible in the Free channel —
+    only Free-shown TP1s count toward the 3rd-TP1 streak promo.
+    tp1_detail: {'tag','side','tp1','sl_be','tp2'} for the promo's message."""
     _reset_daily_tracker_if_needed()
     key = result.lower()
     _daily_tracker[key] = _daily_tracker.get(key, 0) + 1
     _daily_tracker["trades"].append({"symbol": symbol, "result": result, "time": ist_str()})
-    if result == "TP1" and _daily_tracker["tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
-        _daily_tracker["tp1_promo_sent"] = True
-        _send_tp1_streak_promo()
-    elif result == "SL":
-        _send_sl_reassurance()
+    if result == "TP1" and free_shown:
+        _daily_tracker["free_tp1"] = _daily_tracker.get("free_tp1", 0) + 1
+        if _daily_tracker["free_tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
+            _daily_tracker["tp1_promo_sent"] = True
+            _send_tp1_streak_promo(symbol, tp1_detail or {})
     elif result == "TP2":
         _send_tp2_congrats()
 
@@ -930,25 +959,29 @@ def _claude_text(msg):
             return block.text.strip()
     return ""
 
-# Specific scheduled slots that always run on Direct + Opus 4.8, regardless of the
-# admin's normal /aiconfig setting for that scan type — everything else keeps using
-# whatever gateway/model is currently configured (Aerolink, as usual). Set right
-# before the auto-trigger fires and cleared right after that scan cycle finishes.
-_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23)}
-_DEMO_SCAN1_SPECIAL_TIMES = {(3,23), (8,23), (15,8), (17,10)}
-_force_direct_48_scan2 = False
-_force_direct_48_demo1 = False
+# Specific scheduled slots that always run on Direct + Opus 4.8 and post to
+# VIP/Free ("special"); every other auto-scheduled slot ("regular") still forces
+# Opus 4.8 but routes through Aerolink instead, and stays Signal-channel only.
+# Manual (non-scheduled) triggers like typing /scan1 keep using the admin's
+# normal /aiconfig setting untouched. Set right before the auto-trigger fires
+# and cleared right after that scan cycle finishes (see _scan_run_mode below).
+_SCAN_SPECIAL = {
+    "scan1": {(3,2), (5,23), (12,23)},
+    "scan2": {(2,23), (8,2), (11,27), (12,3), (13,7), (20,23)},
+    "test":  {(3,24), (8,24), (15,24), (17,10)},
+}
+_scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
 
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
     has its own independent model + gateway choice, set via /aiconfig."""
-    if kind == "scan2" and _force_direct_48_scan2: return "claude-opus-4-8"
-    if kind == "test" and _force_direct_48_demo1: return "claude-opus-4-8"
+    if _scan_run_mode.get(kind): return "claude-opus-4-8"
     return {"btc": SCAN_MODEL, "scan1": SCAN1_MODEL, "scan2": SCAN2_MODEL, "test": TEST_MODEL}.get(kind, SCAN_MODEL)
 
 def _ai_aerolink(kind: str = "btc") -> bool:
-    if kind == "scan2" and _force_direct_48_scan2: return False
-    if kind == "test" and _force_direct_48_demo1: return False
+    _mode = _scan_run_mode.get(kind)
+    if _mode == "special": return False
+    if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
 def _claude_client(kind: str = "btc", attempt: int = 0):
@@ -3172,7 +3205,8 @@ def run_tick_check():
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
                 send_telegram(_tp1_msg)
                 send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
-                _track_daily_result(SYMBOL, "TP1")
+                _track_daily_result(SYMBOL, "TP1", free_shown=active_trade.get("share_free", True),
+                    tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
         # SL — use candle low/high to catch wick SL hits
@@ -3195,7 +3229,6 @@ def run_tick_check():
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -3205,13 +3238,13 @@ def run_tick_check():
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             else:
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+                _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -3508,7 +3541,9 @@ def _tick_one(ver: int, t: dict) -> bool:
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
-                _track_daily_result(sym, "TP1")
+                _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
+                _track_daily_result(sym, "TP1", free_shown=_free_shown,
+                    tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
                 _notify_free_late(sym, t, "TP1")
 
         sl_margin = sl * 0.002
@@ -3521,7 +3556,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
             send_telegram(_sl_msg)
-            if t.get("tier_routed"):
+            if result == "BE" and t.get("tier_routed"):
                 send_to_tier_channels(_sl_msg, t.get("share_free", True))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -3529,6 +3564,8 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
                 _track_daily_result(sym, "SL")
+                _send_sl_reassurance(sym, f"S{ver}", sig, entry,
+                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)))
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -3584,7 +3621,6 @@ def run_price_check():
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
                 send_telegram(_sl_msg)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -3594,13 +3630,13 @@ def run_price_check():
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
                 send_telegram(_sl_msg)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             else:
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg)
-                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+                _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
@@ -3610,7 +3646,10 @@ def run_price_check():
             _tp1_msg = fmt_update("TP1_HIT")
             send_telegram(_tp1_msg)
             send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP1")
+            _track_daily_result(SYMBOL, "TP1", free_shown=active_trade.get("share_free", True),
+                tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
+                    "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
+                    "tp2": active_trade.get("tp2",0)})
             _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_telegram(fmt_update("STOP_HUNT"))
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
@@ -5291,7 +5330,6 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         lbl = "V1 (big movers)" if ver == 1 else "V2 (fresh momentum)"
         send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
         def _do_scan(cid=chat_id, scan_ver=ver):
-            global _force_direct_48_scan2
             try:
                 import traceback as _tb, pandas as _pd
 
@@ -5762,15 +5800,16 @@ Reasoning: [one line]"""
                         save_state()
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        _tier_routed = (scan_ver == 1) or (scan_ver == 2 and _force_direct_48_scan2)
-                        _effective_share_free = True if (scan_ver == 2 and _force_direct_48_scan2) else _share_free
+                        _kind = "scan1" if scan_ver == 1 else "scan2"
+                        _tier_routed = _scan_run_mode.get(_kind) == "special"
+                        _effective_share_free = True if _tier_routed else _share_free
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
                         send_telegram(fmt_scan_signal(slot_data))
-                        # Scan1 always goes to Free/VIP channels; Scan2 only at its 6 whitelisted
-                        # slot times (unconditionally, bypassing the daily free-quota gate) —
-                        # everything else stays on the legacy channel only.
+                        # Only the whitelisted special slot times reach Free/VIP channels
+                        # (unconditionally, bypassing the daily free-quota gate) — every
+                        # regular-grid auto-run stays on the legacy channel only.
                         if _tier_routed:
                             send_to_tier_channels(fmt_scan_signal(slot_data), _effective_share_free)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
@@ -5819,12 +5858,11 @@ Reasoning: [one line]"""
                 send_reply(cid, f"❌ Scan error: {e}")
                 import traceback as _tb2; print(_tb2.format_exc())
             finally:
-                # /scan2 runs here in its own background thread — the special-time
-                # Direct+Opus override flag must stay True for this whole run, so it
-                # can only be safely cleared once this thread is actually done, not
+                # /scan1 and /scan2 both run here in their own background thread —
+                # the run-mode override must stay set for this whole run, so it can
+                # only be safely cleared once this thread is actually done, not
                 # right after handle_command() returns (that only kicks off this thread).
-                if scan_ver == 2:
-                    _force_direct_48_scan2 = False
+                _scan_run_mode["scan1" if scan_ver == 1 else "scan2"] = None
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
     elif cmd == "/model" and is_admin:
@@ -7960,26 +7998,24 @@ def command_listener():
 
 # --- MAIN ---------------------------------------------------------------------
 # ── Scan1 fixed schedule (IST HH:MM) ─────────────────────────────────────────
-SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
-    # AM
-    (3,2),(5,23),
-    # PM
-    (12,23),(13,45),
-]))
-# Scan2 keeps the full original schedule (independent of Scan1)
-SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
-    # AM
-    (1,2),(1,23),(2,2),(2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
-    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),
-    # PM
-    (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
-    (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
-]))
-# Demo/Test fires 1 min after each Scan2 slot — EXCEPT the :23 slots, which fire
-# at the exact same minute as Scan2 itself (no +1 offset) rather than :24.
-SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = [
-    (h, m) if m == 23 else ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN2_SCHEDULE
-]
+def _regular_grid(minute_a: int, minute_b: int, special: set, near_thresh: int = 5) -> set:
+    """Every hour's :minute_a and :minute_b, minus any slot that exactly matches
+    or falls within near_thresh minutes of a special time in the same hour
+    (avoids running a near-duplicate scan right next to the special one)."""
+    out = set()
+    for h in range(24):
+        for m in (minute_a, minute_b):
+            if any(sh == h and abs(sm - m) <= near_thresh for sh, sm in special):
+                continue
+            out.add((h, m))
+    return out
+
+# Scan1: special times (Direct+Opus, tier-routed) + hourly :02/:23 regular grid (Aerolink+Opus, Signal-only)
+SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
+# Scan2: special times (Direct+Opus, tier-routed) + hourly :07/:27 regular grid (Aerolink+Opus, Signal-only)
+SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
+# Demo: special times (Direct+Opus, Demo1 tier-routed) + hourly :09/:27 regular grid (Aerolink+Opus, Signal-only)
+SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test"] | _regular_grid(9, 27, _SCAN_SPECIAL["test"]))
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
 _last_midnight_date = None   # for midnight reset
@@ -7993,7 +8029,7 @@ _scan_cycle_lock   = __import__("threading").Lock()
 
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
-    global _scan_cycle_placed, _force_direct_48_scan2
+    global _scan_cycle_placed
     lbl = "V1" if scan_ver == 1 else "V2"
     send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>🛡️ Capital protected</i>")
     # Clear cycle dedup set when scan1 starts (scan1 always starts first)
@@ -8191,14 +8227,13 @@ def _demo_monitor_loop():
             print(f"  [DEMO MONITOR] Error: {_e}")
 
 def _run_test_scan_and_clear_flag(cid, scan_ver: int):
-    """Wrapper for the auto-scheduled Demo Scan1 trigger — ensures
-    _force_direct_48_demo1 always clears afterward, regardless of which
-    exit path _run_test_scan takes (slots full, no coins, error, etc.)."""
-    global _force_direct_48_demo1
+    """Wrapper for the auto-scheduled Demo Scan1 trigger — ensures the "test"
+    run-mode override always clears afterward, regardless of which exit path
+    _run_test_scan takes (slots full, no coins, error, etc.)."""
     try:
         _run_test_scan(cid, scan_ver)
     finally:
-        _force_direct_48_demo1 = False
+        _scan_run_mode["test"] = None
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. No copytrade."""
@@ -8378,7 +8413,7 @@ def _run_test_scan(cid, scan_ver: int):
                     _using_aero = _ai_aerolink("test")
                     _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
                                else "aerolink-key1" if _using_aero else "direct")
-                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test')} force_direct48={_force_direct_48_demo1}")
+                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test')} run_mode={_scan_run_mode.get('test')}")
                     r2 = _claude_client("test", attempt=_attempt).messages.create(
                         model=_ai_model("test"), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
@@ -8457,9 +8492,11 @@ def _run_test_scan(cid, scan_ver: int):
                 f"⏰ Timeout: 1H | move_age: {age}c"
             )
             send_telegram(demo_msg)
-            # Demo Scan1 only reaches Free/VIP channels at its 4 whitelisted slot times
-            # (unconditionally) — everything else stays on the legacy channel only.
-            if scan_ver == 1 and _force_direct_48_demo1:
+            # Demo Scan1 only reaches Free/VIP channels at its whitelisted special
+            # slot times — everything else (regular grid, Demo Scan2) stays on the
+            # legacy channel only.
+            _demo1_tier_routed = scan_ver == 1 and _scan_run_mode.get("test") == "special"
+            if _demo1_tier_routed:
                 send_to_tier_channels(demo_msg, True)
 
             slot_data = {
@@ -8467,7 +8504,7 @@ def _run_test_scan(cid, scan_ver: int):
                 "entry": scan_entry, "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
                 "tp1_hit": False, "be_sl": 0, "created_at": time.time(),
                 "scan_ver": scan_ver,
-                "tier_routed": scan_ver == 1 and _force_direct_48_demo1,
+                "tier_routed": _demo1_tier_routed,
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
@@ -8644,30 +8681,29 @@ def main():
             _btc_fixed_hours = {7, 11, 15, 19, 23}
             _cur_hm = (_ist_now.hour, _ist_now.minute)
 
-            # Scan1: fixed schedule
+            # Scan1: special times (Direct) + hourly :02/:23 regular grid (Aerolink)
             if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
                 print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
+                    _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
-            # Scan2: same schedule as Scan1
+            # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
             if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set():
                 if _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
                     _scan1_triggered_today.add((_cur_hm, 2))
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
-                        global _force_direct_48_scan2
-                        _force_direct_48_scan2 = _cur_hm in _SCAN2_SPECIAL_TIMES
+                        _scan_run_mode["scan2"] = "special" if _cur_hm in _SCAN_SPECIAL["scan2"] else "regular"
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
-            # Test demo Scan1: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
+            # Test demo Scan1: special times (Direct) + hourly :09/:27 regular grid (Aerolink)
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
                 print(f"  [TEST-SCAN] Demo Scan1 at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
                 if ADMIN_CHAT_ID:
-                    global _force_direct_48_demo1
-                    _force_direct_48_demo1 = _cur_hm in _DEMO_SCAN1_SPECIAL_TIMES
+                    _scan_run_mode["test"] = "special" if _cur_hm in _SCAN_SPECIAL["test"] else "regular"
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # Test demo Scan2: same trigger slots, mirrors real Scan2's schedule
