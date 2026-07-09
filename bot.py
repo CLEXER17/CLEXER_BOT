@@ -934,7 +934,7 @@ def _claude_text(msg):
 # admin's normal /aiconfig setting for that scan type — everything else keeps using
 # whatever gateway/model is currently configured (Aerolink, as usual). Set right
 # before the auto-trigger fires and cleared right after that scan cycle finishes.
-_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23)}
+_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23), (11,37)}  # TEMP: 11:37 test slot — remove after
 _DEMO_SCAN1_SPECIAL_TIMES = {(3,23), (8,23), (15,8), (17,10)}
 _force_direct_48_scan2 = False
 _force_direct_48_demo1 = False
@@ -5291,6 +5291,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         lbl = "V1 (big movers)" if ver == 1 else "V2 (fresh momentum)"
         send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
         def _do_scan(cid=chat_id, scan_ver=ver):
+            global _force_direct_48_scan2
             try:
                 import traceback as _tb, pandas as _pd
 
@@ -5817,6 +5818,13 @@ Reasoning: [one line]"""
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
                 import traceback as _tb2; print(_tb2.format_exc())
+            finally:
+                # /scan2 runs here in its own background thread — the special-time
+                # Direct+Opus override flag must stay True for this whole run, so it
+                # can only be safely cleared once this thread is actually done, not
+                # right after handle_command() returns (that only kicks off this thread).
+                if scan_ver == 2:
+                    _force_direct_48_scan2 = False
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
     elif cmd == "/model" and is_admin:
@@ -7962,7 +7970,7 @@ SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
 SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
     (1,2),(1,23),(2,2),(2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
-    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),
+    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),(11,37),  # TEMP: 11:37 added for a Direct+Opus test — remove after
     # PM
     (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
     (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
@@ -7993,11 +8001,11 @@ def _run_auto_scan(cid, scan_ver=2):
         with _scan_cycle_lock:
             _scan_cycle_placed.clear()
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
-    try:
-        handle_command(cmd, cid)
-    finally:
-        if scan_ver == 2:
-            _force_direct_48_scan2 = False
+    # Note: /scan2's actual work runs in its own background thread (_do_scan) that
+    # handle_command() merely kicks off — it returns almost instantly. The special-
+    # time flag is cleared by _do_scan itself once that thread finishes, NOT here,
+    # otherwise it gets cleared before the real Claude call ever happens.
+    handle_command(cmd, cid)
 
 # ══════════════════════════════════════════════════════════
 # TEST MODE — CLEXER SCALP v1 (demo only, no copytrade)
