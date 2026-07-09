@@ -934,7 +934,7 @@ def _claude_text(msg):
 # admin's normal /aiconfig setting for that scan type — everything else keeps using
 # whatever gateway/model is currently configured (Aerolink, as usual). Set right
 # before the auto-trigger fires and cleared right after that scan cycle finishes.
-_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23), (11,37)}  # TEMP: 11:37 test slot — remove after
+_SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23)}
 _DEMO_SCAN1_SPECIAL_TIMES = {(3,23), (8,23), (15,8), (17,10)}
 _force_direct_48_scan2 = False
 _force_direct_48_demo1 = False
@@ -7970,7 +7970,7 @@ SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(set([
 SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
     # AM
     (1,2),(1,23),(2,2),(2,23),(3,2),(3,23),(4,2),(4,23),(5,2),(5,23),
-    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),(11,37),  # TEMP: 11:37 added for a Direct+Opus test — remove after
+    (6,2),(6,23),(8,2),(8,23),(11,2),(11,23),
     # PM
     (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
     (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
