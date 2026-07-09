@@ -37,6 +37,7 @@ except ImportError:
 # --- CONFIG -------------------------------------------------------------------
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
 AEROLINK_API_KEY    = os.getenv("AEROLINK_API_KEY",    "")   # separate key issued by aerolink.lat — never mix with ANTHROPIC_API_KEY
+AEROLINK_API_KEY_2  = os.getenv("AEROLINK_API_KEY_2",  "")   # backup Aerolink key — used automatically on retry if the primary fails
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
@@ -179,10 +180,13 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     t["trail_sl_moved"] = True
     ct.update_scan_sl(t["symbol"], new_sl)
     save_state()
-    send_telegram(
+    _msg = (
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  S{ver}\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
+    send_telegram(_msg)
+    if t.get("tier_routed"):
+        send_to_tier_channels(_msg, t.get("share_free", True))
 
 def _apply_trail_sl_btc(price: float):
     if not TRAIL_SL_BTC or active_trade.get("trail_sl_moved") or active_trade.get("tp1_hit"):
@@ -199,10 +203,12 @@ def _apply_trail_sl_btc(price: float):
     active_trade["trail_sl_moved"] = True
     ct.on_update_sl(new_sl)
     save_active_trade()
-    send_telegram(
+    _msg = (
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.0f} → {new_sl:,.0f}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
+    send_telegram(_msg)
+    send_to_tier_channels(_msg, active_trade.get("share_free", True))
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 0   # max signals shared to free channels/users per day (0 = none shared)
@@ -388,12 +394,12 @@ def _send_sl_reassurance():
     No buttons — buttons are TP-only, per admin's instruction.
     Free + VIP only — not the Signal channel."""
     text = _apply_premium_emojis(
-        "🛑 Stop Loss Hit\n\n"
-        "Not every trade is a winner, and that's part of professional trading.\n\n"
+        "🛑 <b>Stop Loss Hit</b>\n\n"
+        "<blockquote>Not every trade is a winner, and that's part of professional trading.\n\n"
         "✅ Losses are controlled through proper risk management.\n"
         "📊 We stay disciplined, protect our capital, and move on to the next opportunity.\n\n"
         "The goal isn't to win every trade—it's to stay consistently profitable over time.\n\n"
-        "💎 Crypto Clexer focuses on strategy, discipline, and long-term results."
+        "💎 Crypto Clexer focuses on strategy, discipline, and long-term results.</blockquote>"
     )
     for _tag, cid in _free_and_vip_channel_ids():
         if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
@@ -426,25 +432,44 @@ def _send_tp2_congrats():
 
 def _notify_free_late(symbol: str, trade: dict, result: str):
     """If this trade was VIP-only at entry (daily free quota was already used
-    up, so Free never saw it), and it just hit TP1/TP2, let Free-tier viewers
-    know what they missed — plain emoji, native buttons, quoting exactly when
-    the original VIP-only signal went out."""
+    up, so Free never saw it), and it just hit TP1/TP2, post a VIP-conversion
+    pitch to Free-tier viewers — plain emoji, native buttons, quoting exactly
+    when the original VIP-only signal went out."""
     if trade.get("share_free", True):
         return  # already shared to Free at entry — no catch-up needed
     free_chans = _channels_by_tier("free")
     if not free_chans:
         return
     entry_ts = trade.get("entry_time_str", "")
-    label = "TP1" if result == "TP1" else "TP2"
+    coin = symbol.replace("-USDT", "").replace("USDT", "")
     _uname = _get_bot_username()
     btns = []
     if _uname: btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
     if ADMIN_CHAT_ID: btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
     mkp = {"inline_keyboard": [btns]} if btns else None
-    text = (
-        f"🎯 <b>{label} HIT!</b> — #{symbol}\n\n"
-        f"<blockquote>This signal was provided in VIP at {entry_ts}</blockquote>"
-    )
+    if result == "TP1":
+        text = (
+            "🚨 <b>VIP SIGNAL UPDATE</b>\n\n"
+            f"{entry_ts}\n\n"
+            f"#{coin}USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
+            "<blockquote>This signal was shared exclusively in Crypto Clexer VIP before the market move.\n\n"
+            "Congratulations to all our VIP members who secured profits. 🔥\n\n"
+            "Want to receive these signals before the move?\n\n"
+            "📩 DM now for VIP access.</blockquote>"
+        )
+    else:
+        text = (
+            "🏆 <b>VIP RESULT</b>\n"
+            f"{entry_ts}\n\n"
+            f"#{coin}USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
+            "<blockquote>Another VIP-exclusive signal delivered successfully.\n\n"
+            "✅ TP1 Achieved\n"
+            "✅ TP2 Achieved\n\n"
+            "This setup was shared with our VIP members before the market move.\n\n"
+            "If you're seeing this in the free channel, imagine having the trade before the move.\n\n"
+            "💎 Crypto Clexer VIP\n\n"
+            "📩 DM now for VIP access.</blockquote>"
+        )
     for cid in free_chans:
         try:
             payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
@@ -926,12 +951,15 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if kind == "test" and _force_direct_48_demo1: return False
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
-def _claude_client(kind: str = "btc"):
+def _claude_client(kind: str = "btc", attempt: int = 0):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the separate AEROLINK_API_KEY +
-    AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway."""
+    AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
+    On a retry (attempt >= 1), automatically switches to AEROLINK_API_KEY_2 if one is
+    configured — so a failure on the primary Aerolink key doesn't fail the whole call."""
     if _ai_aerolink(kind) and AEROLINK_API_KEY:
-        return anthropic.Anthropic(api_key=AEROLINK_API_KEY, base_url=AEROLINK_BASE_URL)
+        key = AEROLINK_API_KEY_2 if (attempt >= 1 and AEROLINK_API_KEY_2) else AEROLINK_API_KEY
+        return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
@@ -1087,7 +1115,7 @@ def set_trade(s: dict, share_free: bool = True):
             "entry_hit": s.get("entry_type", "MARKET") == "MARKET",
             "entry_time": time.time(),   # used to clip price range checks to post-entry only
             "sl_wicked": False, "scan_count": 0,
-            "share_free": share_free, "entry_time_str": (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M"),
+            "share_free": share_free, "entry_time_str": (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M"),
         }
     trade_stats["total_signals"] += 1
     signal_history.append({
@@ -2326,7 +2354,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     max_retries = 2; raw = None
     for attempt in range(max_retries):
         try:
-            msg = _claude_client().messages.create(
+            msg = _claude_client(attempt=attempt).messages.create(
                 model=SCAN_MODEL, max_tokens=1200,
                 messages=[{"role": "user", "content": content}])
             _log_api_usage("btc_analysis", SCAN_MODEL,
@@ -2340,7 +2368,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 print("  [CLAUDE] Retrying text-only...")
                 content_text = [c for c in content if c["type"] == "text"]
                 try:
-                    msg = _claude_client().messages.create(
+                    msg = _claude_client(attempt=1).messages.create(
                         model=SCAN_MODEL, max_tokens=1200,
                         messages=[{"role": "user", "content": content_text}])
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
@@ -3121,9 +3149,11 @@ def run_tick_check():
         if tp2_hit:
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
-            send_telegram(f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
+            _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
+            send_telegram(_tp2_msg)
+            send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
             _track_daily_result(SYMBOL, "TP2")
             _notify_free_late(SYMBOL, active_trade, "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
@@ -3136,10 +3166,12 @@ def run_tick_check():
                 trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
                 save_active_trade()
                 ct.on_tp1(entry, tp1)
-                send_telegram(f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
+                _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
+                send_telegram(_tp1_msg)
+                send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
                 _track_daily_result(SYMBOL, "TP1")
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
@@ -3156,22 +3188,28 @@ def run_tick_check():
             _sl_in_ch2 = (time.time() - _entry_ts) > 600
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
-                send_telegram(
+                _sl_msg = (
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>", include_ch2=_sl_in_ch2)
+                    f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
-                send_telegram(
+                _sl_msg = (
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>", include_ch2=_sl_in_ch2)
+                    f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             else:
-                send_telegram(fmt_update("SL_HIT"), include_ch2=_sl_in_ch2)
+                _sl_msg = fmt_update("SL_HIT")
+                send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3441,7 +3479,10 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
             trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
             _log_scan_history(t, "TP2", price)
-            send_telegram(fmt_scan_update("TP2_HIT", price, t))
+            _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
+            send_telegram(_tp2_msg)
+            if t.get("tier_routed"):
+                send_to_tier_channels(_tp2_msg, t.get("share_free", True))
             ct.on_scan_tp2(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -3459,7 +3500,10 @@ def _tick_one(ver: int, t: dict) -> bool:
                 sl = entry
                 trade_stats["scan_tp1"] += 1
                 trade_stats[f"scan{ver}_tp1"] += 1
-                send_telegram(fmt_scan_update("TP1_HIT", price, t))
+                _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
+                send_telegram(_tp1_msg)
+                if t.get("tier_routed"):
+                    send_to_tier_channels(_tp1_msg, t.get("share_free", True))
                 ct.on_scan_tp1(sym)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -3475,7 +3519,10 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats[f"scan{ver}_sl"] += 1
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
-            send_telegram(fmt_scan_update("SL_HIT", price, t))
+            _sl_msg = fmt_scan_update("SL_HIT", price, t)
+            send_telegram(_sl_msg)
+            if t.get("tier_routed"):
+                send_to_tier_channels(_sl_msg, t.get("share_free", True))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "sl_hit_time": _ist_str_now(), "result": result,
@@ -3519,29 +3566,39 @@ def run_price_check():
         if status == "TP2_HIT":
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", "hit during 1H check")
-            ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0)); send_telegram(fmt_update("TP2_HIT")); _track_daily_result(SYMBOL, "TP2"); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
+            ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
+            _tp2_msg = fmt_update("TP2_HIT")
+            send_telegram(_tp2_msg)
+            send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
+            _track_daily_result(SYMBOL, "TP2"); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
             log_trade_outcome("SL_HIT", f"{n} in a row during 1H check")
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
-                send_telegram(
+                _sl_msg = (
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(_sl_msg)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
-                send_telegram(
+                _sl_msg = (
                     f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(_sl_msg)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             else:
-                send_telegram(fmt_update("SL_HIT"))
+                _sl_msg = fmt_update("SL_HIT")
+                send_telegram(_sl_msg)
+                send_to_tier_channels(_sl_msg, active_trade.get("share_free", True))
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3550,7 +3607,9 @@ def run_price_check():
             trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
-            send_telegram(fmt_update("TP1_HIT"))
+            _tp1_msg = fmt_update("TP1_HIT")
+            send_telegram(_tp1_msg)
+            send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
             _track_daily_result(SYMBOL, "TP1")
             _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_telegram(fmt_update("STOP_HUNT"))
@@ -5601,17 +5660,22 @@ Reasoning: [one line]"""
                     _last_claude_err = ""
                     for _attempt in range(3):
                         try:
-                            r2 = _claude_client(f"scan{scan_ver}").messages.create(
-                                model=_ai_model(f"scan{scan_ver}"), max_tokens=_max_tokens,
+                            _kind = f"scan{scan_ver}"
+                            _using_aero = _ai_aerolink(_kind)
+                            _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
+                                       else "aerolink-key1" if _using_aero else "direct")
+                            print(f"  [SCAN] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model(_kind)}")
+                            r2 = _claude_client(_kind, attempt=_attempt).messages.create(
+                                model=_ai_model(_kind), max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
-                            _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(f"scan{scan_ver}"),
+                            _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
                                            r2.usage.input_tokens, r2.usage.output_tokens)
                             analysis = _claude_text(r2)
                             _claude_ok = True
                             break
                         except Exception as _ce:
                             _last_claude_err = str(_ce)
-                            print(f"  [SCAN] Claude attempt {_attempt+1} FAIL: {_last_claude_err}")
+                            print(f"  [SCAN] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_last_claude_err}")
                             if _attempt < 2:
                                 time.sleep(10)
                     if not _claude_ok:
@@ -5697,16 +5761,17 @@ Reasoning: [one line]"""
                         save_state()
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        slot_data["share_free"] = _share_free
-                        slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y at %H.%M")
+                        _tier_routed = (scan_ver == 1) or (scan_ver == 2 and _force_direct_48_scan2)
+                        _effective_share_free = True if (scan_ver == 2 and _force_direct_48_scan2) else _share_free
+                        slot_data["share_free"] = _effective_share_free
+                        slot_data["tier_routed"] = _tier_routed
+                        slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
                         send_telegram(fmt_scan_signal(slot_data))
                         # Scan1 always goes to Free/VIP channels; Scan2 only at its 6 whitelisted
                         # slot times (unconditionally, bypassing the daily free-quota gate) —
                         # everything else stays on the legacy channel only.
-                        if scan_ver == 1:
-                            send_to_tier_channels(fmt_scan_signal(slot_data), _share_free)
-                        elif scan_ver == 2 and _force_direct_48_scan2:
-                            send_to_tier_channels(fmt_scan_signal(slot_data), True)
+                        if _tier_routed:
+                            send_to_tier_channels(fmt_scan_signal(slot_data), _effective_share_free)
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
@@ -8299,7 +8364,11 @@ def _run_test_scan(cid, scan_ver: int):
             analysis = ""; _claude_ok = False
             for _attempt in range(3):
                 try:
-                    r2 = _claude_client("test").messages.create(
+                    _using_aero = _ai_aerolink("test")
+                    _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
+                               else "aerolink-key1" if _using_aero else "direct")
+                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test')} force_direct48={_force_direct_48_demo1}")
+                    r2 = _claude_client("test", attempt=_attempt).messages.create(
                         model=_ai_model("test"), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo_{chosen_sym}", _ai_model("test"),
@@ -8307,7 +8376,7 @@ def _run_test_scan(cid, scan_ver: int):
                     analysis = _claude_text(r2)
                     _claude_ok = True; break
                 except Exception as _ce:
-                    print(f"  [TEST] Claude attempt {_attempt+1} FAIL: {_ce}")
+                    print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
                     if _attempt < 2: time.sleep(10)
             if not _claude_ok:
                 print(f"  [TEST] {chosen_sym}: Claude failed 3 times — skipping"); continue
