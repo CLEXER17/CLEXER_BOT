@@ -935,7 +935,7 @@ def _claude_text(msg):
 # whatever gateway/model is currently configured (Aerolink, as usual). Set right
 # before the auto-trigger fires and cleared right after that scan cycle finishes.
 _SCAN2_SPECIAL_TIMES      = {(2,23), (8,2), (11,23), (12,3), (13,7), (20,23)}
-_DEMO_SCAN1_SPECIAL_TIMES = {(3,24), (8,24), (15,8), (17,10)}
+_DEMO_SCAN1_SPECIAL_TIMES = {(3,23), (8,23), (15,8), (17,10)}
 _force_direct_48_scan2 = False
 _force_direct_48_demo1 = False
 
@@ -7967,9 +7967,10 @@ SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(set([
     (12,3),(12,23),(13,7),(13,23),(14,7),(14,23),(15,7),(15,23),
     (16,7),(16,23),(17,9),(17,23),(19,4),(19,23),(20,7),(20,23),(21,7),(21,23),
 ]))
-# Demo/Test fires 1 min after each Scan2 slot (uses full schedule, not trimmed Scan1)
+# Demo/Test fires 1 min after each Scan2 slot — EXCEPT the :23 slots, which fire
+# at the exact same minute as Scan2 itself (no +1 offset) rather than :24.
 SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = [
-    ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN2_SCHEDULE
+    (h, m) if m == 23 else ((h + (m+1)//60) % 24, (m+1) % 60) for h,m in SCAN2_SCHEDULE
 ]
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
@@ -8277,10 +8278,12 @@ def _run_test_scan(cid, scan_ver: int):
         structured = [t for t in top10 if t["structure"] != "NEUTRAL"]
         candidate_order = structured + [c for c in top10 if c not in structured]
 
+        MAX_TRIES = 3
         signal_placed = False
         tried = []
         for candidate in candidate_order:
             if signal_placed: break
+            if len(tried) >= MAX_TRIES: break
             chosen_sym  = candidate["sym"]
             chosen_base = candidate["base"]
             cp          = candidate["price"]
@@ -8650,14 +8653,21 @@ def main():
                         _force_direct_48_scan2 = _cur_hm in _SCAN2_SPECIAL_TIMES
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
-            # Test demo: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
+            # Test demo Scan1: fires 1 min after each scan1 time (if TEST_SCAN_ENABLED)
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
-                print(f"  [TEST-SCAN] Demo scan at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
+                print(f"  [TEST-SCAN] Demo Scan1 at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
                 if ADMIN_CHAT_ID:
                     global _force_direct_48_demo1
                     _force_direct_48_demo1 = _cur_hm in _DEMO_SCAN1_SPECIAL_TIMES
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
+
+            # Test demo Scan2: same trigger slots, mirrors real Scan2's schedule
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
+                _test_triggered_today.add((_cur_hm, 2))
+                print(f"  [TEST-SCAN] Demo Scan2 at {_ist_now.strftime('%H:%M')} IST (1min after scan2)")
+                if ADMIN_CHAT_ID:
+                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
