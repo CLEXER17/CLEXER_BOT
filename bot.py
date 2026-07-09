@@ -461,6 +461,8 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     up, so Free never saw it), and it just hit TP1/TP2, post a VIP-conversion
     pitch to Free-tier viewers — plain emoji, native buttons, quoting exactly
     when the original VIP-only signal went out."""
+    if not trade.get("tier_routed", True):
+        return  # Signal-only entry — never went to VIP either, nothing to "catch up" on
     if trade.get("share_free", True):
         return  # already shared to Free at entry — no catch-up needed
     free_chans = _channels_by_tier("free")
@@ -476,24 +478,22 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     if result == "TP1":
         text = (
             "🚨 <b>VIP SIGNAL UPDATE</b>\n\n"
-            f"{entry_ts}\n\n"
             f"#{coin}USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
-            "<blockquote>This signal was shared exclusively in Crypto Clexer VIP before the market move.\n\n"
+            f"<blockquote>This signal was shared exclusively in \"Crypto Clexer VIP\" AT {entry_ts}\n"
             "Congratulations to all our VIP members who secured profits. 🔥\n\n"
-            "Want to receive these signals before the move?\n\n"
+            "Want to receive these signals?\n"
             "📩 DM now for VIP access.</blockquote>"
         )
     else:
         text = (
-            "🏆 <b>VIP RESULT</b>\n"
-            f"{entry_ts}\n\n"
+            "🏆 <b>VIP RESULT</b>\n\n"
             f"#{coin}USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
-            "<blockquote>Another VIP-exclusive signal delivered successfully.\n\n"
+            "<blockquote>VIP-exclusive signal closed successfully.\n\n"
             "✅ TP1 Achieved\n"
             "✅ TP2 Achieved\n\n"
-            "This setup was shared with our VIP members before the market move.\n\n"
+            f"This setup was shared with our VIP members AT {entry_ts}\n"
             "If you're seeing this in the free channel, imagine having the trade before the move.\n\n"
-            "💎 Crypto Clexer VIP\n\n"
+            "💎 Crypto Clexer VIP\n"
             "📩 DM now for VIP access.</blockquote>"
         )
     for cid in free_chans:
@@ -548,8 +548,7 @@ def _track_daily_result(symbol: str, result: str, free_shown: bool = False, tp1_
         if _daily_tracker["free_tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
             _daily_tracker["tp1_promo_sent"] = True
             _send_tp1_streak_promo(symbol, tp1_detail or {})
-    elif result == "TP2":
-        _send_tp2_congrats()
+    # TP2 congrats broadcast disabled — admin asked to stop sending it.
 
 def _daily_summary_loop():
     """Background thread — fires the end-of-day recap once, shortly after
@@ -5818,8 +5817,13 @@ Reasoning: [one line]"""
                             "tp1_price": scan_tp1, "tp2_price": scan_tp2,
                             "entry_trigger_time": _ist_str_now(), "result": "open"})
                         sd["ver"] = scan_ver
-                        ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _share_free)
-                        send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
+                        # Copy trade only mirrors signals that were actually shown in
+                        # VIP/Free — regular-grid (Signal-only) auto-runs place no orders.
+                        if _tier_routed:
+                            ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
+                            send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
+                        else:
+                            send_reply(cid, f"📋 <b>{chosen_sym}:</b> Signal-only slot (not VIP/Free) — no copy trade orders placed.")
                         # Send skip summary explaining why previous coins were skipped
                         if skip_log:
                             send_reply(cid,
