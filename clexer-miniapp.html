@@ -357,7 +357,7 @@
   const CIRC = 2 * Math.PI * 44;
   let curP = "30D";
 
-  const dec = s => s==="BTCUSDT"?1:(s==="ETHUSDT"||s==="BNBUSDT")?2:s==="SOLUSDT"?2:4;
+  const dec = s => s==="BTCUSDT"?1:(s==="ETHUSDT"||s==="BNBUSDT")?2:s==="SOLUSDT"?2:8;
   const fmt = (n,d) => Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 
   /* ---------- tab switching ---------- */
@@ -959,7 +959,7 @@
       const pctSL   = (pnlSL  / bal * 100);
       totalTP1 += pnlTP1; totalTP2 += pnlTP2; totalSL += pnlSL;
       const dispS = sym.replace(/-?USDT$/,'').replace(/-$/,'');
-      const d = sym==="BTCUSDT"?1:sym==="ETHUSDT"||sym==="BNBUSDT"?2:4;
+      const d = sym==="BTCUSDT"?1:sym==="ETHUSDT"||sym==="BNBUSDT"?2:8;
       html += `<div style="border:1px solid ${isRunning?'var(--border)':'rgba(255,176,32,.2)'};border-radius:10px;padding:12px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span style="font-family:var(--mono);font-size:13px;font-weight:700">${dispS}/USDT</span>
