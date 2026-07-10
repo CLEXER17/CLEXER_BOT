@@ -503,12 +503,7 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
-def _send_daily_summary():
-    """End-of-day recap — every TP1/TP2/SL from today, with premium emoji via
-    forward. Free + VIP only — not the Signal channel."""
-    trades = _daily_tracker.get("trades", [])
-    if not trades:
-        return
+def _build_recap_text(trades: list) -> str:
     tp2_list = [t for t in trades if t["result"] == "TP2"]
     tp1_list = [t for t in trades if t["result"] == "TP1"]
     sl_list  = [t for t in trades if t["result"] == "SL"]
@@ -524,25 +519,51 @@ def _send_daily_summary():
     if sl_list:
         lines.append("🛑 <b>SL Hit:</b>")
         lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
-    text = _apply_premium_emojis("\n".join(lines))
-    for _tag, cid in _free_and_vip_channel_ids():
-        if not _send_via_true_forward(text, cid, f"daily-summary-{_tag}"):
+    return "\n".join(lines)
+
+def _send_daily_summary():
+    """End-of-day recap — every TP1/TP2/SL that was actually tier-routed today,
+    with premium emoji via forward. VIP gets every tier-routed trade (VIP-only
+    + VIP+Free); Free only gets the subset that was also shown in Free —
+    so the two recaps are no longer identical, and Signal-only trades never
+    appear in either."""
+    all_trades = [t for t in _daily_tracker.get("trades", []) if t.get("tier_routed")]
+    if not all_trades:
+        return
+    vip_text = _apply_premium_emojis(_build_recap_text(all_trades))
+    for cid in _channels_by_tier("vip"):
+        if not _send_via_true_forward(vip_text, cid, "daily-summary-vip"):
             try:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
-            except Exception as e: print(f"  [DAILY SUMMARY] {_tag} {cid}: {e}")
+                    json={"chat_id": cid, "text": vip_text, "parse_mode": "HTML"}, timeout=10)
+            except Exception as e: print(f"  [DAILY SUMMARY] vip {cid}: {e}")
+    free_trades = [t for t in all_trades if t.get("free_shown")]
+    if free_trades:
+        free_text = _apply_premium_emojis(_build_recap_text(free_trades))
+        for cid in _channels_by_tier("free"):
+            if not _send_via_true_forward(free_text, cid, "daily-summary-free"):
+                try:
+                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={"chat_id": cid, "text": free_text, "parse_mode": "HTML"}, timeout=10)
+                except Exception as e: print(f"  [DAILY SUMMARY] free {cid}: {e}")
 
-def _track_daily_result(symbol: str, result: str, free_shown: bool = False, tp1_detail: dict = None):
+def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False, tp1_detail: dict = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
-    Drives the 3rd-Free-TP1-of-the-day promo, the per-TP2 congrats post, and
-    feeds the end-of-day recap.
-    free_shown: True if this result was actually visible in the Free channel —
-    only Free-shown TP1s count toward the 3rd-TP1 streak promo.
+    Drives the 3rd-Free-TP1-of-the-day promo and feeds the end-of-day recap.
+    tier_routed: True if this trade was shown in VIP (and maybe Free) — only
+    tier_routed trades are eligible for the recap at all (Signal-only never appears).
+    free_shown: True if also visible in the Free channel — builds Free's own
+    (shorter) recap and gates the 3rd-TP1 streak promo.
     tp1_detail: {'tag','side','tp1','sl_be','tp2'} for the promo's message."""
     _reset_daily_tracker_if_needed()
     key = result.lower()
     _daily_tracker[key] = _daily_tracker.get(key, 0) + 1
-    _daily_tracker["trades"].append({"symbol": symbol, "result": result, "time": ist_str()})
+    if tier_routed:
+        _daily_tracker["trades"].append({
+            "symbol": symbol, "result": result,
+            "time": now_ist().strftime("%I:%M %p IST"),
+            "free_shown": free_shown, "tier_routed": True,
+        })
     if result == "TP1" and free_shown:
         _daily_tracker["free_tp1"] = _daily_tracker.get("free_tp1", 0) + 1
         if _daily_tracker["free_tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
@@ -3186,7 +3207,7 @@ def run_tick_check():
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
             send_telegram(_tp2_msg)
             send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP2")
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
 
@@ -3204,7 +3225,7 @@ def run_tick_check():
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
                 send_telegram(_tp1_msg)
                 send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
-                _track_daily_result(SYMBOL, "TP1", free_shown=active_trade.get("share_free", True),
+                _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
@@ -3241,7 +3262,7 @@ def run_tick_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3519,7 +3540,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
-            _track_daily_result(sym, "TP2")
+            _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True))
             _notify_free_late(sym, t, "TP2")
             _remove_scan_trade(ver, sym); return True
 
@@ -3541,7 +3562,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
                 _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
-                _track_daily_result(sym, "TP1", free_shown=_free_shown,
+                _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
                     tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
                 _notify_free_late(sym, t, "TP1")
 
@@ -3562,7 +3583,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
-                _track_daily_result(sym, "SL")
+                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)))
             _remove_scan_trade(ver, sym); return True
@@ -3606,7 +3627,7 @@ def run_price_check():
             _tp2_msg = fmt_update("TP2_HIT")
             send_telegram(_tp2_msg)
             send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP2"); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True)); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
@@ -3633,7 +3654,7 @@ def run_price_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL")  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3645,7 +3666,7 @@ def run_price_check():
             _tp1_msg = fmt_update("TP1_HIT")
             send_telegram(_tp1_msg)
             send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP1", free_shown=active_trade.get("share_free", True),
+            _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
                     "tp2": active_trade.get("tp2",0)})
