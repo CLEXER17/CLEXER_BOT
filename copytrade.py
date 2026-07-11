@@ -223,6 +223,7 @@ _last_signal: dict = {}   # last active signal — cleared on SL/TP/cancel
 _SIGNAL_FILE = os.path.join(_DATA_DIR, "ct_last_signal.json")
 
 def _save_last_signal():
+    """Local file only — central sync is manual, via /syncup."""
     try:
         with open(_SIGNAL_FILE, "w") as f:
             json.dump(_last_signal, f)
@@ -232,9 +233,22 @@ def _save_last_signal():
 def _load_last_signal():
     global _last_signal
     try:
-        if os.path.exists(_SIGNAL_FILE):
+        d = None
+        if _API_URL:
+            try:
+                hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
+                r = requests.get(f"{_API_URL}/kv/ct_last_signal", headers=hdrs, timeout=8)
+                if r.ok:
+                    body = r.json()
+                    if body.get("found"):
+                        d = body["data"]
+            except Exception as e:
+                print(f"[CT] signal central load error (falling back to local file): {e}")
+        if d is None and os.path.exists(_SIGNAL_FILE):
             with open(_SIGNAL_FILE) as f:
-                _last_signal = json.load(f)
+                d = json.load(f)
+        if d is not None:
+            _last_signal = d
             if _last_signal:
                 print(f"[CT] Restored last signal: {_last_signal.get('side')} entry={_last_signal.get('entry')}")
     except Exception as e:
@@ -310,17 +324,20 @@ def load():
     _load_last_signal()
 
 def _save():
+    """Local file only — central sync is manual, via /syncup."""
     try:
         with open(CT_FILE, "w") as f:
             json.dump(_db, f, indent=2)
     except Exception as e:
         print(f"[CT] Save error: {e}")
-    if _API_URL:
-        try:
-            hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
-            requests.post(f"{_API_URL}/kv/ct_users", json=_db, headers=hdrs, timeout=8)
-        except Exception as e:
-            print(f"[CT] Central save error: {e}")
+
+def push_to_central() -> bool:
+    """Force-push the current users DB to the central store. Called by /syncup."""
+    if not _API_URL:
+        return False
+    hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
+    requests.post(f"{_API_URL}/kv/ct_users", json=_db, headers=hdrs, timeout=15)
+    return True
 
 def _get(cid: str) -> dict:
     return _db.get(str(cid), {})
