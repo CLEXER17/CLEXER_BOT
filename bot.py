@@ -677,6 +677,15 @@ def get_active_server_name() -> str:
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
 
+def _kv_push(key: str, data) -> bool:
+    """Push any JSON-able blob to the shared store under `key`. Used by /syncup
+    for the pieces that don't already have their own dedicated push path."""
+    if not CLEXER_API_URL:
+        return False
+    hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+    requests.post(f"{CLEXER_API_URL}/kv/{key}", json=data, headers=hdrs, timeout=15)
+    return True
+
 def set_active_server(name: str):
     _active_server_cache["name"] = name
     _active_server_cache["checked_at"] = time.time()
@@ -712,9 +721,22 @@ def check_rate_limit(chat_id, cmd):
 def load_users():
     global registered_users, user_usernames, blocked_users
     try:
-        if os.path.exists(USER_DB_FILE):
+        d = None
+        if CLEXER_API_URL:
+            try:
+                hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+                r = requests.get(f"{CLEXER_API_URL}/kv/registered_users", headers=hdrs, timeout=8)
+                if r.ok:
+                    body = r.json()
+                    if body.get("found"):
+                        d = body["data"]
+                        print("[USERS] Loaded from central store")
+            except Exception as e:
+                print(f"[USERS] Central load error (falling back to local file): {e}")
+        if d is None and os.path.exists(USER_DB_FILE):
             with open(USER_DB_FILE, "r") as f:
                 d = json.load(f)
+        if d is not None:
             if isinstance(d, list):
                 registered_users = set(int(x) for x in d)  # legacy format — just a list of ids
             else:
@@ -725,13 +747,14 @@ def load_users():
         print(f"[USERS] Load error: {e}"); registered_users = set()
 
 def save_users():
+    _blob = {
+        "users": list(registered_users),
+        "usernames": user_usernames,
+        "blocked": list(blocked_users),
+    }
     try:
         with open(USER_DB_FILE, "w") as f:
-            json.dump({
-                "users": list(registered_users),
-                "usernames": user_usernames,
-                "blocked": list(blocked_users),
-            }, f)
+            json.dump(_blob, f)
     except Exception as e: print(f"[USERS] Save error: {e}")
 
 def is_co_admin(chat_id) -> bool:
@@ -1004,6 +1027,7 @@ def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens:
         cost = input_tokens * _OPUS_IN_COST  + output_tokens * _OPUS_OUT_COST
     headers = ["date","time","call_type","model","input_tokens","output_tokens","cost_usd"]
     row = [date_str, time_str, call_type, model, input_tokens, output_tokens, f"{cost:.6f}"]
+    _pull_csv_central("api_cost_log_csv", API_COST_LOG)
     write_header = not os.path.exists(API_COST_LOG)
     try:
         with open(API_COST_LOG, "a", newline="") as f:
@@ -1064,8 +1088,30 @@ def _claude_client(kind: str = "btc", attempt: int = 0):
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
 
+def _pull_csv_central(key: str, path: str) -> bool:
+    """On a fresh server with no local CSV yet, restore it from the shared
+    store so a new co-server starts with main's full history instead of empty.
+    Never overwrites a CSV that already exists locally."""
+    if os.path.exists(path) or not CLEXER_API_URL:
+        return False
+    try:
+        hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+        r = requests.get(f"{CLEXER_API_URL}/kv/{key}", headers=hdrs, timeout=15)
+        if r.ok:
+            body = r.json()
+            if body.get("found") and body["data"].get("csv"):
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(body["data"]["csv"])
+                print(f"  [LOG] Restored {key} from central store")
+                return True
+    except Exception as e:
+        print(f"  [LOG] Central pull error ({key}): {e}")
+    return False
+
 def _ensure_csv():
     if not os.path.exists(TRADE_LOG_CSV):
+        if _pull_csv_central("trade_history_csv", TRADE_LOG_CSV):
+            return
         import csv
         with open(TRADE_LOG_CSV, "w", newline="") as f:
             csv.writer(f).writerow(_CSV_HEADERS)
@@ -1152,22 +1198,29 @@ def save_state():
             json.dump(state, f, indent=2)
     except Exception as e:
         print(f"[STATE] Save error: {e}")
-    if CLEXER_API_URL:
-        try:
-            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-            requests.post(f"{CLEXER_API_URL}/push_state", json=state, headers=hdrs, timeout=5)
-        except Exception as e:
-            print(f"[STATE] Push error: {e}")
 
 def save_active_trade():
     save_state()
 
 def load_active_trade():
     global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
+    d = None
+    if CLEXER_API_URL:
+        try:
+            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+            r = requests.get(f"{CLEXER_API_URL}/push_state", headers=hdrs, timeout=8)
+            if r.ok:
+                body = r.json()
+                if body:  # non-empty dict — central store has real state
+                    d = body
+                    print("[STATE] Loaded from central store")
+        except Exception as e:
+            print(f"[STATE] Central load error (falling back to local file): {e}")
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     try:
-        if os.path.exists(path):
+        if d is None and os.path.exists(path):
             d = json.load(open(path))
+        if d is not None:
             trade_stats.update(d.get("stats", {}))
             signal_history[:] = d.get("history", [])
             trade_outcomes[:]  = d.get("outcomes", [])
@@ -2817,12 +2870,6 @@ def save_settings():
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
-    if CLEXER_API_URL:
-        try:
-            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-            requests.post(f"{CLEXER_API_URL}/kv/bot_settings", json=_settings_blob, headers=hdrs, timeout=8)
-        except Exception as e:
-            print(f"[SETTINGS] Central save error: {e}")
 
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
@@ -5965,19 +6012,53 @@ Reasoning: [one line]"""
         _results = []
         try:
             ct._save()
+            ct.push_to_central()
             _results.append(f"✅ Copy-trade users ({len(ct._db)})")
         except Exception as e:
             _results.append(f"❌ Copy-trade users: {e}")
         try:
             save_settings()
+            _kv_push("bot_settings", json.load(open(_SETTINGS_FILE)))
             _results.append("✅ Bot settings")
         except Exception as e:
             _results.append(f"❌ Bot settings: {e}")
         try:
             save_state()
+            requests.post(f"{CLEXER_API_URL}/push_state", json=json.load(open(STATE_FILE)),
+                headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}), timeout=15)
             _results.append("✅ Trade state")
         except Exception as e:
             _results.append(f"❌ Trade state: {e}")
+        try:
+            save_users()
+            _kv_push("registered_users", json.load(open(USER_DB_FILE)))
+            _results.append(f"✅ Registered users ({len(registered_users)})")
+        except Exception as e:
+            _results.append(f"❌ Registered users: {e}")
+        try:
+            if os.path.exists(ct._SIGNAL_FILE):
+                _kv_push("ct_last_signal", json.load(open(ct._SIGNAL_FILE)))
+                _results.append("✅ Last copy-trade signal")
+            else:
+                _results.append("⏭️ Last copy-trade signal (none yet)")
+        except Exception as e:
+            _results.append(f"❌ Last copy-trade signal: {e}")
+        try:
+            if os.path.exists(TRADE_LOG_CSV):
+                _kv_push("trade_history_csv", {"csv": open(TRADE_LOG_CSV, encoding="utf-8").read()})
+                _results.append("✅ Trade history CSV")
+            else:
+                _results.append("⏭️ Trade history CSV (none yet)")
+        except Exception as e:
+            _results.append(f"❌ Trade history CSV: {e}")
+        try:
+            if os.path.exists(API_COST_LOG):
+                _kv_push("api_cost_log_csv", {"csv": open(API_COST_LOG, encoding="utf-8").read()})
+                _results.append("✅ API cost log CSV")
+            else:
+                _results.append("⏭️ API cost log CSV (none yet)")
+        except Exception as e:
+            _results.append(f"❌ API cost log CSV: {e}")
         send_reply(chat_id,
             f"<b>Sync-up complete</b>\n\n<blockquote>" + "\n".join(_results) + "</blockquote>\n\n"
             f"Any co-server pointed at the same CLEXER_API_URL will now see this data on its next load.\n\n"
@@ -8683,6 +8764,8 @@ def main():
     ct.load()
     load_settings()
     load_active_trade()
+    _pull_csv_central("trade_history_csv", TRADE_LOG_CSV)
+    _pull_csv_central("api_cost_log_csv", API_COST_LOG)
 
     # Start PAUSED - user must send /go
     bot_paused.set()
