@@ -640,6 +640,52 @@ trade_lock = threading.Lock()
 DATA_DIR           = os.getenv("DATA_DIR", ".")
 CLEXER_API_URL     = os.getenv("CLEXER_API_URL", "").rstrip("/")
 PUSH_STATE_SECRET  = os.getenv("PUSH_STATE_SECRET", "")
+
+# ── Multi-server active/standby switch ─────────────────────────────────────────
+# Each Railway deployment (main, co-server1, co-server2, ...) sets its own unique
+# SERVER_NAME. Only ONE name is ever the "active" one at a time — stored centrally
+# via api.py/kv_store so every server agrees on it regardless of which is running.
+# Standby servers keep polling/analyzing normally but never place real copytrade
+# orders — flip which one is active with /server <name> from Telegram.
+SERVER_NAME = os.getenv("SERVER_NAME", "main")
+_active_server_cache = {"name": None, "checked_at": 0.0}
+
+def get_active_server_name() -> str:
+    """Which server name is currently flagged active. Refreshes from the central
+    store at most once every 20s; if no central store is configured, this server
+    is always considered active (preserves single-server behavior)."""
+    if not CLEXER_API_URL:
+        return SERVER_NAME
+    now = time.time()
+    if now - _active_server_cache["checked_at"] < 20 and _active_server_cache["name"]:
+        return _active_server_cache["name"]
+    try:
+        hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+        r = requests.get(f"{CLEXER_API_URL}/kv/active_server", headers=hdrs, timeout=8)
+        if r.ok:
+            body = r.json()
+            name = (body.get("data") or {}).get("name") if body.get("found") else None
+            if name:
+                _active_server_cache["name"] = name
+                _active_server_cache["checked_at"] = now
+                return name
+    except Exception as e:
+        print(f"[SERVER] active-check error: {e}")
+    # Unreachable/never-set — fall back to whatever we last knew, else assume active
+    return _active_server_cache["name"] or SERVER_NAME
+
+def is_active_server() -> bool:
+    return get_active_server_name() == SERVER_NAME
+
+def set_active_server(name: str):
+    _active_server_cache["name"] = name
+    _active_server_cache["checked_at"] = time.time()
+    if CLEXER_API_URL:
+        try:
+            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+            requests.post(f"{CLEXER_API_URL}/kv/active_server", json={"name": name}, headers=hdrs, timeout=8)
+        except Exception as e:
+            print(f"[SERVER] set-active error: {e}")
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
@@ -2669,8 +2715,23 @@ _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 def load_settings():
     global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2
     try:
-        if os.path.exists(_SETTINGS_FILE):
+        d = None
+        # Central store first (shared across every server pointed at the same
+        # CLEXER_API_URL) — falls back to the local file if unreachable/unset.
+        if CLEXER_API_URL:
+            try:
+                hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+                r = requests.get(f"{CLEXER_API_URL}/kv/bot_settings", headers=hdrs, timeout=8)
+                if r.ok:
+                    body = r.json()
+                    if body.get("found"):
+                        d = body["data"]
+                        print("[SETTINGS] Loaded from central store")
+            except Exception as e:
+                print(f"[SETTINGS] Central load error (falling back to local file): {e}")
+        if d is None and os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
+        if d is not None:
             channel_paused.update(d.get("channel_paused", {}))
             SEND_CHARTS           = d.get("send_charts",         SEND_CHARTS)
             CHART_TFS             = d.get("chart_tfs",           CHART_TFS)
@@ -2715,8 +2776,7 @@ def load_settings():
         print(f"[SETTINGS] Load error: {e}")
 
 def save_settings():
-    try:
-        json.dump({
+    _settings_blob = {
             "channel_paused":   channel_paused,
             "send_charts":      SEND_CHARTS,
             "chart_tfs":        CHART_TFS,
@@ -2752,9 +2812,17 @@ def save_settings():
             "btc_ct_enabled":   ct.BTC_CT_ENABLED,
             "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
             "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
-        }, open(_SETTINGS_FILE, "w"), indent=2)
+    }
+    try:
+        json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
         print(f"[SETTINGS] Save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+            requests.post(f"{CLEXER_API_URL}/kv/bot_settings", json=_settings_blob, headers=hdrs, timeout=8)
+        except Exception as e:
+            print(f"[SETTINGS] Central save error: {e}")
 
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
@@ -5890,6 +5958,32 @@ Reasoning: [one line]"""
                 _scan_run_mode["scan1" if scan_ver == 1 else "scan2"] = None
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
+    elif cmd == "/server" and is_admin:
+        _arg = parts[1].strip() if len(parts) > 1 else ""
+        _active_now = get_active_server_name()
+        if _arg:
+            set_active_server(_arg)
+            _active_now = _arg
+            send_reply(chat_id,
+                f"🖥️ <b>Active Server Switched</b>\n\n"
+                f"<blockquote>Now active: <b>{_active_now}</b>\n"
+                f"This server (<b>{SERVER_NAME}</b>) is {'🟢 ACTIVE — placing real orders' if _active_now==SERVER_NAME else '⏸️ STANDBY — no copytrade orders will be placed'}.</blockquote>\n\n"
+                f"<i>🛡️ Capital protected</i>")
+            return
+        _status = "🟢 ACTIVE — placing real orders" if is_active_server() else "⏸️ STANDBY — no copytrade orders will be placed"
+        _mkp = {"inline_keyboard": [
+            [{"text": f"✅ Make \"{SERVER_NAME}\" active", "callback_data": f"srvset:{SERVER_NAME}"}],
+        ]}
+        send_reply(chat_id,
+            f"🖥️ <b>Server Status</b>\n\n"
+            f"<blockquote>This server's name: <b>{SERVER_NAME}</b>\n"
+            f"Currently active server: <b>{_active_now}</b>\n"
+            f"Status here: {_status}</blockquote>\n\n"
+            f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
+            f"run it from whichever server you're switching TO.\n\n"
+            f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
+        return
+
     elif cmd == "/model" and is_admin:
         _arg = parts[1].lower() if len(parts) > 1 else ""
         if _arg in ("opus", "4.8", "4-8"):
@@ -7693,6 +7787,8 @@ def command_listener():
                     elif cb_data.startswith("scantoggle:"):
                         if cb_is_admin:
                             _toggle_cmd(f"/scantoggle {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data.startswith("srvset:") and cb_is_admin:
+                        handle_command(f"/server {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("model:") and cb_is_admin:
                         _marg = cb_data.split(":")[1]
                         if _marg == "opus":  SCAN_MODEL = "claude-opus-4-8"
@@ -8595,6 +8691,15 @@ def main():
             time.sleep(3600)  # hourly is plenty for a date-based expiry
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
+
+    def _active_server_loop():
+        while True:
+            try:
+                ct._is_active = is_active_server()
+            except Exception as e:
+                print(f"[SERVER] active-sync error: {e}")
+            time.sleep(15)
+    threading.Thread(target=_active_server_loop, daemon=True).start()
 
     threading.Thread(target=command_listener, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
