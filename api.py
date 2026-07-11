@@ -58,6 +58,12 @@ def init_db():
                     updated_at  TIMESTAMPTZ DEFAULT NOW()
                 );
 
+                CREATE TABLE IF NOT EXISTS kv_store (
+                    key         TEXT PRIMARY KEY,
+                    data_json   JSONB NOT NULL,
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                );
+
                 CREATE TABLE IF NOT EXISTS users (
                     tg_id       BIGINT PRIMARY KEY,
                     username    TEXT,
@@ -208,6 +214,48 @@ async def push_state(request: Request):
     except Exception as e:
         raise HTTPException(500, f"DB error: {e}")
     return {"ok": True}
+
+# ── generic key-value sync (copytrade users DB, bot settings, active-server flag) ──
+# Lets multiple Railway deployments (main + any number of co-servers) share one
+# source of truth by talking to this single api.py service instead of each
+# keeping its own local files. Any server can push a full blob under a key, and
+# any server can pull the latest blob for that key.
+def _kv_check_secret(request: Request):
+    if PUSH_STATE_SECRET:
+        if request.headers.get("X-Push-Secret", "") != PUSH_STATE_SECRET:
+            raise HTTPException(403, "Forbidden")
+
+@app.post("/kv/{key}")
+async def kv_push(key: str, request: Request):
+    _kv_check_secret(request)
+    body = await request.json()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO kv_store (key, data_json, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                      SET data_json  = EXCLUDED.data_json,
+                          updated_at = NOW()
+                """, (key, json.dumps(body)))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
+    return {"ok": True}
+
+@app.get("/kv/{key}")
+def kv_pull(key: str):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data_json, updated_at FROM kv_store WHERE key = %s", (key,))
+                row = cur.fetchone()
+        if row:
+            return {"found": True, "data": row["data_json"], "updated_at": row["updated_at"].isoformat()}
+        return {"found": False, "data": None}
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
 
 # ── startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
