@@ -5958,6 +5958,32 @@ Reasoning: [one line]"""
                 _scan_run_mode["scan1" if scan_ver == 1 else "scan2"] = None
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
+    elif cmd == "/syncup" and is_admin:
+        if not CLEXER_API_URL:
+            send_reply(chat_id, "❌ CLEXER_API_URL isn't set on this server — nothing to sync to."); return
+        send_reply(chat_id, "🔄 Pushing this server's current users, settings, and trade state to the shared store...")
+        _results = []
+        try:
+            ct._save()
+            _results.append(f"✅ Copy-trade users ({len(ct._db)})")
+        except Exception as e:
+            _results.append(f"❌ Copy-trade users: {e}")
+        try:
+            save_settings()
+            _results.append("✅ Bot settings")
+        except Exception as e:
+            _results.append(f"❌ Bot settings: {e}")
+        try:
+            save_state()
+            _results.append("✅ Trade state")
+        except Exception as e:
+            _results.append(f"❌ Trade state: {e}")
+        send_reply(chat_id,
+            f"<b>Sync-up complete</b>\n\n<blockquote>" + "\n".join(_results) + "</blockquote>\n\n"
+            f"Any co-server pointed at the same CLEXER_API_URL will now see this data on its next load.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        return
+
     elif cmd == "/server" and is_admin:
         _arg = parts[1].strip() if len(parts) > 1 else ""
         _active_now = get_active_server_name()
