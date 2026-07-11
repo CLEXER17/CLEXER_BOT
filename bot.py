@@ -8810,7 +8810,26 @@ def main():
             time.sleep(15)
     threading.Thread(target=_active_server_loop, daemon=True).start()
 
-    threading.Thread(target=command_listener, daemon=True).start()
+    def _wait_then_poll():
+        """Telegram only allows ONE process to poll getUpdates for a given bot
+        token at a time — if two servers both poll simultaneously, Telegram
+        returns conflicts and commands behave unpredictably. So a standby
+        server waits here (checking every 20s) until it's marked active
+        before it ever starts polling. A fresh main with no CLEXER_API_URL
+        set, or an empty/never-configured shared store, starts immediately —
+        this only kicks in once multi-server mode is actually in use."""
+        if CLEXER_API_URL:
+            _warned = False
+            while not is_active_server():
+                if not _warned:
+                    print(f"[SERVER] '{SERVER_NAME}' is in STANDBY (active server: "
+                          f"'{get_active_server_name()}') — NOT polling Telegram. "
+                          f"Run /server {SERVER_NAME} from the active server to switch.")
+                    _warned = True
+                time.sleep(20)
+            print(f"[SERVER] '{SERVER_NAME}' is ACTIVE — starting Telegram polling now.")
+        command_listener()
+    threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
