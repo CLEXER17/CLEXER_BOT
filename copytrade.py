@@ -35,6 +35,13 @@ except ImportError:
 _DATA_DIR      = os.getenv("DATA_DIR", ".")
 CT_FILE        = os.path.join(_DATA_DIR, "copy_users.json")
 CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
+# Shared cross-server sync — same api.py service every main/co-server points at.
+# When set, the users DB is pulled from / pushed to this central store instead of
+# (in addition to) the local JSON file, so multiple Railway deployments always
+# see the same copy-on/off, tier, and API-key state regardless of which one is
+# currently the active trading server.
+_API_URL       = os.getenv("CLEXER_API_URL", "").rstrip("/")
+_API_SECRET    = os.getenv("PUSH_STATE_SECRET", "")
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
@@ -277,11 +284,27 @@ def _calc_auto_leverage(size_usdt: float, risk_usdt: float, entry: float, sl: fl
 
 def load():
     global _db
+    # Central store first (shared across every server pointed at the same
+    # CLEXER_API_URL) — falls back to the local file if unreachable/unset,
+    # so the bot still works standalone with no central store configured.
+    if _API_URL:
+        try:
+            hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
+            r = requests.get(f"{_API_URL}/kv/ct_users", headers=hdrs, timeout=8)
+            if r.ok:
+                body = r.json()
+                if body.get("found"):
+                    _db = body["data"]
+                    print(f"[CT] Loaded {len(_db)} copy users from central store")
+                    _load_last_signal()
+                    return
+        except Exception as e:
+            print(f"[CT] Central load error (falling back to local file): {e}")
     try:
         if os.path.exists(CT_FILE):
             with open(CT_FILE) as f:
                 _db = json.load(f)
-            print(f"[CT] Loaded {len(_db)} copy users")
+            print(f"[CT] Loaded {len(_db)} copy users from local file")
     except Exception as e:
         print(f"[CT] Load error: {e}"); _db = {}
     _load_last_signal()
@@ -292,6 +315,12 @@ def _save():
             json.dump(_db, f, indent=2)
     except Exception as e:
         print(f"[CT] Save error: {e}")
+    if _API_URL:
+        try:
+            hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
+            requests.post(f"{_API_URL}/kv/ct_users", json=_db, headers=hdrs, timeout=8)
+        except Exception as e:
+            print(f"[CT] Central save error: {e}")
 
 def _get(cid: str) -> dict:
     return _db.get(str(cid), {})
@@ -480,10 +509,16 @@ def _record_pnl(user: dict, pnl: float):
 
 # ─── COPY TRADE MIRROR ACTIONS ────────────────────────────────────────────────
 
+_is_active = True  # set by bot.py from is_active_server() — False = standby,
+                   # this server must never place/modify/close a real BingX order.
+
 def _users_with_copy(share_free: bool = True) -> list[tuple[str, dict, str, str]]:
     """Yield (cid, user, api_key, api_secret) for all active copy users.
     share_free=False excludes free-tier users — used when a signal didn't make
-    today's free-channel quota, so free users only ever copy what free channels got."""
+    today's free-channel quota, so free users only ever copy what free channels got.
+    Returns nothing at all while this server is in standby (multi-server failover)."""
+    if not _is_active:
+        return []
     out = []
     for cid, user in list(_db.items()):
         if not user.get("copy_on") or not user.get("connected") or user.get("paused_by_admin"):
