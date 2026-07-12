@@ -8898,6 +8898,19 @@ def main():
                 if not _weekend_sleep_notified:
                     _weekend_sleep_notified = True
                     send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — BingX orders still active.\n\n<i>🛡️ Capital protected</i>")
+                    # Flush Friday's daily recap right now instead of waiting for the
+                    # post-midnight window — if the process restarts/goes down anytime
+                    # during the weekend (Railway restart, credit limit, etc.), the
+                    # in-memory _daily_tracker would be wiped before ever reaching that
+                    # check, and Friday's report would silently never go out.
+                    global _daily_summary_last_sent_date
+                    _today_marker = now_ist().strftime("%Y-%m-%d")
+                    if _daily_summary_last_sent_date != _today_marker and _daily_tracker.get("trades"):
+                        try:
+                            _send_daily_summary()
+                            _daily_summary_last_sent_date = _today_marker
+                        except Exception as e:
+                            print(f"  [DAILY SUMMARY] weekend-sleep flush error: {e}")
                 time.sleep(60); continue
             elif _weekend_sleep_notified:
                 _weekend_sleep_notified = False
