@@ -6198,7 +6198,9 @@ Reasoning: [one line]"""
                 vol    = float(d.get("volume", 0))
 
                 # Ask Claude for brief analysis
-                resp = _claude_client().messages.create(
+                # /coin ALWAYS uses direct Anthropic API — never Aerolink,
+                # regardless of the BTC/scan gateway toggles.
+                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                     model=SCAN_MODEL, max_tokens=700,
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
