@@ -1106,7 +1106,7 @@ def _smallcaps(text: str) -> str:
     'entry zone' -> 'Eɴᴛʀʏ Zᴏɴᴇ'. Numbers, symbols, and emoji pass through untouched."""
     return " ".join(_sc_word(w) for w in text.split(" "))
 
-_TAG_OR_URL_RE = re.compile(r'(<[^>]+>|https?://\S+)')
+_TAG_OR_URL_RE = re.compile(r'(<[^>]+>|https?://\S+|/[A-Za-z_][A-Za-z0-9_]{0,31}(?:@\w+)?)')
 
 def _stylize_all(text: str) -> str:
     """Apply the small-caps house style to an ENTIRE outgoing message, safely:
@@ -1135,6 +1135,8 @@ def _stylize_all(text: str) -> str:
             out.append(p)
         elif p.startswith("http://") or p.startswith("https://"):
             out.append(p)
+        elif re.fullmatch(r'/[A-Za-z_][A-Za-z0-9_]{0,31}(?:@\w+)?', p):
+            out.append(p)
         else:
             if pre_depth > 0 or code_depth > 0:
                 out.append(p)
@@ -1144,6 +1146,28 @@ def _stylize_all(text: str) -> str:
 
 _CARD_BORDER   = "࿇" + "═" * 33 + "࿇"
 _CARD_DIVIDER  = "┈" * 26
+
+def _clean_markdown_for_telegram(text: str, max_chars: int = 1400) -> str:
+    """Strip/convert Claude's raw markdown into clean Telegram HTML:
+    - '## Headers' / '### Headers' -> plain text (no literal #'s)
+    - '**bold**' -> real <b>bold</b>
+    - '---' horizontal-rule lines -> removed entirely
+    - Truncates gracefully at the last full sentence/line instead of
+      cutting mid-word, and adds a trailing ellipsis when truncated."""
+    text = text.strip()
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-_*]{3,}\s*$', '', text, flags=re.MULTILINE)
+    text = _html.escape(text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    if len(text) > max_chars:
+        cut = text[:max_chars]
+        last_nl = cut.rfind('\n')
+        last_period = cut.rfind('. ')
+        cut_point = max(last_nl, last_period)
+        if cut_point > max_chars * 0.5:
+            cut = cut[:cut_point + 1]
+        text = cut.rstrip() + " …"
+    return text
 
 def _card(title: str, sections: list) -> str:
     """Build a bordered/emojified Telegram card.
@@ -6379,7 +6403,8 @@ Reasoning: [one line]"""
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
                 analysis = _claude_text(resp)
-                analysis_lines = [l for l in analysis[:900].split(chr(10)) if l.strip()]
+                analysis_clean = _clean_markdown_for_telegram(analysis)
+                analysis_lines = [l for l in analysis_clean.split(chr(10)) if l.strip()]
                 emoji = "🟢" if change >= 0 else "🔴"
                 card = _card("Coin Analysis", [
                     [f"{emoji} <b>{sym}</b>  🕐 {ist_str()}"],
@@ -6387,7 +6412,7 @@ Reasoning: [one line]"""
                      f"📊 24ʜ: H:${high24:,.6g}  L:${low24:,.6g}",
                      f"📦 Vᴏʟ: ${vol/1e6:.1f}M"],
                     [f"🧠 <b>Claude Analysis</b>"] +
-                    [f"<i>{_html.escape(l)}</i>" for l in analysis_lines],
+                    [f"<i>{l}</i>" for l in analysis_lines],
                     [f"🛡️ <i>Capital protected</i>"],
                 ])
                 send_reply(cid, card)
