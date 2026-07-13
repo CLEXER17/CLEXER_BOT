@@ -1074,6 +1074,63 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
+def bingx_klines_for(symbol: str, interval: str, limit: int = 100):
+    """Generic BingX kline/candle fetch for ANY symbol (not just the main SYMBOL).
+    No TradingView dependency — pure BingX REST. Returns list of dicts
+    [{t,o,h,l,c,v}, ...] oldest-to-newest, or [] on failure."""
+    try:
+        r = requests.get(
+            "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=10).json()
+        rows = r.get("data", [])
+        if not rows:
+            return []
+        out = []
+        for row in rows:
+            if isinstance(row, dict):
+                out.append({
+                    "t": int(float(row.get("time") or row.get("openTime") or 0)),
+                    "o": float(row.get("open", 0)),
+                    "h": float(row.get("high", 0)),
+                    "l": float(row.get("low", 0)),
+                    "c": float(row.get("close", 0)),
+                    "v": float(row.get("volume", 0)),
+                })
+        out.sort(key=lambda x: x["t"])
+        return out
+    except Exception as e:
+        print(f"  [BINGX KLINES] {symbol} {interval}: {e}")
+        return []
+
+
+def bingx_simple_ta(symbol: str):
+    """Lightweight technical context for /coin, built entirely from BingX kline data
+    (no TradingView). Returns a dict with swing high/low over the last N 1H candles
+    and EMA20/EMA50 on 1H closes, or {} if data unavailable."""
+    candles = bingx_klines_for(symbol, "1h", 60)
+    if len(candles) < 20:
+        return {}
+    closes = [c["c"] for c in candles]
+
+    def ema(vals, period):
+        k = 2 / (period + 1)
+        e = vals[0]
+        for v in vals[1:]:
+            e = v * k + e * (1 - k)
+        return e
+
+    recent20 = candles[-20:]
+    swing_high = max(c["h"] for c in recent20)
+    swing_low  = min(c["l"] for c in recent20)
+    return {
+        "swing_high_20h": swing_high,
+        "swing_low_20h": swing_low,
+        "ema20_1h": ema(closes, 20) if len(closes) >= 20 else None,
+        "ema50_1h": ema(closes, 50) if len(closes) >= 50 else None,
+    }
+
+
 def _claude_client(kind: str = "btc", attempt: int = 0):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the separate AEROLINK_API_KEY +
@@ -6197,8 +6254,19 @@ Reasoning: [one line]"""
                 low24  = float(d.get("lowPrice",  0))
                 vol    = float(d.get("volume", 0))
 
+                # Real technical context from BingX kline data (NOT TradingView) --
+                # 20x 1H swing high/low + EMA20/EMA50 on 1H closes.
+                ta = bingx_simple_ta(sym)
+                ta_block = ""
+                if ta:
+                    ta_block = (
+                        f"20H Swing High/Low: ${ta['swing_high_20h']:,.6g} / ${ta['swing_low_20h']:,.6g}\n"
+                        f"EMA20 (1H): ${ta['ema20_1h']:,.6g}"
+                        + (f"  |  EMA50 (1H): ${ta['ema50_1h']:,.6g}\n" if ta.get('ema50_1h') else "\n")
+                    )
+
                 # Ask Claude for brief analysis
-                # /coin ALWAYS uses direct Anthropic API — never Aerolink,
+                # /coin ALWAYS uses direct Anthropic API -- never Aerolink,
                 # regardless of the BTC/scan gateway toggles.
                 resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
                     model=SCAN_MODEL, max_tokens=700,
@@ -6208,11 +6276,14 @@ Reasoning: [one line]"""
                         f"24h Change: {change:+.2f}%\n"
                         f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
                         f"24h Volume: ${vol:,.0f}\n"
+                        f"{ta_block}"
                         f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
                         f"Give:\n1. Bias: LONG / SHORT / WAIT\n"
                         f"2. Entry zone\n3. SL zone\n4. TP target\n"
                         f"5. Confidence: HIGH / MED / LOW\n"
                         f"6. Reasoning (2-3 lines max)\n\n"
+                        f"Use the 1H swing high/low and EMA levels above as real support/"
+                        f"resistance references for entry/SL/TP zones -- don't just guess a plain % offset.\n"
                         f"Be practical and concise. No fluff."}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
