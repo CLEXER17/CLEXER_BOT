@@ -1074,6 +1074,53 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
+_SMALLCAPS_MAP = {
+    'a':'ᴀ','b':'ʙ','c':'ᴄ','d':'ᴅ','e':'ᴇ','f':'ꜰ','g':'ɢ','h':'ʜ','i':'ɪ',
+    'j':'ᴊ','k':'ᴋ','l':'ʟ','m':'ᴍ','n':'ɴ','o':'ᴏ','p':'ᴘ','q':'ǫ','r':'ʀ',
+    's':'ꜱ','t':'ᴛ','u':'ᴜ','v':'ᴠ','w':'ᴡ','x':'x','y':'ʏ','z':'ᴢ',
+}
+
+def _smallcaps(text: str) -> str:
+    """Convert plain text to 'Title-cap + small-caps body' style, e.g.
+    'entry zone' -> 'Eɴᴛʀʏ Zᴏɴᴇ'. Numbers, symbols, and emoji pass through untouched."""
+    words = text.split(" ")
+    out_words = []
+    for w in words:
+        if not w:
+            out_words.append(w); continue
+        chars = list(w)
+        first_done = False
+        rebuilt = []
+        for ch in chars:
+            if ch.isalpha():
+                if not first_done:
+                    rebuilt.append(ch.upper())
+                    first_done = True
+                else:
+                    rebuilt.append(_SMALLCAPS_MAP.get(ch.lower(), ch))
+            else:
+                rebuilt.append(ch)
+        out_words.append("".join(rebuilt))
+    return " ".join(out_words)
+
+_CARD_BORDER   = "࿇" + "═" * 33 + "࿇"
+_CARD_DIVIDER  = "┈" * 26
+
+def _card(title: str, sections: list) -> str:
+    """Build a bordered/emojified Telegram card.
+    sections: list of section-lines-lists; a divider is inserted between sections.
+    Each line in a section should already include any HTML (<b>, <i>) and emoji —
+    only _smallcaps() the label portion yourself before passing it in."""
+    out = [_CARD_BORDER, f"✦ {_smallcaps(title)} ✦", _CARD_BORDER, ""]
+    for i, section in enumerate(sections):
+        for line in section:
+            out.append(f"┃ {line}")
+        if i < len(sections) - 1:
+            out.append(_CARD_DIVIDER)
+    out.append(_CARD_BORDER)
+    return "\n".join(out)
+
+
 def bingx_klines_for(symbol: str, interval: str, limit: int = 100):
     """Generic BingX kline/candle fetch for ANY symbol (not just the main SYMBOL).
     No TradingView dependency — pure BingX REST. Returns list of dicts
@@ -3534,31 +3581,27 @@ def fmt_scan_signal(t: dict) -> str:
         zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = f"#ID{int(t.get('created_at', time.time()))}"
-        return (
-            f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term\n\n"
-            f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
-            f"⏳ Signal Details:\n"
-            f"Target 1: <b>{tp1:,.4g}</b>\n"
-            f"Target 2: <b>{tp2:,.4g}</b>\n\n"
-            f"🔺 Stop-Loss: <b>{sl:,.4g}</b>\n"
-            f"💡 After reaching the first target you can put the rest of the position to breakeven.\n\n"
-            f"🔎 Signal ID: <i>{sig_id}</i>\n\n"
-            f"✨ <i>🛡️ Capital protected</i>"
-        )
+        return _card("Signal", [
+            [f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term"],
+            [f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>"],
+            [f"🎯 Tᴀʀɢᴇᴛ 1: <b>{tp1:,.4g}</b>",
+             f"🏆 Tᴀʀɢᴇᴛ 2: <b>{tp2:,.4g}</b>",
+             f"🔺 Sᴛᴏᴘ-Lᴏꜱꜱ: <b>{sl:,.4g}</b>"],
+            [f"💡 Aꜰᴛᴇʀ TP1, ᴍᴏᴠᴇ ʀᴇꜱᴛ ᴛᴏ ʙʀᴇᴀᴋᴇᴠᴇɴ.",
+             f"🔎 Sɪɢɴᴀʟ ID: <i>{sig_id}</i>"],
+            [f"🛡️ <i>Capital protected</i>"],
+        ])
 
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
-    return (
-        f"<b>📣 #{coin}-USDT</b>\n"
-        f"<b>{'─'*22}</b>\n\n"
-        f" SCAN SIGNAL  |  <b>S{ver}</b>\n"
-        f"  🕐 {ist_str()}\n\n"
-        f"{arrow} — <b>MARKET ENTRY</b>\n\n"
-        f"🎯 Entry: <b>{entry:,.4g}</b>\n"
-        f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
-        f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
-        f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
-        f"✨ <i>🛡️ Capital protected</i>"
-    )
+    return _card("Scan Signal", [
+        [f"📣 <b>#{coin}-USDT</b>  |  <b>S{ver}</b>  🕐 {ist_str()}"],
+        [f"{arrow} — <b>MARKET ENTRY</b>"],
+        [f"🎯 Eɴᴛʀʏ: <b>{entry:,.4g}</b>",
+         f"🛑 SL: <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)",
+         f"💰 TP1: <b>{tp1:,.4g}</b>",
+         f"🏆 TP2: <b>{tp2:,.4g}</b>"],
+        [f"🛡️ <i>Capital protected</i>"],
+    ])
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     if t is None: t = scan_active_trade
@@ -6288,14 +6331,18 @@ Reasoning: [one line]"""
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
                 analysis = _claude_text(resp)
+                analysis_lines = [l for l in analysis[:900].split(chr(10)) if l.strip()]
                 emoji = "🟢" if change >= 0 else "🔴"
-                send_reply(cid,
-                    f"{emoji} <b>{sym} Analysis</b>  {ist_str()}\n\n"
-                    f"Price:  <b>${price:,.6g}</b>  ({change:+.2f}%)\n"
-                    f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
-                    f"Vol:   ${vol/1e6:.1f}M\n\n"
-                    f"<b>Claude Analysis:</b>\n<i>{_html.escape(analysis[:900])}</i>\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                card = _card("Coin Analysis", [
+                    [f"{emoji} <b>{sym}</b>  🕐 {ist_str()}"],
+                    [f"💰 Price: <b>${price:,.6g}</b>  ({change:+.2f}%)",
+                     f"📊 24ʜ: H:${high24:,.6g}  L:${low24:,.6g}",
+                     f"📦 Vᴏʟ: ${vol/1e6:.1f}M"],
+                    [f"🧠 <b>Claude Analysis</b>"] +
+                    [f"<i>{_html.escape(l)}</i>" for l in analysis_lines],
+                    [f"🛡️ <i>Capital protected</i>"],
+                ])
+                send_reply(cid, card)
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()
