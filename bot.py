@@ -1080,28 +1080,67 @@ _SMALLCAPS_MAP = {
     's':'ꜱ','t':'ᴛ','u':'ᴜ','v':'ᴠ','w':'ᴡ','x':'x','y':'ʏ','z':'ᴢ',
 }
 
+def _sc_word(w: str) -> str:
+    """One word -> 'First cap + small-caps body', preserving any ORIGINAL
+    uppercase letters later in the word as-is (so 'WhatsApp' -> 'WʜᴀᴛꜱAᴘᴘ',
+    matching the requested house style). Non-letters pass through untouched."""
+    if not w:
+        return w
+    first_done = False
+    out = []
+    for ch in w:
+        if ch.isalpha():
+            if not first_done:
+                out.append(ch.upper())
+                first_done = True
+            elif ch.isupper():
+                out.append(ch)  # keep original caps (e.g. the 'A' in WhatsApp)
+            else:
+                out.append(_SMALLCAPS_MAP.get(ch.lower(), ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
 def _smallcaps(text: str) -> str:
     """Convert plain text to 'Title-cap + small-caps body' style, e.g.
     'entry zone' -> 'Eɴᴛʀʏ Zᴏɴᴇ'. Numbers, symbols, and emoji pass through untouched."""
-    words = text.split(" ")
-    out_words = []
-    for w in words:
-        if not w:
-            out_words.append(w); continue
-        chars = list(w)
-        first_done = False
-        rebuilt = []
-        for ch in chars:
-            if ch.isalpha():
-                if not first_done:
-                    rebuilt.append(ch.upper())
-                    first_done = True
-                else:
-                    rebuilt.append(_SMALLCAPS_MAP.get(ch.lower(), ch))
+    return " ".join(_sc_word(w) for w in text.split(" "))
+
+_TAG_OR_URL_RE = re.compile(r'(<[^>]+>|https?://\S+)')
+
+def _stylize_all(text: str) -> str:
+    """Apply the small-caps house style to an ENTIRE outgoing message, safely:
+    HTML tags (<b>, <i>, <a href=...>, <pre>, <code>, <tg-emoji ...>, etc.) and raw
+    URLs are left completely untouched; content inside <pre>...</pre> (tables/
+    monospace dumps) and <code>...</code> (copyable/tappable literal commands like
+    '/coin ETH') is also left untouched so nothing breaks when tapped or copied.
+    Everything else (plain visible text) gets word-by-word small-caps styling."""
+    if not text:
+        return text
+    parts = _TAG_OR_URL_RE.split(text)
+    out = []
+    pre_depth = 0
+    code_depth = 0
+    for p in parts:
+        if p.startswith("<") and p.endswith(">"):
+            lo = p.lower()
+            if lo.startswith("<pre"):
+                pre_depth += 1
+            elif lo.startswith("</pre"):
+                pre_depth = max(0, pre_depth - 1)
+            elif lo.startswith("<code"):
+                code_depth += 1
+            elif lo.startswith("</code"):
+                code_depth = max(0, code_depth - 1)
+            out.append(p)
+        elif p.startswith("http://") or p.startswith("https://"):
+            out.append(p)
+        else:
+            if pre_depth > 0 or code_depth > 0:
+                out.append(p)
             else:
-                rebuilt.append(ch)
-        out_words.append("".join(rebuilt))
-    return " ".join(out_words)
+                out.append(re.sub(r"[A-Za-z]+", lambda m: _sc_word(m.group(0)), p))
+    return "".join(out)
 
 _CARD_BORDER   = "࿇" + "═" * 33 + "࿇"
 _CARD_DIVIDER  = "┈" * 26
@@ -3017,10 +3056,19 @@ PREMIUM_EMOJI_MAP = {
 }
 PREMIUM_EMOJIS_ENABLED = True
 
+BOT_TEXT_STYLE_ENABLED = True  # set False to instantly revert every message to plain text
+
 def _apply_premium_emojis(text: str) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
-    version; everyone else still sees the plain glyph (Telegram's own fallback)."""
-    if not PREMIUM_EMOJIS_ENABLED or not text:
+    version; everyone else still sees the plain glyph (Telegram's own fallback).
+    Also applies the bot-wide small-caps house style to all plain text first —
+    this one function is the shared choke point every send path calls through,
+    so styling it here covers /coin, scan signals, menus, and everything else."""
+    if not text:
+        return text
+    if BOT_TEXT_STYLE_ENABLED:
+        text = _stylize_all(text)
+    if not PREMIUM_EMOJIS_ENABLED:
         return text
     for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
         if glyph in text:
