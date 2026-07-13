@@ -6380,11 +6380,12 @@ Reasoning: [one line]"""
                         + (f"  |  EMA50 (1H): ${ta['ema50_1h']:,.6g}\n" if ta.get('ema50_1h') else "\n")
                     )
 
-                # Ask Claude for brief analysis
+                # Ask Claude for structured analysis (strict JSON so we can build
+                # a fixed, reliable template instead of parsing freeform text).
                 # /coin ALWAYS uses direct Anthropic API -- never Aerolink,
                 # regardless of the BTC/scan gateway toggles.
                 resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model=SCAN_MODEL, max_tokens=700,
+                    model=SCAN_MODEL, max_tokens=800,
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
                         f"Current Price: ${price:,.6g}\n"
@@ -6393,29 +6394,77 @@ Reasoning: [one line]"""
                         f"24h Volume: ${vol:,.0f}\n"
                         f"{ta_block}"
                         f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
-                        f"Give:\n1. Bias: LONG / SHORT / WAIT\n"
-                        f"2. Entry zone\n3. SL zone\n4. TP target\n"
-                        f"5. Confidence: HIGH / MED / LOW\n"
-                        f"6. Reasoning (2-3 lines max)\n\n"
                         f"Use the 1H swing high/low and EMA levels above as real support/"
-                        f"resistance references for entry/SL/TP zones -- don't just guess a plain % offset.\n"
-                        f"Be practical and concise. No fluff."}])
+                        f"resistance references -- don't just guess a plain % offset.\n\n"
+                        f"Respond with ONLY raw JSON (no markdown fences, no preamble), exactly this shape:\n"
+                        f'{{"bias":"LONG/SHORT/WAIT","bias_note":"short qualifier e.g. Wait for confirmation",'
+                        f'"entry_zone":"e.g. 1791 - 1798","stop_loss":"e.g. 1806","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
+                        f'"confidence":"HIGH/MEDIUM/LOW",'
+                        f'"reason":["2-4 short bullet points, plain strings, no leading bullet char"],'
+                        f'"practical_note_intro":"one short sentence",'
+                        f'"practical_note_options":["option 1 text","option 2 text"],'
+                        f'"btc_weak":"effect on thesis if BTC stays weak",'
+                        f'"btc_strong":"effect on thesis if BTC bounces strong"}}'}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
-                analysis = _claude_text(resp)
-                analysis_clean = _clean_markdown_for_telegram(analysis)
-                analysis_lines = [l for l in analysis_clean.split(chr(10)) if l.strip()]
+                raw = _claude_text(resp).strip()
+                raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip(), flags=re.MULTILINE).strip()
                 emoji = "🟢" if change >= 0 else "🔴"
-                card = _card("Coin Analysis", [
-                    [f"{emoji} <b>{sym}</b>  🕐 {ist_str()}"],
-                    [f"💰 Price: <b>${price:,.6g}</b>  ({change:+.2f}%)",
-                     f"📊 24ʜ: H:${high24:,.6g}  L:${low24:,.6g}",
-                     f"📦 Vᴏʟ: ${vol/1e6:.1f}M"],
-                    [f"🧠 <b>Claude Analysis</b>"] +
-                    [f"<i>{l}</i>" for l in analysis_lines],
-                    [f"🛡️ <i>Capital protected</i>"],
-                ])
-                send_reply(cid, card)
+
+                try:
+                    j = json.loads(raw)
+
+                    reason_lines = "\n".join(f"• {r}" for r in j.get("reason", []))
+                    opts = j.get("practical_note_options", [])
+                    opt_block = ""
+                    if len(opts) >= 1:
+                        opt_block += f"① {opts[0]}"
+                    if len(opts) >= 2:
+                        opt_block += f"\n\nOR\n\n② {opts[1]}"
+
+                    body = (
+                        f"╔════════════════════════════╗\n"
+                        f"📊 COIN ANALYSIS\n"
+                        f"╚════════════════════════════╝\n\n"
+                        f"{emoji} {sym.replace('-', '/')}\n"
+                        f"📅 {ist_str()}\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"💰 Price: ${price:,.6g} ({change:+.2f}%)\n"
+                        f"📈 24H High: ${high24:,.6g}\n"
+                        f"📉 24H Low: ${low24:,.6g}\n"
+                        f"📦 Volume: ${vol/1e6:.1f}M\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"🧠 AI Analysis\n\n"
+                        f"📍 Bias: {j.get('bias','?')} ({j.get('bias_note','')})\n\n"
+                        f"🎯 Entry Zone:\n{j.get('entry_zone','?')}\n\n"
+                        f"🛑 Stop Loss:\n{j.get('stop_loss','?')}\n\n"
+                        f"🎯 Targets:\n• TP1: {j.get('tp1','?')}\n• TP2: {j.get('tp2','?')}\n\n"
+                        f"📊 Confidence:\n{j.get('confidence','?')}\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"<blockquote>📖 Reason\n\n{reason_lines}</blockquote>\n\n"
+                        f"<blockquote>⚠️ Practical Note\n\n{j.get('practical_note_intro','')}\n\n{opt_block}</blockquote>\n\n"
+                        f"<blockquote>📌 Keep an eye on BTC:\n"
+                        f"• Weak BTC → {j.get('btc_weak','')}\n"
+                        f"• Strong BTC bounce → {j.get('btc_strong','')}</blockquote>\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"🛡️ Capital Protected"
+                    )
+                    send_reply(cid, body)
+                except Exception:
+                    # Fallback: JSON parse failed -- show raw analysis in the card style
+                    # so /coin never just silently fails.
+                    analysis_clean = _clean_markdown_for_telegram(raw)
+                    analysis_lines = [l for l in analysis_clean.split(chr(10)) if l.strip()]
+                    card = _card("Coin Analysis", [
+                        [f"{emoji} <b>{sym}</b>  🕐 {ist_str()}"],
+                        [f"💰 Price: <b>${price:,.6g}</b>  ({change:+.2f}%)",
+                         f"📊 24ʜ: H:${high24:,.6g}  L:${low24:,.6g}",
+                         f"📦 Vᴏʟ: ${vol/1e6:.1f}M"],
+                        [f"🧠 <b>Claude Analysis</b>"] +
+                        [f"<i>{l}</i>" for l in analysis_lines],
+                        [f"🛡️ <i>Capital protected</i>"],
+                    ])
+                    send_reply(cid, card)
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()
