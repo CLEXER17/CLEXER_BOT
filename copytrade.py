@@ -125,6 +125,8 @@ SCAN_CT_ENABLED = True   # legacy combined flag — kept for backward compat, no
 BTC_CT_ENABLED   = True  # toggle with /ctpause btc|on|off — copy trade for BTC signals
 SCAN1_CT_ENABLED = True  # toggle with /ctpause scan1|on|off — copy trade for Scan1 signals
 SCAN2_CT_ENABLED = True  # toggle with /ctpause scan2|on|off — copy trade for Scan2 signals
+DEMO1_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan1 signals
+DEMO2_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan2 signals
 
 def _now_ist() -> str:
     return (datetime.now(timezone.utc) + IST).strftime("%d %b %I:%M %p IST")
@@ -1073,6 +1075,14 @@ def set_scan2_ct(enabled: bool):
     global SCAN2_CT_ENABLED
     SCAN2_CT_ENABLED = enabled
 
+def set_demo1_ct(enabled: bool):
+    global DEMO1_CT_ENABLED
+    DEMO1_CT_ENABLED = enabled
+
+def set_demo2_ct(enabled: bool):
+    global DEMO2_CT_ENABLED
+    DEMO2_CT_ENABLED = enabled
+
 def is_scan_tp1_hit(symbol: str) -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
     for cid, user, _, _ in _users_with_copy():
@@ -1093,6 +1103,10 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float, share_free: boo
         return ["[CT] Scan1 copy trade is OFF"]
     if ver == 2 and not SCAN2_CT_ENABLED:
         return ["[CT] Scan2 copy trade is OFF"]
+    if ver == 3 and not DEMO1_CT_ENABLED:
+        return ["[CT] Demo1 copy trade is OFF"]
+    if ver == 4 and not DEMO2_CT_ENABLED:
+        return ["[CT] Demo2 copy trade is OFF"]
 
     with _scan_signal_lock:
         return _on_scan_signal_inner(signal_dict, symbol, price, share_free)
@@ -1654,11 +1668,15 @@ def on_scan_entry_missed(symbol: str):
 _SCAN_SLOTS = {
     1: ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_"],  # scan1 — 6 slots
     2: ["scan_", "s2b_"],                                   # scan2 — 2 slots
+    3: ["d1_", "d1b_"],                                     # demo1 — 2 slots
+    4: ["d2_", "d2b_"],                                     # demo2 — 2 slots
 }
-_ALL_SLOT_PREFIXES = ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_", "scan_", "s2b_"]
+_ALL_SLOT_PREFIXES = ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_", "scan_", "s2b_", "d1_", "d1b_", "d2_", "d2b_"]
 
 def _pfx(ver: int) -> str:
     """Legacy — returns slot A prefix for scan version."""
+    if ver == 3: return "d1_"
+    if ver == 4: return "d2_"
     return "s1_" if ver == 1 else "scan_"
 
 def _free_slot(user: dict, ver: int) -> str:
@@ -1676,11 +1694,10 @@ def _pfx_for_symbol(user: dict, symbol: str) -> str:
     return ""
 
 def _ver_for_symbol(user: dict, symbol: str) -> int:
-    """Find which scan version owns this symbol (1 or 2). Returns 0 if not found."""
-    for p in _SCAN_SLOTS[1]:
-        if user.get(f"{p}symbol") == symbol: return 1
-    for p in _SCAN_SLOTS[2]:
-        if user.get(f"{p}symbol") == symbol: return 2
+    """Find which scan version owns this symbol (1=scan1, 2=scan2, 3=demo1, 4=demo2). Returns 0 if not found."""
+    for ver, prefixes in _SCAN_SLOTS.items():
+        for p in prefixes:
+            if user.get(f"{p}symbol") == symbol: return ver
     return 0
 
 def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):

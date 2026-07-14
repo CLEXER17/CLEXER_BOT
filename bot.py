@@ -624,6 +624,7 @@ def _snapshot_scan_settings() -> dict:
         "scan1_test_schedule": list(SCAN1_TEST_SCHEDULE),
         "btc_ct_enabled": ct.BTC_CT_ENABLED, "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
         "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
+        "demo1_ct_enabled": ct.DEMO1_CT_ENABLED, "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
     }
 
 def _apply_scan_settings(d: dict):
@@ -644,6 +645,7 @@ def _apply_scan_settings(d: dict):
     SCAN1_TEST_SCHEDULE = d.get("scan1_test_schedule", SCAN1_TEST_SCHEDULE)
     ct.BTC_CT_ENABLED = d.get("btc_ct_enabled", ct.BTC_CT_ENABLED); ct.SCAN1_CT_ENABLED = d.get("scan1_ct_enabled", ct.SCAN1_CT_ENABLED)
     ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", ct.SCAN2_CT_ENABLED)
+    ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", ct.DEMO1_CT_ENABLED); ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", ct.DEMO2_CT_ENABLED)
 CONTACT_ADMIN_ENABLED  = True   # shows/hides the "Contact Admin" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_ENABLED = True   # shows/hides the "Signal Channel" button for users — toggled via /adminlinks
 SIGNAL_CHANNEL_LINK    = ""     # admin-provided channel link — set/removed via /adminlinks
@@ -2913,6 +2915,8 @@ def load_settings():
             ct.BTC_CT_ENABLED   = d.get("btc_ct_enabled",   True)
             ct.SCAN1_CT_ENABLED = d.get("scan1_ct_enabled", True)
             ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", True)
+            ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", False)
+            ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -2958,6 +2962,8 @@ def save_settings():
             "btc_ct_enabled":   ct.BTC_CT_ENABLED,
             "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
             "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
+            "demo1_ct_enabled": ct.DEMO1_CT_ENABLED,
+            "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -7214,6 +7220,8 @@ def send_ctpause_screen(chat_id, message_id=None):
     _btc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
     _scan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
     _scan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
+    _demo1_flag = "✅ ON" if ct.DEMO1_CT_ENABLED else "❌ OFF"
+    _demo2_flag = "✅ ON" if ct.DEMO2_CT_ENABLED else "❌ OFF"
     rows = [
         [{"text": f"₿ BTC Copy Trade  {_btc_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctbtc_on"},
@@ -7224,12 +7232,19 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🔍 Scan2 Copy Trade  {_scan2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctscan2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctscan2_off"}],
+        [{"text": f"🧪 Demo1 Copy Trade  {_demo1_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctdemo1_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctdemo1_off"}],
+        [{"text": f"🧪 Demo2 Copy Trade  {_demo2_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctdemo2_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctdemo2_off"}],
         [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>📋 Copy Trade — By Type</b>\n\n"
-        "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals.\n"
-        "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.</blockquote>",
+        "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, Scan2, Demo1 and Demo2 signals.\n"
+        "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.\n"
+        "Demo1/Demo2 are OFF by default — turning them ON places REAL orders on users' accounts for demo signals too.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_go_screen(chat_id, message_id=None):
@@ -7905,6 +7920,14 @@ def command_listener():
                         ct.set_scan2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctscan2_off" and cb_is_scanadmin:
                         ct.set_scan2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctdemo1_on" and cb_is_scanadmin:
+                        ct.set_demo1_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctdemo1_off" and cb_is_scanadmin:
+                        ct.set_demo1_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctdemo2_on" and cb_is_scanadmin:
+                        ct.set_demo2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctdemo2_off" and cb_is_scanadmin:
+                        ct.set_demo2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
@@ -8633,7 +8656,10 @@ Reasoning: [one line — name the exact swing candle level used]"""
 _demo_monitor_lock = __import__("threading").Lock()
 
 def _demo_monitor_loop():
-    """Background thread: monitors demo trades every 30s. No copytrade — only TG alerts."""
+    """Background thread: monitors demo trades every 30s. Sends TG alerts and,
+    when Demo1/Demo2 copy trade is turned ON, closes matching real copy-user
+    positions on TP1/TP2/SL/timeout via ct.on_scan_tp1/tp2/sl (symbol-based lookup —
+    safe no-op if no copy user has that symbol open in a demo slot)."""
     import re as _re
     while True:
         try:
@@ -8683,6 +8709,7 @@ def _demo_monitor_loop():
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
+                        ct.on_scan_tp2(sym)
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
@@ -8698,6 +8725,7 @@ def _demo_monitor_loop():
                               f"❌ {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
+                        ct.on_scan_sl(sym)
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -8713,6 +8741,7 @@ def _demo_monitor_loop():
                               f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
+                        ct.on_scan_tp1(sym)
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
@@ -8725,6 +8754,7 @@ def _demo_monitor_loop():
                               f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
+                        ct.on_scan_sl(sym)
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
@@ -8744,7 +8774,8 @@ def _run_test_scan_and_clear_flag(cid, scan_ver: int):
         _scan_run_mode["test"] = None
 
 def _run_test_scan(cid, scan_ver: int):
-    """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. No copytrade."""
+    """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
+    trade orders too, if Demo1/Demo2 copy trade is turned ON."""
     import re as _re, math as _math
     lbl = "S1" if scan_ver == 1 else "S2"
     send_admin(f"🧪 <b>[TEST] Scalp V1 Scan{lbl}</b>  {ist_str()}\n\nDemo scan starting...\n\n<i>- CLEXER TEST -</i>")
@@ -9017,6 +9048,13 @@ def _run_test_scan(cid, scan_ver: int):
                 "signal_time":_ist_str_now(),"entry_price":scan_entry,
                 "sl_price":scan_sl,"tp1_price":scan_tp1,"tp2_price":scan_tp2,
                 "entry_trigger_time":_ist_str_now(),"result":"open"})
+            _demo_ver = 3 if scan_ver == 1 else 4
+            _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
+            if _demo_ct_on:
+                _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
+                             "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}
+                ct_results = ct.on_scan_signal(_demo_sd, chosen_sym, cp, True)
+                send_admin(f"📋 <b>Demo{scan_ver} Copy Trade ({chosen_sym}):</b>\n" + "\n".join(ct_results[:5]))
             signal_placed = True
             print(f"  [TEST] {chosen_sym} {scan_signal_val} demo signal placed — scan{lbl}")
 
