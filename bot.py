@@ -3620,6 +3620,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     ver_lbl = f"S{t.get('ver', 1)}"
     entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
     _hdr = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
+    _hdr_notime = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}"
     msgs = {
         "ENTRY_HIT": _scan_box(
             "Entry Triggered", _hdr("🚀", "Entry Triggered"),
@@ -3629,26 +3630,26 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
              [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
         ),
         "TP1_HIT": _scan_box(
-            "TP1 Hit", _hdr("💰", "TP1 Hit"),
+            "TP1 Hit", _hdr_notime("💰", "TP1 Hit"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: {tp1:,.4g}",
               f"🛡️ {_smallcaps_title('SL moved to BE')}: {entry:,.4g}",
               f"🚀 {_smallcaps_title('Riding TP2')}: {tp2:,.4g}..."]],
         ),
         "TP2_HIT": _scan_box(
-            "TP2 Hit", _hdr("🏆", "TP2 Hit"),
+            "TP2 Hit", _hdr_notime("🏆", "TP2 Hit"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
               f"✅ {_smallcaps_title('Full profit')} @ TP2: {tp2:,.4g}"]],
         ),
         "SL_HIT": (
             _scan_box(
-                "BE Exit", _hdr("🛡️", "BE Exit"),
+                "BE Exit", _hdr_notime("🛡️", "BE Exit"),
                 [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
                   f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} {entry:,.4g}",
                   f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
                  [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
             ) if t.get("tp1_hit") else
             _scan_box(
-                "SL Hit", _hdr("🚨", "SL Hit"),
+                "SL Hit", _hdr_notime("🚨", "SL Hit"),
                 [[f"❌ {_smallcaps_title('Loss on')} {sig} @ {entry:,.4g}"],
                  [f"⛔ {_smallcaps_title('Do not open any trade now')}",
                   f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
