@@ -439,7 +439,7 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
     _sl_line4 = _smallcaps_title("The goal isn't to win every trade—it's to stay consistently profitable over time.")
     _sl_line5 = _smallcaps_title("Crypto Clexer focuses on strategy, discipline, and long-term results.")
     text = _apply_premium_emojis(
-        f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>  🕐 {ist_str()}\n"
+        f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>\n"
         f"❌ Loss on {side} @ {entry_str}\n\n"
         f"<blockquote>{_sl_line1}\n\n"
         f"✅ {_sl_line2}\n"
