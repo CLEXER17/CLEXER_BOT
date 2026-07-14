@@ -5333,7 +5333,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         return
 
     elif cmd == "/test" and is_scanadmin:
-        global TEST_SCAN_ENABLED, _test_scan1_last_hour, _test_scan2_last_hour
+        global _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
         _test_btns = {"inline_keyboard": [
             [{"text": "🟢  ON", "callback_data": "test_on"}, {"text": "🔴  OFF", "callback_data": "test_off"}],
