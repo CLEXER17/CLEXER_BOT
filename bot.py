@@ -9074,9 +9074,15 @@ def _run_test_scan(cid, scan_ver: int):
                 "signal_time":_ist_str_now(),"entry_price":scan_entry,
                 "sl_price":scan_sl,"tp1_price":scan_tp1,"tp2_price":scan_tp2,
                 "entry_trigger_time":_ist_str_now(),"result":"open"})
+            # Copy trade only mirrors demo signals that were actually shown in
+            # VIP/Free (same rule real Scan1/Scan2 already follow) — regular-grid
+            # and unverified-special-time demo signals place no real orders,
+            # even when Demo1/Demo2 copy trade is turned ON.
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
-            if _demo_ct_on:
+            _demo_trigger_hm = _scan_trigger_hm.get("test")
+            _demo_is_unverified = _demo1_tier_routed and _demo_trigger_hm in _SCAN_SPECIAL_NO_COPY.get("test", set())
+            if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified:
                 _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}
                 ct_results = ct.on_scan_signal(_demo_sd, chosen_sym, cp, True)
