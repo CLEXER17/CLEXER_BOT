@@ -2944,6 +2944,27 @@ PREMIUM_EMOJI_MAP = {
 }
 PREMIUM_EMOJIS_ENABLED = True
 
+_SMALLCAPS_MAP = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyz",
+    "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
+)
+
+def _smallcaps_title(text: str) -> str:
+    """'Likely breaks' -> 'Lɪᴋᴇʟʏ Bʀᴇᴀᴋꜱ' — first letter of each word stays a
+    normal capital, the rest render in small-caps unicode glyphs. Acronyms
+    (AI, BTC, EMA20, ...) are left untouched instead of getting mangled."""
+    words = text.split(" ")
+    out = []
+    for w in words:
+        if not w:
+            out.append(w); continue
+        letters = [c for c in w if c.isalpha()]
+        if letters and len(letters) > 1 and all(c.isupper() for c in letters):
+            out.append(w)  # acronym — leave as-is
+        else:
+            out.append(w[0].upper() + w[1:].lower().translate(_SMALLCAPS_MAP))
+    return " ".join(out)
+
 def _apply_premium_emojis(text: str) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
     version; everyone else still sees the plain glyph (Telegram's own fallback)."""
@@ -6230,9 +6251,10 @@ Reasoning: [one line]"""
                 low24  = float(d.get("lowPrice",  0))
                 vol    = float(d.get("volume", 0))
 
-                # Ask Claude for brief analysis
+                # Ask Claude for structured analysis (JSON, not freeform prose)
                 resp = _claude_client().messages.create(
                     model=SCAN_MODEL, max_tokens=700,
+                    system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
                         f"Current Price: ${price:,.6g}\n"
@@ -6240,22 +6262,58 @@ Reasoning: [one line]"""
                         f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
                         f"24h Volume: ${vol:,.0f}\n"
                         f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
-                        f"Give:\n1. Bias: LONG / SHORT / WAIT\n"
-                        f"2. Entry zone\n3. SL zone\n4. TP target\n"
-                        f"5. Confidence: HIGH / MED / LOW\n"
-                        f"6. Reasoning (2-3 lines max)\n\n"
-                        f"Be practical and concise. No fluff."}])
+                        f'Return this exact JSON shape:\n'
+                        f'{{"bias":"LONG|SHORT|WAIT","entry_zone":"e.g. 1791-1798",'
+                        f'"sl":"e.g. 1846","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
+                        f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
+                        f'"practical_note":"1-2 sentences, the actual trade plan in plain words",'
+                        f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
+                        f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
-                analysis = _claude_text(resp)
-                emoji = "🟢" if change >= 0 else "🔴"
-                send_reply(cid,
-                    f"{emoji} <b>{sym} Analysis</b>  {ist_str()}\n\n"
-                    f"Price:  <b>${price:,.6g}</b>  ({change:+.2f}%)\n"
-                    f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
-                    f"Vol:   ${vol/1e6:.1f}M\n\n"
-                    f"<b>Claude Analysis:</b>\n<i>{_html.escape(analysis[:900])}</i>\n\n"
-                    f"<i>🛡️ Capital protected</i>")
+                import json as _cjson, re as _cre
+                _raw = _claude_text(resp)
+                _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
+                a = _cjson.loads(_m.group()) if _m else {}
+                bias  = str(a.get("bias","WAIT")).upper()
+                conf  = str(a.get("confidence","LOW")).upper()
+                arrow = "🟢" if change >= 0 else "🔴"
+                bias_emoji = "🟢" if bias == "LONG" else ("🔴" if bias == "SHORT" else "🟡")
+                reasoning = a.get("reasoning") or []
+                btc_watch = a.get("btc_watch") or []
+                _reason_lines = "\n".join(f"• {_smallcaps_title(str(r))}" for r in reasoning) or f"• {_smallcaps_title('No clear structure yet')}"
+                _btc_lines = "\n".join(f"• {_smallcaps_title(str(b))}" for b in btc_watch)
+                coin_disp = sym.replace("-", "/")
+                _BORDER = "࿇═════════════════════════════════࿇"
+                _DIV    = "━━━━━━━━━━━━━━━━━━━━"
+                text_out = (
+                    f"{_BORDER}\n"
+                    f"✦ {_smallcaps_title('Coin Analysis')} ✦\n"
+                    f"{_BORDER}\n\n"
+                    f"{arrow} {coin_disp}\n"
+                    f"📅 {ist_str()}\n\n"
+                    f"{_DIV}\n\n"
+                    f"💰 {_smallcaps_title('Price')}: ${price:,.6g} ({change:+.2f}%)\n"
+                    f"📈 24ʜ {_smallcaps_title('High')}: ${high24:,.6g}\n"
+                    f"📉 24ʜ {_smallcaps_title('Low')}: ${low24:,.6g}\n"
+                    f"📦 {_smallcaps_title('Volume')}: ${vol/1e6:.1f}M\n\n"
+                    f"{_DIV}\n\n"
+                    f"🧠 {_smallcaps_title('AI Analysis')}\n\n"
+                    f"📍 {_smallcaps_title('Bias')}: {bias_emoji} {bias}\n\n"
+                    f"🎯 {_smallcaps_title('Entry Zone')}:\n{a.get('entry_zone','—')}\n\n"
+                    f"🛑 {_smallcaps_title('Stop Loss')}:\n{a.get('sl','—')}\n\n"
+                    f"🎯 {_smallcaps_title('Targets')}:\n"
+                    f"• TP1: {a.get('tp1','—')}\n"
+                    f"• TP2: {a.get('tp2','—')}\n\n"
+                    f"📊 {_smallcaps_title('Confidence')}:\n{conf}\n\n"
+                    f"{_DIV}\n\n"
+                    f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
+                    f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(str(a.get('practical_note','Size small — low-conviction setup.')))}</blockquote>\n\n"
+                    + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
+                    + f"{_DIV}\n\n"
+                    f"🛡️ {_smallcaps_title('Capital Protected')}"
+                )
+                send_reply(cid, text_out)
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()
