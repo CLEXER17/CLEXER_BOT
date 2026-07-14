@@ -641,6 +641,30 @@ DATA_DIR           = os.getenv("DATA_DIR", ".")
 CLEXER_API_URL     = os.getenv("CLEXER_API_URL", "").rstrip("/")
 PUSH_STATE_SECRET  = os.getenv("PUSH_STATE_SECRET", "")
 
+def _central_get(path: str, timeout: int = 8, retries: int = 3, delay: float = 2.5):
+    """GET from CLEXER_API_URL with a couple of retries — several startup pulls
+    firing in quick succession can hit a freshly-started Postgres before it's
+    fully ready (transient 503), which would otherwise silently make a server
+    start blank instead of restoring its real shared data."""
+    if not CLEXER_API_URL:
+        return None
+    hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(f"{CLEXER_API_URL}{path}", headers=hdrs, timeout=timeout)
+            if r.ok:
+                return r
+            last_err = f"HTTP {r.status_code} — {r.text[:150]}"
+            if r.status_code < 500:
+                return r  # 4xx won't fix itself with a retry (e.g. bad secret)
+        except Exception as e:
+            last_err = str(e)
+        if attempt < retries - 1:
+            time.sleep(delay)
+    print(f"[CENTRAL] {path} failed after {retries} attempts: {last_err}")
+    return None
+
 # ── Multi-server active/standby switch ─────────────────────────────────────────
 # Each Railway deployment (main, co-server1, co-server2, ...) sets its own unique
 # SERVER_NAME. Only ONE name is ever the "active" one at a time — stored centrally
@@ -732,21 +756,14 @@ def load_users():
     global registered_users, user_usernames, blocked_users
     try:
         d = None
-        if CLEXER_API_URL:
-            try:
-                hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-                r = requests.get(f"{CLEXER_API_URL}/kv/registered_users", headers=hdrs, timeout=8)
-                if r.ok:
-                    body = r.json()
-                    if body.get("found"):
-                        d = body["data"]
-                        print("[USERS] Loaded from central store")
-                    else:
-                        print("[USERS] Central store reachable but no data found yet")
-                else:
-                    print(f"[USERS] Central load HTTP {r.status_code} — {r.text[:150]}")
-            except Exception as e:
-                print(f"[USERS] Central load error (falling back to local file): {e}")
+        r = _central_get("/kv/registered_users")
+        if r is not None and r.ok:
+            body = r.json()
+            if body.get("found"):
+                d = body["data"]
+                print("[USERS] Loaded from central store")
+            else:
+                print("[USERS] Central store reachable but no data found yet")
         if d is None and os.path.exists(USER_DB_FILE):
             with open(USER_DB_FILE, "r") as f:
                 d = json.load(f)
@@ -1108,20 +1125,14 @@ def _pull_csv_central(key: str, path: str) -> bool:
     Never overwrites a CSV that already exists locally."""
     if os.path.exists(path) or not CLEXER_API_URL:
         return False
-    try:
-        hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-        r = requests.get(f"{CLEXER_API_URL}/kv/{key}", headers=hdrs, timeout=15)
-        if r.ok:
-            body = r.json()
-            if body.get("found") and body["data"].get("csv"):
-                with open(path, "w", encoding="utf-8", newline="") as f:
-                    f.write(body["data"]["csv"])
-                print(f"  [LOG] Restored {key} from central store")
-                return True
-        else:
-            print(f"  [LOG] Central pull HTTP {r.status_code} ({key}) — {r.text[:150]}")
-    except Exception as e:
-        print(f"  [LOG] Central pull error ({key}): {e}")
+    r = _central_get(f"/kv/{key}", timeout=15)
+    if r is not None and r.ok:
+        body = r.json()
+        if body.get("found") and body["data"].get("csv"):
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(body["data"]["csv"])
+            print(f"  [LOG] Restored {key} from central store")
+            return True
     return False
 
 def _ensure_csv():
@@ -1221,21 +1232,14 @@ def save_active_trade():
 def load_active_trade():
     global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
     d = None
-    if CLEXER_API_URL:
-        try:
-            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-            r = requests.get(f"{CLEXER_API_URL}/push_state", headers=hdrs, timeout=8)
-            if r.ok:
-                body = r.json()
-                if body:  # non-empty dict — central store has real state
-                    d = body
-                    print("[STATE] Loaded from central store")
-                else:
-                    print("[STATE] Central store reachable but empty (no /syncup run yet?)")
-            else:
-                print(f"[STATE] Central load HTTP {r.status_code} — {r.text[:150]}")
-        except Exception as e:
-            print(f"[STATE] Central load error (falling back to local file): {e}")
+    r = _central_get("/push_state")
+    if r is not None and r.ok:
+        body = r.json()
+        if body:  # non-empty dict — central store has real state
+            d = body
+            print("[STATE] Loaded from central store")
+        else:
+            print("[STATE] Central store reachable but empty (no /syncup run yet?)")
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     try:
         if d is None and os.path.exists(path):
@@ -2791,21 +2795,14 @@ def load_settings():
         d = None
         # Central store first (shared across every server pointed at the same
         # CLEXER_API_URL) — falls back to the local file if unreachable/unset.
-        if CLEXER_API_URL:
-            try:
-                hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-                r = requests.get(f"{CLEXER_API_URL}/kv/bot_settings", headers=hdrs, timeout=8)
-                if r.ok:
-                    body = r.json()
-                    if body.get("found"):
-                        d = body["data"]
-                        print("[SETTINGS] Loaded from central store")
-                    else:
-                        print("[SETTINGS] Central store reachable but no data found yet")
-                else:
-                    print(f"[SETTINGS] Central load HTTP {r.status_code} — {r.text[:150]}")
-            except Exception as e:
-                print(f"[SETTINGS] Central load error (falling back to local file): {e}")
+        r = _central_get("/kv/bot_settings")
+        if r is not None and r.ok:
+            body = r.json()
+            if body.get("found"):
+                d = body["data"]
+                print("[SETTINGS] Loaded from central store")
+            else:
+                print("[SETTINGS] Central store reachable but no data found yet")
         if d is None and os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
         if d is not None:

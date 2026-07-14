@@ -42,6 +42,30 @@ CT_ENCRYPT_KEY = os.getenv("CT_ENCRYPT_KEY", "")
 # currently the active trading server.
 _API_URL       = os.getenv("CLEXER_API_URL", "").rstrip("/")
 _API_SECRET    = os.getenv("PUSH_STATE_SECRET", "")
+
+def _central_get(path: str, timeout: int = 8, retries: int = 3, delay: float = 2.5):
+    """GET from _API_URL with a couple of retries — several startup pulls firing
+    in quick succession can hit a freshly-started Postgres before it's fully
+    ready (transient 503), which would otherwise silently start this server
+    blank instead of restoring its real shared users DB."""
+    if not _API_URL:
+        return None
+    hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(f"{_API_URL}{path}", headers=hdrs, timeout=timeout)
+            if r.ok:
+                return r
+            last_err = f"HTTP {r.status_code} — {r.text[:150]}"
+            if r.status_code < 500:
+                return r
+        except Exception as e:
+            last_err = str(e)
+        if attempt < retries - 1:
+            time.sleep(delay)
+    print(f"[CT] central GET {path} failed after {retries} attempts: {last_err}")
+    return None
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
@@ -234,18 +258,11 @@ def _load_last_signal():
     global _last_signal
     try:
         d = None
-        if _API_URL:
-            try:
-                hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
-                r = requests.get(f"{_API_URL}/kv/ct_last_signal", headers=hdrs, timeout=8)
-                if r.ok:
-                    body = r.json()
-                    if body.get("found"):
-                        d = body["data"]
-                else:
-                    print(f"[CT] signal central load HTTP {r.status_code} — {r.text[:150]}")
-            except Exception as e:
-                print(f"[CT] signal central load error (falling back to local file): {e}")
+        r = _central_get("/kv/ct_last_signal")
+        if r is not None and r.ok:
+            body = r.json()
+            if body.get("found"):
+                d = body["data"]
         if d is None and os.path.exists(_SIGNAL_FILE):
             with open(_SIGNAL_FILE) as f:
                 d = json.load(f)
@@ -303,23 +320,16 @@ def load():
     # Central store first (shared across every server pointed at the same
     # CLEXER_API_URL) — falls back to the local file if unreachable/unset,
     # so the bot still works standalone with no central store configured.
-    if _API_URL:
-        try:
-            hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
-            r = requests.get(f"{_API_URL}/kv/ct_users", headers=hdrs, timeout=8)
-            if r.ok:
-                body = r.json()
-                if body.get("found"):
-                    _db = body["data"]
-                    print(f"[CT] Loaded {len(_db)} copy users from central store")
-                    _load_last_signal()
-                    return
-                else:
-                    print("[CT] Central store reachable but no data found yet")
-            else:
-                print(f"[CT] Central load HTTP {r.status_code} — {r.text[:150]}")
-        except Exception as e:
-            print(f"[CT] Central load error (falling back to local file): {e}")
+    r = _central_get("/kv/ct_users")
+    if r is not None and r.ok:
+        body = r.json()
+        if body.get("found"):
+            _db = body["data"]
+            print(f"[CT] Loaded {len(_db)} copy users from central store")
+            _load_last_signal()
+            return
+        else:
+            print("[CT] Central store reachable but no data found yet")
     try:
         if os.path.exists(CT_FILE):
             with open(CT_FILE) as f:
