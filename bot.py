@@ -4486,9 +4486,12 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
+        _next_test  = _next_special_time("test")
         _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
         _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
         _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
+        _next_ts1_line = f"⏰ Next TS1:        <b>{_next_test}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS1:        <b>OFF</b>\n"
+        _next_ts2_line = f"⏰ Next TS2:        <b>{_next_test}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS2:        <b>OFF</b>\n"
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
@@ -4529,6 +4532,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             + f"\n{_next_btc_line}"
             f"{_next_s1_line}"
             f"{_next_s2_line}"
+            f"{_next_ts1_line}"
+            f"{_next_ts2_line}"
             f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
             + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
