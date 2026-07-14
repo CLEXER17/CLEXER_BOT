@@ -315,6 +315,15 @@ def _calc_auto_leverage(size_usdt: float, risk_usdt: float, entry: float, sl: fl
     lev = max(1, min(125, int(lev)))  # clamp 1–125, round down
     return lev
 
+def _lev_display(user: dict) -> str:
+    """Leverage line for status screens. In auto-risk mode there's no fixed
+    leverage — it's recalculated per trade from that trade's SL distance — so
+    showing the stale manual-mode `leverage` field there is misleading."""
+    risk = user.get("risk_usdt")
+    if risk:
+        return f"Auto-risk: <b>${risk}</b> max loss (leverage varies per trade)"
+    return f"Leverage: <b>{user.get('leverage', 10)}x</b>"
+
 def load():
     global _db
     # Central store first (shared across every server pointed at the same
@@ -2100,10 +2109,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 send_reply_fn(chat_id, "Size must be $0.25–$10,000 USDT"); return
             user = _get(cid) or _default_user(username)
             user["size_usdt"] = size; _set(cid, user)
+            _exposure_line = (f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n"
+                if not user.get("risk_usdt") else "")
             send_reply_fn(chat_id,
                 f"<b>Trade Size Set</b>\n\n"
-                f"<blockquote>Size: <b>${size} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n"
-                f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n\n"
+                f"<blockquote>Size: <b>${size} USDT</b> | {_lev_display(user)}\n"
+                f"{_exposure_line}\n"
                 f"<i>🛡️ Capital protected</i></blockquote>")
         except: send_reply_fn(chat_id, "Please enter a valid number.")
 
@@ -2191,7 +2202,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             st = "✅ ON" if user.get("copy_on") else "❌ OFF"
             send_reply_fn(chat_id,
                 f"<b>Copy Trade</b>\n\n<blockquote>Status: <b>{st}</b>\n\n"
-                f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | Leverage: <b>{user.get('leverage', 10)}x</b>\n\n"
+                f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | {_lev_display(user)}\n\n"
                 f""
                 f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
@@ -2206,7 +2217,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 "<b>Copy Trade ON ✅</b>\n\n"
                 "<blockquote>"
                 f"Auto-copying all CLEXER signals.\n"
-                f"Size: <b>${user['size_usdt']} USDT</b> | Leverage: <b>{user['leverage']}x</b>\n\n"
+                f"Size: <b>${user['size_usdt']} USDT</b> | {_lev_display(user)}\n\n"
                 "<b>⚠️ Warning:</b> Real money. You are responsible for your trades.\n\n"
                 "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         elif state == "off":
@@ -2296,7 +2307,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"Win rate:     <b>{wr}</b>\n\n"
             f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
             f"{_bingx_pnl_line}"
-            f"Size: ${user.get('size_usdt',50)} | Leverage: {user.get('leverage',10)}x\n\n"
+            f"Size: ${user.get('size_usdt',50)} | {_lev_display(user)}\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_myh_btns)
 
     elif cmd == "/nocopy":
