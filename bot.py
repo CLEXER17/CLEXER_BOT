@@ -1136,8 +1136,8 @@ def _claude_text(msg):
 # and cleared right after that scan cycle finishes (see _scan_run_mode below).
 _SCAN_SPECIAL = {
     "scan1": {(3,2), (5,23), (9,2), (16,15)},
-    "scan2": {(2,23), (11,27), (12,3), (13,7), (5,23), (5,28), (9,27), (10,7)},
-    "test":  {(3,24), (8,24), (15,24), (17,10), (0,0), (1,9), (2,24), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    "scan2": {(2,23), (11,27), (12,3), (13,7), (5,23), (5,28), (6,23), (9,27), (10,7)},
+    "test":  {(3,24), (8,24), (15,24), (17,10), (0,0), (0,9), (0,27), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 # Newly-added special times that aren't verified yet — they still post to
 # VIP/Free like any special time, but copytrade must NEVER auto-execute real
