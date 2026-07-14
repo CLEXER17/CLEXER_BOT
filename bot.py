@@ -1149,7 +1149,7 @@ _SCAN_SPECIAL_NO_COPY = {
     "test":  {(0,0), (1,9), (2,24), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 _scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
-_scan_trigger_hm = {"scan1": None, "scan2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
+_scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
@@ -1159,7 +1159,14 @@ def _ai_model(kind: str = "btc") -> str:
 
 def _ai_aerolink(kind: str = "btc") -> bool:
     _mode = _scan_run_mode.get(kind)
-    if _mode == "special": return False
+    if _mode == "special":
+        # Unverified special times (still tier-routed, still Opus 4.8, but not
+        # yet trusted for copytrade) go through Aerolink instead of Direct —
+        # only verified/proven special times get the Direct API gateway.
+        _trigger_hm = _scan_trigger_hm.get(kind)
+        if _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
+            return True
+        return False
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
@@ -9143,6 +9150,7 @@ def main():
                 print(f"  [TEST-SCAN] Demo Scan1 at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["test"] = "special" if _cur_hm in _SCAN_SPECIAL["test"] else "regular"
+                    _scan_trigger_hm["test"] = _cur_hm
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # Test demo Scan2: same trigger slots, mirrors real Scan2's schedule
