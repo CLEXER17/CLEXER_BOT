@@ -25,6 +25,27 @@ INTEGRATION HOOKS (add to bot.py at each event):
 import os, json, time, hmac, hashlib, base64, requests, threading
 from datetime import datetime, timezone, timedelta
 
+_SMALLCAPS_MAP = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyz",
+    "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
+)
+
+def _sc(text: str) -> str:
+    """'Trade Size Set' -> 'Tʀᴀᴅᴇ Sɪᴢᴇ Sᴇᴛ' — first letter of each word stays a
+    normal capital, the rest render in small-caps unicode glyphs. Acronyms
+    (BingX, USDT, ...) that are already all-uppercase are left untouched."""
+    words = text.split(" ")
+    out = []
+    for w in words:
+        if not w:
+            out.append(w); continue
+        letters = [c for c in w if c.isalpha()]
+        if letters and len(letters) > 1 and all(c.isupper() for c in letters):
+            out.append(w)
+        else:
+            out.append(w[0].upper() + w[1:].lower().translate(_SMALLCAPS_MAP))
+    return " ".join(out)
+
 try:
     from cryptography.fernet import Fernet
     HAS_CRYPTO = True
@@ -342,8 +363,8 @@ def _lev_display(user: dict) -> str:
     showing the stale manual-mode `leverage` field there is misleading."""
     risk = user.get("risk_usdt")
     if risk:
-        return f"Auto-risk: <b>${risk}</b> max loss (leverage varies per trade)"
-    return f"Leverage: <b>{user.get('leverage', 10)}x</b>"
+        return f"{_sc('Auto-risk')}: <b>${risk}</b> {_sc('max loss (leverage varies per trade)')}"
+    return f"{_sc('Leverage')}: <b>{user.get('leverage', 10)}x</b>"
 
 def load():
     global _db
@@ -2084,14 +2105,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
     if cmd == "/connect":
         if len(parts) < 3:
             send_reply_fn(chat_id,
-                "<b>Connect BingX</b>\n\n<blockquote>Usage:\n<code>/connect API_KEY API_SECRET</code>\n\n"
-                "⚠️ Use <b>read + trade</b> permissions only.\nNEVER enable withdrawal on the key.</blockquote>")
+                f"<b>Connect BingX</b>\n\n<blockquote>{_sc('Usage')}:\n<code>/connect API_KEY API_SECRET</code>\n\n"
+                f"⚠️ {_sc('Use read + trade permissions only. NEVER enable withdrawal on the key.')}</blockquote>")
             return
         api_key = parts[1]; api_secret = parts[2]
-        send_reply_fn(chat_id, "Testing API key...")
+        send_reply_fn(chat_id, f"{_sc('Testing API key')}...")
         ok, err = _test_api(api_key, api_secret)
         if not ok:
-            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n<blockquote>{err}\n\nCheck key + secret and try again.</blockquote>")
+            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n<blockquote>{err}\n\n{_sc('Check key + secret and try again.')}</blockquote>")
             return
         user = _get(cid) or _default_user(username)
         user["api_key_enc"]    = _encrypt(api_key)
@@ -2101,68 +2122,68 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         _set(cid, user)
         send_reply_fn(chat_id,
             "<b>BingX Connected!</b> 🎉\n\n"
-            "<blockquote>✅ API verified\n\n"
-            f"Margin per trade: <b>${user['size_usdt']} USDT</b>\n"
-            f"Leverage: <b>{user['leverage']}x</b> (manual)\n\n"
-            "Head to your Copy Trade menu to turn on auto-copy, change your margin per trade, "
-            "set an auto-risk max loss ⭐, or set leverage manually.\n\n"
+            f"<blockquote>✅ {_sc('API verified')}\n\n"
+            f"{_sc('Margin per trade')}: <b>${user['size_usdt']} USDT</b>\n"
+            f"{_sc('Leverage')}: <b>{user['leverage']}x</b> ({_sc('manual')})\n\n"
+            f"{_sc('Head to your Copy Trade menu to turn on auto-copy, change your margin per trade, set an auto-risk max loss')} ⭐ "
+            f"{_sc('or set leverage manually.')}\n\n"
             "<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/disconnect":
         user = _get(cid)
         if not user:
-            send_reply_fn(chat_id, "No account connected."); return
+            send_reply_fn(chat_id, f"{_sc('No account connected.')}"); return
         user["api_key_enc"] = ""; user["api_secret_enc"] = ""
         user["connected"] = False; user["copy_on"] = False
         _set(cid, user)
         send_reply_fn(chat_id,
             "<b>Disconnected</b>\n\n"
-            "<blockquote>BingX API keys removed. Open positions remain open — manage them manually.\n\n"
+            f"<blockquote>{_sc('BingX API keys removed. Open positions remain open — manage them manually.')}\n\n"
             "<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setsize":
         if len(parts) < 2:
             user = _get(cid) or {}
             send_reply_fn(chat_id,
-                f"Current size: <b>${user.get('size_usdt',50)} USDT</b>\n\n"
-                f"Tap the Set Margin button and enter your new amount."); return
+                f"{_sc('Current size')}: <b>${user.get('size_usdt',50)} USDT</b>\n\n"
+                f"{_sc('Tap the Set Margin button and enter your new amount.')}"); return
         try:
             size = float(parts[1])
             if size < 0.25 or size > 10000:
-                send_reply_fn(chat_id, "Size must be $0.25–$10,000 USDT"); return
+                send_reply_fn(chat_id, _sc("Size must be $0.25–$10,000 USDT")); return
             user = _get(cid) or _default_user(username)
             user["size_usdt"] = size; _set(cid, user)
-            _exposure_line = (f"Exposure per trade: <b>${size * user['leverage']:.0f}</b>\n"
+            _exposure_line = (f"{_sc('Exposure per trade')}: <b>${size * user['leverage']:.0f}</b>\n"
                 if not user.get("risk_usdt") else "")
             send_reply_fn(chat_id,
                 f"<b>Trade Size Set</b>\n\n"
-                f"<blockquote>Size: <b>${size} USDT</b> | {_lev_display(user)}\n"
+                f"<blockquote>{_sc('Size')}: <b>${size} USDT</b> | {_lev_display(user)}\n"
                 f"{_exposure_line}\n"
                 f"<i>🛡️ Capital protected</i></blockquote>")
-        except: send_reply_fn(chat_id, "Please enter a valid number.")
+        except: send_reply_fn(chat_id, _sc("Please enter a valid number."))
 
     elif cmd == "/setleverage":
         if len(parts) < 2:
             user = _get(cid) or {}
             send_reply_fn(chat_id,
-                f"Current leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                f"Tap the Set Leverage button to change it.\n\n"
-                f"<i>Tip: Auto-Risk sets your leverage automatically based on max loss per trade — try that instead.</i>"); return
+                f"{_sc('Current leverage')}: <b>{user.get('leverage',10)}x</b>\n\n"
+                f"{_sc('Tap the Set Leverage button to change it.')}\n\n"
+                f"<i>{_sc('Tip: Auto-Risk sets your leverage automatically based on max loss per trade — try that instead.')}</i>"); return
         try:
             lev = int(parts[1])
             if lev < 1 or lev > 125:
-                send_reply_fn(chat_id, "Leverage must be 1–125x"); return
+                send_reply_fn(chat_id, _sc("Leverage must be 1–125x")); return
             user = _get(cid) or _default_user(username)
             user["leverage"] = lev
             user["risk_usdt"] = None  # disable auto-leverage mode when manual leverage is set
             _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Leverage Set (Manual)</b>\n\n"
-                f"<blockquote>Leverage: <b>{lev}x</b> | Size: <b>${user['size_usdt']} USDT</b>\n"
-                f"Exposure per trade: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
-                f"<i>Auto-risk mode disabled. Turn it back on anytime from the Auto-Risk button.</i>\n\n"
+                f"<blockquote>{_sc('Leverage')}: <b>{lev}x</b> | {_sc('Size')}: <b>${user['size_usdt']} USDT</b>\n"
+                f"{_sc('Exposure per trade')}: <b>${user['size_usdt']*lev:.0f}</b>\n\n"
+                f"<i>{_sc('Auto-risk mode disabled. Turn it back on anytime from the Auto-Risk button.')}</i>\n\n"
                 f"<i>🛡️ Capital protected</i></blockquote>")
-        except: send_reply_fn(chat_id, "Please enter a valid whole number.")
+        except: send_reply_fn(chat_id, _sc("Please enter a valid whole number."))
 
     elif cmd == "/setrisk":
         if len(parts) < 2:
@@ -2172,16 +2193,16 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             if risk:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
-                    f"<blockquote>Max loss per trade: <b>${risk} USDT</b>\n"
-                    f"Margin per trade: <b>${size} USDT</b>\n\n"
-                    f"Leverage is auto-calculated each trade based on SL distance.\n\n"
-                    f"Tap the Auto-Risk button to change your max loss, or turn it off there.\n\n"
+                    f"<blockquote>{_sc('Max loss per trade')}: <b>${risk} USDT</b>\n"
+                    f"{_sc('Margin per trade')}: <b>${size} USDT</b>\n\n"
+                    f"{_sc('Leverage is auto-calculated each trade based on SL distance.')}\n\n"
+                    f"{_sc('Tap the Auto-Risk button to change your max loss, or turn it off there.')}\n\n"
                     f"<i>🛡️ Capital protected</i></blockquote>")
             else:
                 send_reply_fn(chat_id,
                     f"<b>Auto-Risk Mode: OFF</b>\n\n"
-                    f"<blockquote>Currently using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
-                    f"Tap the Auto-Risk button to turn it on and set your max loss per trade ($1–$50).\n\n"
+                    f"<blockquote>{_sc('Currently using manual leverage')}: <b>{user.get('leverage',10)}x</b>\n\n"
+                    f"{_sc('Tap the Auto-Risk button to turn it on and set your max loss per trade ($1–$50).')}\n\n"
                     f"<i>🛡️ Capital protected</i></blockquote>")
             return
         arg = parts[1].lower()
@@ -2191,13 +2212,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Auto-Risk Mode: OFF</b>\n\n"
-                f"<blockquote>Using manual leverage: <b>{user.get('leverage',10)}x</b>\n\n"
+                f"<blockquote>{_sc('Using manual leverage')}: <b>{user.get('leverage',10)}x</b>\n\n"
                 f"<i>🛡️ Capital protected</i></blockquote>")
             return
         try:
             risk = float(arg)
             if risk < 0.25 or risk > 50:
-                send_reply_fn(chat_id, "Risk must be $0.25 – $50 per trade"); return
+                send_reply_fn(chat_id, _sc("Risk must be $0.25 – $50 per trade")); return
             user = _get(cid) or _default_user(username)
             size = user.get("size_usdt", 50)
             user["risk_usdt"] = risk
@@ -2206,14 +2227,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             example_lev = _calc_auto_leverage(size, risk, 100, 98)  # 2% SL example
             send_reply_fn(chat_id,
                 f"<b>Auto-Risk Mode: ON ✅</b>\n\n"
-                f"<blockquote>Max loss per trade: <b>${risk} USDT</b>\n"
-                f"Margin per trade: <b>${size} USDT</b>\n\n"
-                f"<b>How it works:</b>\n"
-                f"Leverage is auto-calculated per trade based on SL distance.\n"
-                f"Example (2% SL): leverage = {example_lev}x → max loss ≈ ${size * example_lev * 0.02:.2f}\n\n"
-                f"<i>Closer SL = higher leverage | Wider SL = lower leverage</i>\n\n"
+                f"<blockquote>{_sc('Max loss per trade')}: <b>${risk} USDT</b>\n"
+                f"{_sc('Margin per trade')}: <b>${size} USDT</b>\n\n"
+                f"<b>{_sc('How it works')}:</b>\n"
+                f"{_sc('Leverage is auto-calculated per trade based on SL distance.')}\n"
+                f"{_sc('Example (2% SL): leverage')} = {example_lev}x → {_sc('max loss')} ≈ ${size * example_lev * 0.02:.2f}\n\n"
+                f"<i>{_sc('Closer SL = higher leverage | Wider SL = lower leverage')}</i>\n\n"
                 f"<i>🛡️ Capital protected</i></blockquote>")
-        except: send_reply_fn(chat_id, "Please enter a valid number.")
+        except: send_reply_fn(chat_id, _sc("Please enter a valid number."))
 
     elif cmd == "/copytrade":
         user = _get(cid)
@@ -2224,30 +2245,30 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user = user or {}
             st = "✅ ON" if user.get("copy_on") else "❌ OFF"
             send_reply_fn(chat_id,
-                f"<b>Copy Trade</b>\n\n<blockquote>Status: <b>{st}</b>\n\n"
-                f"Margin: <b>${user.get('size_usdt', 50)} USDT</b> | {_lev_display(user)}\n\n"
+                f"<b>Copy Trade</b>\n\n<blockquote>{_sc('Status')}: <b>{st}</b>\n\n"
+                f"{_sc('Margin')}: <b>${user.get('size_usdt', 50)} USDT</b> | {_lev_display(user)}\n\n"
                 f""
                 f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
             send_reply_fn(chat_id,
-                "Connect BingX first:\n<code>/connect API_KEY API_SECRET</code>"); return
+                f"{_sc('Connect BingX first')}:\n<code>/connect API_KEY API_SECRET</code>"); return
         if user.get("paused_by_admin"):
-            send_reply_fn(chat_id, "Your copy trade is paused by admin."); return
+            send_reply_fn(chat_id, _sc("Your copy trade is paused by admin.")); return
         state = parts[1].lower()
         if state == "on":
             user["copy_on"] = True; _set(cid, user)
             send_reply_fn(chat_id,
                 "<b>Copy Trade ON ✅</b>\n\n"
                 "<blockquote>"
-                f"Auto-copying all CLEXER signals.\n"
-                f"Size: <b>${user['size_usdt']} USDT</b> | {_lev_display(user)}\n\n"
-                "<b>⚠️ Warning:</b> Real money. You are responsible for your trades.\n\n"
+                f"{_sc('Auto-copying all CLEXER signals.')}\n"
+                f"{_sc('Size')}: <b>${user['size_usdt']} USDT</b> | {_lev_display(user)}\n\n"
+                f"<b>⚠️ {_sc('Warning')}:</b> {_sc('Real money. You are responsible for your trades.')}\n\n"
                 "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         elif state == "off":
             user["copy_on"] = False; _set(cid, user)
             send_reply_fn(chat_id,
-                "<b>Copy Trade OFF ❌</b>\n\n<blockquote>No more auto-copies.\n"
-                "Open positions remain open — manage them on BingX.\n\n"
+                f"<b>Copy Trade OFF ❌</b>\n\n<blockquote>{_sc('No more auto-copies.')}\n"
+                f"{_sc('Open positions remain open — manage them on BingX.')}\n\n"
                 "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
@@ -2257,13 +2278,14 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         if not user or not user.get("connected"):
             _connect_btn = {"inline_keyboard": [[{"text": "🔗  Connect Account", "callback_data": "help_cmd:/connect"}]]}
             send_reply_fn(chat_id,
-                "<b>No Account Connected</b>\n\n<blockquote>Connect your BingX account to see your open position.</blockquote>",
+                f"<b>No Account Connected</b>\n\n<blockquote>{_sc('Connect your BingX account to see your open position.')}</blockquote>",
                 reply_markup=_connect_btn); return
         try:
             api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
             pos = _get_position(api_key, api_secret)
             if not pos:
-                send_reply_fn(chat_id, "<b>No Open Position</b>\n\n<blockquote>You don't have an open position yet.\n\n<i>🛡️ Capital protected</i></blockquote>")
+                _no_pos_line = _sc("You don't have an open position yet.")
+                send_reply_fn(chat_id, f"<b>No Open Position</b>\n\n<blockquote>{_no_pos_line}\n\n<i>🛡️ Capital protected</i></blockquote>")
             else:
                 amt   = float(pos.get("positionAmt", 0))
                 pnl   = float(pos.get("unrealizedProfit", 0))
@@ -2274,12 +2296,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 send_reply_fn(chat_id,
                     f"<b>Your BingX Position</b>\n\n"
                     f"<blockquote>{'🟢' if side=='LONG' else '🔴'} {side} {abs(amt):.4f} BTC\n\n"
-                    f"Entry:    <b>{entry:,.2f}</b>\n"
-                    f"Leverage: <b>{lev}x</b>\n"
-                    f"PnL:      <b>{pnl_s}</b>\n\n"
+                    f"{_sc('Entry')}:    <b>{entry:,.2f}</b>\n"
+                    f"{_sc('Leverage')}: <b>{lev}x</b>\n"
+                    f"{_sc('PnL')}:      <b>{pnl_s}</b>\n\n"
                     f"<i>🛡️ Capital protected</i></blockquote>")
         except Exception as e:
-            send_reply_fn(chat_id, f"Error: {e}")
+            send_reply_fn(chat_id, f"{_sc('Error')}: {e}")
 
     elif cmd == "/mysize":
         user = _get(cid) or {}
@@ -2287,20 +2309,20 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         risk = user.get("risk_usdt")
         lev  = user.get("leverage", 10)
         if risk:
-            lev_line = f"Leverage: <b>Auto (max ${risk} loss/trade)</b>"
-            exp_line = f"Max loss/trade: <b>${risk} USDT</b>"
+            lev_line = f"{_sc('Leverage')}: <b>{_sc('Auto')} (max ${risk} loss/trade)</b>"
+            exp_line = f"{_sc('Max loss/trade')}: <b>${risk} USDT</b>"
         else:
-            lev_line = f"Leverage: <b>{lev}x</b>"
-            exp_line = f"Exposure/trade: <b>${size * lev:.0f}</b>"
+            lev_line = f"{_sc('Leverage')}: <b>{lev}x</b>"
+            exp_line = f"{_sc('Exposure/trade')}: <b>${size * lev:.0f}</b>"
         _size_btns = {"inline_keyboard": [
             [{"text": "💵  Set Size",     "callback_data": "mysize_setsize"},
              {"text": "⚡  Set Leverage", "callback_data": "mysize_setlev"}],
             [{"text": "🛡  Set Risk",     "callback_data": "mysize_setrisk"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Settings</b>\n\n"
-            f"<blockquote>BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
-            f"Copy Trade: <b>{'✅ ON' if user.get('copy_on') else '❌ OFF'}</b>\n"
-            f"Margin per trade: <b>${size} USDT</b>\n"
+            f"<blockquote>{_sc('BingX')}: {'✅ ' + _sc('Connected') if user.get('connected') else '❌ ' + _sc('Not connected')}\n"
+            f"{_sc('Copy Trade')}: <b>{'✅ ON' if user.get('copy_on') else '❌ OFF'}</b>\n"
+            f"{_sc('Margin per trade')}: <b>${size} USDT</b>\n"
             f"{lev_line}\n"
             f"{exp_line}\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_size_btns)
@@ -2318,19 +2340,19 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 _bx_pnl = _fetch_bingx_realized_pnl(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
                 if _bx_pnl is not None:
                     _bx_s = f"+${_bx_pnl:.2f} 🟢" if _bx_pnl > 0 else (f"-${abs(_bx_pnl):.2f} 🔴" if _bx_pnl < 0 else "$0.00")
-                    _bingx_pnl_line = f"BingX Realized PnL (last 90d): <b>{_bx_s}</b>\n\n"
+                    _bingx_pnl_line = f"{_sc('BingX Realized PnL (last 90d)')}: <b>{_bx_s}</b>\n\n"
             except Exception as e:
                 print(f"[CT] /myhistory bingx pnl fetch: {e}")
         _myh_btns = {"inline_keyboard": [[{"text": "🗑 Reset My P&L History", "callback_data": "myhistory_reset"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Copy Trade History</b>\n\n"
-            f"<blockquote>Total trades: <b>{h['total']}</b>\n"
-            f"Wins:         <b>{h['profit']}</b>  (+${h['won_usdt']:.2f})\n"
-            f"Losses:       <b>{h['loss']}</b>  (-${h['lost_usdt']:.2f})\n"
-            f"Win rate:     <b>{wr}</b>\n\n"
-            f"Bot-Tracked PnL: <b>{pnl_s}</b>\n"
+            f"<blockquote>{_sc('Total trades')}: <b>{h['total']}</b>\n"
+            f"{_sc('Wins')}:         <b>{h['profit']}</b>  (+${h['won_usdt']:.2f})\n"
+            f"{_sc('Losses')}:       <b>{h['loss']}</b>  (-${h['lost_usdt']:.2f})\n"
+            f"{_sc('Win rate')}:     <b>{wr}</b>\n\n"
+            f"{_sc('Bot-Tracked PnL')}: <b>{pnl_s}</b>\n"
             f"{_bingx_pnl_line}"
-            f"Size: ${user.get('size_usdt',50)} | {_lev_display(user)}\n\n"
+            f"{_sc('Size')}: ${user.get('size_usdt',50)} | {_lev_display(user)}\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_myh_btns)
 
     elif cmd == "/nocopy":
@@ -2370,11 +2392,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             if nocopy:
                 rows.append([{"text": "🔓  Unblock All", "callback_data": "nocopy_clr:ALL"}])
 
-            blocked_str = (", ".join(f"<b>{c}</b>" for c in nocopy)) if nocopy else "<i>none</i>"
+            blocked_str = (", ".join(f"<b>{c}</b>" for c in nocopy)) if nocopy else f"<i>{_sc('none')}</i>"
             text = (
                 f"🚫 <b>No-Copy Settings</b>\n\n"
-                f"<blockquote>Currently blocked: {blocked_str}\n\n"
-                f"<i>Tap a coin to block/unblock it.\nBlocked coins: bot skips signal, you trade manually.</i></blockquote>"
+                f"<blockquote>{_sc('Currently blocked')}: {blocked_str}\n\n"
+                f"<i>{_sc('Tap a coin to block/unblock it.')}\n{_sc('Blocked coins: bot skips signal, you trade manually.')}</i></blockquote>"
             )
             send_reply_fn(chat_id, text, reply_markup={"inline_keyboard": rows})
 
@@ -2385,15 +2407,15 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             target = parts[2].upper() if len(parts) > 2 else ""
             if target == "ALL":
                 user["nocopy_coins"] = []; _set(cid, user)
-                send_reply_fn(chat_id, "✅ <b>All coins unblocked.</b>\n\n<blockquote>All signals will be copied again.</blockquote>")
+                send_reply_fn(chat_id, f"✅ <b>{_sc('All coins unblocked.')}</b>\n\n<blockquote>{_sc('All signals will be copied again.')}</blockquote>")
             elif target:
                 if target in nocopy:
                     nocopy.remove(target); user["nocopy_coins"] = nocopy; _set(cid, user)
-                    send_reply_fn(chat_id, f"✅ <b>{target} unblocked.</b>")
+                    send_reply_fn(chat_id, f"✅ <b>{target} {_sc('unblocked.')}</b>")
                 else:
-                    send_reply_fn(chat_id, f"ℹ️ <b>{target}</b> was not blocked.")
+                    send_reply_fn(chat_id, f"ℹ️ <b>{target}</b> {_sc('was not blocked.')}")
             else:
-                send_reply_fn(chat_id, "Usage: <code>/nocopy clear BTC</code>")
+                send_reply_fn(chat_id, f"{_sc('Usage')}: <code>/nocopy clear BTC</code>")
             return
 
         # Block the coin
@@ -2401,8 +2423,8 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             nocopy.append(arg); user["nocopy_coins"] = nocopy; _set(cid, user)
         coins_str = ", ".join(f"<b>{c}</b>" for c in nocopy)
         send_reply_fn(chat_id,
-            f"🚫 <b>{arg} blocked</b>\n\n<blockquote>Currently blocked: {coins_str}\n\n"
-            f"To unblock: <code>/nocopy clear {arg}</code></blockquote>")
+            f"🚫 <b>{arg} {_sc('blocked')}</b>\n\n<blockquote>{_sc('Currently blocked')}: {coins_str}\n\n"
+            f"{_sc('To unblock')}: <code>/nocopy clear {arg}</code></blockquote>")
 
     # ── ADMIN COMMANDS ────────────────────────────────────────────────────────
 

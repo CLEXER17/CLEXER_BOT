@@ -3280,91 +3280,80 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
     e   = "🟢" if s["signal"]=="BUY" else "🔴"
-    arr = "📈" if s["signal"]=="BUY" else "📉"
     ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
-    el  = f"🎯 Entry:  <b>{s['entry']:,.0f}</b>"
-    if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
-        el += f"\n   <i>{s['entry_note']}</i>"
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
-    src = s.get("data_source", get_current_source()); mode = s.get("prompt_mode","?")
-    return (f"{e} <b>{s['signal']} - {SYMBOL}</b>  {arr}  {ci}\n"
-        f"🕐 {ist_str()}  |  🌍 {s.get('session',get_session())}\n\n"
-        f"{el}\n"
-        f"🛡️ SL       <b>{s['sl']:,.0f}</b>\n"
-        f"💰 TP1     <b>{s['tp1']:,.0f}</b>\n"
-        f"🏆 TP2     <b>{s['tp2']:,.0f}</b>\n"
-        f"⚖️ R:R     <b>{s.get('rr','-')}</b>\n\n"
-        + (f"🌐 Weekly: <i>{_html.escape(wk)}</i>\n" if wk else "")
-        + (f"📊 4H:     <i>{_html.escape(s4h)}</i>\n" if s4h else "")
-        + (f"📍 Zone:   <i>{_html.escape(ez)}</i>\n"  if ez else "")
-        + f"\n✨ <i>🛡️ Capital protected</i>")
+    entry_lines = [f"🎯 {_smallcaps_title('Entry')}: {s['entry']:,.0f}"]
+    if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
+        entry_lines.append(f"📍 {_html.escape(s['entry_note'])}")
+    levels = [f"🛑 SL: {s['sl']:,.0f}", f"💰 TP1: {s['tp1']:,.0f}", f"🏆 TP2: {s['tp2']:,.0f}",
+              f"⚖️ R:R: {s.get('rr','-')}"]
+    context = []
+    if wk:  context.append(f"🌐 {_smallcaps_title('Weekly')}: {_html.escape(wk)}")
+    if s4h: context.append(f"📊 4ʜ: {_html.escape(s4h)}")
+    if ez:  context.append(f"📍 {_smallcaps_title('Zone')}: {_html.escape(ez)}")
+    sections = [entry_lines, levels]
+    if context: sections.append(context)
+    return _scan_box(
+        f"{SYMBOL} Signal",
+        f"{e} {s['signal']} - {SYMBOL}  {ci}  🕐 {_smallcaps_title(ist_str())}",
+        sections,
+    )
 
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
+    _hdr = lambda emj, title: f"{emj} #{SYMBOL}"
     msgs = {
-        "SL_HIT":         (
-            f"🚨 <b>TRADE CLOSED — SL HIT</b> 🚨\n\n"
-            f"❌ Loss taken on {t.get('signal','?')} @ {t.get('entry',0):,.0f}\n\n"
-            f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
-            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-            f"🔍 Waiting for next valid setup...\n\n"
-            f"<i>🛡️ Capital protected</i>"
+        "SL_HIT": _scan_box(
+            "SL Hit", _hdr("🚨", "SL Hit"),
+            [[f"❌ {_smallcaps_title('Loss taken on')} {t.get('signal','?')} @ {t.get('entry',0):,.0f}"],
+             [f"⛔ {_smallcaps_title('Do not open any trade now')}",
+              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
         ),
-        "TP1_HIT":        (
-            f"💰 <b>TP1 HIT — 50% CLOSED!</b> 🎉\n\n"
-            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
-            f"✅ Half position closed at <b>{t.get('tp1',0):,.0f}</b> — profit secured!\n"
-            f"🛡️ SL moved to Breakeven: <b>{entry:,.0f}</b>\n"
-            f"🚀 Remaining 50% riding to TP2: <b>{t.get('tp2',0):,.0f}</b>\n\n"
-            f"⚠️ <b>Do NOT close manually — bot is managing the rest</b>"
+        "TP1_HIT": _scan_box(
+            "TP1 Hit — 50% Closed", _hdr("💰", "TP1 Hit"),
+            [[f"✅ {_smallcaps_title('Half position closed at')} {t.get('tp1',0):,.0f}",
+              f"🛡️ {_smallcaps_title('SL moved to breakeven')}: {entry:,.0f}",
+              f"🚀 {_smallcaps_title('Remaining 50% riding to TP2')}: {t.get('tp2',0):,.0f}"],
+             [f"⚠️ {_smallcaps_title('Do not close manually — bot is managing the rest')}"]],
         ),
-        "TP2_HIT":        (
-            f"🏆 <b>TRADE CLOSED — TP2 HIT!</b> 🎊💵\n\n"
-            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
-            f"✅ Full profit taken on {t.get('signal','?')} @ {t.get('tp2',0):,.0f}\n\n"
-            f"⛔ <b>This is NOT a new signal — trade is fully closed</b>\n"
-            f"🔍 Waiting for next valid setup..."
+        "TP2_HIT": _scan_box(
+            "TP2 Hit — Trade Closed", _hdr("🏆", "TP2 Hit"),
+            [[f"✅ {_smallcaps_title('Full profit taken on')} {t.get('signal','?')} @ {t.get('tp2',0):,.0f}"],
+             [f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
         ),
-        "STOP_HUNT":      (
-            f"🎣 <b>STOP HUNT DETECTED</b>\n\n"
-            f"Price spiked below SL and closed back above.\n"
-            f"✅ Still in {t.get('signal','?')} trade — position held.\n\n"
-            f"⚠️ <b>No action needed — bot is managing this</b>"
+        "STOP_HUNT": _scan_box(
+            "Stop Hunt Detected", _hdr("🎣", "Stop Hunt"),
+            [[f"{_smallcaps_title('Price spiked below SL and closed back above')}.",
+              f"✅ {_smallcaps_title('Still in')} {t.get('signal','?')} {_smallcaps_title('trade — position held')}."],
+             [f"⚠️ {_smallcaps_title('No action needed — bot is managing this')}"]],
         ),
-        "SETUP_INVALID":  (
-            f"⚠️ <b>TRADE CANCELLED — Setup Invalid</b>\n\n"
-            f"Price closed past SL before entry was hit.\n"
-            f"No position was opened.\n\n"
-            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-            f"⛔ <b>This is NOT a new signal</b>\n\n"
-            f"🔍 Waiting for next valid setup..."
+        "SETUP_INVALID": _scan_box(
+            "Trade Cancelled — Setup Invalid", _hdr("⚠️", "Setup Invalid"),
+            [[f"{_smallcaps_title('Price closed past SL before entry was hit. No position was opened')}."],
+             [f"⛔ {_smallcaps_title('Do not open any trade now')}",
+              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
         ),
-        "ENTRY_MISSED":   (
-            f"😔 <b>TRADE CANCELLED — Entry Missed</b>\n\n"
-            f"Price moved past entry zone <b>{entry:,.0f}</b> without filling.\n"
-            f"No position was opened.\n\n"
-            f"⛔ <b>DO NOT CHASE — do not open a trade now</b>\n"
-            f"⛔ <b>This is NOT a new signal</b>\n\n"
-            f"🔍 Waiting for next valid setup..."
+        "ENTRY_MISSED": _scan_box(
+            "Trade Cancelled — Entry Missed", _hdr("😔", "Entry Missed"),
+            [[f"{_smallcaps_title('Price moved past entry zone')} {entry:,.0f} {_smallcaps_title('without filling. No position was opened')}."],
+             [f"⛔ {_smallcaps_title('Do not chase — do not open a trade now')}",
+              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
         ),
-        "STRUCTURE_FLIP": (
-            f"🔄 <b>TRADE CLOSED — Structure Flipped</b>\n\n"
-            f"Market structure changed — current {t.get('signal','?')} trade closed.\n\n"
-            f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-            f"⛔ <b>Wait for the next signal from CLEXER</b>\n\n"
-            f"🔍 Analysing new direction..."
+        "STRUCTURE_FLIP": _scan_box(
+            "Trade Closed — Structure Flipped", _hdr("🔄", "Structure Flipped"),
+            [[f"{_smallcaps_title('Market structure changed — current')} {t.get('signal','?')} {_smallcaps_title('trade closed')}."],
+             [f"⛔ {_smallcaps_title('Wait for the next signal from CLEXER')}",
+              f"🔍 {_smallcaps_title('Analysing new direction')}..."]],
         ),
-        "WAITING_ENTRY":  (
-            f"⏳ <b>Waiting Pullback</b>\n"
-            f"🎯 Entry: <b>{entry:,.0f}</b>\n"
-            f"🛑 SL:    <b>{t.get('sl',0):,.0f}</b>\n"
-            f"🎯 TP1:   <b>{t.get('tp1',0):,.0f}</b>\n"
-            f"🎯 TP2:   <b>{t.get('tp2',0):,.0f}</b>\n"
-            + (f"📊 Current: <b>{price:,.0f}</b> ({abs((price or 0)-entry):,.0f} pts away)" if price else "")
+        "WAITING_ENTRY": _scan_box(
+            "Waiting Pullback", _hdr("⏳", "Waiting Pullback"),
+            [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.0f}", f"🛑 SL: {t.get('sl',0):,.0f}",
+              f"🎯 TP1: {t.get('tp1',0):,.0f}", f"🎯 TP2: {t.get('tp2',0):,.0f}"]
+             + ([f"📊 {_smallcaps_title('Current')}: {price:,.0f} ({abs((price or 0)-entry):,.0f} pts away)"] if price else [])],
         ),
     }
-    return f"📣 <b>{SYMBOL} UPDATE</b>  🕐 {ist_str()}\n\n{msgs.get(status,'✅ Trade running')}\n\n✨ <i>🛡️ Capital protected</i>"
+    return msgs.get(status, _scan_box("Trade Update", f"✅ #{SYMBOL}", [[f"{_smallcaps_title('Trade running')}"]]))
 
 # --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
