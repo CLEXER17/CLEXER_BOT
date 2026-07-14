@@ -1092,8 +1092,8 @@ _FABLE_OUT_COST = 50.0 / 1_000_000  # $50 per 1M output tokens
 _HAIKU_IN_COST  = 0.80 / 1_000_000
 _HAIKU_OUT_COST = 4.0  / 1_000_000
 
-def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens: int):
-    """Log every Claude API call with token count and cost to CSV."""
+def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens: int, gateway: str = "Direct"):
+    """Log every Claude API call with token count, cost, and gateway (Direct/Aerolink) to CSV."""
     import csv
     from datetime import datetime, timezone, timedelta
     IST = timezone(timedelta(hours=5, minutes=30))
@@ -1106,11 +1106,23 @@ def _log_api_usage(call_type: str, model: str, input_tokens: int, output_tokens:
         cost = input_tokens * _FABLE_IN_COST + output_tokens * _FABLE_OUT_COST
     else:
         cost = input_tokens * _OPUS_IN_COST  + output_tokens * _OPUS_OUT_COST
-    headers = ["date","time","call_type","model","input_tokens","output_tokens","cost_usd"]
-    row = [date_str, time_str, call_type, model, input_tokens, output_tokens, f"{cost:.6f}"]
+    headers = ["date","time","call_type","model","gateway","input_tokens","output_tokens","cost_usd"]
+    row = [date_str, time_str, call_type, model, gateway, input_tokens, output_tokens, f"{cost:.6f}"]
     _pull_csv_central("api_cost_log_csv", API_COST_LOG)
     write_header = not os.path.exists(API_COST_LOG)
     try:
+        if not write_header:
+            # Migrate old rows (written before the gateway column existed) in place.
+            with open(API_COST_LOG, "r", newline="", encoding="utf-8") as rf:
+                first_line = rf.readline()
+            if first_line and "gateway" not in first_line:
+                with open(API_COST_LOG, "r", newline="", encoding="utf-8") as rf:
+                    old_rows = list(csv.DictReader(rf))
+                with open(API_COST_LOG, "w", newline="", encoding="utf-8") as wf:
+                    dw = csv.DictWriter(wf, fieldnames=headers)
+                    dw.writeheader()
+                    for r in old_rows:
+                        dw.writerow({h: r.get(h, "") for h in headers})
         with open(API_COST_LOG, "a", newline="") as f:
             w = csv.writer(f)
             if write_header:
@@ -2620,7 +2632,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 model=SCAN_MODEL, max_tokens=1200,
                 messages=[{"role": "user", "content": content}])
             _log_api_usage("btc_analysis", SCAN_MODEL,
-                           msg.usage.input_tokens, msg.usage.output_tokens)
+                           msg.usage.input_tokens, msg.usage.output_tokens,
+                           gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
             raw = _claude_text(msg)
             if raw: break
             time.sleep(2)
@@ -2634,7 +2647,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                         model=SCAN_MODEL, max_tokens=1200,
                         messages=[{"role": "user", "content": content_text}])
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
-                                   msg.usage.input_tokens, msg.usage.output_tokens)
+                                   msg.usage.input_tokens, msg.usage.output_tokens,
+                                   gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
                     raw = _claude_text(msg)
                     if raw: break
                 except Exception as e2: print(f"  [CLAUDE] text-only retry: {e2}")
@@ -2750,7 +2764,8 @@ def b1_analyze(ticker, data, use_tv=False):
             system="You are a trading signal bot. Respond with ONLY a JSON object. No reasoning, no steps, no text before or after the JSON.",
             messages=[{"role": "user", "content": prompt}])
         _log_api_usage("btc_b1", SCAN_MODEL,
-                       msg.usage.input_tokens, msg.usage.output_tokens)
+                       msg.usage.input_tokens, msg.usage.output_tokens,
+                       gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
         raw = _claude_text(msg)
     except Exception as e:
         print(f"  [B1 CLAUDE] {e}"); return None, label
@@ -3983,7 +3998,8 @@ def check_news(force=False):
                 model="claude-haiku-4-5-20251001", max_tokens=600,
                 messages=[{"role":"user","content":f"BTC: ${btc_price:,.0f}\n{news_block}\n\nReturn JSON array HIGH/MEDIUM impact only. Fields: index,impact(BULLISH/BEARISH/NEUTRAL),strength(HIGH/MEDIUM),reason. Empty [] if none. JSON only."}])
             _log_api_usage("news", "claude-haiku-4-5-20251001",
-                           resp.usage.input_tokens, resp.usage.output_tokens)
+                           resp.usage.input_tokens, resp.usage.output_tokens,
+                           gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
             analyzed = json.loads(_claude_text(resp).replace("```json","").replace("```","").strip())
             for item in analyzed:
                 idx = item.get("index",-1)
@@ -4802,7 +4818,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         model=SCAN_MODEL, max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
                     _log_api_usage("compare_v9_bingx", SCAN_MODEL,
-                                   msg.usage.input_tokens, msg.usage.output_tokens)
+                                   msg.usage.input_tokens, msg.usage.output_tokens,
+                                   gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
                     raw = _claude_text(msg)
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "BingX"; sig["prompt_mode"] = "V9+BingX"
@@ -4825,7 +4842,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         model=SCAN_MODEL, max_tokens=1000,
                         messages=[{"role":"user","content":prompt}])
                     _log_api_usage("compare_v9_tv", SCAN_MODEL,
-                                   msg.usage.input_tokens, msg.usage.output_tokens)
+                                   msg.usage.input_tokens, msg.usage.output_tokens,
+                                   gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
                     raw = _claude_text(msg)
                     sig = extract_json_from_response(raw) or {"signal":"ERROR","raw":raw[:200]}
                     if sig: sig["data_source"] = "TV"; sig["prompt_mode"] = "V9+TV"
@@ -5281,13 +5299,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 result = r.get("result","?"); sig_t = r.get("signal_time","")
                 entry = r.get("entry_price",""); tp_type = r.get("type","")
                 lines.append(f"[{tp_type}] {direction} {coin} @ {entry} → {result} | {sig_t}")
-            _dnav_btns = {"inline_keyboard": [[{"text": "📅 Filter by Date", "callback_data": "dnav:tradelog:years"}]]}
-            send_reply(chat_id, "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\nFile: trade_history.csv", reply_markup=_dnav_btns)
-            # Send the actual CSV file
-            with open(TRADE_LOG_CSV, "rb") as f:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
-                    data={"chat_id": chat_id, "caption": "CLEXER Trade History"},
-                    files={"document": ("trade_history.csv", f, "text/csv")}, timeout=30)
+            _help_edit_or_send(chat_id,
+                "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\n\n📅 <b>Select a year:</b>",
+                _dnav_years_mkp("tradelog"), rotate=False)
         except Exception as e:
             send_reply(chat_id, f"❌ Error reading trade log: {e}")
         return
@@ -5321,13 +5335,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     f"{total_tok:,} tokens  <b>${d['cost']:.4f}</b>")
                 total_cost += d["cost"]
             lines.append(f"\n<b>Total (shown): ${total_cost:.4f}</b>")
-            _dnav_btns = {"inline_keyboard": [[{"text": "📅 Filter by Date", "callback_data": "dnav:report:years"}]]}
-            send_reply(chat_id, "\n".join(lines), reply_markup=_dnav_btns)
-            # Send full CSV
-            with open(API_COST_LOG, "rb") as f:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
-                    data={"chat_id": chat_id, "caption": "CLEXER API Cost Log"},
-                    files={"document": ("api_cost_log.csv", f, "text/csv")}, timeout=30)
+            _help_edit_or_send(chat_id,
+                "\n".join(lines) + "\n\n📅 <b>Select a year:</b>",
+                _dnav_years_mkp("report"), rotate=False)
         except Exception as e:
             send_reply(chat_id, f"❌ Error: {e}")
         return
@@ -6069,7 +6079,8 @@ Reasoning: [one line]"""
                                 model=_ai_model(_kind), max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
-                                           r2.usage.input_tokens, r2.usage.output_tokens)
+                                           r2.usage.input_tokens, r2.usage.output_tokens,
+                                           gateway="Aerolink" if _using_aero else "Direct")
                             analysis = _claude_text(r2)
                             _claude_ok = True
                             break
@@ -6452,7 +6463,8 @@ Reasoning: [one line]"""
                         f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
                         f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
-                               resp.usage.input_tokens, resp.usage.output_tokens)
+                               resp.usage.input_tokens, resp.usage.output_tokens,
+                               gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
                 import json as _cjson, re as _cre
                 _raw = _claude_text(resp)
                 _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
@@ -8360,22 +8372,22 @@ def command_listener():
                             pass
                         elif _action == "years":
                             _help_edit_or_send(cb_chat_id, f"📅 <b>{_dnav_label(_rtype)} — Select Year</b>",
-                                _dnav_years_mkp(_rtype), message_id=cb_msg_id)
+                                _dnav_years_mkp(_rtype), message_id=cb_msg_id, rotate=False)
                         elif _action == "year":
                             _year = int(_dp[3])
                             _help_edit_or_send(cb_chat_id, f"📅 <b>{_year}</b>\n\nChoose how to filter:",
-                                _dnav_period_mkp(_rtype, _year), message_id=cb_msg_id)
+                                _dnav_period_mkp(_rtype, _year), message_id=cb_msg_id, rotate=False)
                         elif _action == "period":
                             _year = int(_dp[3]); _period = _dp[4]
                             _help_edit_or_send(cb_chat_id, f"📅 <b>{_year} — {_period.title()}</b>\n\nChoose a month:",
-                                _dnav_months_mkp(_rtype, _year, _period), message_id=cb_msg_id)
+                                _dnav_months_mkp(_rtype, _year, _period), message_id=cb_msg_id, rotate=False)
                         elif _action == "month":
                             _year = int(_dp[3]); _period = _dp[4]; _month = int(_dp[5])
                             if _period == "monthly":
                                 _dnav_send_file(cb_chat_id, _rtype, _year, _month, message_id=cb_msg_id)
                             else:
                                 _help_edit_or_send(cb_chat_id, f"📆 <b>{_MONTH_NAMES[_month-1]} {_year}</b>\n\nChoose a week:",
-                                    _dnav_weeks_mkp(_rtype, _year, _month), message_id=cb_msg_id)
+                                    _dnav_weeks_mkp(_rtype, _year, _month), message_id=cb_msg_id, rotate=False)
                         elif _action == "week":
                             _year = int(_dp[3]); _month = int(_dp[4]); _week = int(_dp[5])
                             _dnav_send_file(cb_chat_id, _rtype, _year, _month, week=_week, message_id=cb_msg_id)
@@ -8970,7 +8982,8 @@ def _run_test_scan(cid, scan_ver: int):
                         model=_ai_model("test"), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test"),
-                                   r2.usage.input_tokens, r2.usage.output_tokens)
+                                   r2.usage.input_tokens, r2.usage.output_tokens,
+                                   gateway="Aerolink" if _using_aero else "Direct")
                     analysis = _claude_text(r2)
                     _claude_ok = True; break
                 except Exception as _ce:
