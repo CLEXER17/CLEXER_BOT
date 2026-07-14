@@ -807,14 +807,24 @@ def _co_admin_allowed_commands() -> set:
 def register_user(chat_id, username=None):
     chat_id = int(chat_id)
     changed = False
+    is_new = chat_id not in registered_users
     if username and user_usernames.get(str(chat_id)) != username:
         user_usernames[str(chat_id)] = username; changed = True
     if chat_id in blocked_users:
         blocked_users.discard(chat_id); changed = True  # they messaged us — clearly not blocked
-    if chat_id not in registered_users:
+    if is_new:
         registered_users.add(chat_id); changed = True
     if changed:
         save_users()
+        if is_new:
+            # A brand-new user must never depend on someone remembering to run
+            # /syncup — push immediately so a server switch can never silently
+            # lose them, even if nothing else gets manually synced that day.
+            _kv_push("registered_users", {
+                "users": list(registered_users),
+                "usernames": user_usernames,
+                "blocked": list(blocked_users),
+            })
 
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users — exclude them.
