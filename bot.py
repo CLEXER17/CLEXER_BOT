@@ -3517,6 +3517,25 @@ def get_bingx_price(symbol: str) -> float:
         print(f"  [SCAN PRICE] {symbol}: {e}")
         return 0.0
 
+_SCAN_BORDER = "࿇═════════════════════════════════࿇"
+_SCAN_DIV    = "┈" * 26
+
+def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
+    """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
+    message (entry, TP1, TP2, SL, BE, timeout, etc.) — sections is a list of
+    line-lists, each rendered as its own ┃-prefixed block separated by a
+    ┈┈┈ divider, so callers just pass their own content and get consistent
+    styling for free."""
+    out = [_SCAN_BORDER, f"✦ {_smallcaps_title(title)} ✦", _SCAN_BORDER, "",
+           f"┃ {header}"]
+    for sec in sections:
+        out.append(_SCAN_DIV)
+        out += [f"┃ {l}" for l in sec]
+    out.append(_SCAN_DIV)
+    out.append(f"┃ 🛡️ {_smallcaps_title('Capital Protected')}")
+    out.append(_SCAN_BORDER)
+    return "\n".join(out)
+
 def fmt_scan_signal(t: dict) -> str:
     sym  = t["symbol"]; sig = t["signal"]
     entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
@@ -3542,81 +3561,75 @@ def fmt_scan_signal(t: dict) -> str:
         )
 
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
-    return (
-        f"<b>📣 #{coin}-USDT</b>\n"
-        f"<b>{'─'*22}</b>\n\n"
-        f" SCAN SIGNAL  |  <b>S{ver}</b>\n"
-        f"  🕐 {ist_str()}\n\n"
-        f"{arrow} — <b>MARKET ENTRY</b>\n\n"
-        f"🎯 Entry: <b>{entry:,.4g}</b>\n"
-        f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
-        f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
-        f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
-        f"✨ <i>🛡️ Capital protected</i>"
+    return _scan_box(
+        "Scan Signal",
+        f"📣 #{coin}-USDT  |  S{ver}  🕐 {_smallcaps_title(ist_str())}",
+        [
+            [f"{arrow} — {_smallcaps_title('Market Entry')}"],
+            [f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}",
+             f"🛑 SL: {sl:,.4g}  ({sl_pct:.1f}%)",
+             f"💰 TP1: {tp1:,.4g}",
+             f"🏆 TP2: {tp2:,.4g}"],
+        ],
     )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     if t is None: t = scan_active_trade
-    sym  = f"#{t.get('symbol','?')}"; sig = t.get("signal","?")
+    coin = t.get('symbol','?')
+    sym  = f"#{coin}"; sig = t.get("signal","?")
     ver_lbl = f"S{t.get('ver', 1)}"
     entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
+    _hdr = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
     msgs = {
-        "ENTRY_HIT": (
-            f"🚀 <b>ENTRY TRIGGERED — {sym}</b>  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-            f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig}</b>\n"
-            f"🎯 Entry: <b>{entry:,.4g}</b>  |  📊 Price: <b>{price:,.4g}</b>\n"
-            f"🛑 SL:    <b>{t.get('sl',0):,.4g}</b>\n"
-            f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
-            f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
-            f"⚠️ <b>Trade is now LIVE</b>\n\n✨ <i>🛡️ Capital protected</i>"
+        "ENTRY_HIT": _scan_box(
+            "Entry Triggered", _hdr("🚀", "Entry Triggered"),
+            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+              f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}  |  📊 {_smallcaps_title('Price')}: {price:,.4g}",
+              f"🛑 SL: {t.get('sl',0):,.4g}", f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"],
+             [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
         ),
-        "TP1_HIT": (
-            f"💰 <b>TP1 HIT — {sym}!</b> 🎉  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
-            f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
-            f"✅ TP1: <b>{tp1:,.4g}</b>\n"
-            f"🛡️ SL moved to BE: <b>{entry:,.4g}</b>\n"
-            f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n\n✨ <i>🛡️ Capital protected</i>"
+        "TP1_HIT": _scan_box(
+            "TP1 Hit", _hdr("💰", "TP1 Hit"),
+            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: {tp1:,.4g}",
+              f"🛡️ {_smallcaps_title('SL moved to BE')}: {entry:,.4g}",
+              f"🚀 {_smallcaps_title('Riding TP2')}: {tp2:,.4g}..."]],
         ),
-        "TP2_HIT": (
-            f"🏆 <b>TP2 HIT — {sym}!</b> 🎊💵  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-            f"🎊 <i>MAJA AAGYA BHAI YAYY!!!!</i>\n\n"
-            f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
-            f"✅ Full profit @ TP2: <b>{tp2:,.4g}</b>\n\n✨ <i>🛡️ Capital protected</i>"
+        "TP2_HIT": _scan_box(
+            "TP2 Hit", _hdr("🏆", "TP2 Hit"),
+            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+              f"✅ {_smallcaps_title('Full profit')} @ TP2: {tp2:,.4g}"]],
         ),
         "SL_HIT": (
-            (
-                f"🛡️ <b>BE EXIT — {sym}</b>  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-                f"{'🟢' if sig=='BUY' else '🔴'} {sig}\n"
-                f"✅ TP1 already hit — closed at entry <b>{entry:,.4g}</b>\n"
-                f"📊 Result: <b>Breakeven</b> (no loss)\n\n"
-                f"🔍 Waiting for next scan signal...\n\n✨ <i>🛡️ Capital protected</i>"
-            ) if t.get("tp1_hit") else (
-                f"🚨 <b>SL HIT — {sym}</b> 🚨  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-                f"💀 <i>MAA CHUD GYI TRADE KI TOH SHITT YRR</i> 😭\n\n"
-                f"❌ Loss on {sig} @ {entry:,.4g}\n\n"
-                f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                f"🔍 Waiting for next scan signal...\n\n✨ <i>🛡️ Capital protected</i>"
+            _scan_box(
+                "BE Exit", _hdr("🛡️", "BE Exit"),
+                [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} {entry:,.4g}",
+                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
+                 [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+            ) if t.get("tp1_hit") else
+            _scan_box(
+                "SL Hit", _hdr("🚨", "SL Hit"),
+                [[f"❌ {_smallcaps_title('Loss on')} {sig} @ {entry:,.4g}"],
+                 [f"⛔ {_smallcaps_title('Do not open any trade now')}",
+                  f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
             )
         ),
-        "ENTRY_MISSED": (
-            f"😔 <b>ENTRY MISSED — {sym}</b>  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-            f"Price bypassed entry zone <b>{entry:,.4g}</b> without filling.\n"
-            f"⛔ <b>DO NOT CHASE</b>\n\n✨ <i>🛡️ Capital protected</i>"
+        "ENTRY_MISSED": _scan_box(
+            "Entry Missed", _hdr("😔", "Entry Missed"),
+            [[f"{_smallcaps_title('Price bypassed entry zone')} {entry:,.4g} {_smallcaps_title('without filling')}."],
+             [f"⛔ {_smallcaps_title('Do not chase')}"]],
         ),
-        "TIMEOUT": (
-            f"⏰ <b>TIMEOUT — {sym}</b>  |  <b>{ver_lbl}</b>  🕐 {ist_str()}\n\n"
-            f"{'🟢' if sig=='BUY' else '🔴'} {sig} still running after 12 hours — force-closed.\n"
-            f"📊 Result: <b>{t.get('_timeout_pnl', '?')}</b>\n\n"
-            f"🔍 Waiting for next scan signal...\n\n✨ <i>🛡️ Capital protected</i>"
+        "TIMEOUT": _scan_box(
+            "Timeout", _hdr("⏰", "Timeout"),
+            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
+              f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"],
+             [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
         ),
-        "WAITING_ENTRY": (
-            f"⏳ <b>Waiting Entry — {sym}</b>  |  <b>{ver_lbl}</b>\n"
-            f"🎯 Entry: <b>{entry:,.4g}</b>\n"
-            f"🛑 SL:    <b>{t.get('sl',0):,.4g}</b>\n"
-            f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
-            f"🏆 TP2:  <b>{tp2:,.4g}</b>\n"
-            + (f"📊 Current: <b>{price:,.4g}</b> ({abs(price-entry)/entry*100:.2f}% away)" if price else "")
+        "WAITING_ENTRY": _scan_box(
+            "Waiting Entry", _hdr("⏳", "Waiting Entry"),
+            [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}", f"🛑 SL: {t.get('sl',0):,.4g}",
+              f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"]
+             + ([f"📊 {_smallcaps_title('Current')}: {price:,.4g} ({abs(price-entry)/entry*100:.2f}% away)"] if price else [])],
         ),
     }
     return msgs.get(status, f"✅ {sym} trade running")
@@ -8483,12 +8496,11 @@ def _demo_monitor_loop():
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        _msg = (
-                            f"{arrow} <b>[DEMO] {coin}-USDT — TP2 HIT ✅</b>\n"
-                            f"──────────────────────\n"
-                            f"Price @ TP2: <b>{cp:,.6g}</b>\n"
-                            f"Entry: {entry:,.6g} → TP2: {tp2:,.6g}\n"
-                            f"Result: <b>FULL WIN</b>")
+                        _msg = _scan_box(
+                            "Demo TP2 Hit", f"🏆 [DEMO] {coin}-USDT  🕐 {_smallcaps_title(ist_str())}",
+                            [[f"📊 {_smallcaps_title('Price')} @ TP2: {cp:,.6g}",
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g} → TP2: {tp2:,.6g}",
+                              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
@@ -8499,12 +8511,11 @@ def _demo_monitor_loop():
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":be_sl if tp1hit and be_sl else sl,
                             "tp1_price":tp1,"tp2_price":tp2})
-                        _msg = (
-                            f"{arrow} <b>[DEMO] {coin}-USDT — {lbl} HIT ❌</b>\n"
-                            f"──────────────────────\n"
-                            f"Price @ {lbl}: <b>{cp:,.6g}</b>\n"
-                            f"Entry: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}\n"
-                            f"Result: <b>{result}</b>")
+                        _msg = _scan_box(
+                            f"Demo {lbl} Hit", f"🚨 [DEMO] {coin}-USDT  🕐 {_smallcaps_title(ist_str())}",
+                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: {cp:,.6g}",
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}",
+                              f"❌ {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
@@ -8515,12 +8526,11 @@ def _demo_monitor_loop():
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
-                        _msg = (
-                            f"{arrow} <b>[DEMO] {coin}-USDT — TP1 HIT 🎯</b>\n"
-                            f"──────────────────────\n"
-                            f"Price @ TP1: <b>{cp:,.6g}</b>\n"
-                            f"50% closed. BE SL → <b>{be_sl_price:,.6g}</b>\n"
-                            f"Runner TP2: {tp2:,.6g}")
+                        _msg = _scan_box(
+                            "Demo TP1 Hit", f"🎯 [DEMO] {coin}-USDT  🕐 {_smallcaps_title(ist_str())}",
+                            [[f"📊 {_smallcaps_title('Price')} @ TP1: {cp:,.6g}",
+                              f"🛡️ {_smallcaps_title('50% closed. BE SL')} → {be_sl_price:,.6g}",
+                              f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                     elif timeout_hit:
@@ -8528,12 +8538,11 @@ def _demo_monitor_loop():
                         log_trade_event({"type":"demo","coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        _msg = (
-                            f"{arrow} <b>[DEMO] {coin}-USDT — TIMEOUT ⏰</b>\n"
-                            f"──────────────────────\n"
-                            f"1H elapsed — no TP1/SL hit.\n"
-                            f"Exit @ <b>{cp:,.6g}</b> | P/L: <b>{pnl:+.2f}%</b>\n"
-                            f"Entry: {entry:,.6g}")
+                        _msg = _scan_box(
+                            "Demo Timeout", f"⏰ [DEMO] {coin}-USDT  🕐 {_smallcaps_title(ist_str())}",
+                            [[f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}.",
+                              f"📊 {_smallcaps_title('Exit')} @ {cp:,.6g} | P/L: {pnl:+.2f}%",
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         to_remove.append(t)
@@ -8797,18 +8806,15 @@ def _run_test_scan(cid, scan_ver: int):
 
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
-            demo_msg = (
-                f"<b>📣 [DEMO] {coin}-USDT</b>\n"
-                f"<b>{'─'*22}</b>\n\n"
-                f" TEST SIGNAL — SCALP V1  |  <b>TS{scan_ver}</b>\n\n"
-                f"{arrow} — <b>MARKET ENTRY</b>\n\n"
-                f"🎯 Entry:      <b>{scan_entry:,.4g}</b>\n"
-                f"🛑 SL:         <b>{scan_sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
-                f"📌 SwingLevel: <b>{swing_level_str}</b>\n"
-                f"💰 TP1:       <b>{scan_tp1:,.4g}</b>\n"
-                f"🏆 TP2:       <b>{scan_tp2:,.4g}</b>\n"
-                f"📊 RR:        <b>1:2.0 (TP1) / 1:3.75 (TP2)</b>\n"
-                f"⏰ Timeout: 1H | move_age: {age}c"
+            demo_msg = _scan_box(
+                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver}  🕐 {_smallcaps_title(ist_str())}",
+                [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
+                 [f"🎯 {_smallcaps_title('Entry')}: {scan_entry:,.4g}",
+                  f"🛑 SL: {scan_sl:,.4g}  ({sl_pct:.1f}%)",
+                  f"📌 {_smallcaps_title('Swing Level')}: {swing_level_str}",
+                  f"💰 TP1: {scan_tp1:,.4g}", f"🏆 TP2: {scan_tp2:,.4g}",
+                  f"📊 RR: 1:2.0 (TP1) / 1:3.75 (TP2)",
+                  f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
             )
             send_telegram(demo_msg)
             # Demo Scan1 only reaches Free/VIP channels at its whitelisted special
