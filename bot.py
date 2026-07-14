@@ -3326,7 +3326,7 @@ def fmt_signal(s):
     if context: sections.append(context)
     return _scan_box(
         f"{SYMBOL} Signal",
-        f"{e} {s['signal']} - {SYMBOL}  {ci}  {_gw_model_tag('btc')}  🕐 {_smallcaps_title(ist_str())}",
+        f"{e} {s['signal']} - {SYMBOL}  {ci}  {_gw_model_tag('btc')}",
         sections,
     )
 
@@ -3628,7 +3628,7 @@ def fmt_scan_signal(t: dict) -> str:
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
     return _scan_box(
         "Scan Signal",
-        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}  🕐 {_smallcaps_title(ist_str())}",
+        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}",
         [
             [f"{arrow} — {_smallcaps_title('Market Entry')}"],
             [f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}",
@@ -9031,7 +9031,7 @@ def _run_test_scan(cid, scan_ver: int):
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
             demo_msg = _scan_box(
-                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}  🕐 {_smallcaps_title(ist_str())}",
+                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
                  [f"🎯 {_smallcaps_title('Entry')}: {scan_entry:,.4g}",
                   f"🛑 SL: {scan_sl:,.4g}  ({sl_pct:.1f}%)",
