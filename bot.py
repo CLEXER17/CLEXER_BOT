@@ -4127,7 +4127,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server"}
 
 def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS
@@ -6543,6 +6543,8 @@ _COPYADMIN_SUBCATS = {
         ("/ctretry",   "🔄", "Retry Failed Copy", "Re-attempts a copy trade that previously failed for a user."),
         ("/ctclose",   "❌", "Close Positions",   "Force-closes a user's copy-traded positions."),
         ("/synccheck", "🔄", "BingX vs Bot Sync", "Compares live BingX positions against what the bot thinks is open."),
+        ("/syncup",    "☁️", "Push to Central Store", "Force-pushes this server's current users, settings, trade state, and CSVs to the shared multi-server store."),
+        ("/server",    "🖥️", "Server Status / Switch", "Shows which server is currently active, or switch which one is (/server <name>)."),
     ]),
 }
 
