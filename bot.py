@@ -173,14 +173,19 @@ CO_ADMIN_ENABLED  = False # ON = the co-admin permission is active AND their con
 TRAIL_SL_BTC   = False  # Trailing SL — halfway to TP1, move SL to halfway toward entry. Set via /trailsl
 TRAIL_SL_SCAN1 = False
 TRAIL_SL_SCAN2 = False
+TRAIL_SL_DEMO1 = False
+TRAIL_SL_DEMO2 = False
 
 def _apply_trail_sl(ver: int, t: dict, price: float):
     """Fixed 50/50 rule: once price reaches the halfway point to TP1, move SL to
     the halfway point between the original SL and entry — locks in more capital
-    without waiting for TP1 itself. Runs once per trade (trail_sl_moved guards it)."""
+    without waiting for TP1 itself. Runs once per trade (trail_sl_moved guards it).
+    ver: 1=Scan1, 2=Scan2, 3=Demo1, 4=Demo2 — ct.update_scan_sl() looks the symbol
+    up across all slot prefixes (including demo1/demo2), so this also moves any
+    real copy-user SL that's mirroring a demo trade."""
     if t.get("trail_sl_moved") or t.get("tp1_hit"):
         return
-    enabled = TRAIL_SL_SCAN1 if ver == 1 else TRAIL_SL_SCAN2
+    enabled = {1: TRAIL_SL_SCAN1, 2: TRAIL_SL_SCAN2, 3: TRAIL_SL_DEMO1, 4: TRAIL_SL_DEMO2}.get(ver, False)
     if not enabled:
         return
     entry = t["entry"]; tp1 = t["tp1"]; sig = t["signal"]
@@ -194,9 +199,11 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     t["sl"] = new_sl
     t["trail_sl_moved"] = True
     ct.update_scan_sl(t["symbol"], new_sl)
-    save_state()
+    if ver <= 2:
+        save_state()
+    tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
     _msg = (
-        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  S{ver}\n\n"
+        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
     send_telegram(_msg)
@@ -2891,7 +2898,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -2931,6 +2938,8 @@ def load_settings():
             TRAIL_SL_BTC   = d.get("trail_sl_btc", False)
             TRAIL_SL_SCAN1 = d.get("trail_sl_scan1", False)
             TRAIL_SL_SCAN2 = d.get("trail_sl_scan2", False)
+            TRAIL_SL_DEMO1 = d.get("trail_sl_demo1", False)
+            TRAIL_SL_DEMO2 = d.get("trail_sl_demo2", False)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -2978,6 +2987,8 @@ def save_settings():
             "trail_sl_btc": TRAIL_SL_BTC,
             "trail_sl_scan1": TRAIL_SL_SCAN1,
             "trail_sl_scan2": TRAIL_SL_SCAN2,
+            "trail_sl_demo1": TRAIL_SL_DEMO1,
+            "trail_sl_demo2": TRAIL_SL_DEMO2,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -7140,6 +7151,8 @@ def send_trailsl_screen(chat_id, message_id=None):
     _btc_flag   = "✅ ON" if TRAIL_SL_BTC   else "❌ OFF"
     _scan1_flag = "✅ ON" if TRAIL_SL_SCAN1 else "❌ OFF"
     _scan2_flag = "✅ ON" if TRAIL_SL_SCAN2 else "❌ OFF"
+    _demo1_flag = "✅ ON" if TRAIL_SL_DEMO1 else "❌ OFF"
+    _demo2_flag = "✅ ON" if TRAIL_SL_DEMO2 else "❌ OFF"
     rows = [
         [{"text": f"₿ BTC  {_btc_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "trailsl_btc_on"},
@@ -7150,6 +7163,12 @@ def send_trailsl_screen(chat_id, message_id=None):
         [{"text": f"🔍 Scan2  {_scan2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "trailsl_scan2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "trailsl_scan2_off"}],
+        [{"text": f"🧪 Demo1  {_demo1_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_demo1_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_demo1_off"}],
+        [{"text": f"🧪 Demo2  {_demo2_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_demo2_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_demo2_off"}],
         [{"text": "◀️  Back", "callback_data": "tradecontrol_sub:levels"}],
     ]
     _help_edit_or_send(chat_id,
@@ -7157,7 +7176,7 @@ def send_trailsl_screen(chat_id, message_id=None):
         "<blockquote>Once price reaches the halfway point to TP1, SL automatically moves to the halfway "
         "point between the original SL and entry — locking in more capital before TP1 even hits.\n\n"
         "Example: Entry 10, TP1 18, SL 6 → at price 14, SL moves to 8.\n\n"
-        "Turn on independently for BTC, Scan1, and Scan2.</blockquote>",
+        "Turn on independently for BTC, Scan1, Scan2, Demo1, and Demo2.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_coadmin_screen(chat_id, message_id=None):
@@ -8047,6 +8066,16 @@ def command_listener():
                         TRAIL_SL_SCAN2 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "trailsl_scan2_off" and cb_is_scanadmin:
                         TRAIL_SL_SCAN2 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_demo1_on" and cb_is_scanadmin:
+                        global TRAIL_SL_DEMO1
+                        TRAIL_SL_DEMO1 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_demo1_off" and cb_is_scanadmin:
+                        TRAIL_SL_DEMO1 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_demo2_on" and cb_is_scanadmin:
+                        global TRAIL_SL_DEMO2
+                        TRAIL_SL_DEMO2 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_demo2_off" and cb_is_scanadmin:
+                        TRAIL_SL_DEMO2 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_open" and cb_is_admin:
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_on" and cb_is_admin:
@@ -8711,6 +8740,9 @@ def _demo_monitor_loop():
                     if not sym or not entry: continue
                     cp = get_bingx_price(sym)
                     if cp <= 0: continue
+
+                    _apply_trail_sl(2 + _dver, t, cp)  # ver 3=demo1, 4=demo2
+                    sl = float(t.get("sl", 0))
 
                     timeout_hit = (now - created) >= 3600  # 1H timeout
 
