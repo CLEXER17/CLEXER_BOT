@@ -81,6 +81,21 @@ tv_bridge_state = {
 def now_ist():  return datetime.now(timezone.utc) + IST
 def ist_str():  return now_ist().strftime("%d %b %Y  %I:%M %p IST")
 
+def _next_special_time(kind: str) -> str:
+    """Next SPECIAL-only Scan1/Scan2 time (the ones that actually reach VIP/Free) —
+    used for any user-facing display, so regular users never see the internal
+    non-special/testing grid times mixed in."""
+    times = sorted(_SCAN_SPECIAL.get(kind, set()))
+    if not times:
+        return "—"
+    _now_hm = (now_ist().hour, now_ist().minute)
+    fut = [(h, m) for h, m in times if (h, m) > _now_hm]
+    if fut:
+        h, m = fut[0]
+        return f"{h}:{m:02d} IST"
+    h, m = times[0]
+    return f"{h}:{m:02d} IST (tomorrow)"
+
 def _next_schedule_times():
     """Returns (next_btc_scan, next_scan1, next_scan2) as display strings.
     next_btc_scan has no 'IST' suffix (caller appends it); the other two already include it."""
@@ -4364,7 +4379,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 scan_lines += (f"\n\n<b>[DEMO]</b> {dc['signal']} {dc.get('symbol','?')}\n"
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
                     f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
-        _next_btc_scan, _next_scan1, _next_scan2 = _next_schedule_times()
+        _next_btc_scan, _, _ = _next_schedule_times()
+        _next_scan1 = _next_special_time("scan1")
+        _next_scan2 = _next_special_time("scan2")
         _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
         _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
         _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
