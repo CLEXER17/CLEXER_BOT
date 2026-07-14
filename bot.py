@@ -4141,6 +4141,92 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server"}
 
+# ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
+_MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+_WEEK_RANGES = [(1,7),(8,14),(15,21),(22,31)]
+
+def _dnav_label(report_type):
+    return "Trade History" if report_type == "tradelog" else "API Cost Report"
+
+def _dnav_years_mkp(report_type):
+    cur_year = now_ist().year
+    rows = [[{"text": str(y), "callback_data": f"dnav:{report_type}:year:{y}"}] for y in range(2026, cur_year + 1)]
+    rows.append([{"text": "◀️  Back", "callback_data": "settings_sub:data"}])
+    return {"inline_keyboard": rows}
+
+def _dnav_period_mkp(report_type, year):
+    return {"inline_keyboard": [
+        [{"text": "📅 Monthly", "callback_data": f"dnav:{report_type}:period:{year}:monthly"},
+         {"text": "📆 Weekly",  "callback_data": f"dnav:{report_type}:period:{year}:weekly"}],
+        [{"text": "◀️  Back", "callback_data": f"dnav:{report_type}:years"}],
+    ]}
+
+def _dnav_months_mkp(report_type, year, period):
+    rows, row = [], []
+    for i, mn in enumerate(_MONTH_NAMES, start=1):
+        row.append({"text": mn, "callback_data": f"dnav:{report_type}:month:{year}:{period}:{i}"})
+        if len(row) == 4:
+            rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([{"text": "◀️  Back", "callback_data": f"dnav:{report_type}:year:{year}"}])
+    return {"inline_keyboard": rows}
+
+def _dnav_weeks_mkp(report_type, year, month):
+    row = [{"text": f"Week{i} [{lo}-{hi}]", "callback_data": f"dnav:{report_type}:week:{year}:{month}:{i}"}
+           for i, (lo, hi) in enumerate(_WEEK_RANGES, start=1)]
+    return {"inline_keyboard": [row, [{"text": "◀️  Back", "callback_data": f"dnav:{report_type}:period:{year}:weekly"}]]}
+
+def _dnav_row_date(report_type, row):
+    if report_type == "report":
+        try:
+            return datetime.strptime(row.get("date", ""), "%Y-%m-%d").date()
+        except Exception:
+            return None
+    for col in ("signal_time", "entry_trigger_time", "tp1_hit_time", "tp2_hit_time", "sl_hit_time", "timeout_time"):
+        v = row.get(col)
+        if v:
+            try:
+                return datetime.strptime(v.replace(" IST", "").strip(), "%Y-%m-%d %H:%M").date()
+            except Exception:
+                continue
+    return None
+
+def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=None):
+    csv_path = TRADE_LOG_CSV if report_type == "tradelog" else API_COST_LOG
+    if not os.path.exists(csv_path):
+        send_reply(chat_id, "📂 No data file yet."); return
+    import csv as _csv, io
+    with open(csv_path, "r") as f:
+        reader = _csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    if week:
+        lo, hi = _WEEK_RANGES[week - 1]
+        filtered = [r for r in rows if (d := _dnav_row_date(report_type, r)) and d.year == year and d.month == month and lo <= d.day <= hi]
+        period_label = f"{year} {_MONTH_NAMES[month-1]} Week{week} [{lo}-{hi}]"
+        fname_part = f"{year}_{_MONTH_NAMES[month-1]}_Week{week}"
+    else:
+        filtered = [r for r in rows if (d := _dnav_row_date(report_type, r)) and d.year == year and d.month == month]
+        period_label = f"{year} {_MONTH_NAMES[month-1]}"
+        fname_part = f"{year}_{_MONTH_NAMES[month-1]}"
+
+    if not filtered:
+        send_reply(chat_id, f"📂 No data for {period_label} yet.")
+        return
+
+    buf = io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(filtered)
+    content = buf.getvalue().encode("utf-8")
+    base_name = "trade_history" if report_type == "tradelog" else "api_cost_log"
+    fname = f"{base_name}_{fname_part}.csv"
+    send_reply(chat_id, f"📂 <b>{_dnav_label(report_type)} — {period_label}</b>\n\n{len(filtered)} row(s) found.")
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+        data={"chat_id": chat_id, "caption": f"{period_label} — {len(filtered)} rows"},
+        files={"document": (fname, content, "text/csv")}, timeout=30)
+
 def handle_command(text, chat_id, message=None, sender_id=None):
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS
     _uname = (message or {}).get("from", {}).get("username")
@@ -5176,7 +5262,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 result = r.get("result","?"); sig_t = r.get("signal_time","")
                 entry = r.get("entry_price",""); tp_type = r.get("type","")
                 lines.append(f"[{tp_type}] {direction} {coin} @ {entry} → {result} | {sig_t}")
-            send_reply(chat_id, "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\nFile: trade_history.csv")
+            _dnav_btns = {"inline_keyboard": [[{"text": "📅 Filter by Date", "callback_data": "dnav:tradelog:years"}]]}
+            send_reply(chat_id, "\n".join(lines) + f"\n\nTotal rows: {len(rows)}\nFile: trade_history.csv", reply_markup=_dnav_btns)
             # Send the actual CSV file
             with open(TRADE_LOG_CSV, "rb") as f:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
@@ -5215,7 +5302,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     f"{total_tok:,} tokens  <b>${d['cost']:.4f}</b>")
                 total_cost += d["cost"]
             lines.append(f"\n<b>Total (shown): ${total_cost:.4f}</b>")
-            send_reply(chat_id, "\n".join(lines))
+            _dnav_btns = {"inline_keyboard": [[{"text": "📅 Filter by Date", "callback_data": "dnav:report:years"}]]}
+            send_reply(chat_id, "\n".join(lines), reply_markup=_dnav_btns)
             # Send full CSV
             with open(API_COST_LOG, "rb") as f:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
@@ -8228,6 +8316,33 @@ def command_listener():
                                 f"📋 <b>Manual Times — Scan{_ver}</b>\n\n"
                                 f"Type your specific times separated by spaces:\n\n"
                                 f"<i>Example: <code>2.02 2.23 14.25 15.26 15.46</code></i>")
+
+                    elif cb_data.startswith("dnav:") and (cb_is_admin or is_co_admin(cb_cid)):
+                        _dp = cb_data.split(":")
+                        _rtype, _action = _dp[1], _dp[2]
+                        if _rtype == "report" and not cb_is_admin:
+                            pass
+                        elif _action == "years":
+                            _help_edit_or_send(cb_chat_id, f"📅 <b>{_dnav_label(_rtype)} — Select Year</b>",
+                                _dnav_years_mkp(_rtype), message_id=cb_msg_id)
+                        elif _action == "year":
+                            _year = int(_dp[3])
+                            _help_edit_or_send(cb_chat_id, f"📅 <b>{_year}</b>\n\nChoose how to filter:",
+                                _dnav_period_mkp(_rtype, _year), message_id=cb_msg_id)
+                        elif _action == "period":
+                            _year = int(_dp[3]); _period = _dp[4]
+                            _help_edit_or_send(cb_chat_id, f"📅 <b>{_year} — {_period.title()}</b>\n\nChoose a month:",
+                                _dnav_months_mkp(_rtype, _year, _period), message_id=cb_msg_id)
+                        elif _action == "month":
+                            _year = int(_dp[3]); _period = _dp[4]; _month = int(_dp[5])
+                            if _period == "monthly":
+                                _dnav_send_file(cb_chat_id, _rtype, _year, _month, message_id=cb_msg_id)
+                            else:
+                                _help_edit_or_send(cb_chat_id, f"📆 <b>{_MONTH_NAMES[_month-1]} {_year}</b>\n\nChoose a week:",
+                                    _dnav_weeks_mkp(_rtype, _year, _month), message_id=cb_msg_id)
+                        elif _action == "week":
+                            _year = int(_dp[3]); _month = int(_dp[4]); _week = int(_dp[5])
+                            _dnav_send_file(cb_chat_id, _rtype, _year, _month, week=_week, message_id=cb_msg_id)
                     continue
 
                 # Auto-approve/decline VIP channel join requests — only current VIP
@@ -8525,7 +8640,8 @@ def _demo_monitor_loop():
             time.sleep(30)
             if bot_paused.is_set(): continue
             now = time.time()
-            for demo_list in (demo_scan1_trades, demo_scan2_trades):
+            for _dver, demo_list in ((1, demo_scan1_trades), (2, demo_scan2_trades)):
+                _dtype = f"demo{_dver}"
                 to_remove = []
                 for t in list(demo_list):
                     sym    = t.get("symbol","")
@@ -8557,7 +8673,7 @@ def _demo_monitor_loop():
                     coin = sym.replace("-USDT","")
                     arrow = "🟢" if sig == "BUY" else "🔴"
                     if tp2_now:
-                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                        log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
@@ -8571,7 +8687,7 @@ def _demo_monitor_loop():
                     elif sl_hit:
                         lbl = "BE SL" if tp1hit else "SL"
                         result = "BREAKEVEN" if tp1hit else "LOSS"
-                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                        log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":be_sl if tp1hit and be_sl else sl,
                             "tp1_price":tp1,"tp2_price":tp2})
@@ -8587,7 +8703,7 @@ def _demo_monitor_loop():
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
                         t["tp1_hit"] = True
                         t["be_sl"]   = be_sl_price
-                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                        log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
@@ -8599,7 +8715,7 @@ def _demo_monitor_loop():
                         if tier_routed: send_to_tier_channels(_msg, True)
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
-                        log_trade_event({"type":"demo","coin":sym,"direction":sig,
+                        log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
@@ -8809,7 +8925,7 @@ def _run_test_scan(cid, scan_ver: int):
                     r2 = _claude_client("test", attempt=_attempt).messages.create(
                         model=_ai_model("test"), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
-                    _log_api_usage(f"demo_{chosen_sym}", _ai_model("test"),
+                    _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test"),
                                    r2.usage.input_tokens, r2.usage.output_tokens)
                     analysis = _claude_text(r2)
                     _claude_ok = True; break
@@ -8897,7 +9013,7 @@ def _run_test_scan(cid, scan_ver: int):
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
-            log_trade_event({"type":"demo","coin":chosen_sym,"direction":scan_signal_val,
+            log_trade_event({"type":f"demo{scan_ver}","coin":chosen_sym,"direction":scan_signal_val,
                 "signal_time":_ist_str_now(),"entry_price":scan_entry,
                 "sl_price":scan_sl,"tp1_price":scan_tp1,"tp2_price":scan_tp2,
                 "entry_trigger_time":_ist_str_now(),"result":"open"})
