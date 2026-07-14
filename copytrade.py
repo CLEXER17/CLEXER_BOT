@@ -375,6 +375,10 @@ def _set(cid: str, user: dict):
     with _lock:
         _db[str(cid)] = user
         _save()
+        try:
+            push_to_central()
+        except Exception as e:
+            print(f"[CT] immediate central push error: {e}")
 
 def active_count() -> int:
     return sum(1 for u in _db.values() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin"))
