@@ -433,14 +433,19 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
         entry_str = f"{float(entry_price):,.4g}"
     except Exception:
         entry_str = str(entry_price)
+    _sl_line1 = _smallcaps_title("Not every trade is a winner, and that's part of professional trading.")
+    _sl_line2 = _smallcaps_title("Losses are controlled through proper risk management.")
+    _sl_line3 = _smallcaps_title("We stay disciplined, protect our capital, and move on to the next opportunity.")
+    _sl_line4 = _smallcaps_title("The goal isn't to win every trade—it's to stay consistently profitable over time.")
+    _sl_line5 = _smallcaps_title("Crypto Clexer focuses on strategy, discipline, and long-term results.")
     text = _apply_premium_emojis(
         f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>  🕐 {ist_str()}\n"
         f"❌ Loss on {side} @ {entry_str}\n\n"
-        "<blockquote>Not every trade is a winner, and that's part of professional trading.\n\n"
-        "✅ Losses are controlled through proper risk management.\n"
-        "📊 We stay disciplined, protect our capital, and move on to the next opportunity.\n\n"
-        "The goal isn't to win every trade—it's to stay consistently profitable over time.\n\n"
-        "💎 Crypto Clexer focuses on strategy, discipline, and long-term results.</blockquote>"
+        f"<blockquote>{_sl_line1}\n\n"
+        f"✅ {_sl_line2}\n"
+        f"📊 {_sl_line3}\n\n"
+        f"{_sl_line4}\n\n"
+        f"💎 {_sl_line5}</blockquote>"
     )
     for _tag, cid in channels:
         if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
