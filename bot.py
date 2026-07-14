@@ -8738,6 +8738,8 @@ def _demo_monitor_loop():
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp2(sym)
+                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True)
+                        _notify_free_late(sym, t, "TP2")
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE" if tp1hit else "SL"
@@ -8773,6 +8775,9 @@ def _demo_monitor_loop():
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp1(sym)
+                        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=True,
+                            tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2})
+                        _notify_free_late(sym, t, "TP1")
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
