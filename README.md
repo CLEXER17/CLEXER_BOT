@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/29726468/README.md)
 <div align="center">
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,50:302B63,100:6B46C1&height=220&section=header&text=CLEXER%20V17.8.5&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=AI-Powered%20Trading%20Signal%20%26%20Copy-Trade%20Engine&descAlignY=55&descSize=20" width="100%"/>

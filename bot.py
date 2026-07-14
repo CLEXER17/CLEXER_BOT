@@ -669,21 +669,31 @@ def get_active_server_name() -> str:
                 _active_server_cache["name"] = name
                 _active_server_cache["checked_at"] = now
                 return name
+        else:
+            print(f"[SERVER] active-check HTTP {r.status_code} — {r.text[:150]}")
     except Exception as e:
         print(f"[SERVER] active-check error: {e}")
-    # Unreachable/never-set — fall back to whatever we last knew, else assume active
-    return _active_server_cache["name"] or SERVER_NAME
+    # Unreachable/never-set — fall back to whatever we last knew. If nothing was
+    # ever known, "main" is the safe grandfather default (the original, only-ever
+    # server before multi-server existed) — any OTHER named server (co1, co2, ...)
+    # must NEVER default to assuming itself active, or two servers could both
+    # decide independently that they're the one allowed to poll Telegram / trade.
+    return _active_server_cache["name"] or "main"
 
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
 
 def _kv_push(key: str, data) -> bool:
     """Push any JSON-able blob to the shared store under `key`. Used by /syncup
-    for the pieces that don't already have their own dedicated push path."""
+    for the pieces that don't already have their own dedicated push path.
+    Returns True only if the server actually accepted it (2xx) — a wrong/missing
+    PUSH_STATE_SECRET returns 403, which must NOT be reported as success."""
     if not CLEXER_API_URL:
         return False
     hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-    requests.post(f"{CLEXER_API_URL}/kv/{key}", json=data, headers=hdrs, timeout=15)
+    r = requests.post(f"{CLEXER_API_URL}/kv/{key}", json=data, headers=hdrs, timeout=15)
+    if not r.ok:
+        raise Exception(f"HTTP {r.status_code} — {r.text[:150]}")
     return True
 
 def set_active_server(name: str):
@@ -731,6 +741,10 @@ def load_users():
                     if body.get("found"):
                         d = body["data"]
                         print("[USERS] Loaded from central store")
+                    else:
+                        print("[USERS] Central store reachable but no data found yet")
+                else:
+                    print(f"[USERS] Central load HTTP {r.status_code} — {r.text[:150]}")
             except Exception as e:
                 print(f"[USERS] Central load error (falling back to local file): {e}")
         if d is None and os.path.exists(USER_DB_FILE):
@@ -1074,173 +1088,6 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
-_SMALLCAPS_MAP = {
-    'a':'ᴀ','b':'ʙ','c':'ᴄ','d':'ᴅ','e':'ᴇ','f':'ꜰ','g':'ɢ','h':'ʜ','i':'ɪ',
-    'j':'ᴊ','k':'ᴋ','l':'ʟ','m':'ᴍ','n':'ɴ','o':'ᴏ','p':'ᴘ','q':'ǫ','r':'ʀ',
-    's':'ꜱ','t':'ᴛ','u':'ᴜ','v':'ᴠ','w':'ᴡ','x':'x','y':'ʏ','z':'ᴢ',
-}
-
-def _sc_word(w: str) -> str:
-    """One word -> 'First cap + small-caps body', preserving any ORIGINAL
-    uppercase letters later in the word as-is (so 'WhatsApp' -> 'WʜᴀᴛꜱAᴘᴘ',
-    matching the requested house style). Non-letters pass through untouched."""
-    if not w:
-        return w
-    first_done = False
-    out = []
-    for ch in w:
-        if ch.isalpha():
-            if not first_done:
-                out.append(ch.upper())
-                first_done = True
-            elif ch.isupper():
-                out.append(ch)  # keep original caps (e.g. the 'A' in WhatsApp)
-            else:
-                out.append(_SMALLCAPS_MAP.get(ch.lower(), ch))
-        else:
-            out.append(ch)
-    return "".join(out)
-
-def _smallcaps(text: str) -> str:
-    """Convert plain text to 'Title-cap + small-caps body' style, e.g.
-    'entry zone' -> 'Eɴᴛʀʏ Zᴏɴᴇ'. Numbers, symbols, and emoji pass through untouched."""
-    return " ".join(_sc_word(w) for w in text.split(" "))
-
-_TAG_OR_URL_RE = re.compile(r'(<[^>]+>|https?://\S+|/[A-Za-z_][A-Za-z0-9_]{0,31}(?:@\w+)?)')
-
-def _stylize_all(text: str) -> str:
-    """Apply the small-caps house style to an ENTIRE outgoing message, safely:
-    HTML tags (<b>, <i>, <a href=...>, <pre>, <code>, <tg-emoji ...>, etc.) and raw
-    URLs are left completely untouched; content inside <pre>...</pre> (tables/
-    monospace dumps) and <code>...</code> (copyable/tappable literal commands like
-    '/coin ETH') is also left untouched so nothing breaks when tapped or copied.
-    Everything else (plain visible text) gets word-by-word small-caps styling."""
-    if not text:
-        return text
-    parts = _TAG_OR_URL_RE.split(text)
-    out = []
-    pre_depth = 0
-    code_depth = 0
-    for p in parts:
-        if p.startswith("<") and p.endswith(">"):
-            lo = p.lower()
-            if lo.startswith("<pre"):
-                pre_depth += 1
-            elif lo.startswith("</pre"):
-                pre_depth = max(0, pre_depth - 1)
-            elif lo.startswith("<code"):
-                code_depth += 1
-            elif lo.startswith("</code"):
-                code_depth = max(0, code_depth - 1)
-            out.append(p)
-        elif p.startswith("http://") or p.startswith("https://"):
-            out.append(p)
-        elif re.fullmatch(r'/[A-Za-z_][A-Za-z0-9_]{0,31}(?:@\w+)?', p):
-            out.append(p)
-        else:
-            if pre_depth > 0 or code_depth > 0:
-                out.append(p)
-            else:
-                out.append(re.sub(r"[A-Za-z]+", lambda m: _sc_word(m.group(0)), p))
-    return "".join(out)
-
-_CARD_BORDER   = "࿇" + "═" * 33 + "࿇"
-_CARD_DIVIDER  = "┈" * 26
-
-def _clean_markdown_for_telegram(text: str, max_chars: int = 1400) -> str:
-    """Strip/convert Claude's raw markdown into clean Telegram HTML:
-    - '## Headers' / '### Headers' -> plain text (no literal #'s)
-    - '**bold**' -> real <b>bold</b>
-    - '---' horizontal-rule lines -> removed entirely
-    - Truncates gracefully at the last full sentence/line instead of
-      cutting mid-word, and adds a trailing ellipsis when truncated."""
-    text = text.strip()
-    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^[-_*]{3,}\s*$', '', text, flags=re.MULTILINE)
-    text = _html.escape(text)
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    if len(text) > max_chars:
-        cut = text[:max_chars]
-        last_nl = cut.rfind('\n')
-        last_period = cut.rfind('. ')
-        cut_point = max(last_nl, last_period)
-        if cut_point > max_chars * 0.5:
-            cut = cut[:cut_point + 1]
-        text = cut.rstrip() + " …"
-    return text
-
-def _card(title: str, sections: list) -> str:
-    """Build a bordered/emojified Telegram card.
-    sections: list of section-lines-lists; a divider is inserted between sections.
-    Each line in a section should already include any HTML (<b>, <i>) and emoji —
-    only _smallcaps() the label portion yourself before passing it in."""
-    out = [_CARD_BORDER, f"✦ {_smallcaps(title)} ✦", _CARD_BORDER, ""]
-    for i, section in enumerate(sections):
-        for line in section:
-            out.append(f"┃ {line}")
-        if i < len(sections) - 1:
-            out.append(_CARD_DIVIDER)
-    out.append(_CARD_BORDER)
-    return "\n".join(out)
-
-
-def bingx_klines_for(symbol: str, interval: str, limit: int = 100):
-    """Generic BingX kline/candle fetch for ANY symbol (not just the main SYMBOL).
-    No TradingView dependency — pure BingX REST. Returns list of dicts
-    [{t,o,h,l,c,v}, ...] oldest-to-newest, or [] on failure."""
-    try:
-        r = requests.get(
-            "https://open-api.bingx.com/openApi/swap/v2/quote/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-            timeout=10).json()
-        rows = r.get("data", [])
-        if not rows:
-            return []
-        out = []
-        for row in rows:
-            if isinstance(row, dict):
-                out.append({
-                    "t": int(float(row.get("time") or row.get("openTime") or 0)),
-                    "o": float(row.get("open", 0)),
-                    "h": float(row.get("high", 0)),
-                    "l": float(row.get("low", 0)),
-                    "c": float(row.get("close", 0)),
-                    "v": float(row.get("volume", 0)),
-                })
-        out.sort(key=lambda x: x["t"])
-        return out
-    except Exception as e:
-        print(f"  [BINGX KLINES] {symbol} {interval}: {e}")
-        return []
-
-
-def bingx_simple_ta(symbol: str):
-    """Lightweight technical context for /coin, built entirely from BingX kline data
-    (no TradingView). Returns a dict with swing high/low over the last N 1H candles
-    and EMA20/EMA50 on 1H closes, or {} if data unavailable."""
-    candles = bingx_klines_for(symbol, "1h", 60)
-    if len(candles) < 20:
-        return {}
-    closes = [c["c"] for c in candles]
-
-    def ema(vals, period):
-        k = 2 / (period + 1)
-        e = vals[0]
-        for v in vals[1:]:
-            e = v * k + e * (1 - k)
-        return e
-
-    recent20 = candles[-20:]
-    swing_high = max(c["h"] for c in recent20)
-    swing_low  = min(c["l"] for c in recent20)
-    return {
-        "swing_high_20h": swing_high,
-        "swing_low_20h": swing_low,
-        "ema20_1h": ema(closes, 20) if len(closes) >= 20 else None,
-        "ema50_1h": ema(closes, 50) if len(closes) >= 50 else None,
-    }
-
-
 def _claude_client(kind: str = "btc", attempt: int = 0):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the separate AEROLINK_API_KEY +
@@ -1271,6 +1118,8 @@ def _pull_csv_central(key: str, path: str) -> bool:
                     f.write(body["data"]["csv"])
                 print(f"  [LOG] Restored {key} from central store")
                 return True
+        else:
+            print(f"  [LOG] Central pull HTTP {r.status_code} ({key}) — {r.text[:150]}")
     except Exception as e:
         print(f"  [LOG] Central pull error ({key}): {e}")
     return False
@@ -1381,6 +1230,10 @@ def load_active_trade():
                 if body:  # non-empty dict — central store has real state
                     d = body
                     print("[STATE] Loaded from central store")
+                else:
+                    print("[STATE] Central store reachable but empty (no /syncup run yet?)")
+            else:
+                print(f"[STATE] Central load HTTP {r.status_code} — {r.text[:150]}")
         except Exception as e:
             print(f"[STATE] Central load error (falling back to local file): {e}")
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
@@ -2947,6 +2800,10 @@ def load_settings():
                     if body.get("found"):
                         d = body["data"]
                         print("[SETTINGS] Loaded from central store")
+                    else:
+                        print("[SETTINGS] Central store reachable but no data found yet")
+                else:
+                    print(f"[SETTINGS] Central load HTTP {r.status_code} — {r.text[:150]}")
             except Exception as e:
                 print(f"[SETTINGS] Central load error (falling back to local file): {e}")
         if d is None and os.path.exists(_SETTINGS_FILE):
@@ -3050,9 +2907,7 @@ PREMIUM_EMOJI_MAP = {
     "❌": "6120660741369369103", "🚫": "5240241223632954241",
     "🚨": "5395695537687123235", "🚀": "6221996895535896347",
     "💰": "6224365445445590974", "🤖": "5197252827247841976",
-    "📊": "6084477132254218612", "📡": "6174682466356303760",
-    "📈": "6224129999633388168", "📉": "6222274114200015993",
-    "📍": "5258134950741289943", "📖": "5389006929282476921",
+    "📊": "5231200819986047254", "📡": "6174682466356303760",
     "⏰": "5213349767672769194", "🕐": "5363857580777029543",
     "🕦": "5933544413740403607", "🛡": "6070930852647278292",
     "📌": "5193159135004211919", "💬": "5233376087777501917",
@@ -3082,19 +2937,10 @@ PREMIUM_EMOJI_MAP = {
 }
 PREMIUM_EMOJIS_ENABLED = True
 
-BOT_TEXT_STYLE_ENABLED = True  # set False to instantly revert every message to plain text
-
 def _apply_premium_emojis(text: str) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
-    version; everyone else still sees the plain glyph (Telegram's own fallback).
-    Also applies the bot-wide small-caps house style to all plain text first —
-    this one function is the shared choke point every send path calls through,
-    so styling it here covers /coin, scan signals, menus, and everything else."""
-    if not text:
-        return text
-    if BOT_TEXT_STYLE_ENABLED:
-        text = _stylize_all(text)
-    if not PREMIUM_EMOJIS_ENABLED:
+    version; everyone else still sees the plain glyph (Telegram's own fallback)."""
+    if not PREMIUM_EMOJIS_ENABLED or not text:
         return text
     for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
         if glyph in text:
@@ -3655,27 +3501,31 @@ def fmt_scan_signal(t: dict) -> str:
         zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = f"#ID{int(t.get('created_at', time.time()))}"
-        return _card("Signal", [
-            [f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term"],
-            [f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>"],
-            [f"🎯 Tᴀʀɢᴇᴛ 1: <b>{tp1:,.4g}</b>",
-             f"🏆 Tᴀʀɢᴇᴛ 2: <b>{tp2:,.4g}</b>",
-             f"🔺 Sᴛᴏᴘ-Lᴏꜱꜱ: <b>{sl:,.4g}</b>"],
-            [f"💡 Aꜰᴛᴇʀ TP1, ᴍᴏᴠᴇ ʀᴇꜱᴛ ᴛᴏ ʙʀᴇᴀᴋᴇᴠᴇɴ.",
-             f"🔎 Sɪɢɴᴀʟ ID: <i>{sig_id}</i>"],
-            [f"🛡️ <i>Capital protected</i>"],
-        ])
+        return (
+            f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term\n\n"
+            f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
+            f"⏳ Signal Details:\n"
+            f"Target 1: <b>{tp1:,.4g}</b>\n"
+            f"Target 2: <b>{tp2:,.4g}</b>\n\n"
+            f"🔺 Stop-Loss: <b>{sl:,.4g}</b>\n"
+            f"💡 After reaching the first target you can put the rest of the position to breakeven.\n\n"
+            f"🔎 Signal ID: <i>{sig_id}</i>\n\n"
+            f"✨ <i>🛡️ Capital protected</i>"
+        )
 
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
-    return _card("Scan Signal", [
-        [f"📣 <b>#{coin}-USDT</b>  |  <b>S{ver}</b>  🕐 {ist_str()}"],
-        [f"{arrow} — <b>MARKET ENTRY</b>"],
-        [f"🎯 Eɴᴛʀʏ: <b>{entry:,.4g}</b>",
-         f"🛑 SL: <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)",
-         f"💰 TP1: <b>{tp1:,.4g}</b>",
-         f"🏆 TP2: <b>{tp2:,.4g}</b>"],
-        [f"🛡️ <i>Capital protected</i>"],
-    ])
+    return (
+        f"<b>📣 #{coin}-USDT</b>\n"
+        f"<b>{'─'*22}</b>\n\n"
+        f" SCAN SIGNAL  |  <b>S{ver}</b>\n"
+        f"  🕐 {ist_str()}\n\n"
+        f"{arrow} — <b>MARKET ENTRY</b>\n\n"
+        f"🎯 Entry: <b>{entry:,.4g}</b>\n"
+        f"🛑 SL:    <b>{sl:,.4g}</b>  ({sl_pct:.1f}%)\n"
+        f"💰 TP1:  <b>{tp1:,.4g}</b>\n"
+        f"🏆 TP2:  <b>{tp2:,.4g}</b>\n\n"
+        f"✨ <i>🛡️ Capital protected</i>"
+    )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     if t is None: t = scan_active_trade
@@ -6198,8 +6048,10 @@ Reasoning: [one line]"""
             _results.append(f"❌ Bot settings: {e}")
         try:
             save_state()
-            requests.post(f"{CLEXER_API_URL}/push_state", json=json.load(open(STATE_FILE)),
+            _r = requests.post(f"{CLEXER_API_URL}/push_state", json=json.load(open(STATE_FILE)),
                 headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}), timeout=15)
+            if not _r.ok:
+                raise Exception(f"HTTP {_r.status_code} — {_r.text[:150]}")
             _results.append("✅ Trade state")
         except Exception as e:
             _results.append(f"❌ Trade state: {e}")
@@ -6371,102 +6223,32 @@ Reasoning: [one line]"""
                 low24  = float(d.get("lowPrice",  0))
                 vol    = float(d.get("volume", 0))
 
-                # Real technical context from BingX kline data (NOT TradingView) --
-                # 20x 1H swing high/low + EMA20/EMA50 on 1H closes.
-                ta = bingx_simple_ta(sym)
-                ta_block = ""
-                if ta:
-                    ta_block = (
-                        f"20H Swing High/Low: ${ta['swing_high_20h']:,.6g} / ${ta['swing_low_20h']:,.6g}\n"
-                        f"EMA20 (1H): ${ta['ema20_1h']:,.6g}"
-                        + (f"  |  EMA50 (1H): ${ta['ema50_1h']:,.6g}\n" if ta.get('ema50_1h') else "\n")
-                    )
-
-                # Ask Claude for structured analysis (strict JSON so we can build
-                # a fixed, reliable template instead of parsing freeform text).
-                # /coin ALWAYS uses direct Anthropic API -- never Aerolink,
-                # regardless of the BTC/scan gateway toggles.
-                resp = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
-                    model=SCAN_MODEL, max_tokens=800,
+                # Ask Claude for brief analysis
+                resp = _claude_client().messages.create(
+                    model=SCAN_MODEL, max_tokens=700,
                     messages=[{"role": "user", "content":
                         f"Analyze {sym} for a short-term futures trade:\n"
                         f"Current Price: ${price:,.6g}\n"
                         f"24h Change: {change:+.2f}%\n"
                         f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
                         f"24h Volume: ${vol:,.0f}\n"
-                        f"{ta_block}"
                         f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
-                        f"Use the 1H swing high/low and EMA levels above as real support/"
-                        f"resistance references -- don't just guess a plain % offset.\n\n"
-                        f"Respond with ONLY raw JSON (no markdown fences, no preamble), exactly this shape:\n"
-                        f'{{"bias":"LONG/SHORT/WAIT","bias_note":"short qualifier e.g. Wait for confirmation",'
-                        f'"entry_zone":"e.g. 1791 - 1798","stop_loss":"e.g. 1806","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
-                        f'"confidence":"HIGH/MEDIUM/LOW",'
-                        f'"reason":["2-4 short bullet points, plain strings, no leading bullet char"],'
-                        f'"practical_note_intro":"one short sentence",'
-                        f'"practical_note_options":["option 1 text","option 2 text"],'
-                        f'"btc_weak":"effect on thesis if BTC stays weak",'
-                        f'"btc_strong":"effect on thesis if BTC bounces strong"}}'}])
+                        f"Give:\n1. Bias: LONG / SHORT / WAIT\n"
+                        f"2. Entry zone\n3. SL zone\n4. TP target\n"
+                        f"5. Confidence: HIGH / MED / LOW\n"
+                        f"6. Reasoning (2-3 lines max)\n\n"
+                        f"Be practical and concise. No fluff."}])
                 _log_api_usage(f"coin_{sym}", SCAN_MODEL,
                                resp.usage.input_tokens, resp.usage.output_tokens)
-                raw = _claude_text(resp).strip()
-                raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip(), flags=re.MULTILINE).strip()
+                analysis = _claude_text(resp)
                 emoji = "🟢" if change >= 0 else "🔴"
-
-                try:
-                    j = json.loads(raw)
-
-                    reason_lines = "\n".join(f"• {r}" for r in j.get("reason", []))
-                    opts = j.get("practical_note_options", [])
-                    opt_block = ""
-                    if len(opts) >= 1:
-                        opt_block += f"① {opts[0]}"
-                    if len(opts) >= 2:
-                        opt_block += f"\n\nOR\n\n② {opts[1]}"
-
-                    body = (
-                        f"╔════════════════════════════╗\n"
-                        f"📊 COIN ANALYSIS\n"
-                        f"╚════════════════════════════╝\n\n"
-                        f"{emoji} {sym.replace('-', '/')}\n"
-                        f"📅 {ist_str()}\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"💰 Price: ${price:,.6g} ({change:+.2f}%)\n"
-                        f"📈 24H High: ${high24:,.6g}\n"
-                        f"📉 24H Low: ${low24:,.6g}\n"
-                        f"📦 Volume: ${vol/1e6:.1f}M\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"🧠 AI Analysis\n\n"
-                        f"📍 Bias: {j.get('bias','?')} ({j.get('bias_note','')})\n\n"
-                        f"🎯 Entry Zone:\n{j.get('entry_zone','?')}\n\n"
-                        f"🛑 Stop Loss:\n{j.get('stop_loss','?')}\n\n"
-                        f"🎯 Targets:\n• TP1: {j.get('tp1','?')}\n• TP2: {j.get('tp2','?')}\n\n"
-                        f"📊 Confidence:\n{j.get('confidence','?')}\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"<blockquote>📖 Reason\n\n{reason_lines}</blockquote>\n\n"
-                        f"<blockquote>⚠️ Practical Note\n\n{j.get('practical_note_intro','')}\n\n{opt_block}</blockquote>\n\n"
-                        f"<blockquote>📌 Keep an eye on BTC:\n"
-                        f"• Weak BTC → {j.get('btc_weak','')}\n"
-                        f"• Strong BTC bounce → {j.get('btc_strong','')}</blockquote>\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"🛡️ Capital Protected"
-                    )
-                    send_reply(cid, body)
-                except Exception:
-                    # Fallback: JSON parse failed -- show raw analysis in the card style
-                    # so /coin never just silently fails.
-                    analysis_clean = _clean_markdown_for_telegram(raw)
-                    analysis_lines = [l for l in analysis_clean.split(chr(10)) if l.strip()]
-                    card = _card("Coin Analysis", [
-                        [f"{emoji} <b>{sym}</b>  🕐 {ist_str()}"],
-                        [f"💰 Price: <b>${price:,.6g}</b>  ({change:+.2f}%)",
-                         f"📊 24ʜ: H:${high24:,.6g}  L:${low24:,.6g}",
-                         f"📦 Vᴏʟ: ${vol/1e6:.1f}M"],
-                        [f"🧠 <b>Claude Analysis</b>"] +
-                        [f"<i>{l}</i>" for l in analysis_lines],
-                        [f"🛡️ <i>Capital protected</i>"],
-                    ])
-                    send_reply(cid, card)
+                send_reply(cid,
+                    f"{emoji} <b>{sym} Analysis</b>  {ist_str()}\n\n"
+                    f"Price:  <b>${price:,.6g}</b>  ({change:+.2f}%)\n"
+                    f"24H:   H:${high24:,.6g}  L:${low24:,.6g}\n"
+                    f"Vol:   ${vol/1e6:.1f}M\n\n"
+                    f"<b>Claude Analysis:</b>\n<i>{_html.escape(analysis[:900])}</i>\n\n"
+                    f"<i>🛡️ Capital protected</i>")
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()

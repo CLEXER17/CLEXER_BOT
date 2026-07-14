@@ -1,4 +1,4 @@
-"""
+﻿"""
 CLEXER V17.8.5 — BingX Copy Trade System
 ──────────────────────────────────────
 Standalone module. Import into bot.py.
@@ -242,6 +242,8 @@ def _load_last_signal():
                     body = r.json()
                     if body.get("found"):
                         d = body["data"]
+                else:
+                    print(f"[CT] signal central load HTTP {r.status_code} — {r.text[:150]}")
             except Exception as e:
                 print(f"[CT] signal central load error (falling back to local file): {e}")
         if d is None and os.path.exists(_SIGNAL_FILE):
@@ -312,6 +314,10 @@ def load():
                     print(f"[CT] Loaded {len(_db)} copy users from central store")
                     _load_last_signal()
                     return
+                else:
+                    print("[CT] Central store reachable but no data found yet")
+            else:
+                print(f"[CT] Central load HTTP {r.status_code} — {r.text[:150]}")
         except Exception as e:
             print(f"[CT] Central load error (falling back to local file): {e}")
     try:
@@ -332,11 +338,15 @@ def _save():
         print(f"[CT] Save error: {e}")
 
 def push_to_central() -> bool:
-    """Force-push the current users DB to the central store. Called by /syncup."""
+    """Force-push the current users DB to the central store. Called by /syncup.
+    Raises if the server didn't actually accept it (e.g. secret mismatch = 403) —
+    caller must not treat a non-2xx response as success."""
     if not _API_URL:
         return False
     hdrs = {"X-Push-Secret": _API_SECRET} if _API_SECRET else {}
-    requests.post(f"{_API_URL}/kv/ct_users", json=_db, headers=hdrs, timeout=15)
+    r = requests.post(f"{_API_URL}/kv/ct_users", json=_db, headers=hdrs, timeout=15)
+    if not r.ok:
+        raise Exception(f"HTTP {r.status_code} — {r.text[:150]}")
     return True
 
 def _get(cid: str) -> dict:

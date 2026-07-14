@@ -191,6 +191,15 @@ def read_state() -> dict:
 # ── push_state (called by bot after every save_state) ─────────────────────────
 PUSH_STATE_SECRET = os.environ.get("PUSH_STATE_SECRET", "")
 
+@app.get("/push_state")
+def get_state(request: Request):
+    """Any server (main or a co-server) calls this on startup to restore the
+    active BTC trade / Scan1 / Scan2 slots from the shared store."""
+    if PUSH_STATE_SECRET:
+        if request.headers.get("X-Push-Secret", "") != PUSH_STATE_SECRET:
+            raise HTTPException(403, "Forbidden")
+    return read_state()
+
 @app.post("/push_state")
 async def push_state(request: Request):
     """Bot calls this endpoint after every save_state() to sync state to DB."""

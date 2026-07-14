@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.claude/
+backups/
+*.json
+!package.json
+*.csv
+.env
+bot_p1.py
+bot_p2.py
+bot_p3.py
+bot_v7_part1.py
+bot_v7_part2.py
+C:*
