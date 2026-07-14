@@ -381,7 +381,7 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
     tp1 = detail.get("tp1", 0); sl_be = detail.get("sl_be", 0); tp2 = detail.get("tp2", 0)
     arrow = "🟢" if side == "BUY" else "🔴"
     text = (
-        f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>  🕐 {ist_str()}\n"
+        f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>\n"
         f"{arrow} {side}\n"
         f"✅ TP1: <b>{tp1:,.4g}</b>\n"
         f"🛡 SL moved to BE: <b>{sl_be:,.4g}</b>\n"
@@ -399,7 +399,7 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
     )
     for cid in _channels_by_tier("free"):
         try:
-            payload = {"chat_id": cid, "text": text, "disable_web_page_preview": True}
+            payload = {"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
             if mkp: payload["reply_markup"] = mkp
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         except Exception as e: print(f"  [TP1 PROMO] free {cid}: {e}")
