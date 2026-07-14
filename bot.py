@@ -665,6 +665,29 @@ def _central_get(path: str, timeout: int = 8, retries: int = 3, delay: float = 2
     print(f"[CENTRAL] {path} failed after {retries} attempts: {last_err}")
     return None
 
+def _kv_pick_newer(local_path: str, kv_body: dict, log_tag: str):
+    """Compare a /kv/{key} response's updated_at against local_path's mtime —
+    return the central data dict only if it's actually newer (or local doesn't
+    exist yet); otherwise return None so the caller falls through to the local
+    file. Prevents a stale central pull from silently clobbering a local change
+    made after the last /syncup."""
+    if not kv_body or not kv_body.get("found"):
+        print(f"[{log_tag}] Central store reachable but no data found yet")
+        return None
+    local_mtime = os.path.getmtime(local_path) if os.path.exists(local_path) else 0
+    central_ts = 0
+    ts_str = kv_body.get("updated_at")
+    if ts_str:
+        try:
+            central_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            central_ts = 0
+    if central_ts >= local_mtime or not os.path.exists(local_path):
+        print(f"[{log_tag}] Loaded from central store (central:{central_ts:.0f} local:{local_mtime:.0f})")
+        return kv_body["data"]
+    print(f"[{log_tag}] Local file is newer than central ({local_mtime:.0f} > {central_ts:.0f}) — using local")
+    return None
+
 # ── Multi-server active/standby switch ─────────────────────────────────────────
 # Each Railway deployment (main, co-server1, co-server2, ...) sets its own unique
 # SERVER_NAME. Only ONE name is ever the "active" one at a time — stored centrally
@@ -758,12 +781,7 @@ def load_users():
         d = None
         r = _central_get("/kv/registered_users")
         if r is not None and r.ok:
-            body = r.json()
-            if body.get("found"):
-                d = body["data"]
-                print("[USERS] Loaded from central store")
-            else:
-                print("[USERS] Central store reachable but no data found yet")
+            d = _kv_pick_newer(USER_DB_FILE, r.json(), "USERS")
         if d is None and os.path.exists(USER_DB_FILE):
             with open(USER_DB_FILE, "r") as f:
                 d = json.load(f)
@@ -1242,15 +1260,27 @@ def save_active_trade():
 def load_active_trade():
     global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
     d = None
+    path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
+    _local_mtime = os.path.getmtime(path) if os.path.exists(path) else 0
     r = _central_get("/push_state")
     if r is not None and r.ok:
         body = r.json()
-        if body:  # non-empty dict — central store has real state
-            d = body
-            print("[STATE] Loaded from central store")
+        _central_state = body.get("state") if isinstance(body, dict) and "state" in body else body
+        _central_ts_str = body.get("updated_at") if isinstance(body, dict) else None
+        if _central_state:
+            _central_ts = 0
+            if _central_ts_str:
+                try:
+                    _central_ts = datetime.fromisoformat(_central_ts_str.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    _central_ts = 0
+            if _central_ts >= _local_mtime or not os.path.exists(path):
+                d = _central_state
+                print(f"[STATE] Loaded from central store (newer than local — central:{_central_ts:.0f} local:{_local_mtime:.0f})")
+            else:
+                print(f"[STATE] Local file is newer than central ({_local_mtime:.0f} > {_central_ts:.0f}) — using local")
         else:
             print("[STATE] Central store reachable but empty (no /syncup run yet?)")
-    path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     try:
         if d is None and os.path.exists(path):
             d = json.load(open(path))
@@ -2807,12 +2837,7 @@ def load_settings():
         # CLEXER_API_URL) — falls back to the local file if unreachable/unset.
         r = _central_get("/kv/bot_settings")
         if r is not None and r.ok:
-            body = r.json()
-            if body.get("found"):
-                d = body["data"]
-                print("[SETTINGS] Loaded from central store")
-            else:
-                print("[SETTINGS] Central store reachable but no data found yet")
+            d = _kv_pick_newer(_SETTINGS_FILE, r.json(), "SETTINGS")
         if d is None and os.path.exists(_SETTINGS_FILE):
             d = json.load(open(_SETTINGS_FILE))
         if d is not None:

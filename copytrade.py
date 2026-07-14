@@ -66,6 +66,29 @@ def _central_get(path: str, timeout: int = 8, retries: int = 3, delay: float = 2
             time.sleep(delay)
     print(f"[CT] central GET {path} failed after {retries} attempts: {last_err}")
     return None
+
+def _kv_pick_newer(local_path: str, kv_body: dict, log_tag: str):
+    """Compare a /kv/{key} response's updated_at against local_path's mtime —
+    return the central data only if it's actually newer (or local doesn't
+    exist yet); otherwise None, so a stale central pull can't silently
+    clobber a local change made after the last /syncup."""
+    if not kv_body or not kv_body.get("found"):
+        print(f"[{log_tag}] Central store reachable but no data found yet")
+        return None
+    local_mtime = os.path.getmtime(local_path) if os.path.exists(local_path) else 0
+    central_ts = 0
+    ts_str = kv_body.get("updated_at")
+    if ts_str:
+        try:
+            central_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            central_ts = 0
+    if central_ts >= local_mtime or not os.path.exists(local_path):
+        print(f"[{log_tag}] Loaded from central store (central:{central_ts:.0f} local:{local_mtime:.0f})")
+        return kv_body["data"]
+    print(f"[{log_tag}] Local file is newer than central ({local_mtime:.0f} > {central_ts:.0f}) — using local")
+    return None
+
 BINGX_BASE     = "https://open-api.bingx.com"
 BINGX_SYMBOL   = "BTC-USDT"
 IST            = timedelta(hours=5, minutes=30)
@@ -260,9 +283,7 @@ def _load_last_signal():
         d = None
         r = _central_get("/kv/ct_last_signal")
         if r is not None and r.ok:
-            body = r.json()
-            if body.get("found"):
-                d = body["data"]
+            d = _kv_pick_newer(_SIGNAL_FILE, r.json(), "CT-SIGNAL")
         if d is None and os.path.exists(_SIGNAL_FILE):
             with open(_SIGNAL_FILE) as f:
                 d = json.load(f)
@@ -331,14 +352,12 @@ def load():
     # so the bot still works standalone with no central store configured.
     r = _central_get("/kv/ct_users")
     if r is not None and r.ok:
-        body = r.json()
-        if body.get("found"):
-            _db = body["data"]
+        _central_data = _kv_pick_newer(CT_FILE, r.json(), "CT")
+        if _central_data is not None:
+            _db = _central_data
             print(f"[CT] Loaded {len(_db)} copy users from central store")
             _load_last_signal()
             return
-        else:
-            print("[CT] Central store reachable but no data found yet")
     try:
         if os.path.exists(CT_FILE):
             with open(CT_FILE) as f:

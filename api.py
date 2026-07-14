@@ -194,11 +194,22 @@ PUSH_STATE_SECRET = os.environ.get("PUSH_STATE_SECRET", "")
 @app.get("/push_state")
 def get_state(request: Request):
     """Any server (main or a co-server) calls this on startup to restore the
-    active BTC trade / Scan1 / Scan2 slots from the shared store."""
+    active BTC trade / Scan1 / Scan2 slots from the shared store. Includes
+    updated_at so a caller can compare it against its own local file's mtime
+    and use whichever is actually newer, instead of always trusting central."""
     if PUSH_STATE_SECRET:
         if request.headers.get("X-Push-Secret", "") != PUSH_STATE_SECRET:
             raise HTTPException(403, "Forbidden")
-    return read_state()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT state_json, updated_at FROM bot_state WHERE id = 1")
+                row = cur.fetchone()
+        if row:
+            return {"state": dict(row["state_json"]), "updated_at": row["updated_at"].isoformat()}
+    except Exception:
+        pass
+    return {"state": read_state(), "updated_at": None}
 
 @app.post("/push_state")
 async def push_state(request: Request):
