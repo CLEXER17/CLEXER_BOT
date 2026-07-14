@@ -1172,6 +1172,13 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
+def _gw_model_tag(kind: str = "btc") -> str:
+    """Gateway+model tag for signal headers: A4.8/D4.8 (Aerolink/Direct + Opus 4.8)
+    or AF/DF (Aerolink/Direct + Fable 5)."""
+    gw = "A" if _ai_aerolink(kind) else "D"
+    mdl = "F" if _ai_model(kind) == "claude-fable-5" else "4.8"
+    return f"{gw}{mdl}"
+
 def _claude_client(kind: str = "btc", attempt: int = 0):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the separate AEROLINK_API_KEY +
@@ -3319,7 +3326,7 @@ def fmt_signal(s):
     if context: sections.append(context)
     return _scan_box(
         f"{SYMBOL} Signal",
-        f"{e} {s['signal']} - {SYMBOL}  {ci}  🕐 {_smallcaps_title(ist_str())}",
+        f"{e} {s['signal']} - {SYMBOL}  {ci}  {_gw_model_tag('btc')}  🕐 {_smallcaps_title(ist_str())}",
         sections,
     )
 
@@ -3601,12 +3608,13 @@ def fmt_scan_signal(t: dict) -> str:
     sl_pct = abs(entry - sl) / entry * 100 if entry else 0
     coin = sym.replace("-USDT","").replace("USDT","")
 
+    _gw_tag = _gw_model_tag("scan1" if ver == 1 else "scan2")
     if et == "ZONE" and t.get("zone_lo") and t.get("zone_hi"):
         zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = f"#ID{int(t.get('created_at', time.time()))}"
         return (
-            f"📩 <b>#{coin}USDT</b>  S{ver} | Mid-Term\n\n"
+            f"📩 <b>#{coin}USDT</b>  S{ver} {_gw_tag} | Mid-Term\n\n"
             f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
             f"⏳ Signal Details:\n"
             f"Target 1: <b>{tp1:,.4g}</b>\n"
@@ -3620,7 +3628,7 @@ def fmt_scan_signal(t: dict) -> str:
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
     return _scan_box(
         "Scan Signal",
-        f"📣 #{coin}-USDT  |  S{ver}  🕐 {_smallcaps_title(ist_str())}",
+        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}  🕐 {_smallcaps_title(ist_str())}",
         [
             [f"{arrow} — {_smallcaps_title('Market Entry')}"],
             [f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}",
@@ -9023,7 +9031,7 @@ def _run_test_scan(cid, scan_ver: int):
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
             demo_msg = _scan_box(
-                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver}  🕐 {_smallcaps_title(ist_str())}",
+                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}  🕐 {_smallcaps_title(ist_str())}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
                  [f"🎯 {_smallcaps_title('Entry')}: {scan_entry:,.4g}",
                   f"🛑 SL: {scan_sl:,.4g}  ({sl_pct:.1f}%)",
