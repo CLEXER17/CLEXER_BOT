@@ -1135,11 +1135,21 @@ def _claude_text(msg):
 # normal /aiconfig setting untouched. Set right before the auto-trigger fires
 # and cleared right after that scan cycle finishes (see _scan_run_mode below).
 _SCAN_SPECIAL = {
-    "scan1": {(3,2), (5,23), (12,23)},
-    "scan2": {(2,23), (8,2), (11,27), (12,3), (13,7), (20,23)},
-    "test":  {(3,24), (8,24), (15,24), (17,10)},
+    "scan1": {(3,2), (5,23), (9,2), (16,15)},
+    "scan2": {(2,23), (11,27), (12,3), (13,7), (5,23), (5,28), (9,27), (10,7)},
+    "test":  {(3,24), (8,24), (15,24), (17,10), (0,0), (1,9), (2,24), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+}
+# Newly-added special times that aren't verified yet — they still post to
+# VIP/Free like any special time, but copytrade must NEVER auto-execute real
+# orders on them until admin has watched enough live results to trust them.
+# Move a time out of here (once proven) to let copytrade start using it.
+_SCAN_SPECIAL_NO_COPY = {
+    "scan1": {(9,2), (16,15)},
+    "scan2": {(5,23), (5,28), (9,27), (10,7)},
+    "test":  {(0,0), (1,9), (2,24), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 _scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
+_scan_trigger_hm = {"scan1": None, "scan2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
@@ -6057,9 +6067,17 @@ Reasoning: [one line]"""
                         sd["ver"] = scan_ver
                         # Copy trade only mirrors signals that were actually shown in
                         # VIP/Free — regular-grid (Signal-only) auto-runs place no orders.
-                        if _tier_routed:
+                        # A special time can ALSO be marked "unverified" (freshly added,
+                        # not yet proven) — those still post to VIP/Free but copytrade
+                        # must never auto-execute real orders on them until admin moves
+                        # them out of _SCAN_SPECIAL_NO_COPY.
+                        _trigger_hm = _scan_trigger_hm.get(_kind)
+                        _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+                        if _tier_routed and not _is_unverified:
                             ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
                             send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
+                        elif _is_unverified:
+                            send_reply(cid, f"📋 <b>{chosen_sym}:</b> Unverified special time ({_trigger_hm[0]}:{_trigger_hm[1]:02d}) — posted to VIP/Free, but no copy trade orders placed until this slot is verified.")
                         else:
                             send_reply(cid, f"📋 <b>{chosen_sym}:</b> Signal-only slot (not VIP/Free) — no copy trade orders placed.")
                         # Send skip summary explaining why previous coins were skipped
@@ -9106,6 +9124,7 @@ def main():
                 print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
+                    _scan_trigger_hm["scan1"] = _cur_hm
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
             # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
@@ -9115,6 +9134,7 @@ def main():
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
                         _scan_run_mode["scan2"] = "special" if _cur_hm in _SCAN_SPECIAL["scan2"] else "regular"
+                        _scan_trigger_hm["scan2"] = _cur_hm
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # Test demo Scan1: special times (Direct) + hourly :09/:27 regular grid (Aerolink)
