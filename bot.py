@@ -366,10 +366,15 @@ _daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_p
 _daily_summary_last_sent_date = ""
 
 def _reset_daily_tracker_if_needed():
+    """Only initializes the tracker on first-ever use. Day-rollover (sending
+    the outgoing day's recap and starting a fresh tracker) is handled solely
+    by _daily_summary_loop — if a trade close triggered the rollover instead,
+    a trade closing right after midnight (still part of the previous day's
+    session) would wipe out that whole day's trades and get mislabeled under
+    the new day's date instead of appearing in its own recap."""
     global _daily_tracker
-    today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
-    if _daily_tracker["date"] != today:
-        _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
+    if not _daily_tracker["date"]:
+        _daily_tracker["date"] = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
 
 def _send_tp1_streak_promo(symbol: str, detail: dict):
     """After the 3rd TP1 of the day that was actually shown in the Free channel
@@ -599,17 +604,22 @@ def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, fre
     # TP2 congrats broadcast disabled — admin asked to stop sending it.
 
 def _daily_summary_loop():
-    """Background thread — fires the end-of-day recap once, shortly after
-    midnight IST, then resets the tracker for the new day."""
+    """Background thread — fires the end-of-day recap ~10-15 min after
+    midnight IST (a grace window so a trade closing right at the boundary,
+    e.g. 12:02 AM, still lands in the outgoing day's tracker/recap instead of
+    the new day's), then rolls the tracker over to the new day."""
     global _daily_summary_last_sent_date
     while True:
         try:
             now = datetime.now(timezone.utc) + IST
-            if now.hour == 0 and now.minute < 5:
-                today_marker = now.strftime("%Y-%m-%d")
-                if _daily_summary_last_sent_date != today_marker and _daily_tracker.get("trades"):
+            today_marker = now.strftime("%Y-%m-%d")
+            if (now.hour == 0 and 10 <= now.minute < 15
+                    and _daily_tracker["date"] and _daily_tracker["date"] != today_marker):
+                if _daily_summary_last_sent_date != _daily_tracker["date"] and _daily_tracker.get("trades"):
                     _send_daily_summary()
-                    _daily_summary_last_sent_date = today_marker
+                _daily_summary_last_sent_date = _daily_tracker["date"]
+                _daily_tracker.update({"date": today_marker, "tp1": 0, "tp2": 0, "sl": 0,
+                                        "free_tp1": 0, "tp1_promo_sent": False, "trades": []})
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
         time.sleep(120)
@@ -3521,7 +3531,7 @@ def run_tick_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3857,7 +3867,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
-                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")))
+                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)))
             _remove_scan_trade(ver, sym); return True
@@ -3928,7 +3938,7 @@ def run_price_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
