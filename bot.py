@@ -8790,6 +8790,18 @@ def main():
     _pull_csv_central("trade_history_csv", TRADE_LOG_CSV)
     _pull_csv_central("api_cost_log_csv", API_COST_LOG)
 
+    # One-time bootstrap escape hatch: set FORCE_ACTIVE=1 on a server's env vars
+    # to make it claim itself active in the central store immediately, without
+    # needing Telegram polling to already be working — breaks the chicken-and-egg
+    # deadlock where a brand-new central store (or an unreachable one) makes every
+    # server default to standby, and nobody can send /server to fix it because
+    # nothing is polling yet. Remove this env var again after first use — leaving
+    # it set means this server will re-claim active on every future restart too.
+    if os.getenv("FORCE_ACTIVE") == "1" and CLEXER_API_URL:
+        set_active_server(SERVER_NAME)
+        print(f"[SERVER] FORCE_ACTIVE=1 — '{SERVER_NAME}' claimed active in the central store. "
+              f"Remove this env var now that it's done its job.")
+
     # Start PAUSED - user must send /go
     bot_paused.set()
 

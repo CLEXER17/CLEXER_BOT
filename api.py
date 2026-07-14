@@ -284,10 +284,17 @@ def health():
 # Starts ON by default — send /miniapp resume from Telegram to go live
 _maintenance = {"on": True, "msg": "Under Maintenance — send /miniapp resume to go live"}
 
+_MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health")
+
 @app.middleware("http")
 async def maintenance_gate(request: Request, call_next):
-    """Block all requests except /maintenance endpoints when in maintenance mode."""
-    if _maintenance["on"] and not request.url.path.startswith("/maintenance"):
+    """Block mini-app-facing requests when in maintenance mode — but NEVER the
+    internal bot-to-bot sync endpoints (/kv/*, /push_state) or /health. Those
+    must always work regardless of mini-app maintenance state, otherwise a
+    freshly-restarted api.py (which resets maintenance to ON by default) would
+    silently cut off every bot server's shared data sync until someone happens
+    to send /miniapp resume — which can itself require a bot to be polling."""
+    if _maintenance["on"] and not request.url.path.startswith(_MAINTENANCE_EXEMPT_PREFIXES):
         return JSONResponse({"error": "maintenance", "msg": _maintenance["msg"]}, status_code=503)
     return await call_next(request)
 
