@@ -8728,26 +8728,29 @@ def _demo_monitor_loop():
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            "Demo TP2 Hit", f"🏆 [DEMO] {coin}-USDT",
+                            f"#{coin} TP2 Hit", f"🏆 TS{_dver} {coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP2: {cp:,.6g}",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g} → TP2: {tp2:,.6g}",
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
+                              f"🏆 TP2: {tp2:,.6g}",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp2(sym)
                         to_remove.append(t)
                     elif sl_hit:
-                        lbl = "BE SL" if tp1hit else "SL"
+                        lbl = "BE" if tp1hit else "SL"
                         result = "BREAKEVEN" if tp1hit else "LOSS"
+                        _sl_exit = be_sl if tp1hit and be_sl else sl
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "sl_hit_time":_ist_str_now(),"result":result,
-                            "entry_price":entry,"sl_price":be_sl if tp1hit and be_sl else sl,
+                            "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"Demo {lbl} Hit", f"🚨 [DEMO] {coin}-USDT",
+                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} {coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ {lbl}: {cp:,.6g}",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g} | {lbl}: {be_sl if tp1hit and be_sl else sl:,.6g}",
-                              f"❌ {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]])
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
+                              f"🛑 {lbl}: {_sl_exit:,.6g}",
+                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_sl(sym)
@@ -8760,9 +8763,10 @@ def _demo_monitor_loop():
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            "Demo TP1 Hit", f"🎯 [DEMO] {coin}-USDT",
+                            f"#{coin} TP1 Hit", f"🎯 TS{_dver} {coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP1: {cp:,.6g}",
-                              f"🛡️ {_smallcaps_title('50% closed. BE SL')} → {be_sl_price:,.6g}",
+                              f"🛡️ {_smallcaps_title('50% closed')}",
+                              f"🔒 BE SL: {be_sl_price:,.6g}",
                               f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
@@ -8773,10 +8777,11 @@ def _demo_monitor_loop():
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            "Demo Timeout", f"⏰ [DEMO] {coin}-USDT",
-                            [[f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}.",
-                              f"📊 {_smallcaps_title('Exit')} @ {cp:,.6g} | P/L: {pnl:+.2f}%",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}"]])
+                            f"#{coin} Timeout", f"⏰ TS{_dver} {coin}-USDT",
+                            [[f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}",
+                              f"📊 {_smallcaps_title('Exit')}: {cp:,.6g}",
+                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
+                              f"📈 P/L: {pnl:+.2f}%"]])
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_sl(sym)
