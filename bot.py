@@ -3601,7 +3601,7 @@ def _wick_check_since_entry(sym: str, created_at: float):
         entry_dt = datetime.fromtimestamp(created_at, timezone.utc).replace(tzinfo=None) + IST
         rounded_min = (entry_dt.minute // 15) * 15
         start_dt = entry_dt.replace(minute=rounded_min, second=0, microsecond=0)
-        elapsed_min = (now_ist() - start_dt).total_seconds() / 60
+        elapsed_min = (now_ist().replace(tzinfo=None) - start_dt).total_seconds() / 60
         n_candles = min(max(1, int(elapsed_min // 15) + 2), 100)
         df15 = bingx_klines(sym, "15m", n_candles)
         if df15 is not None and len(df15) > 0:
