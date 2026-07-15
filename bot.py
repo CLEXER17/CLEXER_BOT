@@ -1013,7 +1013,7 @@ def _chat_is_image_request(text: str) -> bool:
     t = text.lower()
     return any(h in t for h in _CHAT_IMAGE_HINTS)
 
-_CHAT_TEXT_MODEL = "gemini-3.1-flash-lite"  # this account's best free quota: 15 RPM / 500 RPD
+_CHAT_TEXT_MODEL = "gemini-3.5-flash"  # newest/smartest model with free quota on this account — only 5 RPM / 20 RPD though (vs 3.1-flash-lite's 500 RPD)
 
 def _chat_call_gemini_text(history: list) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
@@ -1106,7 +1106,10 @@ def _handle_chat_message(cid, text: str):
             sess["history"] = sess["history"][-max_msgs:]
     except Exception as e:
         print(f"  [CHAT] {cid}: {e}")
-        send_reply(cid, "⚠️ Chat AI had an error — try again.")
+        if "429" in str(e):
+            send_reply(cid, "⚠️ Chat AI hit today's free-tier limit (this model only allows a small number of replies per day). Try again later, or ask admin to switch to a higher-quota model.")
+        else:
+            send_reply(cid, "⚠️ Chat AI had an error — try again.")
 
 def _chat_session_sweep_loop():
     """Background thread — closes any chat session idle for 5+ minutes and notifies the user."""
