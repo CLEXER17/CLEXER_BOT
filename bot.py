@@ -4777,7 +4777,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
                 _pnl = (_cp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _cp and dc.get("entry") else 0
                 _dc_tp1 = "✅" if dc.get('tp1_hit') else f"{dc.get('tp1',0):,.4g}"
-                scan_lines += (f"\n\n<b>[DEMO]</b> {dc['signal']} {dc.get('symbol','?')}\n"
+                scan_lines += (f"\n\n<b>TS{dc.get('scan_ver',1)}</b> {dc['signal']} {dc.get('symbol','?')}\n"
                     f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
                     f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
         _next_btc_scan, _, _ = _next_schedule_times()
@@ -4919,7 +4919,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 except: _dcp = 0; _dcpl = ""
                 _dpnl = (_dcp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _dcp and dc.get("entry") else 0
                 parts_out.append(
-                    f"<b>[DEMO] SCALP V1</b>\n\n{dc['signal']} - {dc.get('symbol','?')}\n{_dcpl}"
+                    f"<b>TS{dc.get('scan_ver',1)} ALT SIGNAL</b>\n\n{dc['signal']} - {dc.get('symbol','?')}\n{_dcpl}"
                     f"Entry: <b>{dc.get('entry',0):,.4g}</b> ✅ (MARKET)\n"
                     f"SL:    <b>{dc.get('sl',0):,.4g}</b>\n"
                     f"TP1:   <b>{dc.get('tp1',0):,.4g}</b> {'✅ HIT' if dc.get('tp1_hit') else '⏳ pending'}\n"
@@ -9428,7 +9428,7 @@ def _run_test_scan(cid, scan_ver: int):
             coin  = chosen_sym.replace("-USDT","")
             _demo_sig_id = _gen_signal_id()
             demo_msg = _scan_box(
-                "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
+                "Alt Signal", f"📣 {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
                  [f"🎯 {_smallcaps_title('Entry')}: {scan_entry:,.4g}",
                   f"🛑 SL: {scan_sl:,.4g}  ({sl_pct:.1f}%)",
