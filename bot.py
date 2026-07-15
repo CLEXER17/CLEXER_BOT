@@ -4042,6 +4042,25 @@ def run_scan_tick_check() -> bool:
     for t in list(scan2_trades): any_closed |= _tick_one(2, t)
     return any_closed
 
+def _ghost_confirm_close(symbol: str):
+    """Backup confirmation — copytrade's own monitor_sl_tp() sometimes detects, from a
+    copy user's actual BingX order history, that a position for `symbol` already closed
+    (e.g. an SL fill) before our own live price-monitor got to it. When that happens,
+    force an immediate tick check on the matching bot trade right now, using the exact
+    same _tick_one/run_tick_check logic the normal monitor loop already uses — so the
+    channel/tier declaration, is_d48 gating, and logging all stay correct with zero
+    duplicated message-building. A no-op if the trade isn't found (already closed by
+    the primary path, or not one of ours)."""
+    try:
+        if active_trade.get("signal") and SYMBOL == symbol:
+            run_tick_check(); return
+        for ver, lst in ((1, scan1_trades), (2, scan2_trades)):
+            for t in list(lst):
+                if t.get("symbol") == symbol:
+                    _tick_one(ver, t); return
+    except Exception as e:
+        print(f"  [GHOST CONFIRM] {symbol}: {e}")
+
 # --- 1-HOUR PRICE CHECK -------------------------------------------------------
 def run_price_check():
     if not active_trade["signal"]: return False
@@ -9435,7 +9454,7 @@ def main():
     threading.Thread(target=_chat_session_sweep_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
-    ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
+    ct.start_monitor_loop(notify_fn=send_admin, ghost_close_fn=_ghost_confirm_close, interval_hours=1)
 
     # Startup sync check — alert admin if any orphan positions exist
     def _startup_sync():

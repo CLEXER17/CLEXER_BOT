@@ -1763,7 +1763,7 @@ def _get_all_positions(api_key: str, api_secret: str) -> list:
     return []
 
 
-def monitor_sl_tp(notify_fn=None):
+def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
     """
     Runs every minute. For every connected user:
     1. Fetches all real BingX positions
@@ -1822,6 +1822,9 @@ def monitor_sl_tp(notify_fn=None):
                 msg = f"🔔 @{uname} BTC trade {reason}"
                 fixes.append(msg); print(f"[CT] {msg}")
                 if notify_fn: notify_fn(f"📊 <b>BTC trade closed @{uname}</b>\n{reason}")
+                if ghost_close_fn and "hit" in reason:
+                    try: ghost_close_fn(BINGX_SYMBOL)
+                    except Exception as e: print(f"[CT] ghost_close_fn BTC: {e}")
 
             # ── Ghost state: bot thinks scan open but BingX has nothing (all 4 slots) ──
             for _gp in _ALL_SLOT_PREFIXES:
@@ -1838,6 +1841,9 @@ def monitor_sl_tp(notify_fn=None):
                     msg = f"🔔 @{uname} {scan_sym} ({_gp.rstrip('_')}) {reason}"
                     fixes.append(msg); print(f"[CT] {msg}")
                     if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
+                    if ghost_close_fn and "hit" in reason:
+                        try: ghost_close_fn(scan_sym)
+                        except Exception as e: print(f"[CT] ghost_close_fn {scan_sym}: {e}")
 
             # ── Check every real BingX position ──
             for sym, pos in pos_by_sym.items():
@@ -2040,7 +2046,7 @@ def sync_check() -> list[str]:
 
 _pause_event = None  # set by bot.py after import
 
-def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
+def start_monitor_loop(notify_fn=None, ghost_close_fn=None, interval_hours: int = 1):
     """Start background thread that runs monitor_sl_tp every 30 seconds."""
     import threading as _th
     def _loop():
@@ -2049,7 +2055,7 @@ def start_monitor_loop(notify_fn=None, interval_hours: int = 1):
             try:
                 if _pause_event and _pause_event.is_set():
                     time.sleep(30); continue
-                monitor_sl_tp(notify_fn)
+                monitor_sl_tp(notify_fn, ghost_close_fn)
             except Exception as e:
                 print(f"[CT] monitor loop error: {e}")
             time.sleep(30)
