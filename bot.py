@@ -4488,7 +4488,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -4903,6 +4903,28 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
                 "🎨 Need an image? Just describe what you want.\n\n"
                 "⏳ Session will automatically close after 5 minutes of inactivity.")
+
+    elif cmd == "/testreply" and is_admin:
+        _test_entry = _scan_box(
+            "Reply Test — Entry", "🧪 #TESTCOIN-USDT  |  Reply Threading Check",
+            [[f"🎯 Entry: 100.00", f"🛑 SL: 95.00", f"💰 TP1: 110.00", f"🏆 TP2: 120.00"]],
+            tag="#CLEXTEST01",
+        )
+        _mid = _send_via_true_forward_capture(_test_entry, chat_id, "test-entry")
+        if not _mid:
+            send_reply(chat_id, "❌ <b>Test FAILED at step 1</b> — couldn't send/forward the entry message at all. Check ADMIN_CHAT_ID and bot permissions.")
+            return
+        time.sleep(1)
+        _test_reply = _scan_box(
+            "Reply Test — TP1", "🧪 #TESTCOIN-USDT  |  This should reply to the message above ⬆️",
+            [["✅ If this message shows a quoted preview linking to the entry above, reply-threading is WORKING."]],
+            tag="#CLEXTEST01",
+        )
+        _mid2 = _send_plain_reply(chat_id, _test_reply, reply_to=_mid)
+        if _mid2:
+            send_reply(chat_id, "✅ Test sent — scroll up: does the 2nd message show <b>\"Reply to CRYPTO CLEXER\"</b> quoting the 1st message? If yes, reply-threading works correctly.")
+        else:
+            send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
 
     elif cmd == "/trade":
         parts_out = []
