@@ -975,7 +975,8 @@ def _chat_call_gemini_text(history: list) -> str:
             "asks for detail. You may use simple Telegram HTML tags like <b> and <i> for emphasis."}]},
     }
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
-    r.raise_for_status()
+    if not r.ok:
+        raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
@@ -988,7 +989,8 @@ def _chat_call_gemini_image(prompt: str):
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=60)
-    r.raise_for_status()
+    if not r.ok:
+        raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     text = "".join(p.get("text","") for p in parts if p.get("text")).strip()
