@@ -39,6 +39,7 @@ ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
 AEROLINK_API_KEY    = os.getenv("AEROLINK_API_KEY",    "")   # separate key issued by aerolink.lat — never mix with ANTHROPIC_API_KEY
 AEROLINK_API_KEY_2  = os.getenv("AEROLINK_API_KEY_2",  "")   # backup Aerolink key — used automatically on retry if the primary fails
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
+GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
@@ -944,6 +945,105 @@ def _render_user_list_text(title, ids):
 
 broadcast_pending: dict = {}
 pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to type the value
+
+# ─── /chat — free-form AI chat session (Gemini free tier), open to every user.
+# _chat_sessions: cid str -> {"last": epoch, "history": [{"role","parts":[{"text":...}]}]}
+# A session starts with /chat, then every non-command message from that user
+# routes to the AI until 5 minutes pass with no message, at which point the
+# sweep loop auto-closes it and notifies the user. ─────────────────────────
+_chat_sessions: dict = {}
+_CHAT_TIMEOUT_SEC = 300
+_CHAT_HISTORY_MAX_TURNS = 12   # user+model pairs kept per session, to bound token usage
+_CHAT_IMAGE_HINTS = ("generate an image","generate image","draw ","draw me","draw a",
+                     "create an image","create a picture","make an image","make a picture",
+                     "picture of","image of","paint ","illustrate ","sketch ")
+
+def _gemini_headers():
+    return {"Content-Type": "application/json"}
+
+def _chat_is_image_request(text: str) -> bool:
+    t = text.lower()
+    return any(h in t for h in _CHAT_IMAGE_HINTS)
+
+def _chat_call_gemini_text(history: list) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    body = {
+        "contents": history,
+        "systemInstruction": {"parts": [{"text":
+            "You are a helpful, friendly assistant inside a Telegram bot. Answer anything the "
+            "user asks, on any topic. Keep replies clear and reasonably concise unless the user "
+            "asks for detail. You may use simple Telegram HTML tags like <b> and <i> for emphasis."}]},
+    }
+    r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
+    r.raise_for_status()
+    d = r.json()
+    parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    return "".join(p.get("text","") for p in parts).strip() or "…"
+
+def _chat_call_gemini_image(prompt: str):
+    """Returns (text, image_bytes_or_None)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key={GEMINI_API_KEY}"
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    r = requests.post(url, headers=_gemini_headers(), json=body, timeout=60)
+    r.raise_for_status()
+    d = r.json()
+    parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    text = "".join(p.get("text","") for p in parts if p.get("text")).strip()
+    img_b64 = next((p["inlineData"]["data"] for p in parts if p.get("inlineData")), None)
+    img_bytes = base64.b64decode(img_b64) if img_b64 else None
+    return text, img_bytes
+
+def _handle_chat_message(cid, text: str):
+    sess = _chat_sessions.get(str(cid))
+    if not sess:
+        return
+    sess["last"] = time.time()
+    if not GEMINI_API_KEY:
+        send_reply(cid, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
+        return
+    try:
+        if _chat_is_image_request(text):
+            send_reply(cid, "🎨 Generating image…")
+            reply_text, img_bytes = _chat_call_gemini_image(text)
+            if img_bytes:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                    data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
+                    files={"photo": ("image.png", img_bytes, "image/png")}, timeout=30)
+            else:
+                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.")
+            sess["history"].append({"role": "user", "parts": [{"text": text}]})
+            sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
+        else:
+            sess["history"].append({"role": "user", "parts": [{"text": text}]})
+            reply_text = _chat_call_gemini_text(sess["history"])
+            sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
+            send_reply(cid, reply_text)
+        # Trim history to bound token usage
+        max_msgs = _CHAT_HISTORY_MAX_TURNS * 2
+        if len(sess["history"]) > max_msgs:
+            sess["history"] = sess["history"][-max_msgs:]
+    except Exception as e:
+        print(f"  [CHAT] {cid}: {e}")
+        send_reply(cid, "⚠️ Chat AI had an error — try again.")
+
+def _chat_session_sweep_loop():
+    """Background thread — closes any chat session idle for 5+ minutes and notifies the user."""
+    while True:
+        try:
+            now = time.time()
+            for cid_str in list(_chat_sessions.keys()):
+                if now - _chat_sessions[cid_str]["last"] > _CHAT_TIMEOUT_SEC:
+                    del _chat_sessions[cid_str]
+                    try:
+                        send_reply(int(cid_str), "💬 Chat session closed (5 min of inactivity). Send /chat to start a new one.")
+                    except Exception as e:
+                        print(f"  [CHAT SWEEP] notify {cid_str}: {e}")
+        except Exception as e:
+            print(f"  [CHAT SWEEP] {e}")
+        time.sleep(20)
 _last_help_msg: dict = {}  # cid → message_id of last /help message (for dedup/cleanup)
 _tp_state: dict = {}       # cid → {"target": "scan1"/"scan2"/"demo", "digits": [], "times": [(h,m),...], "msg_id": int}
 _pending_confirm: dict = {}  # cid → {"action": str, "label": str, "back_cb": str} — awaiting Yes/Cancel on a destructive action
@@ -4212,7 +4312,7 @@ FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 
 <i>Note: 2 uses per command per hour</i>"""
 
-FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session"}
+FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat"}
 
 # False = scan uses BingX candles + matplotlib (default, no TV bridge needed)
 # True  = scan uses TV bridge candles + TV screenshots (old behaviour)
@@ -4628,6 +4728,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"H:{tk['high24']:,.2f}  L:{tk['low24']:,.2f}\n"
                 f"Source: {tk.get('source',get_current_source())}\n{ist_str()}")
         except Exception as e: send_reply(chat_id, f"Error: {e}")
+
+    elif cmd == "/chat":
+        _chat_sessions[str(chat_id)] = {"last": time.time(), "history": []}
+        if not GEMINI_API_KEY:
+            send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
+        else:
+            send_reply(chat_id,
+                "💬 <b>Chat session started!</b>\n\n"
+                "Ask me anything — just type your message, no need to send /chat again.\n"
+                "I can also generate images if you ask (e.g. \"draw a sunset over mountains\").\n\n"
+                "<i>Session auto-closes after 5 minutes of inactivity.</i>")
 
     elif cmd == "/trade":
         parts_out = []
@@ -8630,7 +8741,10 @@ def command_listener():
                         else:
                             send_reply(cid, result_text, reply_markup=final_mkp)
                     continue
-                if text.startswith("/"): handle_command(text, cid, msg, sender_id=sender_uid)
+                if text.startswith("/"):
+                    handle_command(text, cid, msg, sender_id=sender_uid)
+                elif str(cid) in _chat_sessions:
+                    _handle_chat_message(cid, text)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
 
@@ -9284,6 +9398,7 @@ def main():
         command_listener()
     threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
+    threading.Thread(target=_chat_session_sweep_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, interval_hours=1)
