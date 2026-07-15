@@ -954,10 +954,9 @@ pending_input: dict = {}   # cid → {"cmd": "/settp1"} — waiting for user to 
 _chat_sessions: dict = {}
 _CHAT_TIMEOUT_SEC = 300
 _CHAT_HISTORY_MAX_TURNS = 12   # user+model pairs kept per session, to bound token usage
-_CHAT_IMAGE_HINTS = ("generate an image","generate image","draw ","draw me","draw a",
-                     "create an image","create a picture","make an image","make a picture",
-                     "picture of","image of","paint ","illustrate ","sketch ",
-                     "picture","photo","image","wallpaper","artwork","drawing")
+_CHAT_IMAGE_HINTS = ("generate an image","generate image","draw","create an image","create a picture",
+                     "make an image","make a picture","picture","photo","image","wallpaper",
+                     "artwork","drawing","paint","illustrate","sketch")
 
 def _gemini_headers():
     return {"Content-Type": "application/json"}
