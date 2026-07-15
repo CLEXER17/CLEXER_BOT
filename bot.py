@@ -965,8 +965,10 @@ def _chat_is_image_request(text: str) -> bool:
     t = text.lower()
     return any(h in t for h in _CHAT_IMAGE_HINTS)
 
+_CHAT_TEXT_MODEL = "gemini-3.1-flash-lite"  # this account's best free quota: 15 RPM / 500 RPD
+
 def _chat_call_gemini_text(history: list) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     body = {
         "contents": history,
         "systemInstruction": {"parts": [{"text":
@@ -981,22 +983,21 @@ def _chat_call_gemini_text(history: list) -> str:
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
 
+_CHAT_IMAGE_MODEL = "imagen-4.0-fast-generate-001"  # this account's only image model with free quota: 25/day
+
 def _chat_call_gemini_image(prompt: str):
-    """Returns (text, image_bytes_or_None)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key={GEMINI_API_KEY}"
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
-    }
+    """Returns (text, image_bytes_or_None). Imagen uses the :predict endpoint —
+    a different request/response shape than the :generateContent chat models."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_IMAGE_MODEL}:predict?key={GEMINI_API_KEY}"
+    body = {"instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1}}
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=60)
     if not r.ok:
         raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
-    parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = "".join(p.get("text","") for p in parts if p.get("text")).strip()
-    img_b64 = next((p["inlineData"]["data"] for p in parts if p.get("inlineData")), None)
+    predictions = d.get("predictions", [])
+    img_b64 = predictions[0].get("bytesBase64Encoded") if predictions else None
     img_bytes = base64.b64decode(img_b64) if img_b64 else None
-    return text, img_bytes
+    return "", img_bytes
 
 def _handle_chat_message(cid, text: str):
     sess = _chat_sessions.get(str(cid))
