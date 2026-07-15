@@ -3850,7 +3850,6 @@ def get_bingx_price(symbol: str) -> float:
         print(f"  [SCAN PRICE] {symbol}: {e}")
         return 0.0
 
-_SCAN_BORDER = "࿇═════════════════════════════════࿇"
 _SCAN_DIV    = "┈" * 26
 
 def _gen_signal_id() -> str:
@@ -3865,7 +3864,7 @@ def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     ┈┈┈ divider, so callers just pass their own content and get consistent
     styling for free. tag (if given) is the trade's signal ID, shown just
     above the footer so the same trade can be found across every message."""
-    out = [_SCAN_BORDER, f"✦ {_smallcaps_title(title)} ✦", _SCAN_BORDER, "",
+    out = [f"✦ {_smallcaps_title(title)} ✦", "",
            f"┃ {header}"]
     for sec in sections:
         out.append(_SCAN_DIV)
@@ -3874,7 +3873,6 @@ def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     if tag:
         out.append(f"┃ 🪪 {tag}")
     out.append(f"┃ 🛡️ {_smallcaps_title('Capital Protected')}")
-    out.append(_SCAN_BORDER)
     return "\n".join(out)
 
 def fmt_scan_signal(t: dict) -> str:
