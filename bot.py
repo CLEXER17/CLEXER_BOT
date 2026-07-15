@@ -9100,14 +9100,24 @@ def _demo_monitor_loop():
         except Exception as _e:
             print(f"  [DEMO MONITOR] Error: {_e}")
 
+_test_run_pending = {"count": 0}
+_test_run_lock = threading.Lock()
+
 def _run_test_scan_and_clear_flag(cid, scan_ver: int):
-    """Wrapper for the auto-scheduled Demo Scan1 trigger — ensures the "test"
-    run-mode override always clears afterward, regardless of which exit path
-    _run_test_scan takes (slots full, no coins, error, etc.)."""
+    """Wrapper for the auto-scheduled Demo Scan1/Scan2 triggers — ensures the "test"
+    run-mode override clears only once BOTH TS1 and TS2 have finished, regardless of
+    which exit path _run_test_scan takes (slots full, no coins, error, etc.). TS1 and
+    TS2 fire from the same trigger tick and both read _scan_run_mode["test"]/
+    _scan_trigger_hm["test"] throughout their (possibly multi-second, multi-Claude-call)
+    run — clearing it as soon as just one of them finishes would make the other read a
+    stale/cleared value mid-run (e.g. its own "no signal" notice silently not firing)."""
     try:
         _run_test_scan(cid, scan_ver)
     finally:
-        _scan_run_mode["test"] = None
+        with _test_run_lock:
+            _test_run_pending["count"] -= 1
+            if _test_run_pending["count"] <= 0:
+                _scan_run_mode["test"] = None
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
@@ -9676,6 +9686,8 @@ def main():
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["test"] = "special" if _cur_hm in _SCAN_SPECIAL["test"] else "regular"
                     _scan_trigger_hm["test"] = _cur_hm
+                    with _test_run_lock:
+                        _test_run_pending["count"] += 1
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # Test demo Scan2: same trigger slots, mirrors real Scan2's schedule
@@ -9683,7 +9695,9 @@ def main():
                 _test_triggered_today.add((_cur_hm, 2))
                 print(f"  [TEST-SCAN] Demo Scan2 at {_ist_now.strftime('%H:%M')} IST (1min after scan2)")
                 if ADMIN_CHAT_ID:
-                    threading.Thread(target=lambda: _run_test_scan(ADMIN_CHAT_ID, 2), daemon=True).start()
+                    with _test_run_lock:
+                        _test_run_pending["count"] += 1
+                    threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
