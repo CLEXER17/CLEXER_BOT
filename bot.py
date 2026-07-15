@@ -207,7 +207,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_telegram(_msg)
+    send_telegram(_msg, include_ch2=t.get("is_d48", True))
     if t.get("tier_routed"):
         send_to_tier_channels(_msg, t.get("share_free", True))
 
@@ -230,7 +230,7 @@ def _apply_trail_sl_btc(price: float):
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.0f} → {new_sl:,.0f}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_telegram(_msg)
+    send_telegram(_msg, include_ch2=active_trade.get("is_d48", True))
     send_to_tier_channels(_msg, active_trade.get("share_free", True))
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
@@ -9708,7 +9708,8 @@ def main():
                         send_telegram(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
-                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
+                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
+                            include_ch2=t.get("is_d48", True))
                         ct.on_close_all()
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
