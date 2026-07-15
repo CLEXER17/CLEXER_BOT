@@ -317,34 +317,6 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
         print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
         return False
 
-def _send_via_true_forward_capture(text: str, dest_chat_id, tag: str):
-    """Same staged-forward trick as _send_via_true_forward (preserves premium
-    emoji), but returns the delivered message's message_id (or None on failure)
-    instead of just True/False — used for entry signals so later TP1/TP2/SL/
-    Trailing-SL/timeout messages can reply to this exact message."""
-    base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    if not ADMIN_CHAT_ID:
-        return None
-    try:
-        r_stage = requests.post(f"{base}/sendMessage",
-            json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True, "disable_notification": True}, timeout=10)
-        rj_stage = r_stage.json()
-        if not rj_stage.get("ok"):
-            print(f"  [TRUE FORWARD CAPTURE] {tag} staging failed: {rj_stage.get('description')}")
-            return None
-        stage_msg_id = rj_stage["result"]["message_id"]
-        r_fwd = requests.post(f"{base}/forwardMessage",
-            json={"chat_id": dest_chat_id, "from_chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=10)
-        rj_fwd = r_fwd.json()
-        requests.post(f"{base}/deleteMessage", json={"chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=5)
-        if not rj_fwd.get("ok"):
-            print(f"  [TRUE FORWARD CAPTURE] {tag} {dest_chat_id} rejected: {rj_fwd.get('description')}")
-            return None
-        return rj_fwd["result"]["message_id"]
-    except Exception as e:
-        print(f"  [TRUE FORWARD CAPTURE] {tag} {dest_chat_id}: {e}")
-        return None
 
 def _send_plain_reply(chat_id, text: str, reply_to=None):
     """Direct sendMessage (no forward trick) — premium emoji fall back to plain
@@ -365,27 +337,27 @@ def _send_plain_reply(chat_id, text: str, reply_to=None):
     return None
 
 def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True) -> dict:
-    """Sends a trade's entry signal exactly like send_telegram()+send_to_tier_channels()
-    (keeps premium emoji via the forward trick), but also captures each destination's
-    message_id. Store the returned dict on the trade (t["reply_map"] = ...) so later
-    send_lifecycle_reply() calls can thread TP1/TP2/SL/Trailing-SL/timeout messages as
-    genuine replies to this entry post in every channel it went to."""
+    """Sends a trade's entry signal via plain sendMessage (confirmed via /testreply
+    to render premium emoji correctly — the old forward-relay trick actually LOSES
+    them despite the original assumption it preserved them), and captures each
+    destination's message_id. Store the returned dict on the trade (t["reply_map"] = ...)
+    so later send_lifecycle_reply() calls can thread TP1/TP2/SL/Trailing-SL/timeout
+    messages as genuine replies to this entry post in every channel it went to."""
     ids = {}
-    text = _apply_premium_emojis(text)
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
-        mid = _send_via_true_forward_capture(text, cid, f"legacy-ch{key}")
+        mid = _send_plain_reply(cid, text)
         if mid: ids[f"ch{key}"] = mid
     if tier_routed:
         for cid in _channels_by_tier("vip"):
-            mid = _send_via_true_forward_capture(text, cid, "vip")
+            mid = _send_plain_reply(cid, text)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
-                mid = _send_via_true_forward_capture(text, cid, "free")
+                mid = _send_plain_reply(cid, text)
                 if mid: ids[f"free:{cid}"] = mid
     return ids
 
@@ -4910,7 +4882,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             [[f"🎯 Entry: 100.00", f"🛑 SL: 95.00", f"💰 TP1: 110.00", f"🏆 TP2: 120.00"]],
             tag="#CLEXTEST01",
         )
-        _mid = _send_via_true_forward_capture(_test_entry, chat_id, "test-entry")
+        _mid = _send_plain_reply(chat_id, _test_entry)
         if not _mid:
             send_reply(chat_id, "❌ <b>Test FAILED at step 1</b> — couldn't send/forward the entry message at all. Check ADMIN_CHAT_ID and bot permissions.")
             return
