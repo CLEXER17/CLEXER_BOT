@@ -364,11 +364,21 @@ def _all_channel_ids() -> list:
 # end-of-day recap. Resets automatically on IST date rollover. ────────────────
 _daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
 _daily_summary_last_sent_date = ""
+# Archive of past days' finished trackers, keyed by IST date string — lets the
+# midnight recap read the day that just ended even if a trade's TP/SL happens
+# to fire in the few minutes right after rollover (which would otherwise reset
+# _daily_tracker to the new day before the recap loop gets to read it).
+_daily_archive: dict = {}
 
 def _reset_daily_tracker_if_needed():
     global _daily_tracker
     today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
     if _daily_tracker["date"] != today:
+        if _daily_tracker["date"] and _daily_tracker.get("trades"):
+            _daily_archive[_daily_tracker["date"]] = _daily_tracker
+            # Bound memory — keep only the last few days.
+            for _old_date in sorted(_daily_archive.keys())[:-7]:
+                del _daily_archive[_old_date]
         _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
 
 def _send_tp1_streak_promo(symbol: str, detail: dict):
@@ -530,11 +540,11 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
-def _build_recap_text(trades: list) -> str:
+def _build_recap_text(trades: list, date_str: str) -> str:
     tp2_list = [t for t in trades if t["result"] == "TP2"]
     tp1_list = [t for t in trades if t["result"] == "TP1"]
     sl_list  = [t for t in trades if t["result"] == "SL"]
-    lines = [f"📊 <b>Daily Recap — {_daily_tracker['date']}</b>\n"]
+    lines = [f"📊 <b>Daily Recap — {date_str}</b>\n"]
     if tp2_list:
         lines.append("🏆 <b>TP2 Hit:</b>")
         lines += [f"✅ {t['symbol']} — {t['time']}" for t in tp2_list]
@@ -548,16 +558,22 @@ def _build_recap_text(trades: list) -> str:
         lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
     return "\n".join(lines)
 
-def _send_daily_summary():
-    """End-of-day recap — every TP1/TP2/SL that was actually tier-routed today,
-    with premium emoji via forward. VIP gets every tier-routed trade (VIP-only
-    + VIP+Free); Free only gets the subset that was also shown in Free —
-    so the two recaps are no longer identical, and Signal-only trades never
-    appear in either."""
-    all_trades = [t for t in _daily_tracker.get("trades", []) if t.get("tier_routed")]
+def _send_daily_summary(tracker: dict):
+    """End-of-day recap for one specific day's tracker snapshot — every TP1/TP2/SL
+    that actually triggered on that calendar day and was tier-routed, with premium
+    emoji via forward. VIP gets every tier-routed trade (VIP-only + VIP+Free);
+    Free only gets the subset that was also shown in Free — so the two recaps
+    are no longer identical, and Signal-only trades never appear in either.
+    Only counts trades whose TP1/TP2/SL actually fired on this tracker's own
+    date — a trade opened the day before but not yet closed is simply absent
+    from the trades list (never added until it actually triggers), and a trade
+    that triggers just after midnight belongs to the NEXT day's tracker/recap,
+    never this one."""
+    date_str = tracker.get("date", "")
+    all_trades = [t for t in tracker.get("trades", []) if t.get("tier_routed")]
     if not all_trades:
         return
-    vip_text = _apply_premium_emojis(_build_recap_text(all_trades))
+    vip_text = _apply_premium_emojis(_build_recap_text(all_trades, date_str))
     for cid in _channels_by_tier("vip"):
         if not _send_via_true_forward(vip_text, cid, "daily-summary-vip"):
             try:
@@ -566,7 +582,7 @@ def _send_daily_summary():
             except Exception as e: print(f"  [DAILY SUMMARY] vip {cid}: {e}")
     free_trades = [t for t in all_trades if t.get("free_shown")]
     if free_trades:
-        free_text = _apply_premium_emojis(_build_recap_text(free_trades))
+        free_text = _apply_premium_emojis(_build_recap_text(free_trades, date_str))
         for cid in _channels_by_tier("free"):
             if not _send_via_true_forward(free_text, cid, "daily-summary-free"):
                 try:
@@ -599,17 +615,24 @@ def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, fre
     # TP2 congrats broadcast disabled — admin asked to stop sending it.
 
 def _daily_summary_loop():
-    """Background thread — fires the end-of-day recap once, shortly after
-    midnight IST, then resets the tracker for the new day."""
+    """Background thread — fires the recap for the day that just ENDED, shortly
+    after midnight IST. Explicitly forces the day rollover itself (rather than
+    waiting for some trade event to trigger it), then reads that day's snapshot
+    from _daily_archive — so a trade that happens to fire in the same 0:00-0:05
+    window as this loop is checked can never wipe the outgoing day's data out
+    from under it, and the recap is always labeled with the day it's about."""
     global _daily_summary_last_sent_date
     while True:
         try:
             now = datetime.now(timezone.utc) + IST
             if now.hour == 0 and now.minute < 5:
-                today_marker = now.strftime("%Y-%m-%d")
-                if _daily_summary_last_sent_date != today_marker and _daily_tracker.get("trades"):
-                    _send_daily_summary()
-                    _daily_summary_last_sent_date = today_marker
+                _reset_daily_tracker_if_needed()
+                yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+                if _daily_summary_last_sent_date != yesterday_str:
+                    snap = _daily_archive.get(yesterday_str)
+                    if snap and snap.get("trades"):
+                        _send_daily_summary(snap)
+                    _daily_summary_last_sent_date = yesterday_str
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
         time.sleep(120)
@@ -9310,7 +9333,7 @@ def main():
                     _today_marker = now_ist().strftime("%Y-%m-%d")
                     if _daily_summary_last_sent_date != _today_marker and _daily_tracker.get("trades"):
                         try:
-                            _send_daily_summary()
+                            _send_daily_summary(_daily_tracker)
                             _daily_summary_last_sent_date = _today_marker
                         except Exception as e:
                             print(f"  [DAILY SUMMARY] weekend-sleep flush error: {e}")
