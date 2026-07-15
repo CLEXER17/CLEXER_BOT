@@ -1062,7 +1062,7 @@ def _chat_session_sweep_loop():
                 if now - _chat_sessions[cid_str]["last"] > _CHAT_TIMEOUT_SEC:
                     del _chat_sessions[cid_str]
                     try:
-                        send_reply(int(cid_str), "💬 Chat session closed (5 min of inactivity). Send /chat to start a new one.")
+                        send_reply(int(cid_str), "💬 Chat session closed (5 min of inactivity).")
                     except Exception as e:
                         print(f"  [CHAT SWEEP] notify {cid_str}: {e}")
         except Exception as e:
