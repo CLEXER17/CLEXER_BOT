@@ -983,34 +983,31 @@ def _chat_call_gemini_text(history: list) -> str:
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
 
-_CHAT_IMAGE_MODEL = "imagen-4.0-fast-generate-001"  # this account's only image model with free quota: 25/day
-
-def _chat_call_gemini_image(prompt: str):
-    """Returns (text, image_bytes_or_None). Imagen uses the :predict endpoint —
-    a different request/response shape than the :generateContent chat models."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_IMAGE_MODEL}:predict?key={GEMINI_API_KEY}"
-    body = {"instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1}}
-    r = requests.post(url, headers=_gemini_headers(), json=body, timeout=60)
-    if not r.ok:
-        raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
-    d = r.json()
-    predictions = d.get("predictions", [])
-    img_b64 = predictions[0].get("bytesBase64Encoded") if predictions else None
-    img_bytes = base64.b64decode(img_b64) if img_b64 else None
-    return "", img_bytes
+def _chat_generate_image(prompt: str):
+    """Free, no-API-key image generation via Pollinations.ai (image.pollinations.ai) —
+    every Gemini image model on this account turned out to be billing-gated, so this
+    swaps to a genuinely free provider instead. GET request, image bytes come back
+    directly in the response body (no JSON wrapper). Returns (text, image_bytes_or_None)."""
+    import urllib.parse
+    url = "https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt, safe="")
+    r = requests.get(url, params={"width": 1024, "height": 1024, "nologo": "true"}, timeout=60)
+    if not r.ok or not r.content:
+        raise Exception(f"{r.status_code} {r.reason}")
+    return "", r.content
 
 def _handle_chat_message(cid, text: str):
     sess = _chat_sessions.get(str(cid))
     if not sess:
         return
     sess["last"] = time.time()
-    if not GEMINI_API_KEY:
+    _is_image = _chat_is_image_request(text)
+    if not _is_image and not GEMINI_API_KEY:
         send_reply(cid, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         return
     try:
-        if _chat_is_image_request(text):
+        if _is_image:
             send_reply(cid, "🎨 Generating image…")
-            reply_text, img_bytes = _chat_call_gemini_image(text)
+            reply_text, img_bytes = _chat_generate_image(text)
             if img_bytes:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                     data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
