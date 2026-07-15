@@ -207,7 +207,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_telegram(_msg, include_ch2=t.get("is_d48", True))
+    send_telegram(_msg, include_ch2=t.get("is_d48", False))
     if t.get("tier_routed"):
         send_to_tier_channels(_msg, t.get("share_free", True))
 
@@ -230,7 +230,7 @@ def _apply_trail_sl_btc(price: float):
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
         f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.0f} → {new_sl:,.0f}</b> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_telegram(_msg, include_ch2=active_trade.get("is_d48", True))
+    send_telegram(_msg, include_ch2=active_trade.get("is_d48", False))
     send_to_tier_channels(_msg, active_trade.get("share_free", True))
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
@@ -3617,7 +3617,7 @@ def run_tick_check():
                     f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
                     f"⚠️ <b>Trade is now LIVE — SL and TP active</b>\n\n"
                     f"✨ <i>🛡️ Capital protected</i>",
-                    include_ch2=active_trade.get("is_d48", True))
+                    include_ch2=active_trade.get("is_d48", False))
             return False
 
         _apply_trail_sl_btc(price)
@@ -3631,7 +3631,7 @@ def run_tick_check():
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
-            send_telegram(_tp2_msg, include_ch2=active_trade.get("is_d48", True))
+            send_telegram(_tp2_msg, include_ch2=active_trade.get("is_d48", False))
             send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP2")
@@ -3649,7 +3649,7 @@ def run_tick_check():
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
-                send_telegram(_tp1_msg, include_ch2=active_trade.get("is_d48", True))
+                send_telegram(_tp1_msg, include_ch2=active_trade.get("is_d48", False))
                 send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
@@ -3666,7 +3666,7 @@ def run_tick_check():
             log_trade_outcome("SL_HIT", f"{n} in a row, low:{check_low:,.0f} sl:{sl:,.0f}")
             # Suppress ch2 if SL hit within 10 min of entry (stop hunt / quick SL)
             _entry_ts = t.get("entry_time", 0)
-            _sl_in_ch2 = (time.time() - _entry_ts) > 600 and active_trade.get("is_d48", True)
+            _sl_in_ch2 = (time.time() - _entry_ts) > 600 and active_trade.get("is_d48", False)
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
                 _sl_msg = (
@@ -3930,7 +3930,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             pnl = (price - entry) / entry * 100 * (1 if sig == "BUY" else -1) if price and entry else 0
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
-            send_telegram(fmt_scan_update("TIMEOUT", price, t), include_ch2=t.get("is_d48", True))
+            send_telegram(fmt_scan_update("TIMEOUT", price, t), include_ch2=t.get("is_d48", False))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
@@ -3967,7 +3967,7 @@ def _tick_one(ver: int, t: dict) -> bool:
         if not t["entry_hit"]:
             # Shouldn't happen for MARKET trades, but safety fallback
             t["entry_hit"] = True
-            send_telegram(fmt_scan_update("ENTRY_HIT", price, t), include_ch2=t.get("is_d48", True))
+            send_telegram(fmt_scan_update("ENTRY_HIT", price, t), include_ch2=t.get("is_d48", False))
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
         if tp2_hit:
@@ -3975,7 +3975,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
-            send_telegram(_tp2_msg, include_ch2=t.get("is_d48", True))
+            send_telegram(_tp2_msg, include_ch2=t.get("is_d48", False))
             if t.get("tier_routed"):
                 send_to_tier_channels(_tp2_msg, t.get("share_free", True))
             ct.on_scan_tp2(sym)
@@ -3997,7 +3997,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 trade_stats["scan_tp1"] += 1
                 trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
-                send_telegram(_tp1_msg, include_ch2=t.get("is_d48", True))
+                send_telegram(_tp1_msg, include_ch2=t.get("is_d48", False))
                 if t.get("tier_routed"):
                     send_to_tier_channels(_tp1_msg, t.get("share_free", True))
                 ct.on_scan_tp1(sym)
@@ -4019,7 +4019,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
-            send_telegram(_sl_msg, include_ch2=t.get("is_d48", True))
+            send_telegram(_sl_msg, include_ch2=t.get("is_d48", False))
             if result == "BE" and t.get("tier_routed"):
                 send_to_tier_channels(_sl_msg, t.get("share_free", True))
             ct.on_scan_sl(sym)
@@ -4072,7 +4072,7 @@ def run_price_check():
         high_1h = range_1h["high"] or price; low_1h = range_1h["low"] or price
         print(f"  [1H] cur:{price:,.2f} H:{high_1h:,.2f} L:{low_1h:,.2f}")
         df_5m = get_candles("5m", 50); df_4h = get_candles("4h", 10)
-        _ch2_ok = active_trade.get("is_d48", True)
+        _ch2_ok = active_trade.get("is_d48", False)
         if detect_entry_missed(price):
             trade_stats["missed_entries"] += 1
             log_trade_outcome("ENTRY_MISSED", f"price bypassed entry {active_trade['entry']:,.0f}")
@@ -8948,7 +8948,7 @@ def _demo_monitor_loop():
                     be_sl  = float(t.get("be_sl", 0))
                     created = float(t.get("created_at", now))
                     tier_routed = t.get("tier_routed", False)
-                    is_d48 = t.get("is_d48", True)
+                    is_d48 = t.get("is_d48", False)
 
                     if not sym or not entry: continue
                     cp = get_bingx_price(sym)
@@ -9688,7 +9688,7 @@ def main():
                             f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
                             f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>\n\n"
                             f"✨ <i>🛡️ Capital protected</i>",
-                            include_ch2=active_trade.get("is_d48", True)
+                            include_ch2=active_trade.get("is_d48", False)
                         )
                     active = ct.active_count()
                     if active == 0:
@@ -9728,7 +9728,7 @@ def main():
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
                             f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
-                            include_ch2=t.get("is_d48", True))
+                            include_ch2=t.get("is_d48", False))
                         ct.on_close_all()
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
