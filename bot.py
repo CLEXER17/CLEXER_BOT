@@ -3272,7 +3272,7 @@ PREMIUM_EMOJI_MAP = {
     "🔗": "5271604874419647061",
     "💎": "6122857771760094969", "🔎": "5017088445353296841",
     "📈": "6224129999633388168", "📉": "6222274114200015993",
-    "🎆": "5064672027248427816",
+    "🎆": "5064672027248427816", "🪪": "5890864241388293875",
 }
 PREMIUM_EMOJIS_ENABLED = True
 
@@ -3872,7 +3872,7 @@ def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
         out += [f"┃ {l}" for l in sec]
     out.append(_SCAN_DIV)
     if tag:
-        out.append(f"┃ 🆔 {tag}")
+        out.append(f"┃ 🪪 {tag}")
     out.append(f"┃ 🛡️ {_smallcaps_title('Capital Protected')}")
     out.append(_SCAN_BORDER)
     return "\n".join(out)
