@@ -2,7 +2,7 @@
 CLEXER Signal Bot V17.8.5
 """
 
-import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html
+import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
@@ -1563,6 +1563,7 @@ def set_trade(s: dict, share_free: bool = True):
             "sl_wicked": False, "scan_count": 0,
             "share_free": share_free, "entry_time_str": (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M"),
             "is_d48": _gw_model_tag("btc") == "D4.8",  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+            "sig_id": s.get("sig_id") or _gen_signal_id(),
         }
     trade_stats["total_signals"] += 1
     signal_history.append({
@@ -3522,17 +3523,20 @@ def fmt_signal(s):
         f"{SYMBOL} Signal",
         f"{e} {s['signal']} - {SYMBOL}  {ci}  {_gw_model_tag('btc')}",
         sections,
+        tag=s.get("sig_id",""),
     )
 
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
     _hdr = lambda emj, title: f"{emj} #{SYMBOL}"
+    _sid = t.get("sig_id","")
     msgs = {
         "SL_HIT": _scan_box(
             "SL Hit", _hdr("🚨", "SL Hit"),
             [[f"❌ {_smallcaps_title('Loss taken on')} {t.get('signal','?')} @ {t.get('entry',0):,.0f}"],
              [f"⛔ {_smallcaps_title('Do not open any trade now')}",
               f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
+            tag=_sid,
         ),
         "TP1_HIT": _scan_box(
             "TP1 Hit — 50% Closed", _hdr("💰", "TP1 Hit"),
@@ -3540,44 +3544,51 @@ def fmt_update(status, price=None):
               f"🛡️ {_smallcaps_title('SL moved to breakeven')}: {entry:,.0f}",
               f"🚀 {_smallcaps_title('Remaining 50% riding to TP2')}: {t.get('tp2',0):,.0f}"],
              [f"⚠️ {_smallcaps_title('Do not close manually — bot is managing the rest')}"]],
+            tag=_sid,
         ),
         "TP2_HIT": _scan_box(
             "TP2 Hit — Trade Closed", _hdr("🏆", "TP2 Hit"),
             [[f"✅ {_smallcaps_title('Full profit taken on')} {t.get('signal','?')} @ {t.get('tp2',0):,.0f}"],
              [f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
+            tag=_sid,
         ),
         "STOP_HUNT": _scan_box(
             "Stop Hunt Detected", _hdr("🎣", "Stop Hunt"),
             [[f"{_smallcaps_title('Price spiked below SL and closed back above')}.",
               f"✅ {_smallcaps_title('Still in')} {t.get('signal','?')} {_smallcaps_title('trade — position held')}."],
              [f"⚠️ {_smallcaps_title('No action needed — bot is managing this')}"]],
+            tag=_sid,
         ),
         "SETUP_INVALID": _scan_box(
             "Trade Cancelled — Setup Invalid", _hdr("⚠️", "Setup Invalid"),
             [[f"{_smallcaps_title('Price closed past SL before entry was hit. No position was opened')}."],
              [f"⛔ {_smallcaps_title('Do not open any trade now')}",
               f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
+            tag=_sid,
         ),
         "ENTRY_MISSED": _scan_box(
             "Trade Cancelled — Entry Missed", _hdr("😔", "Entry Missed"),
             [[f"{_smallcaps_title('Price moved past entry zone')} {entry:,.0f} {_smallcaps_title('without filling. No position was opened')}."],
              [f"⛔ {_smallcaps_title('Do not chase — do not open a trade now')}",
               f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
+            tag=_sid,
         ),
         "STRUCTURE_FLIP": _scan_box(
             "Trade Closed — Structure Flipped", _hdr("🔄", "Structure Flipped"),
             [[f"{_smallcaps_title('Market structure changed — current')} {t.get('signal','?')} {_smallcaps_title('trade closed')}."],
              [f"⛔ {_smallcaps_title('Wait for the next signal from CLEXER')}",
               f"🔍 {_smallcaps_title('Analysing new direction')}..."]],
+            tag=_sid,
         ),
         "WAITING_ENTRY": _scan_box(
             "Waiting Pullback", _hdr("⏳", "Waiting Pullback"),
             [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.0f}", f"🛑 SL: {t.get('sl',0):,.0f}",
               f"🎯 TP1: {t.get('tp1',0):,.0f}", f"🎯 TP2: {t.get('tp2',0):,.0f}"]
              + ([f"📊 {_smallcaps_title('Current')}: {price:,.0f} ({abs((price or 0)-entry):,.0f} pts away)"] if price else [])],
+            tag=_sid,
         ),
     }
-    return msgs.get(status, _scan_box("Trade Update", f"✅ #{SYMBOL}", [[f"{_smallcaps_title('Trade running')}"]]))
+    return msgs.get(status, _scan_box("Trade Update", f"✅ #{SYMBOL}", [[f"{_smallcaps_title('Trade running')}"]], tag=_sid))
 
 # --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
@@ -3780,18 +3791,26 @@ def get_bingx_price(symbol: str) -> float:
 _SCAN_BORDER = "࿇═════════════════════════════════࿇"
 _SCAN_DIV    = "┈" * 26
 
+def _gen_signal_id() -> str:
+    """Unique per-trade ID shown on every lifecycle message (signal, TP1, TP2, SL,
+    timeout) so the same trade can be found/grepped across the whole chat history."""
+    return "#CLEX" + "".join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
     message (entry, TP1, TP2, SL, BE, timeout, etc.) — sections is a list of
     line-lists, each rendered as its own ┃-prefixed block separated by a
     ┈┈┈ divider, so callers just pass their own content and get consistent
-    styling for free."""
+    styling for free. tag (if given) is the trade's signal ID, shown just
+    above the footer so the same trade can be found across every message."""
     out = [_SCAN_BORDER, f"✦ {_smallcaps_title(title)} ✦", _SCAN_BORDER, "",
            f"┃ {header}"]
     for sec in sections:
         out.append(_SCAN_DIV)
         out += [f"┃ {l}" for l in sec]
     out.append(_SCAN_DIV)
+    if tag:
+        out.append(f"┃ 🆔 {tag}")
     out.append(f"┃ 🛡️ {_smallcaps_title('Capital Protected')}")
     out.append(_SCAN_BORDER)
     return "\n".join(out)
@@ -3808,7 +3827,7 @@ def fmt_scan_signal(t: dict) -> str:
     if et == "ZONE" and t.get("zone_lo") and t.get("zone_hi"):
         zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
-        sig_id = f"#ID{int(t.get('created_at', time.time()))}"
+        sig_id = t.get("sig_id") or f"#ID{int(t.get('created_at', time.time()))}"
         return (
             f"📩 <b>#{coin}USDT</b>  S{ver} {_gw_tag} | Mid-Term\n\n"
             f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
@@ -3832,6 +3851,7 @@ def fmt_scan_signal(t: dict) -> str:
              f"💰 TP1: {tp1:,.4g}",
              f"🏆 TP2: {tp2:,.4g}"],
         ],
+        tag=t.get("sig_id",""),
     )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
@@ -3842,6 +3862,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
     _hdr = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
     _hdr_notime = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}"
+    _sid = t.get("sig_id","")
     msgs = {
         "ENTRY_HIT": _scan_box(
             "Entry Triggered", _hdr("🚀", "Entry Triggered"),
@@ -3849,17 +3870,20 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
               f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}  |  📊 {_smallcaps_title('Price')}: {price:,.4g}",
               f"🛑 SL: {t.get('sl',0):,.4g}", f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"],
              [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
+            tag=_sid,
         ),
         "TP1_HIT": _scan_box(
             "TP1 Hit", _hdr_notime("💰", "TP1 Hit"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: {tp1:,.4g}",
               f"🛡️ {_smallcaps_title('SL moved to BE')}: {entry:,.4g}",
               f"🚀 {_smallcaps_title('Riding TP2')}: {tp2:,.4g}..."]],
+            tag=_sid,
         ),
         "TP2_HIT": _scan_box(
             "TP2 Hit", _hdr_notime("🏆", "TP2 Hit"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
               f"✅ {_smallcaps_title('Full profit')} @ TP2: {tp2:,.4g}"]],
+            tag=_sid,
         ),
         "SL_HIT": (
             _scan_box(
@@ -3868,30 +3892,35 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
                   f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} {entry:,.4g}",
                   f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
                  [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+                tag=_sid,
             ) if t.get("tp1_hit") else
             _scan_box(
                 "SL Hit", _hdr_notime("🚨", "SL Hit"),
                 [[f"❌ {_smallcaps_title('Loss on')} {sig} @ {entry:,.4g}"],
                  [f"⛔ {_smallcaps_title('Do not open any trade now')}",
                   f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+                tag=_sid,
             )
         ),
         "ENTRY_MISSED": _scan_box(
             "Entry Missed", _hdr("😔", "Entry Missed"),
             [[f"{_smallcaps_title('Price bypassed entry zone')} {entry:,.4g} {_smallcaps_title('without filling')}."],
              [f"⛔ {_smallcaps_title('Do not chase')}"]],
+            tag=_sid,
         ),
         "TIMEOUT": _scan_box(
             "Timeout", _hdr("⏰", "Timeout"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
               f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"],
              [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+            tag=_sid,
         ),
         "WAITING_ENTRY": _scan_box(
             "Waiting Entry", _hdr("⏳", "Waiting Entry"),
             [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}", f"🛑 SL: {t.get('sl',0):,.4g}",
               f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"]
              + ([f"📊 {_smallcaps_title('Current')}: {price:,.4g} ({abs(price-entry)/entry*100:.2f}% away)"] if price else [])],
+            tag=_sid,
         ),
     }
     return msgs.get(status, f"✅ {sym} trade running")
@@ -6399,6 +6428,7 @@ Reasoning: [one line]"""
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+                        slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
                         send_telegram(fmt_scan_signal(slot_data), include_ch2=slot_data["is_d48"])
                         # Only the whitelisted special slot times reach Free/VIP channels
@@ -8949,6 +8979,7 @@ def _demo_monitor_loop():
                     created = float(t.get("created_at", now))
                     tier_routed = t.get("tier_routed", False)
                     is_d48 = t.get("is_d48", False)
+                    sig_id = t.get("sig_id","")
 
                     if not sym or not entry: continue
                     cp = get_bingx_price(sym)
@@ -8979,7 +9010,8 @@ def _demo_monitor_loop():
                             [[f"📊 {_smallcaps_title('Price')} @ TP2: {cp:,.6g}",
                               f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
                               f"🏆 TP2: {tp2:,.6g}",
-                              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]])
+                              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
+                            tag=sig_id)
                         send_telegram(_msg, include_ch2=is_d48)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp2(sym)
@@ -8999,7 +9031,8 @@ def _demo_monitor_loop():
                             [[f"📊 {_smallcaps_title('Price')} @ {lbl}: {cp:,.6g}",
                               f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
                               f"🛑 {lbl}: {_sl_exit:,.6g}",
-                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]])
+                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
+                            tag=sig_id)
                         send_telegram(_msg, include_ch2=is_d48)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_sl(sym)
@@ -9016,7 +9049,8 @@ def _demo_monitor_loop():
                             [[f"📊 {_smallcaps_title('Price')} @ TP1: {cp:,.6g}",
                               f"🛡️ {_smallcaps_title('50% closed')}",
                               f"🔒 BE SL: {be_sl_price:,.6g}",
-                              f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]])
+                              f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]],
+                            tag=sig_id)
                         send_telegram(_msg, include_ch2=is_d48)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp1(sym)
@@ -9034,7 +9068,8 @@ def _demo_monitor_loop():
                             [[f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}",
                               f"📊 {_smallcaps_title('Exit')}: {cp:,.6g}",
                               f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
-                              f"📈 P/L: {pnl:+.2f}%"]])
+                              f"📈 P/L: {pnl:+.2f}%"]],
+                            tag=sig_id)
                         send_telegram(_msg, include_ch2=is_d48)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_sl(sym)
@@ -9302,6 +9337,7 @@ def _run_test_scan(cid, scan_ver: int):
 
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
+            _demo_sig_id = _gen_signal_id()
             demo_msg = _scan_box(
                 "Demo Signal", f"📣 [DEMO] {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
@@ -9311,6 +9347,7 @@ def _run_test_scan(cid, scan_ver: int):
                   f"💰 TP1: {scan_tp1:,.4g}", f"🏆 TP2: {scan_tp2:,.4g}",
                   f"📊 RR: 1:2.0 (TP1) / 1:3.75 (TP2)",
                   f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
+                tag=_demo_sig_id,
             )
             _demo_is_d48 = _gw_model_tag("test") == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
             send_telegram(demo_msg, include_ch2=_demo_is_d48)
@@ -9328,6 +9365,7 @@ def _run_test_scan(cid, scan_ver: int):
                 "scan_ver": scan_ver,
                 "tier_routed": _demo1_tier_routed,
                 "is_d48": _demo_is_d48,
+                "sig_id": _demo_sig_id,
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
@@ -9675,7 +9713,7 @@ def main():
                 if signal and not signal.get("_hold"):
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    signal["sig_id"] = _gen_signal_id(); send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
@@ -9733,7 +9771,7 @@ def main():
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
+                        signal["sig_id"] = _gen_signal_id(); send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
                         set_trade(signal, _share_free)
                         ct.on_signal(signal, price, _share_free)
                 else:
@@ -9747,7 +9785,7 @@ def main():
                     reset_trade(); time.sleep(1)
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
+                    signal["sig_id"] = _gen_signal_id(); send_telegram(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8")); send_to_tier_channels(fmt_signal(signal), _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]
