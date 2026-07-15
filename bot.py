@@ -6490,6 +6490,27 @@ Reasoning: [one line]"""
                             f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
                             f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.\n\n"
                             f"<i>🛡️ Capital protected</i>")
+                    # Special-time slots matter for tracking — let VIP know this specific
+                    # slot didn't fire, and clearly say why (gateway/API error vs Claude
+                    # genuinely finding no clean setup) instead of silently skipping it.
+                    if _is_special_now:
+                        _trig_hm = _scan_trigger_hm.get(_kind)
+                        _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
+                        _label = f"S{scan_ver}"
+                        _gw = _gw_model_tag(_kind)
+                        if api_fail_count > 0 and api_fail_count >= len(tried):
+                            _no_sig_msg = _scan_box(
+                                f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
+                                [[f"🔴 {_smallcaps_title(f'{_gw} Error')}",
+                                  f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
+                            )
+                        else:
+                            _no_sig_msg = _scan_box(
+                                f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
+                                [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
+                                  f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
+                            )
+                        send_to_tier_channels(_no_sig_msg, False)  # VIP only
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -9182,6 +9203,7 @@ def _run_test_scan(cid, scan_ver: int):
         MAX_TRIES = 3
         signal_placed = False
         tried = []
+        _demo_api_fail_count = 0
         for candidate in candidate_order:
             if signal_placed: break
             if len(tried) >= MAX_TRIES: break
@@ -9284,7 +9306,7 @@ def _run_test_scan(cid, scan_ver: int):
                     print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
                     if _attempt < 2: time.sleep(10)
             if not _claude_ok:
-                print(f"  [TEST] {chosen_sym}: Claude failed 3 times — skipping"); continue
+                print(f"  [TEST] {chosen_sym}: Claude failed 3 times — skipping"); _demo_api_fail_count += 1; continue
 
             _ac = analysis.replace(",","")
             def _p(label):
@@ -9391,6 +9413,25 @@ def _run_test_scan(cid, scan_ver: int):
 
         if not signal_placed:
             tried_str = ", ".join(tried) if tried else "none"
+            _test_is_special_now = _scan_run_mode.get("test") == "special"
+            if _test_is_special_now:
+                _trig_hm = _scan_trigger_hm.get("test")
+                _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
+                _label = f"TS{scan_ver}"
+                _gw = _gw_model_tag("test")
+                if _demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried):
+                    _no_sig_msg = _scan_box(
+                        f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
+                        [[f"🔴 {_smallcaps_title(f'{_gw} Error')}",
+                          f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
+                    )
+                else:
+                    _no_sig_msg = _scan_box(
+                        f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
+                        [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
+                          f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
+                    )
+                send_to_tier_channels(_no_sig_msg, False)  # VIP only
             send_admin(
                 f"⏸ <b>[TEST] No demo signal</b>  {ist_str()}\n\n"
                 f"Tried: <b>{tried_str}</b>\n\n"
