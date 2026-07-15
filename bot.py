@@ -361,25 +361,32 @@ def _all_channel_ids() -> list:
     return ids
 
 # ─── Daily TP1/TP2/SL tracker — drives the streak promo, SL reassurance, and
-# end-of-day recap. Resets automatically on IST date rollover. ────────────────
-_daily_tracker = {"date": "", "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
+# end-of-day recap. Trades are bucketed by the IST calendar day they were
+# OPENED on (their entry_date), not by whichever day their TP1/TP2/SL happens
+# to fire on — so a trade opened on the 14th that closes at 12:02 AM on the
+# 15th still counts toward the 14th's recap, exactly like every other trade
+# from that day. Once a day's recap has been sent, any later-arriving result
+# for a trade from that day is simply not recapped again (there's no way to
+# retroactively edit an already-sent Telegram message). ────────────────────
+_daily_buckets: dict = {}   # entry_date str -> {"date","tp1","tp2","sl","free_tp1","tp1_promo_sent","trades"}
 _daily_summary_last_sent_date = ""
-# Archive of past days' finished trackers, keyed by IST date string — lets the
-# midnight recap read the day that just ended even if a trade's TP/SL happens
-# to fire in the few minutes right after rollover (which would otherwise reset
-# _daily_tracker to the new day before the recap loop gets to read it).
-_daily_archive: dict = {}
 
-def _reset_daily_tracker_if_needed():
-    global _daily_tracker
-    today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
-    if _daily_tracker["date"] != today:
-        if _daily_tracker["date"] and _daily_tracker.get("trades"):
-            _daily_archive[_daily_tracker["date"]] = _daily_tracker
-            # Bound memory — keep only the last few days.
-            for _old_date in sorted(_daily_archive.keys())[:-7]:
-                del _daily_archive[_old_date]
-        _daily_tracker = {"date": today, "tp1": 0, "tp2": 0, "sl": 0, "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
+def _ist_date_str(epoch_seconds=None) -> str:
+    """IST calendar-day string for a given epoch timestamp, or today if none given."""
+    if epoch_seconds is None:
+        return now_ist().strftime("%Y-%m-%d")
+    try:
+        return (datetime.fromtimestamp(float(epoch_seconds), timezone.utc) + IST).strftime("%Y-%m-%d")
+    except Exception:
+        return now_ist().strftime("%Y-%m-%d")
+
+def _get_daily_bucket(date_str: str) -> dict:
+    if date_str not in _daily_buckets:
+        _daily_buckets[date_str] = {"date": date_str, "tp1": 0, "tp2": 0, "sl": 0,
+                                     "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
+        for _old_date in sorted(_daily_buckets.keys())[:-7]:   # bound memory — keep last 7 days
+            del _daily_buckets[_old_date]
+    return _daily_buckets[date_str]
 
 def _send_tp1_streak_promo(symbol: str, detail: dict):
     """After the 3rd TP1 of the day that was actually shown in the Free channel
@@ -590,52 +597,60 @@ def _send_daily_summary(tracker: dict):
                         json={"chat_id": cid, "text": free_text, "parse_mode": "HTML"}, timeout=10)
                 except Exception as e: print(f"  [DAILY SUMMARY] free {cid}: {e}")
 
-def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False, tp1_detail: dict = None):
+def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
+                         tp1_detail: dict = None, entry_date: str = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
     Drives the 3rd-Free-TP1-of-the-day promo and feeds the end-of-day recap.
+    entry_date: the IST calendar day this TRADE was opened on (not today) —
+    the result is credited to that day's bucket, so a trade opened on the
+    14th that closes just after midnight on the 15th still recaps under the
+    14th. Defaults to today if not given (e.g. BTC call sites not yet passing it).
     tier_routed: True if this trade was shown in VIP (and maybe Free) — only
     tier_routed trades are eligible for the recap at all (Signal-only never appears).
     free_shown: True if also visible in the Free channel — builds Free's own
     (shorter) recap and gates the 3rd-TP1 streak promo.
     tp1_detail: {'tag','side','tp1','sl_be','tp2'} for the promo's message."""
-    _reset_daily_tracker_if_needed()
+    date_str = entry_date or _ist_date_str()
+    bucket = _get_daily_bucket(date_str)
     key = result.lower()
-    _daily_tracker[key] = _daily_tracker.get(key, 0) + 1
+    bucket[key] = bucket.get(key, 0) + 1
     if tier_routed:
-        _daily_tracker["trades"].append({
+        bucket["trades"].append({
             "symbol": symbol, "result": result,
             "time": now_ist().strftime("%I:%M %p IST"),
             "free_shown": free_shown, "tier_routed": True,
         })
     if result == "TP1" and free_shown:
-        _daily_tracker["free_tp1"] = _daily_tracker.get("free_tp1", 0) + 1
-        if _daily_tracker["free_tp1"] == 3 and not _daily_tracker["tp1_promo_sent"]:
-            _daily_tracker["tp1_promo_sent"] = True
+        bucket["free_tp1"] = bucket.get("free_tp1", 0) + 1
+        if bucket["free_tp1"] == 3 and not bucket["tp1_promo_sent"]:
+            bucket["tp1_promo_sent"] = True
             _send_tp1_streak_promo(symbol, tp1_detail or {})
     # TP2 congrats broadcast disabled — admin asked to stop sending it.
 
 def _daily_summary_loop():
     """Background thread — fires the recap for the day that just ENDED, shortly
-    after midnight IST. Explicitly forces the day rollover itself (rather than
-    waiting for some trade event to trigger it), then reads that day's snapshot
-    from _daily_archive — so a trade that happens to fire in the same 0:00-0:05
-    window as this loop is checked can never wipe the outgoing day's data out
-    from under it, and the recap is always labeled with the day it's about."""
+    after midnight IST, reading that day's bucket from _daily_buckets (trades
+    are grouped by the day they were OPENED, so this only ever grabs trades
+    that actually belong to the outgoing day). Checked every 60s for up to 10
+    minutes after midnight, to give any TP1/TP2/SL that fires right at the
+    rollover boundary time to land in its bucket before the recap is sent.
+    Whatever hasn't landed by then is simply not included — a trade opened on
+    day D that resolves after D's recap has already gone out is not recapped
+    again on any later day."""
     global _daily_summary_last_sent_date
     while True:
         try:
             now = datetime.now(timezone.utc) + IST
-            if now.hour == 0 and now.minute < 5:
-                _reset_daily_tracker_if_needed()
+            if now.hour == 0 and now.minute < 10:
                 yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
                 if _daily_summary_last_sent_date != yesterday_str:
-                    snap = _daily_archive.get(yesterday_str)
-                    if snap and snap.get("trades"):
-                        _send_daily_summary(snap)
-                    _daily_summary_last_sent_date = yesterday_str
+                    bucket = _daily_buckets.get(yesterday_str)
+                    if bucket and bucket.get("trades"):
+                        _send_daily_summary(bucket)
+                        _daily_summary_last_sent_date = yesterday_str  # only lock once actually sent
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
-        time.sleep(120)
+        time.sleep(60)
 
 ACTIVE_PROFILE = "mine"   # "mine" or "coadmin" — which scan-settings snapshot is currently live
 _SETTINGS_PROFILES = {"mine": {}, "coadmin": {}}  # each holds a snapshot of every setting co-admin can touch
@@ -3489,7 +3504,7 @@ def run_tick_check():
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
             send_telegram(_tp2_msg)
             send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True))
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
 
@@ -3508,7 +3523,8 @@ def run_tick_check():
                 send_telegram(_tp1_msg)
                 send_to_tier_channels(_tp1_msg, active_trade.get("share_free", True))
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
-                    tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
+                    tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+                    entry_date=_ist_date_str(active_trade.get("entry_time")))
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
         # SL — use candle low/high to catch wick SL hits
@@ -3544,7 +3560,7 @@ def run_tick_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg, include_ch2=_sl_in_ch2)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3837,7 +3853,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
-            _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True))
+            _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
+                entry_date=_ist_date_str(t.get("created_at")))
             _notify_free_late(sym, t, "TP2")
             _remove_scan_trade(ver, sym); return True
 
@@ -3860,7 +3877,8 @@ def _tick_one(ver: int, t: dict) -> bool:
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
                 _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
                 _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
-                    tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2})
+                    tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+                    entry_date=_ist_date_str(t.get("created_at")))
                 _notify_free_late(sym, t, "TP1")
 
         sl_margin = sl * 0.002
@@ -3880,7 +3898,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
-                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")))
+                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)))
             _remove_scan_trade(ver, sym); return True
@@ -3924,7 +3942,7 @@ def run_price_check():
             _tp2_msg = fmt_update("TP2_HIT")
             send_telegram(_tp2_msg)
             send_to_tier_channels(_tp2_msg, active_trade.get("share_free", True))
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True)); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
@@ -3951,7 +3969,7 @@ def run_price_check():
                 _sl_msg = fmt_update("SL_HIT")
                 send_telegram(_sl_msg)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True)  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
@@ -3966,7 +3984,8 @@ def run_price_check():
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
-                    "tp2": active_trade.get("tp2",0)})
+                    "tp2": active_trade.get("tp2",0)},
+                entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_telegram(fmt_update("STOP_HUNT"))
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
@@ -8793,7 +8812,7 @@ def _demo_monitor_loop():
                         send_telegram(_msg)
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp2(sym)
-                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True)
+                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
                         to_remove.append(t)
                     elif sl_hit:
@@ -8831,7 +8850,8 @@ def _demo_monitor_loop():
                         if tier_routed: send_to_tier_channels(_msg, True)
                         ct.on_scan_tp1(sym)
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=True,
-                            tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2})
+                            tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
+                            entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP1")
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
@@ -9327,13 +9347,14 @@ def main():
                     # Flush Friday's daily recap right now instead of waiting for the
                     # post-midnight window — if the process restarts/goes down anytime
                     # during the weekend (Railway restart, credit limit, etc.), the
-                    # in-memory _daily_tracker would be wiped before ever reaching that
+                    # in-memory bucket would be lost before ever reaching that
                     # check, and Friday's report would silently never go out.
                     global _daily_summary_last_sent_date
                     _today_marker = now_ist().strftime("%Y-%m-%d")
-                    if _daily_summary_last_sent_date != _today_marker and _daily_tracker.get("trades"):
+                    _today_bucket = _daily_buckets.get(_today_marker)
+                    if _daily_summary_last_sent_date != _today_marker and _today_bucket and _today_bucket.get("trades"):
                         try:
-                            _send_daily_summary(_daily_tracker)
+                            _send_daily_summary(_today_bucket)
                             _daily_summary_last_sent_date = _today_marker
                         except Exception as e:
                             print(f"  [DAILY SUMMARY] weekend-sleep flush error: {e}")
