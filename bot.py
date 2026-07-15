@@ -5887,9 +5887,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     return
 
                 # ── Check slot availability (scan1=6 slots, scan2=6 slots) ──────
+                # Special-time signals (the verified, tier-routed ones) are NEVER
+                # blocked by this cap, even if all 6 slots are occupied by regular-
+                # grid/testing trades — a blocked special time is a real missed
+                # opportunity, so it always gets to place, going over the 6-slot pool.
                 _max_slots = 6
                 my_list = _scan_list(scan_ver)
-                if len(my_list) >= _max_slots:
+                _kind = "scan1" if scan_ver == 1 else "scan2"
+                _is_special_now = _scan_run_mode.get(_kind) == "special"
+                if len(my_list) >= _max_slots and not _is_special_now:
                     send_reply(cid,
                         f"🚫 <b>Scan{scan_ver} slots full ({_max_slots}/{_max_slots})</b>\n\n" +
                         "\n".join(f"  {'🟢' if x['signal']=='BUY' else '🔴'} {x['symbol']}" for x in my_list) +
@@ -8894,8 +8900,9 @@ def _run_test_scan(cid, scan_ver: int):
 
     demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
     _max_demo_slots = 6
+    _demo_is_special_now = _scan_run_mode.get("test") == "special"
     with _demo_monitor_lock:
-        if len(demo_list) >= _max_demo_slots:
+        if len(demo_list) >= _max_demo_slots and not _demo_is_special_now:
             send_admin(f"🚫 <b>[TEST] Scan{lbl} slots full ({_max_demo_slots}/{_max_demo_slots})</b>\n\nAll demo slots occupied. Waiting for close.\n\n<i>- CLEXER TEST -</i>")
             return
 

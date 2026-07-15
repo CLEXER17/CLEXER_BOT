@@ -1667,11 +1667,11 @@ def on_scan_entry_missed(symbol: str):
 
 _SCAN_SLOTS = {
     1: ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_"],  # scan1 — 6 slots
-    2: ["scan_", "s2b_"],                                   # scan2 — 2 slots
-    3: ["d1_", "d1b_"],                                     # demo1 — 2 slots
-    4: ["d2_", "d2b_"],                                     # demo2 — 2 slots
+    2: ["scan_", "s2b_", "s2c_", "s2d_", "s2e_", "s2f_"],   # scan2 — 6 slots
+    3: ["d1_", "d1b_", "d1c_", "d1d_", "d1e_", "d1f_"],     # demo1 — 6 slots
+    4: ["d2_", "d2b_", "d2c_", "d2d_", "d2e_", "d2f_"],     # demo2 — 6 slots
 }
-_ALL_SLOT_PREFIXES = ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_", "scan_", "s2b_", "d1_", "d1b_", "d2_", "d2b_"]
+_ALL_SLOT_PREFIXES = [p for _ver, _prefixes in _SCAN_SLOTS.items() for p in _prefixes]
 
 def _pfx(ver: int) -> str:
     """Legacy — returns slot A prefix for scan version."""
