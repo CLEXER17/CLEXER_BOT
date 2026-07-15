@@ -4762,10 +4762,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         else:
             send_reply(chat_id,
-                "💬 <b>Chat session started!</b>\n\n"
-                "Ask me anything — just type your message, no need to send /chat again.\n"
-                "I can also generate images if you ask (e.g. \"draw a sunset over mountains\").\n\n"
-                "<i>Session auto-closes after 5 minutes of inactivity.</i>")
+                "💬 <b>Chat Session Started</b>\n\n"
+                "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
+                "🎨 Need an image? Just describe what you want.\n\n"
+                "⏳ Session will automatically close after 5 minutes of inactivity.")
 
     elif cmd == "/trade":
         parts_out = []
