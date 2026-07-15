@@ -270,39 +270,23 @@ def _get_bot_username():
     return _BOT_USERNAME
 
 def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: bool = False) -> bool:
-    """Real fix for the custom_emoji-in-channels restriction: stage the message
-    silently in the admin DM (muted, deleted right after), then use a genuine
-    forwardMessage (not copyMessage — confirmed different: forwardMessage keeps
-    a low-level relay that preserves custom_emoji entities, copyMessage/direct
-    sendMessage both strip them). Returns True if delivered via forward.
-    If with_bot_button, sends a small follow-up message with an 'Open Bot' link —
-    forwardMessage itself can't carry a reply_markup, so this is a second message."""
+    """Sends via plain sendMessage. NOTE: this used to stage-then-forwardMessage
+    to "preserve" premium/custom emoji — that assumption was wrong. /testreply
+    proved the opposite empirically: forwardMessage strips premium emoji, while
+    plain sendMessage (with the <tg-emoji> entities _apply_premium_emojis already
+    wrapped the text in, by the time it reaches here) renders them correctly.
+    Kept the same name/signature so every existing caller needed no changes.
+    If with_bot_button, sends a small follow-up message with an 'Open Bot' link."""
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    if not ADMIN_CHAT_ID:
-        return False
     try:
-        r_stage = requests.post(f"{base}/sendMessage",
-            json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True, "disable_notification": True}, timeout=10)
-        rj_stage = r_stage.json()
-        if not rj_stage.get("ok"):
-            print(f"  [TRUE FORWARD] {tag} staging failed: {rj_stage.get('description')}")
+        r = requests.post(f"{base}/sendMessage",
+            json={"chat_id": dest_chat_id, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": True}, timeout=10)
+        rj = r.json()
+        if not rj.get("ok"):
+            print(f"  [SEND] {tag} {dest_chat_id} rejected: {rj.get('description')}")
             return False
-        stage_msg_id = rj_stage["result"]["message_id"]
-        r_fwd = requests.post(f"{base}/forwardMessage",
-            json={"chat_id": dest_chat_id, "from_chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=10)
-        rj_fwd = r_fwd.json()
-        requests.post(f"{base}/deleteMessage", json={"chat_id": ADMIN_CHAT_ID, "message_id": stage_msg_id}, timeout=5)
-        if not rj_fwd.get("ok"):
-            print(f"  [TRUE FORWARD] {tag} {dest_chat_id} rejected: {rj_fwd.get('description')}")
-            return False
-        _ents = rj_fwd.get("result", {}).get("entities", [])
-        _ce = [e for e in _ents if e.get("type") == "custom_emoji"]
-        print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: delivered, {len(_ce)} custom_emoji of {len(_ents)} total entities")
         if with_bot_button:
-            # Telegram confirmed-rejects editMessageReplyMarkup on forwarded messages
-            # ("message can't be edited") — a button can't be merged into the forwarded
-            # message itself, so this has to be a separate follow-up message.
             _uname = _get_bot_username()
             if _uname:
                 r_btn = requests.post(f"{base}/sendMessage",
@@ -311,10 +295,10 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
                               {"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"}]]}},
                     timeout=10)
                 if not r_btn.json().get("ok"):
-                    print(f"  [TRUE FORWARD BUTTON] {tag} {dest_chat_id} failed: {r_btn.json().get('description')}")
+                    print(f"  [SEND BUTTON] {tag} {dest_chat_id} failed: {r_btn.json().get('description')}")
         return True
     except Exception as e:
-        print(f"  [TRUE FORWARD] {tag} {dest_chat_id}: {e}")
+        print(f"  [SEND] {tag} {dest_chat_id}: {e}")
         return False
 
 
