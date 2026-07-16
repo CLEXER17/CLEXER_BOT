@@ -1393,6 +1393,139 @@ _SCAN_SPECIAL_NO_COPY = {
 _scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
 _scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
+# ─── Auto promote/demote special times by live win rate ────────────────────
+# Per-slot (kind, hour:minute) outcome tracker that automatically:
+#   1. Promotes a REGULAR (non-special) time to special+verified once it has
+#      proven itself: win% >= threshold AND at least 4 wins banked.
+#   2. Demotes a VERIFIED special time to unverified (no-copy) if its win%
+#      drops below threshold — protects real copytrade money automatically.
+#   3. Re-promotes an UNVERIFIED special time back to verified once win% is
+#      back above threshold AND it has strung together >=2 wins in a row
+#      since its last real SL (a "clean streak", not just an overall average).
+# Thresholds: 41% for scan1/scan2, 35% for test (demo — shared by TS1+TS2,
+# since they run off the exact same _SCAN_SPECIAL["test"]/_SCAN_SPECIAL_NO_COPY
+# schedule and can't be independently verified today).
+# A win = TP2, BE (SL after TP1 already hit — that trade already banked TP1,
+# so it's a win not a loss), or a positive-P/L timeout. A loss = a real SL
+# (never hit TP1), LOSS, or a negative-P/L timeout. TP1 alone is never a
+# terminal state in this bot (the runner keeps riding to TP2/BE/timeout), so
+# it's not tracked as its own event — only these 4 terminal outcomes are.
+_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "test": 35}
+_SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
+_SLOT_MIN_STREAK_FOR_REVERIFY = 2
+_SLOT_STATE_FILE = os.path.join(DATA_DIR, "slot_auto_state.json")
+_slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
+
+def _slot_key(kind: str, hm: tuple) -> str:
+    return f"{kind}|{hm[0]}.{hm[1]:02d}"
+
+def _load_slot_state():
+    """Restores _slot_stats AND any runtime-promoted/demoted _SCAN_SPECIAL /
+    _SCAN_SPECIAL_NO_COPY changes from disk — without this, an auto-promotion
+    would be silently lost on the next Railway restart/redeploy."""
+    global _slot_stats
+    try:
+        if not os.path.exists(_SLOT_STATE_FILE):
+            return
+        with open(_SLOT_STATE_FILE) as f:
+            d = json.load(f)
+        _slot_stats = d.get("stats", {})
+        for kind, times in d.get("special", {}).items():
+            _SCAN_SPECIAL.setdefault(kind, set()).update(tuple(hm) for hm in times)
+        for kind, times in d.get("no_copy", {}).items():
+            _SCAN_SPECIAL_NO_COPY.setdefault(kind, set()).update(tuple(hm) for hm in times)
+        # A demotion needs to be able to REMOVE a time from no_copy (re-verify)
+        # or SPECIAL could shrink in code between deploys — rebuild no_copy to
+        # only contain times that are still actually special, and drop any
+        # saved "removed" markers by trusting disk as the full override.
+        for kind in d.get("no_copy_removed", {}):
+            for hm in d["no_copy_removed"][kind]:
+                _SCAN_SPECIAL_NO_COPY.get(kind, set()).discard(tuple(hm))
+        print(f"[SLOT AUTO] Loaded {len(_slot_stats)} tracked slots from disk")
+    except Exception as e:
+        print(f"[SLOT AUTO] load error: {e}")
+
+def _save_slot_state():
+    try:
+        d = {
+            "stats": _slot_stats,
+            "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
+            "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
+        }
+        with open(_SLOT_STATE_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception as e:
+        print(f"[SLOT AUTO] save error: {e}")
+
+def _rebuild_schedules():
+    global SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE
+    SCAN1_SCHEDULE = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
+    SCAN2_SCHEDULE = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
+    SCAN1_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test"] | _regular_grid(9, 27, _SCAN_SPECIAL["test"]))
+
+def _evaluate_slot(kind: str, hm: tuple):
+    key = _slot_key(kind, hm)
+    st = _slot_stats.get(key)
+    if not st:
+        return
+    total = st["tp"] + st["sl"]
+    if total == 0:
+        return
+    win_pct = st["tp"] / total * 100
+    threshold = _SLOT_EVAL_THRESHOLD[kind]
+    is_special = hm in _SCAN_SPECIAL.get(kind, set())
+    is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(kind, set())
+    changed = False
+    hm_str = f"{hm[0]}:{hm[1]:02d}"
+
+    if not is_special:
+        if win_pct >= threshold and st["tp"] >= _SLOT_MIN_WINS_FOR_NEW_PROMOTION:
+            _SCAN_SPECIAL.setdefault(kind, set()).add(hm)
+            changed = True
+            send_admin(f"⭐ <b>Auto-promoted</b> {kind} {hm_str} → SPECIAL + VERIFIED\n\n"
+                       f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl) — copytrade now enabled here.")
+    elif is_special and not is_unverified:
+        if win_pct < threshold:
+            _SCAN_SPECIAL_NO_COPY.setdefault(kind, set()).add(hm)
+            changed = True
+            send_admin(f"⚠️ <b>Auto-demoted</b> {kind} {hm_str} → UNVERIFIED\n\n"
+                       f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.")
+    elif is_unverified:
+        if win_pct >= threshold and st.get("streak", 0) >= _SLOT_MIN_STREAK_FOR_REVERIFY:
+            _SCAN_SPECIAL_NO_COPY[kind].discard(hm)
+            changed = True
+            send_admin(f"✅ <b>Auto-reverified</b> {kind} {hm_str} → VERIFIED\n\n"
+                       f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.")
+
+    if changed:
+        _rebuild_schedules()
+        _save_slot_state()
+
+def _slot_track(kind: str, hm: tuple, is_win: bool):
+    """Call once per trade, at its terminal outcome only (TP2 / BE / real-SL /
+    LOSS / timeout) — never at TP1 (not terminal here, the runner keeps going)."""
+    key = _slot_key(kind, hm)
+    st = _slot_stats.setdefault(key, {"tp": 0, "sl": 0, "streak": 0})
+    if is_win:
+        st["tp"] += 1
+        st["streak"] += 1
+    else:
+        st["sl"] += 1
+        st["streak"] = 0
+    _save_slot_state()
+    _evaluate_slot(kind, hm)
+
+def _ist_hm_from_epoch(epoch):
+    if not epoch:
+        return None
+    try:
+        dt = datetime.fromtimestamp(epoch, timezone.utc) + IST
+        return (dt.hour, dt.minute)
+    except Exception:
+        return None
+
+_load_slot_state()
+
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
     has its own independent model + gateway choice, set via /aiconfig."""
@@ -4019,6 +4152,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
                 "entry_price": entry, "sl_price": t.get("sl",0)})
+            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
             _remove_scan_trade(ver, sym); return True
 
         price = get_bingx_price(sym)
@@ -4077,6 +4212,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")))
             _notify_free_late(sym, t, "TP2")
+            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
@@ -4120,6 +4257,8 @@ def _tick_one(ver: int, t: dict) -> bool:
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
+            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -9118,6 +9257,8 @@ def _demo_monitor_loop():
                         ct.on_scan_tp2(sym)
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
+                        _slot_hm = _ist_hm_from_epoch(created)
+                        if _slot_hm: _slot_track("test", _slot_hm, True)
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE" if tp1hit else "SL"
@@ -9136,6 +9277,8 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
                         ct.on_scan_sl(sym)
+                        _slot_hm = _ist_hm_from_epoch(created)
+                        if _slot_hm: _slot_track("test", _slot_hm, result == "BREAKEVEN")
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -9173,6 +9316,8 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
                         ct.on_scan_sl(sym)
+                        _slot_hm = _ist_hm_from_epoch(created)
+                        if _slot_hm: _slot_track("test", _slot_hm, pnl >= 0)
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
