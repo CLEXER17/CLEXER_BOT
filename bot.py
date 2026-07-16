@@ -205,7 +205,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
     _msg = (
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-        f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.4g} → {new_sl:,.4g}</b> to lock in more capital.\n\n"
+        f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
     send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
@@ -227,7 +227,7 @@ def _apply_trail_sl_btc(price: float):
     save_active_trade()
     _msg = (
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-        f"Price reached halfway to TP1 — SL moved <b>{orig_sl:,.0f} → {new_sl:,.0f}</b> to lock in more capital.\n\n"
+        f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
     send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
         tier_routed=True, share_free=active_trade.get("share_free", True))
@@ -532,7 +532,7 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
     _sid_line = f"\n🪪 {sig_id}" if sig_id else ""
     text = _apply_premium_emojis(
         f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>\n"
-        f"❌ Loss on {side} @ {entry_str}\n\n"
+        f"❌ Loss on {side} @ <code>{entry_str}</code>\n\n"
         f"<blockquote>{_sl_line1}\n\n"
         f"✅ {_sl_line2}\n"
         f"📊 {_sl_line3}\n\n"
@@ -3727,10 +3727,10 @@ def fmt_signal(s):
     ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
-    entry_lines = [f"🎯 {_smallcaps_title('Entry')}: {s['entry']:,.0f}"]
+    entry_lines = [f"🎯 {_smallcaps_title('Entry')}: <code>{s['entry']:,.0f}</code>"]
     if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
         entry_lines.append(f"📍 {_html.escape(s['entry_note'])}")
-    levels = [f"🛑 SL: {s['sl']:,.0f}", f"💰 TP1: {s['tp1']:,.0f}", f"🏆 TP2: {s['tp2']:,.0f}",
+    levels = [f"🛑 SL: <code>{s['sl']:,.0f}</code>", f"💰 TP1: <code>{s['tp1']:,.0f}</code>", f"🏆 TP2: <code>{s['tp2']:,.0f}</code>",
               f"⚖️ R:R: {s.get('rr','-')}"]
     context = []
     if wk:  context.append(f"🌐 {_smallcaps_title('Weekly')}: {_html.escape(wk)}")
@@ -3752,22 +3752,22 @@ def fmt_update(status, price=None):
     msgs = {
         "SL_HIT": _scan_box(
             "SL Hit", _hdr("🚨", "SL Hit"),
-            [[f"❌ {_smallcaps_title('Loss taken on')} {t.get('signal','?')} @ {t.get('entry',0):,.0f}"],
+            [[f"❌ {_smallcaps_title('Loss taken on')} {t.get('signal','?')} @ <code>{t.get('entry',0):,.0f}</code>"],
              [f"⛔ {_smallcaps_title('Do not open any trade now')}",
               f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
             tag=_sid,
         ),
         "TP1_HIT": _scan_box(
             f"TP1 Hit — {ct.TP1_CLOSE_PCT}% Closed", _hdr("💰", "TP1 Hit"),
-            [[f"✅ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% position closed at')} {t.get('tp1',0):,.0f}",
-              f"🛡️ {_smallcaps_title('SL moved to breakeven')}: {entry:,.0f}",
-              f"🚀 {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% riding to TP2')}: {t.get('tp2',0):,.0f}"],
+            [[f"✅ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% position closed at')} <code>{t.get('tp1',0):,.0f}</code>",
+              f"🛡️ {_smallcaps_title('SL moved to breakeven')}: <code>{entry:,.0f}</code>",
+              f"🚀 {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% riding to TP2')}: <code>{t.get('tp2',0):,.0f}</code>"],
              [f"⚠️ {_smallcaps_title('Do not close manually — bot is managing the rest')}"]],
             tag=_sid,
         ),
         "TP2_HIT": _scan_box(
             "TP2 Hit — Trade Closed", _hdr("🏆", "TP2 Hit"),
-            [[f"✅ {_smallcaps_title('Full profit taken on')} {t.get('signal','?')} @ {t.get('tp2',0):,.0f}"],
+            [[f"✅ {_smallcaps_title('Full profit taken on')} {t.get('signal','?')} @ <code>{t.get('tp2',0):,.0f}</code>"],
              [f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
             tag=_sid,
         ),
@@ -3787,7 +3787,7 @@ def fmt_update(status, price=None):
         ),
         "ENTRY_MISSED": _scan_box(
             "Trade Cancelled — Entry Missed", _hdr("😔", "Entry Missed"),
-            [[f"{_smallcaps_title('Price moved past entry zone')} {entry:,.0f} {_smallcaps_title('without filling. No position was opened')}."],
+            [[f"{_smallcaps_title('Price moved past entry zone')} <code>{entry:,.0f}</code> {_smallcaps_title('without filling. No position was opened')}."],
              [f"⛔ {_smallcaps_title('Do not chase — do not open a trade now')}",
               f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
             tag=_sid,
@@ -3801,9 +3801,9 @@ def fmt_update(status, price=None):
         ),
         "WAITING_ENTRY": _scan_box(
             "Waiting Pullback", _hdr("⏳", "Waiting Pullback"),
-            [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.0f}", f"🛑 SL: {t.get('sl',0):,.0f}",
-              f"🎯 TP1: {t.get('tp1',0):,.0f}", f"🎯 TP2: {t.get('tp2',0):,.0f}"]
-             + ([f"📊 {_smallcaps_title('Current')}: {price:,.0f} ({abs((price or 0)-entry):,.0f} pts away)"] if price else [])],
+            [[f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.0f}</code>", f"🛑 SL: <code>{t.get('sl',0):,.0f}</code>",
+              f"🎯 TP1: <code>{t.get('tp1',0):,.0f}</code>", f"🎯 TP2: <code>{t.get('tp2',0):,.0f}</code>"]
+             + ([f"📊 {_smallcaps_title('Current')}: <code>{price:,.0f}</code> ({abs((price or 0)-entry):,.0f} pts away)"] if price else [])],
             tag=_sid,
         ),
     }
@@ -4063,10 +4063,10 @@ def fmt_scan_signal(t: dict) -> str:
         f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}",
         [
             [f"{arrow} — {_smallcaps_title('Market Entry')}"],
-            [f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}",
-             f"🛑 SL: {sl:,.4g}  ({sl_pct:.1f}%)",
-             f"💰 TP1: {tp1:,.4g}",
-             f"🏆 TP2: {tp2:,.4g}"],
+            [f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>",
+             f"🛑 SL: <code>{sl:,.4g}</code>  ({sl_pct:.1f}%)",
+             f"💰 TP1: <code>{tp1:,.4g}</code>",
+             f"🏆 TP2: <code>{tp2:,.4g}</code>"],
         ],
         tag=t.get("sig_id",""),
     )
@@ -4084,36 +4084,36 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         "ENTRY_HIT": _scan_box(
             "Entry Triggered", _hdr("🚀", "Entry Triggered"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
-              f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}  |  📊 {_smallcaps_title('Price')}: {price:,.4g}",
-              f"🛑 SL: {t.get('sl',0):,.4g}", f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"],
+              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>  |  📊 {_smallcaps_title('Price')}: <code>{price:,.4g}</code>",
+              f"🛑 SL: <code>{t.get('sl',0):,.4g}</code>", f"💰 TP1: <code>{tp1:,.4g}</code>", f"🏆 TP2: <code>{tp2:,.4g}</code>"],
              [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
             tag=_sid,
         ),
         "TP1_HIT": _scan_box(
             "TP1 Hit", _hdr_notime("💰", "TP1 Hit"),
-            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: {tp1:,.4g}",
-              f"🛡️ {_smallcaps_title('SL moved to BE')}: {entry:,.4g}",
-              f"🚀 {_smallcaps_title('Riding TP2')}: {tp2:,.4g}..."]],
+            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: <code>{tp1:,.4g}</code>",
+              f"🛡️ {_smallcaps_title('SL moved to BE')}: <code>{entry:,.4g}</code>",
+              f"🚀 {_smallcaps_title('Riding TP2')}: <code>{tp2:,.4g}</code>..."]],
             tag=_sid,
         ),
         "TP2_HIT": _scan_box(
             "TP2 Hit", _hdr_notime("🏆", "TP2 Hit"),
             [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
-              f"✅ {_smallcaps_title('Full profit')} @ TP2: {tp2:,.4g}"]],
+              f"✅ {_smallcaps_title('Full profit')} @ TP2: <code>{tp2:,.4g}</code>"]],
             tag=_sid,
         ),
         "SL_HIT": (
             _scan_box(
                 "BE Exit", _hdr_notime("🛡️", "BE Exit"),
                 [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
-                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} {entry:,.4g}",
+                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
                   f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
                  [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
                 tag=_sid,
             ) if t.get("tp1_hit") else
             _scan_box(
                 "SL Hit", _hdr_notime("🚨", "SL Hit"),
-                [[f"❌ {_smallcaps_title('Loss on')} {sig} @ {entry:,.4g}"],
+                [[f"❌ {_smallcaps_title('Loss on')} {sig} @ <code>{entry:,.4g}</code>"],
                  [f"⛔ {_smallcaps_title('Do not open any trade now')}",
                   f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
                 tag=_sid,
@@ -4121,7 +4121,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "ENTRY_MISSED": _scan_box(
             "Entry Missed", _hdr("😔", "Entry Missed"),
-            [[f"{_smallcaps_title('Price bypassed entry zone')} {entry:,.4g} {_smallcaps_title('without filling')}."],
+            [[f"{_smallcaps_title('Price bypassed entry zone')} <code>{entry:,.4g}</code> {_smallcaps_title('without filling')}."],
              [f"⛔ {_smallcaps_title('Do not chase')}"]],
             tag=_sid,
         ),
@@ -4134,9 +4134,9 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "WAITING_ENTRY": _scan_box(
             "Waiting Entry", _hdr("⏳", "Waiting Entry"),
-            [[f"🎯 {_smallcaps_title('Entry')}: {entry:,.4g}", f"🛑 SL: {t.get('sl',0):,.4g}",
-              f"💰 TP1: {tp1:,.4g}", f"🏆 TP2: {tp2:,.4g}"]
-             + ([f"📊 {_smallcaps_title('Current')}: {price:,.4g} ({abs(price-entry)/entry*100:.2f}% away)"] if price else [])],
+            [[f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>", f"🛑 SL: <code>{t.get('sl',0):,.4g}</code>",
+              f"💰 TP1: <code>{tp1:,.4g}</code>", f"🏆 TP2: <code>{tp2:,.4g}</code>"]
+             + ([f"📊 {_smallcaps_title('Current')}: <code>{price:,.4g}</code> ({abs(price-entry)/entry*100:.2f}% away)"] if price else [])],
             tag=_sid,
         ),
     }
@@ -9277,9 +9277,9 @@ def _demo_monitor_loop():
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
                             f"#{coin} TP2 Hit", f"🏆 TS{_dver} {coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ TP2: {cp:,.6g}",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
-                              f"🏆 TP2: {tp2:,.6g}",
+                            [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
+                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
+                              f"🏆 TP2: <code>{tp2:,.6g}</code>",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
@@ -9299,9 +9299,9 @@ def _demo_monitor_loop():
                             "tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
                             f"#{coin} {lbl} Hit", f"🚨 TS{_dver} {coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: {cp:,.6g}",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
-                              f"🛑 {lbl}: {_sl_exit:,.6g}",
+                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
+                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
+                              f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
                               f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
@@ -9318,10 +9318,10 @@ def _demo_monitor_loop():
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
                             f"#{coin} TP1 Hit", f"🎯 TS{_dver} {coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ TP1: {cp:,.6g}",
+                            [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
                               f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
-                              f"🔒 BE SL: {be_sl_price:,.6g}",
-                              f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]],
+                              f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
+                              f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
                         ct.on_scan_tp1(sym)
@@ -9339,8 +9339,8 @@ def _demo_monitor_loop():
                         _msg = _scan_box(
                             f"#{coin} Timeout", f"⏰ TS{_dver} {coin}-USDT",
                             [[_timeout_line,
-                              f"📊 {_smallcaps_title('Exit')}: {cp:,.6g}",
-                              f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
+                              f"📊 {_smallcaps_title('Exit')}: <code>{cp:,.6g}</code>",
+                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
@@ -9626,10 +9626,10 @@ def _run_test_scan(cid, scan_ver: int):
             demo_msg = _scan_box(
                 "Alt Signal", f"📣 {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
-                 [f"🎯 {_smallcaps_title('Entry')}: {scan_entry:,.4g}",
-                  f"🛑 SL: {scan_sl:,.4g}  ({sl_pct:.1f}%)",
+                 [f"🎯 {_smallcaps_title('Entry')}: <code>{scan_entry:,.4g}</code>",
+                  f"🛑 SL: <code>{scan_sl:,.4g}</code>  ({sl_pct:.1f}%)",
                   f"📌 {_smallcaps_title('Swing Level')}: {swing_level_str}",
-                  f"💰 TP1: {scan_tp1:,.4g}", f"🏆 TP2: {scan_tp2:,.4g}",
+                  f"💰 TP1: <code>{scan_tp1:,.4g}</code>", f"🏆 TP2: <code>{scan_tp2:,.4g}</code>",
                   f"📊 RR: 1:2.0 (TP1) / 1:3.75 (TP2)",
                   f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
                 tag=_demo_sig_id,
