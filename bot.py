@@ -5114,13 +5114,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 else:
                     _stat_str = "no data yet"
                 _icon = "🔒" if _unverified else "✅"
-                _label = "UNVERIFIED — no copytrade" if _unverified else "VERIFIED"
+                _label = "UNVERIFIED" if _unverified else "VERIFIED"
                 _st_lines.append(f"  {_icon} {_hm_str} — {_label} — {_stat_str}")
             _st_lines.append("")
         if not _st_lines:
             send_reply(chat_id, "No special times configured."); return
         send_reply(chat_id, f"<b>⭐ Special Times</b>\n\n" + "\n".join(_st_lines).rstrip() +
-            "\n\n<i>✅ verified = copytrade live · 🔒 unverified = posts to channels but no real orders</i>\n\n<i>🛡️ Capital protected</i>")
+            "\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/trade":
         parts_out = []
