@@ -9152,9 +9152,11 @@ def _demo_monitor_loop():
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
+                        _timeout_line = (f"1ʜ ᴇʟᴀᴘꜱᴇᴅ ꜱɪɴᴄᴇ TP1 — {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% runner closed')}"
+                                         if tp1hit else f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}")
                         _msg = _scan_box(
                             f"#{coin} Timeout", f"⏰ TS{_dver} {coin}-USDT",
-                            [[f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}",
+                            [[_timeout_line,
                               f"📊 {_smallcaps_title('Exit')}: {cp:,.6g}",
                               f"🎯 {_smallcaps_title('Entry')}: {entry:,.6g}",
                               f"📈 P/L: {pnl:+.2f}%"]],
