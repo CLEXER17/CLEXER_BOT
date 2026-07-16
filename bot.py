@@ -4536,6 +4536,7 @@ ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 /session - Current session
 /tvstatus - TV connection
 /st - Special times, verified/unverified + win rate
+/nt - Non-special (regular grid) times win rate
 /force_reload - Clear TV bridge cache + 5min warmup (bridge only)
 
 <b>TRADE CONTROL</b>
@@ -4627,7 +4628,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5094,6 +5095,36 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
         send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
+            "\n\n<i>🛡️ Capital protected</i>")
+
+    elif cmd == "/nt":
+        # Non-special (regular grid) times — same table shape as /st, but for
+        # everything /st doesn't cover. Only shows slots with actual tracked
+        # data (tp+sl > 0) since the full regular grid is dozens of untested
+        # slots per kind and dumping all of them would just be noise.
+        _nt_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "test": "DEMO TS1+TS2"}
+        _nt_grid_minutes = {"scan1": (2, 23), "scan2": (7, 27), "test": (9, 27)}
+        _nt_blocks = []
+        for _kind in ("scan1", "scan2", "test"):
+            _ma, _mb = _nt_grid_minutes[_kind]
+            _regular = _regular_grid(_ma, _mb, _SCAN_SPECIAL.get(_kind, set()))
+            _rows = []
+            for _hm in sorted(_regular):
+                _key = _slot_key(_kind, _hm)
+                _stat = _slot_stats.get(_key)
+                if not _stat or (_stat["tp"] + _stat["sl"]) == 0:
+                    continue
+                _total = _stat["tp"] + _stat["sl"]
+                _wr = f"{_stat['tp'] / _total * 100:.0f}%"
+                _cnt = f"{_stat['tp']}/{_stat['sl']}"
+                _streak = str(_stat.get("streak", 0))
+                _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
+                _rows.append(f"<code>{_hm_str:<6}{_wr:>5}  {_cnt:>5}  streak {_streak}</code>")
+            if _rows:
+                _nt_blocks.append(f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n" + "\n".join(_rows))
+        if not _nt_blocks:
+            send_reply(chat_id, "No non-special times have tracked data yet."); return
+        send_reply(chat_id, "📊 <b>Non-Special Times</b>\n\n" + "\n\n".join(_nt_blocks) +
             "\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/trade":
