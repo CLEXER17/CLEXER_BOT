@@ -3595,10 +3595,10 @@ def fmt_update(status, price=None):
             tag=_sid,
         ),
         "TP1_HIT": _scan_box(
-            "TP1 Hit — 50% Closed", _hdr("💰", "TP1 Hit"),
-            [[f"✅ {_smallcaps_title('Half position closed at')} {t.get('tp1',0):,.0f}",
+            f"TP1 Hit — {ct.TP1_CLOSE_PCT}% Closed", _hdr("💰", "TP1 Hit"),
+            [[f"✅ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% position closed at')} {t.get('tp1',0):,.0f}",
               f"🛡️ {_smallcaps_title('SL moved to breakeven')}: {entry:,.0f}",
-              f"🚀 {_smallcaps_title('Remaining 50% riding to TP2')}: {t.get('tp2',0):,.0f}"],
+              f"🚀 {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% riding to TP2')}: {t.get('tp2',0):,.0f}"],
              [f"⚠️ {_smallcaps_title('Do not close manually — bot is managing the rest')}"]],
             tag=_sid,
         ),
@@ -9137,7 +9137,7 @@ def _demo_monitor_loop():
                         _msg = _scan_box(
                             f"#{coin} TP1 Hit", f"🎯 TS{_dver} {coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP1: {cp:,.6g}",
-                              f"🛡️ {_smallcaps_title('50% closed')}",
+                              f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
                               f"🔒 BE SL: {be_sl_price:,.6g}",
                               f"🚀 {_smallcaps_title('Runner TP2')}: {tp2:,.6g}"]],
                             tag=sig_id)
