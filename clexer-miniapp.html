@@ -377,10 +377,23 @@
   }
   document.getElementById("nav").addEventListener("click",e=>{const t=e.target.closest(".tab");if(t)switchTab(t.dataset.tab);});
 
-  /* ---------- price feed — BingX direct, Railway fallback ---------- */
+  /* ---------- price feed — Railway (same-origin) first, BingX direct as fallback ---------- */
   async function fetchPrice(sym){
     const bxSym = sym.includes("-") ? sym : sym.replace("USDT","-USDT");
-    // Try BingX directly first (public endpoint, CORS allowed)
+    // Same-origin API first — Telegram's in-app WebView on some clients blocks
+    // direct cross-origin fetches to third-party domains (BingX), which silently
+    // failed every time and left the price stuck at 0 even though this same-origin
+    // call always worked fine. Same-origin also can't be blocked by that restriction.
+    try{
+      const r = await fetch(`${API}/price?sym=${bxSym}`,{cache:"no-store"});
+      if(!r.ok) throw 0;
+      const j = await r.json();
+      if(j.price > 0){
+        prices[sym] = {last: j.price, chg: j.change, sim: false};
+        return;
+      }
+    }catch(e){}
+    // Fallback: BingX direct (works on desktop/browser previews, some clients)
     try{
       const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${bxSym}`,{cache:"no-store"});
       if(!r.ok) throw 0;
@@ -388,17 +401,7 @@
       let d = j.data;
       if(Array.isArray(d)) d = d[0];
       const price = parseFloat(d?.lastPrice||0);
-      if(price > 0){
-        prices[sym] = {last: price, chg: parseFloat(d?.priceChangePercent||0), sim: false};
-        return;
-      }
-    }catch(e){}
-    // Fallback: Railway API (server-side fetch)
-    try{
-      const r = await fetch(`${API}/price?sym=${bxSym}`,{cache:"no-store"});
-      if(!r.ok) throw 0;
-      const j = await r.json();
-      prices[sym] = {last: j.price, chg: j.change, sim: false};
+      prices[sym] = {last: price, chg: parseFloat(d?.priceChangePercent||0), sim: false};
     }catch(e){
       if(!prices[sym]) prices[sym] = {last: 0, chg: 0, sim: true};
     }

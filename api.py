@@ -285,7 +285,12 @@ def startup():
 # ── health ────────────────────────────────────────────────────────────────────
 @app.get("/app")
 def serve_miniapp():
-    return FileResponse("clexer-miniapp.html", media_type="text/html")
+    # Telegram's in-app WebView caches web_app pages aggressively across
+    # sessions — a stale cached copy previously kept serving a dead API URL
+    # long after the file was fixed and redeployed. Explicit no-cache headers
+    # force it (and any browser) to always fetch the latest deployed version.
+    return FileResponse("clexer-miniapp.html", media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
 
 @app.get("/health")
 def health():
