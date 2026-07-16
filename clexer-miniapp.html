@@ -514,22 +514,6 @@
   }
 
   /* ---------- CHART ---------- */
-  const _symExchange = {}; // cache: BEATUSDT -> "BINGX" or "BINANCE"
-  async function resolveExchange(sym){
-    if(_symExchange[sym]) return _symExchange[sym];
-    // Try Binance first
-    try{
-      const r=await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`,{cache:"no-store"});
-      if(r.ok){const d=await r.json();if(d.price){_symExchange[sym]="BINANCE";return "BINANCE";}}
-    }catch(e){}
-    // Try BingX perpetual
-    try{
-      const r=await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${sym.replace("USDT","-USDT")}`,{cache:"no-store"});
-      if(r.ok){const d=await r.json();if(d.data&&d.data.lastPrice){_symExchange[sym]="BINGX";return "BINGX";}}
-    }catch(e){}
-    // Default fallback
-    _symExchange[sym]="BINGX"; return "BINGX";
-  }
   function loadTVScript(cb){
     if(typeof TradingView!=="undefined"){cb();return;}
     const s=document.createElement("script");
@@ -541,8 +525,12 @@
     document.getElementById("tv_chart").innerHTML=`<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:12px;letter-spacing:.08em;font-family:var(--mono)"><div style="width:28px;height:28px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 0.8s linear infinite"></div>Loading chart…</div>`;
     loadTVScript(async()=>{
       if(typeof TradingView==="undefined"){document.getElementById("fallback").style.display="flex";return;}
-      const exch = await resolveExchange(symbol);
-      const tvSym = exch==="BINGX" ? `BINGX:${symbol.replace("USDT","USDT.P")}` : `BINANCE:${symbol}`;
+      // Always chart BingX — that's what the top price line and your actual
+      // trades use. Auto-detecting exchange used to prefer Binance whenever
+      // both had the symbol, showing a different (Binance) last price in the
+      // chart than the BingX price above it — confusing when they're a few
+      // dollars apart, even though neither number was wrong.
+      const tvSym = `BINGX:${symbol.replace("USDT","USDT.P")}`;
       new TradingView.widget({container_id:"tv_chart",symbol:tvSym,interval:interval,theme:"dark",style:"1",locale:"en",autosize:true,timezone:"Asia/Kolkata",hide_side_toolbar:true,allow_symbol_change:false,backgroundColor:"#0A0D12",gridColor:"rgba(30,36,46,0.6)"});
       setTimeout(()=>{const f=document.getElementById("tv_chart");document.getElementById("fallback").style.display=f.querySelector("iframe")?"none":"flex";},4500);
     });
