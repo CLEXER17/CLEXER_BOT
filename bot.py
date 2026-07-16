@@ -3449,6 +3449,7 @@ PREMIUM_EMOJI_MAP = {
     "💎": "6122857771760094969", "🔎": "5017088445353296841",
     "📈": "6224129999633388168", "📉": "6222274114200015993",
     "🎆": "5064672027248427816", "🪪": "5890864241388293875",
+    "🔒": "5296369303661067030",
 }
 PREMIUM_EMOJIS_ENABLED = True
 
@@ -5095,13 +5096,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
 
     elif cmd == "/specialtimes":
-        _st_labels = {"scan1": "Scan1", "scan2": "Scan2", "test": "Demo (TS1+TS2)"}
-        _st_lines = []
+        _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "test": "DEMO TS1+TS2"}
+        _st_blocks = []
         for _kind in ("scan1", "scan2", "test"):
             _times = sorted(_SCAN_SPECIAL.get(_kind, set()))
             if not _times:
                 continue
-            _st_lines.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}% threshold)")
+            _rows = []
             for _hm in _times:
                 _unverified = _hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
                 _key = _slot_key(_kind, _hm)
@@ -5109,17 +5110,20 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
                 if _stat and (_stat["tp"] + _stat["sl"]) > 0:
                     _total = _stat["tp"] + _stat["sl"]
-                    _wr = _stat["tp"] / _total * 100
-                    _stat_str = f"{_wr:.0f}% ({_stat['tp']}tp/{_stat['sl']}sl, streak {_stat.get('streak',0)})"
+                    _wr = f"{_stat['tp'] / _total * 100:.0f}%"
+                    _cnt = f"{_stat['tp']}/{_stat['sl']}"
+                    _streak = str(_stat.get("streak", 0))
                 else:
-                    _stat_str = "no data yet"
+                    _wr = "—%"; _cnt = "0/0"; _streak = "0"
                 _icon = "🔒" if _unverified else "✅"
-                _label = "UNVERIFIED" if _unverified else "VERIFIED"
-                _st_lines.append(f"  {_icon} {_hm_str} — {_label} — {_stat_str}")
-            _st_lines.append("")
-        if not _st_lines:
+                # Emoji can't go inside <pre>/<code> (Telegram disallows nested
+                # entities there, which would break the premium-emoji wrapping) —
+                # icon stays plain text, only the aligned numeric part is <code>.
+                _rows.append(f"{_icon} <code>{_hm_str:<6}{_wr:>5}  {_cnt:>5}  streak {_streak}</code>")
+            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n" + "\n".join(_rows))
+        if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
-        send_reply(chat_id, f"<b>⭐ Special Times</b>\n\n" + "\n".join(_st_lines).rstrip() +
+        send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
             "\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/trade":
