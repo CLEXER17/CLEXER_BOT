@@ -5,11 +5,9 @@ matplotlib
 pandas
 numpy
 Pillow
-feedparser
-beautifulsoup4
-lxml
 cryptography
 fastapi
 uvicorn
 psycopg2-binary
 pydantic
+websocket-client

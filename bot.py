@@ -23,10 +23,10 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
 try:
-    from bs4 import BeautifulSoup
-    HAS_BS4 = True
+    import websocket as _ws_client   # websocket-client — powers the free liquidation feed
+    HAS_WEBSOCKET = True
 except ImportError:
-    HAS_BS4 = False
+    HAS_WEBSOCKET = False
 
 # --- CONFIG -------------------------------------------------------------------
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
@@ -41,13 +41,11 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
-WHALE_ALERT_API_KEY = os.getenv("WHALE_ALERT_API_KEY", "")   # free tier at whale-alert.io/signup — powers the whale-transfer "Trending Insights" news feed
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 5     # price check every 5s when trade active
 PRICE_CHECK_INTERVAL = 3600
 SIGNAL_SCAN_INTERVAL = 14400
-NEWS_CHECK_INTERVAL  = 1800
 BINANCE_BASE         = "https://api1.binance.com/api/v3"
 IST                  = timedelta(hours=5, minutes=30)
 
@@ -55,9 +53,8 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-MAX_NEWS_AGE      = 4        # hours — whale transfers older than this are skipped
-MAX_NEWS_PER_RUN  = 3
-WHALE_MIN_USD     = 500000   # Whale Alert free tier requires >= $500k anyway
+LIQUIDATION_MIN_USD    = 100000   # only post liquidations at/above this size
+LIQUIDATION_POST_COOLDOWN = 20    # seconds — min gap between posts, so a liquidation cascade doesn't spam the channel
 
 tv_bridge_state = {
     "online": False, "cdp_ok": False, "last_seen": 0,
@@ -759,8 +756,6 @@ last_force_scan_time  = 0
 last_signal_scan_time = 0
 last_price_check_time = 0
 last_tick_time        = 0
-last_news_check_time  = 0
-posted_news_guids: set = set()
 latest_news_context: list = []
 trade_lock = threading.Lock()
 
@@ -4415,81 +4410,80 @@ def run_price_check():
     except Exception as e: print(f"  [1H ERROR] {e}")
     return False
 
-# --- NEWS (Whale Alert — "Trending Insights" style whale-transfer feed) -------
-def _whale_tag(txn: dict) -> tuple:
-    """Rule-based (no LLM call — these fire often, an AI call per transfer would
-    burn API credit fast) classification, same logic Arkham-style trackers use:
-    moving INTO a known exchange wallet = incoming sell pressure (bearish);
-    moving OUT of an exchange = accumulation/self-custody (bullish); anything
-    else (wallet-to-wallet, unknown owners) is just a neutral whale move."""
-    frm = (txn.get("from") or {}).get("owner_type", "")
-    to  = (txn.get("to") or {}).get("owner_type", "")
-    if to == "exchange" and frm != "exchange":
-        return "BEARISH", "🔴"
-    if frm == "exchange" and to != "exchange":
-        return "BULLISH", "🟢"
-    return "WHALE", "🐋"
+# --- NEWS (free Binance liquidation feed — "Trending Insights" style cards) ---
+# Whale Alert has no permanent free tier (7-day trial only, confirmed), so this
+# uses Binance Futures' PUBLIC liquidation WebSocket instead — genuinely free,
+# no API key, no rate limit, no signup. A big LONG liquidation = forced selling
+# (bearish pressure); a big SHORT liquidation = forced buying (bullish pressure).
+_last_liq_post_time = 0
 
-def check_news(force=False):
-    """Polls Whale Alert's public API for large on-chain transfers and posts
-    them as Arkham-Intel-style 'Trending Insights' cards — replaced the old
-    RSS-headline feed per admin request (wanted whale-activity insights, not
-    generic crypto news)."""
-    global latest_news_context
-    if not SEND_NEWS and not force: return
-    if not WHALE_ALERT_API_KEY:
-        print("  [WHALE NEWS] WHALE_ALERT_API_KEY not set — skipping"); return
+def _handle_liquidation_msg(raw: str):
+    global _last_liq_post_time, latest_news_context
+    if not SEND_NEWS:
+        return
     try:
-        start_ts = int(time.time() - MAX_NEWS_AGE * 3600)
-        r = requests.get("https://api.whale-alert.io/v1/transactions",
-            params={"api_key": WHALE_ALERT_API_KEY, "min_value": WHALE_MIN_USD,
-                    "start": start_ts, "limit": 100}, timeout=15)
-        rj = r.json()
-        if rj.get("result") != "success":
-            print(f"  [WHALE NEWS] API error: {rj.get('message', rj)}"); return
-        txns = rj.get("transactions", [])
-    except Exception as e:
-        print(f"  [WHALE NEWS] fetch error: {e}"); return
-    if not txns: return
-
-    fresh = []
-    for t in txns:
-        guid = t.get("hash") or str(t.get("id", ""))
-        if not guid or guid in posted_news_guids: continue
-        fresh.append(t)
-    if not fresh: return
-    fresh.sort(key=lambda t: t.get("amount_usd", 0), reverse=True)
-
-    latest_news_context = []
-    for txn in fresh[:MAX_NEWS_PER_RUN]:
-        impact, emoji = _whale_tag(txn)
-        symbol = (txn.get("symbol") or "?").upper()
-        amount = txn.get("amount", 0); amount_usd = txn.get("amount_usd", 0)
-        frm = txn.get("from") or {}; to = txn.get("to") or {}
-        frm_label = frm.get("owner") or ("Unknown wallet" if frm.get("owner_type") != "exchange" else "Exchange")
-        to_label  = to.get("owner")  or ("Unknown wallet" if to.get("owner_type")  != "exchange" else "Exchange")
-        verb = "moved into" if impact == "BEARISH" else ("withdrawn from" if impact == "BULLISH" else "transferred")
-        title = f"Whale {verb} {amount_usd/1e6:,.2f}M {symbol} — {frm_label} → {to_label}"
-        blockchain = (txn.get("blockchain") or "?").title()
-        explorer_hash = txn.get("hash", "")
+        d = json.loads(raw).get("o", {})
+        sym   = d.get("s", "?")
+        side  = d.get("S", "?")          # side of the liquidation order itself
+        price = float(d.get("ap", 0) or d.get("p", 0) or 0)
+        qty   = float(d.get("q", 0) or 0)
+        usd   = price * qty
+        if usd < LIQUIDATION_MIN_USD:
+            return
+        now = time.time()
+        if now - _last_liq_post_time < LIQUIDATION_POST_COOLDOWN:
+            return
+        # SELL-side liquidation order = a LONG position got force-closed (bearish);
+        # BUY-side liquidation order = a SHORT position got force-closed (bullish).
+        if side == "SELL":
+            impact, emoji, closed = "BEARISH", "🔴", "LONG"
+        else:
+            impact, emoji, closed = "BULLISH", "🟢", "SHORT"
+        title = f"{usd/1e6:,.2f}M {sym} {closed} liquidated"
         msg_text = (
             f"<b>TRENDING INSIGHT</b>\n\n{emoji} <b>{impact}</b>\n"
-            f"<b>{title[:150]}</b>\n\n"
-            f"💰 Amount: <code>{amount:,.4g} {symbol}</code> (${amount_usd:,.0f})\n"
-            f"⛓ Chain: {blockchain}\n\n"
+            f"<b>{title}</b>\n\n"
+            f"💥 {closed} position force-closed\n"
+            f"💰 Size: <code>{qty:,.4g} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
+            f"💵 Price: <code>{price:,.4g}</code>\n\n"
             f"<i>🛡️ Capital protected · {ist_str()}</i>"
         )
+        send_telegram(msg_text)
+        _last_liq_post_time = now
+        latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
+    except Exception as e:
+        print(f"  [LIQUIDATION] parse/post error: {e}")
+
+def _liquidation_ws_loop():
+    """Runs forever in a background thread — reconnects automatically on drop.
+    Binance's !forceOrder@arr stream is public/unauthenticated and covers every
+    liquidation across the whole futures market, not just one symbol."""
+    if not HAS_WEBSOCKET:
+        print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
+    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    while True:
         try:
-            send_telegram(msg_text)
-            guid = txn.get("hash") or str(txn.get("id", ""))
-            posted_news_guids.add(guid)
-            if len(posted_news_guids) > 1000:
-                for g in list(posted_news_guids)[:200]:
-                    posted_news_guids.discard(g)
-            latest_news_context.append(f"• {impact}: {title[:80]}")
-            time.sleep(1)
+            ws = _ws_client.create_connection(url, timeout=30)
+            print("  [LIQUIDATION] connected")
+            while True:
+                msg = ws.recv()
+                if msg:
+                    _handle_liquidation_msg(msg)
         except Exception as e:
-            print(f"  [WHALE NEWS POST] {e}")
+            print(f"  [LIQUIDATION] connection error: {e} — reconnecting in 10s")
+        time.sleep(10)
+
+def check_news(force=False):
+    """Kept for /latestnews compatibility — the liquidation feed posts live as
+    events happen (see _liquidation_ws_loop), so there's nothing to "fetch on
+    demand" the way the old RSS/Whale-Alert polling model worked. Just reports
+    feed status instead."""
+    if not force:
+        return
+    if not HAS_WEBSOCKET:
+        send_admin("⚠️ websocket-client not installed — liquidation feed can't run."); return
+    send_admin("ℹ️ Liquidation feed runs continuously in the background — nothing to fetch on demand. "
+               f"Posts big liquidations (≥ ${LIQUIDATION_MIN_USD:,.0f}) live as they happen when News is ON.")
 
 # --- /tvstatus ----------------------------------------------------------------
 def cmd_tvstatus(chat_id):
@@ -5531,15 +5525,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 reply_markup=_news_btns)
         elif parts[1].lower()=="on":
             SEND_NEWS = True; save_settings()
-            _wa_note = "" if WHALE_ALERT_API_KEY else "\n\n⚠️ WHALE_ALERT_API_KEY not set — nothing will post until it is."
-            send_reply(chat_id, f"✅ <b>News ON</b> — Whale Alert (Trending Insights){_wa_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
+            _ws_note = "" if HAS_WEBSOCKET else "\n\n⚠️ websocket-client not installed on this server — feed can't run."
+            send_reply(chat_id, f"✅ <b>News ON</b> — Liquidation feed (Trending Insights){_ws_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
         elif parts[1].lower()=="off":
             SEND_NEWS = False; save_settings()
             send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
 
     elif cmd == "/latestnews":
-        send_reply(chat_id, "Fetching news (~15s)...")
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
 
     elif cmd == "/broadcast":
@@ -7288,7 +7281,7 @@ _SETTINGS_SUBCATS = {
 _BROADCAST_SUBCATS = {
     "messaging": ("📢 Messaging", [
         ("/broadcast",   "📢", "Message All Users", "Send a message to every registered user of the bot."),
-        ("/latestnews",  "📰", "Fetch Latest News",  "Pull and post the latest crypto news right now."),
+        ("/latestnews",  "📰", "News Feed Status",  "Check whether the live liquidation feed is running."),
     ]),
     "channels": ("📡 Channel Control", [
         ("/channels",      "📡", "Channel Status",    "Show the current status of all connected signal channels."),
@@ -9752,7 +9745,7 @@ def _run_test_scan(cid, scan_ver: int):
         import traceback as _tb3; print(_tb3.format_exc())
 
 def main():
-    global last_signal_scan_time, last_price_check_time, last_tick_time, last_news_check_time, last_scan_tick_time
+    global last_signal_scan_time, last_price_check_time, last_tick_time, last_scan_tick_time
 
     print(f"[CLEXER V17.8.5] Starting | {SYMBOL}")
     print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET - Binance-only'}")
@@ -9809,6 +9802,7 @@ def main():
             time.sleep(3600)  # hourly is plenty for a date-based expiry
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
+    threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
 
     def _active_server_loop():
         while True:
@@ -9945,10 +9939,9 @@ def main():
                     print("  TV back ONLINE")
                     send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>🛡️ Capital protected</i>")
 
-            # News
-            if (now-last_news_check_time) >= NEWS_CHECK_INTERVAL and SEND_NEWS:
-                last_news_check_time = now
-                threading.Thread(target=check_news, daemon=True).start()
+            # News: the liquidation feed runs continuously in its own background
+            # thread (_liquidation_ws_loop), started once at boot — nothing to
+            # poll here anymore.
 
             # ── Scan schedule ──────────────────────────────────────────────────
             global _last_midnight_date, _scan1_triggered_today, _test_triggered_today
