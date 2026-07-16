@@ -494,7 +494,7 @@ def _sl_reassurance_channels(tier_routed: bool, share_free: bool) -> list:
         return _free_and_vip_channel_ids()
     return [("vip", cid) for cid in _channels_by_tier("vip")]
 
-def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list, reply_map: dict = None):
+def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list, reply_map: dict = None, sig_id: str = ""):
     """Sent every real SL loss (not breakeven) — only to the tiers that actually
     received this trade's entry (Signal-only entries get nothing here; the
     Signal channel keeps its own separate SL message, unchanged).
@@ -514,6 +514,7 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
     _sl_line3 = _smallcaps_title("We stay disciplined, protect our capital, and move on to the next opportunity.")
     _sl_line4 = _smallcaps_title("The goal isn't to win every trade—it's to stay consistently profitable over time.")
     _sl_line5 = _smallcaps_title("Crypto Clexer focuses on strategy, discipline, and long-term results.")
+    _sid_line = f"\n🪪 {sig_id}" if sig_id else ""
     text = _apply_premium_emojis(
         f"🚨 <b>SL HIT — #{coin}USDT</b> 🚨  |  <b>{tag}</b>\n"
         f"❌ Loss on {side} @ {entry_str}\n\n"
@@ -522,6 +523,7 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
         f"📊 {_sl_line3}\n\n"
         f"{_sl_line4}\n\n"
         f"💎 {_sl_line5}</blockquote>"
+        f"{_sid_line}"
     )
     for _tag, cid in channels:
         _send_plain_reply(cid, text, reply_to=reply_map.get(f"{_tag}:{cid}"))
@@ -3757,7 +3759,7 @@ def run_tick_check():
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
-                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"))
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -4117,7 +4119,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             if result == "SL":
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
-                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"))
+                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -4208,7 +4210,7 @@ def run_price_check():
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
-                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"))
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
