@@ -1407,17 +1407,23 @@ _scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,m
 #   3. Re-promotes an UNVERIFIED special time back to verified once win% is
 #      back above threshold AND it has strung together >=2 wins in a row
 #      since its last real SL (a "clean streak", not just an overall average).
-# Thresholds: 41% for scan1/scan2, 35% for test (demo — shared by TS1+TS2,
-# since they run off the exact same _SCAN_SPECIAL["test"]/_SCAN_SPECIAL_NO_COPY
-# schedule and can't be independently verified today).
+# Thresholds: 41% for scan1/scan2, 35% for demo1/demo2 (TS1/TS2 track win-rate
+# stats separately, but still run off the same shared _SCAN_SPECIAL["test"]/
+# _SCAN_SPECIAL_NO_COPY["test"] schedule, so a promotion/demotion triggered by
+# either one's stats still applies to both — see _SLOT_SCHEDULE_KIND below).
 # A win = TP2, BE (SL after TP1 already hit — that trade already banked TP1,
 # so it's a win not a loss), or a positive-P/L timeout. A loss = a real SL
 # (never hit TP1), LOSS, or a negative-P/L timeout. TP1 alone is never a
 # terminal state in this bot (the runner keeps riding to TP2/BE/timeout), so
 # it's not tracked as its own event — only these 4 terminal outcomes are.
-_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "test": 35}
+_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "test": 35, "demo1": 35, "demo2": 35}
 _SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
 _SLOT_MIN_STREAK_FOR_REVERIFY = 2
+# demo1/demo2 track win-rate stats SEPARATELY (own tp/sl/streak per clock time)
+# even though TS1 and TS2 still fire off the exact same _SCAN_SPECIAL["test"]/
+# _SCAN_SPECIAL_NO_COPY["test"] schedule and can't be independently verified —
+# this maps each stats-tracking kind to the schedule kind it actually shares.
+_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "test": "test", "demo1": "test", "demo2": "test"}
 _SLOT_STATE_FILE = os.path.join(DATA_DIR, "slot_auto_state.json")
 _slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
 
@@ -1478,26 +1484,27 @@ def _evaluate_slot(kind: str, hm: tuple):
         return
     win_pct = st["tp"] / total * 100
     threshold = _SLOT_EVAL_THRESHOLD[kind]
-    is_special = hm in _SCAN_SPECIAL.get(kind, set())
-    is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(kind, set())
+    sched_kind = _SLOT_SCHEDULE_KIND[kind]   # demo1/demo2 both resolve to "test" — the actual shared schedule
+    is_special = hm in _SCAN_SPECIAL.get(sched_kind, set())
+    is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(sched_kind, set())
     changed = False
     hm_str = f"{hm[0]}:{hm[1]:02d}"
 
     if not is_special:
         if win_pct >= threshold and st["tp"] >= _SLOT_MIN_WINS_FOR_NEW_PROMOTION:
-            _SCAN_SPECIAL.setdefault(kind, set()).add(hm)
+            _SCAN_SPECIAL.setdefault(sched_kind, set()).add(hm)
             changed = True
             send_admin(f"⭐ <b>Auto-promoted</b> {kind} {hm_str} → SPECIAL + VERIFIED\n\n"
                        f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl) — copytrade now enabled here.", pin=True)
     elif is_special and not is_unverified:
         if win_pct < threshold:
-            _SCAN_SPECIAL_NO_COPY.setdefault(kind, set()).add(hm)
+            _SCAN_SPECIAL_NO_COPY.setdefault(sched_kind, set()).add(hm)
             changed = True
             send_admin(f"⚠️ <b>Auto-demoted</b> {kind} {hm_str} → UNVERIFIED\n\n"
                        f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.", pin=True)
     elif is_unverified:
         if win_pct >= threshold and st.get("streak", 0) >= _SLOT_MIN_STREAK_FOR_REVERIFY:
-            _SCAN_SPECIAL_NO_COPY[kind].discard(hm)
+            _SCAN_SPECIAL_NO_COPY[sched_kind].discard(hm)
             changed = True
             send_admin(f"✅ <b>Auto-reverified</b> {kind} {hm_str} → VERIFIED\n\n"
                        f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.", pin=True)
@@ -5067,15 +5074,16 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
 
     elif cmd == "/st":
-        _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "test": "DEMO TS1+TS2"}
+        _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         _st_blocks = []
-        for _kind in ("scan1", "scan2", "test"):
-            _times = sorted(_SCAN_SPECIAL.get(_kind, set()))
+        for _kind in ("scan1", "scan2", "demo1", "demo2"):
+            _sched_kind = _SLOT_SCHEDULE_KIND[_kind]   # demo1/demo2 share the "test" schedule
+            _times = sorted(_SCAN_SPECIAL.get(_sched_kind, set()))
             if not _times:
                 continue
             _rows = []
             for _hm in _times:
-                _unverified = _hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+                _unverified = _hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind, set())
                 _key = _slot_key(_kind, _hm)
                 _stat = _slot_stats.get(_key)
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
@@ -5102,12 +5110,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # everything /st doesn't cover. Only shows slots with actual tracked
         # data (tp+sl > 0) since the full regular grid is dozens of untested
         # slots per kind and dumping all of them would just be noise.
-        _nt_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "test": "DEMO TS1+TS2"}
-        _nt_grid_minutes = {"scan1": (2, 23), "scan2": (7, 27), "test": (9, 27)}
+        _nt_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
+        _nt_grid_minutes = {"scan1": (2, 23), "scan2": (7, 27), "demo1": (9, 27), "demo2": (9, 27)}
         _nt_blocks = []
-        for _kind in ("scan1", "scan2", "test"):
+        for _kind in ("scan1", "scan2", "demo1", "demo2"):
+            _sched_kind = _SLOT_SCHEDULE_KIND[_kind]
             _ma, _mb = _nt_grid_minutes[_kind]
-            _regular = _regular_grid(_ma, _mb, _SCAN_SPECIAL.get(_kind, set()))
+            _regular = _regular_grid(_ma, _mb, _SCAN_SPECIAL.get(_sched_kind, set()))
             _rows = []
             for _hm in sorted(_regular):
                 _key = _slot_key(_kind, _hm)
@@ -9357,7 +9366,7 @@ def _demo_monitor_loop():
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _ist_hm_from_epoch(created)
-                        if _slot_hm: _slot_track("test", _slot_hm, True)
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE" if tp1hit else "SL"
@@ -9377,7 +9386,7 @@ def _demo_monitor_loop():
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
-                        if _slot_hm: _slot_track("test", _slot_hm, result == "BREAKEVEN")
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -9416,7 +9425,7 @@ def _demo_monitor_loop():
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
-                        if _slot_hm: _slot_track("test", _slot_hm, pnl >= 0)
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
