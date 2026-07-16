@@ -4021,10 +4021,19 @@ def _tick_one(ver: int, t: dict) -> bool:
 
         price = get_bingx_price(sym)
         if price <= 0: return False
-        df1m = bingx_klines(sym, "1m", 3)
-        if df1m is not None and len(df1m) > 0:
-            check_high = max(price, float(df1m["high"].max()))
-            check_low  = min(price, float(df1m["low"].min()))
+        # Too soon after entry — a 1m candle can still span/precede the actual
+        # entry moment, so its high/low would misattribute a pre-entry wick as a
+        # post-entry SL/TP hit (this caused a real false SL within the same
+        # minute as entry). Use live price only until at least 1 minute has
+        # passed, matching BTC's own tick check.
+        mins_since_entry = (time.time() - _created_at) / 60 if _created_at else 999
+        if mins_since_entry >= 1:
+            df1m = bingx_klines(sym, "1m", 3)
+            if df1m is not None and len(df1m) > 0:
+                check_high = max(price, float(df1m["high"].max()))
+                check_low  = min(price, float(df1m["low"].min()))
+            else:
+                check_high = price; check_low = price
         else:
             check_high = price; check_low = price
 
