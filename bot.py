@@ -7866,7 +7866,11 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
-    _miniapp_base = MINI_APP_URL or CLEXER_API_URL
+    # CLEXER_API_URL (not MINI_APP_URL — that's a separate, older env var only
+    # used for the chart-screenshot feature and was found pointing at a dead
+    # Railway domain, causing this button to 404) is the confirmed-live host
+    # that actually serves /app.
+    _miniapp_base = CLEXER_API_URL
     if _miniapp_base:
         # Cache-busting query param — Telegram's Menu Button web app can get stuck
         # serving a stale cached copy indefinitely on some clients even with
