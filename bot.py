@@ -296,11 +296,26 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
                     timeout=10)
                 if not r_btn.json().get("ok"):
                     print(f"  [SEND BUTTON] {tag} {dest_chat_id} failed: {r_btn.json().get('description')}")
-        return True
+        return rj.get("result", {}).get("message_id") or True
     except Exception as e:
         print(f"  [SEND] {tag} {dest_chat_id}: {e}")
         return False
 
+
+def _pin_message(chat_id, message_id, disable_notification: bool = True):
+    """Pins a message in a channel/group — requires the bot to be an admin
+    there with 'pin messages' rights. Silent no-op on failure (e.g. bot isn't
+    admin) rather than raising, since pinning is a nice-to-have, not critical."""
+    if not message_id:
+        return
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/pinChatMessage",
+            json={"chat_id": chat_id, "message_id": message_id,
+                  "disable_notification": disable_notification}, timeout=10)
+        if not r.json().get("ok"):
+            print(f"  [PIN] {chat_id} msg {message_id} failed: {r.json().get('description')}")
+    except Exception as e:
+        print(f"  [PIN] {chat_id} msg {message_id}: {e}")
 
 def _send_plain_reply(chat_id, text: str, reply_to=None):
     """Direct sendMessage (no forward trick) — premium emoji fall back to plain
@@ -632,20 +647,28 @@ def _send_daily_summary(tracker: dict):
         return
     vip_text = _apply_premium_emojis(_build_recap_text(all_trades, date_str))
     for cid in _channels_by_tier("vip"):
-        if not _send_via_true_forward(vip_text, cid, "daily-summary-vip"):
+        _mid = _send_via_true_forward(vip_text, cid, "daily-summary-vip")
+        if not _mid:
             try:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={"chat_id": cid, "text": vip_text, "parse_mode": "HTML"}, timeout=10)
+                _mid = r.json().get("result", {}).get("message_id")
             except Exception as e: print(f"  [DAILY SUMMARY] vip {cid}: {e}")
+        if isinstance(_mid, int):
+            _pin_message(cid, _mid)
     free_trades = [t for t in all_trades if t.get("free_shown")]
     if free_trades:
         free_text = _apply_premium_emojis(_build_recap_text(free_trades, date_str))
         for cid in _channels_by_tier("free"):
-            if not _send_via_true_forward(free_text, cid, "daily-summary-free"):
+            _mid = _send_via_true_forward(free_text, cid, "daily-summary-free")
+            if not _mid:
                 try:
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                         json={"chat_id": cid, "text": free_text, "parse_mode": "HTML"}, timeout=10)
+                    _mid = r.json().get("result", {}).get("message_id")
                 except Exception as e: print(f"  [DAILY SUMMARY] free {cid}: {e}")
+            if isinstance(_mid, int):
+                _pin_message(cid, _mid)
 
 def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
                          tp1_detail: dict = None, entry_date: str = None):
