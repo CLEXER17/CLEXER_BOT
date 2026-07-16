@@ -1703,6 +1703,18 @@ def save_state():
             json.dump(state, f, indent=2)
     except Exception as e:
         print(f"[STATE] Save error: {e}")
+        return
+    # Push to the central store on every save, not just during a manual
+    # /syncup — the mini app's /trades/active reads from there, so without
+    # this it only ever reflected whatever state existed at the last manual
+    # sync, making trades (including these newly-added demo ones) look stale
+    # or missing entirely most of the time.
+    if CLEXER_API_URL:
+        try:
+            requests.post(f"{CLEXER_API_URL}/push_state", json=state,
+                headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}), timeout=8)
+        except Exception as e:
+            print(f"[STATE] Central push error: {e}")
 
 def save_active_trade():
     save_state()
