@@ -23,12 +23,6 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
 try:
-    import feedparser
-    HAS_FEEDPARSER = True
-except ImportError:
-    HAS_FEEDPARSER = False
-
-try:
     from bs4 import BeautifulSoup
     HAS_BS4 = True
 except ImportError:
@@ -47,6 +41,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
+WHALE_ALERT_API_KEY = os.getenv("WHALE_ALERT_API_KEY", "")   # free tier at whale-alert.io/signup — powers the whale-transfer "Trending Insights" news feed
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 5     # price check every 5s when trade active
@@ -60,19 +55,9 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-MAX_NEWS_AGE      = 4
+MAX_NEWS_AGE      = 4        # hours — whale transfers older than this are skipped
 MAX_NEWS_PER_RUN  = 3
-
-NEWS_SOURCES = [
-    {"url": "https://feeds.feedburner.com/CoinDesk",          "name": "CoinDesk"},
-    {"url": "https://cointelegraph.com/rss",                   "name": "CoinTelegraph"},
-    {"url": "https://www.newsbtc.com/feed/",                   "name": "NewsBTC"},
-    {"url": "https://cryptopotato.com/feed/",                  "name": "CryptoPotato"},
-    {"url": "https://bitcoinmagazine.com/.rss/full/",          "name": "BTC Magazine"},
-    {"url": "https://decrypt.co/feed",                         "name": "Decrypt"},
-    {"url": "https://ambcrypto.com/feed/",                     "name": "AMBCrypto"},
-    {"url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "name": "CoinDesk2"},
-]
+WHALE_MIN_USD     = 500000   # Whale Alert free tier requires >= $500k anyway
 
 tv_bridge_state = {
     "online": False, "cdp_ok": False, "last_seen": 0,
@@ -4430,91 +4415,81 @@ def run_price_check():
     except Exception as e: print(f"  [1H ERROR] {e}")
     return False
 
-# --- NEWS ---------------------------------------------------------------------
-def get_article_image(entry):
-    for field in ("media_content","media_thumbnail"):
-        items = getattr(entry, field, []) or entry.get(field, [])
-        if items:
-            url = items[0].get("url","") if isinstance(items[0],dict) else ""
-            if url.startswith("http"):
-                try:
-                    r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
-                    if r.status_code==200 and len(r.content)>2000: return r.content
-                except: pass
-    link = entry.get("link","")
-    if not link: return None
-    try:
-        r = requests.get(link, timeout=8, headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
-        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', r.text)
-        if not m: m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', r.text)
-        if m:
-            r2 = requests.get(m.group(1), timeout=8)
-            if r2.status_code==200: return r2.content
-    except: pass
-    return None
+# --- NEWS (Whale Alert — "Trending Insights" style whale-transfer feed) -------
+def _whale_tag(txn: dict) -> tuple:
+    """Rule-based (no LLM call — these fire often, an AI call per transfer would
+    burn API credit fast) classification, same logic Arkham-style trackers use:
+    moving INTO a known exchange wallet = incoming sell pressure (bearish);
+    moving OUT of an exchange = accumulation/self-custody (bullish); anything
+    else (wallet-to-wallet, unknown owners) is just a neutral whale move."""
+    frm = (txn.get("from") or {}).get("owner_type", "")
+    to  = (txn.get("to") or {}).get("owner_type", "")
+    if to == "exchange" and frm != "exchange":
+        return "BEARISH", "🔴"
+    if frm == "exchange" and to != "exchange":
+        return "BULLISH", "🟢"
+    return "WHALE", "🐋"
 
 def check_news(force=False):
+    """Polls Whale Alert's public API for large on-chain transfers and posts
+    them as Arkham-Intel-style 'Trending Insights' cards — replaced the old
+    RSS-headline feed per admin request (wanted whale-activity insights, not
+    generic crypto news)."""
     global latest_news_context
     if not SEND_NEWS and not force: return
-    if not HAS_FEEDPARSER: return
-    candidates = []; btc_kw = ["bitcoin","btc","crypto","fed","interest rate","sec","etf","regulation",
-        "whale","halving","rally","crash","bull","bear","hack","cpi","bank","blackrock","coinbase","binance"]
-    for src in NEWS_SOURCES:
+    if not WHALE_ALERT_API_KEY:
+        print("  [WHALE NEWS] WHALE_ALERT_API_KEY not set — skipping"); return
+    try:
+        start_ts = int(time.time() - MAX_NEWS_AGE * 3600)
+        r = requests.get("https://api.whale-alert.io/v1/transactions",
+            params={"api_key": WHALE_ALERT_API_KEY, "min_value": WHALE_MIN_USD,
+                    "start": start_ts, "limit": 100}, timeout=15)
+        rj = r.json()
+        if rj.get("result") != "success":
+            print(f"  [WHALE NEWS] API error: {rj.get('message', rj)}"); return
+        txns = rj.get("transactions", [])
+    except Exception as e:
+        print(f"  [WHALE NEWS] fetch error: {e}"); return
+    if not txns: return
+
+    fresh = []
+    for t in txns:
+        guid = t.get("hash") or str(t.get("id", ""))
+        if not guid or guid in posted_news_guids: continue
+        fresh.append(t)
+    if not fresh: return
+    fresh.sort(key=lambda t: t.get("amount_usd", 0), reverse=True)
+
+    latest_news_context = []
+    for txn in fresh[:MAX_NEWS_PER_RUN]:
+        impact, emoji = _whale_tag(txn)
+        symbol = (txn.get("symbol") or "?").upper()
+        amount = txn.get("amount", 0); amount_usd = txn.get("amount_usd", 0)
+        frm = txn.get("from") or {}; to = txn.get("to") or {}
+        frm_label = frm.get("owner") or ("Unknown wallet" if frm.get("owner_type") != "exchange" else "Exchange")
+        to_label  = to.get("owner")  or ("Unknown wallet" if to.get("owner_type")  != "exchange" else "Exchange")
+        verb = "moved into" if impact == "BEARISH" else ("withdrawn from" if impact == "BULLISH" else "transferred")
+        title = f"Whale {verb} {amount_usd/1e6:,.2f}M {symbol} — {frm_label} → {to_label}"
+        blockchain = (txn.get("blockchain") or "?").title()
+        explorer_hash = txn.get("hash", "")
+        msg_text = (
+            f"<b>TRENDING INSIGHT</b>\n\n{emoji} <b>{impact}</b>\n"
+            f"<b>{title[:150]}</b>\n\n"
+            f"💰 Amount: <code>{amount:,.4g} {symbol}</code> (${amount_usd:,.0f})\n"
+            f"⛓ Chain: {blockchain}\n\n"
+            f"<i>🛡️ Capital protected · {ist_str()}</i>"
+        )
         try:
-            feed = feedparser.parse(src["url"]); added = 0
-            for entry in feed.entries:
-                title = (entry.get("title") or "").strip(); link = entry.get("link","")
-                guid = entry.get("id", link or title)
-                if not title or guid in posted_news_guids: continue
-                pub = entry.get("published_parsed") or entry.get("updated_parsed")
-                if pub and (time.time()-time.mktime(pub))/3600 > MAX_NEWS_AGE: continue
-                raw_sum = entry.get("summary") or entry.get("description") or ""
-                summary = re.sub(r"<[^>]+>","",raw_sum)[:400]
-                if not any(kw in (title+" "+summary).lower() for kw in btc_kw): continue
-                candidates.append({"title":title,"link":link,"guid":guid,"summary":summary,"source":src["name"],"entry":entry}); added+=1
-        except Exception as e: print(f"    {src['name']}: {e}")
-    if not candidates: return
-    try: btc_price = get_ticker()["price"]
-    except: btc_price = 0
-    to_post = []
-    for i in range(0, len(candidates), 10):
-        batch = candidates[i:i+10]
-        news_block = "\n\n".join(f"[{j}] {e['source']}\nTITLE: {e['title']}\nSUMMARY: {e['summary'][:200]}" for j,e in enumerate(batch))
-        try:
-            resp = _claude_client().messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=600,
-                messages=[{"role":"user","content":f"BTC: ${btc_price:,.0f}\n{news_block}\n\nReturn JSON array HIGH/MEDIUM impact only. Fields: index,impact(BULLISH/BEARISH/NEUTRAL),strength(HIGH/MEDIUM),reason. Empty [] if none. JSON only."}])
-            _log_api_usage("news", "claude-haiku-4-5-20251001",
-                           resp.usage.input_tokens, resp.usage.output_tokens,
-                           gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
-            analyzed = json.loads(_claude_text(resp).replace("```json","").replace("```","").strip())
-            for item in analyzed:
-                idx = item.get("index",-1)
-                if 0 <= idx < len(batch):
-                    batch[idx].update({"impact":item.get("impact","NEUTRAL"),"strength":item.get("strength","LOW"),"reason":item.get("reason","")})
-                    to_post.append(batch[idx])
-        except Exception as e: print(f"  [NEWS CLAUDE] {e}")
-    if not to_post: return
-    to_post.sort(key=lambda x: 0 if x.get("strength")=="HIGH" else 1)
-    latest_news_context = [f"• {e.get('impact','?')} ({e.get('strength','?')}): {e['title'][:80]} - {e.get('reason','')[:80]}" for e in to_post[:3]]
-    for item in to_post[:MAX_NEWS_PER_RUN]:
-        impact = item.get("impact","NEUTRAL"); emoji = "🟢" if impact=="BULLISH" else ("🔴" if impact=="BEARISH" else "⚪")
-        msg_text = (f"<b>MARKET NEWS</b>\n\n{emoji} <b>{impact}</b> for BTC\n"
-            f"<b>{item['title'][:120]}</b>\n\n<i>{item.get('reason','')}</i>\n\n"
-            f"{item['source']}\n<a href='{item['link']}'>Read article</a>\n\n<i>🛡️ Capital protected · {ist_str()}</i>")
-        try:
-            img_bytes = get_article_image(item["entry"])
-            if img_bytes and len(img_bytes)>2000:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                    data={"chat_id":TELEGRAM_CHANNEL_ID,"caption":msg_text,"parse_mode":"HTML"},
-                    files={"photo":("news.jpg",img_bytes,"image/jpeg")}, timeout=20)
-            else: send_telegram(msg_text)
-            posted_news_guids.add(item["guid"])
-            if len(posted_news_guids)>1000:
-                old = list(posted_news_guids)[:200]
-                for g in old: posted_news_guids.discard(g)
+            send_telegram(msg_text)
+            guid = txn.get("hash") or str(txn.get("id", ""))
+            posted_news_guids.add(guid)
+            if len(posted_news_guids) > 1000:
+                for g in list(posted_news_guids)[:200]:
+                    posted_news_guids.discard(g)
+            latest_news_context.append(f"• {impact}: {title[:80]}")
             time.sleep(1)
-        except Exception as e: print(f"  [NEWS POST] {e}")
+        except Exception as e:
+            print(f"  [WHALE NEWS POST] {e}")
 
 # --- /tvstatus ----------------------------------------------------------------
 def cmd_tvstatus(chat_id):
@@ -5556,7 +5531,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 reply_markup=_news_btns)
         elif parts[1].lower()=="on":
             SEND_NEWS = True; save_settings()
-            send_reply(chat_id, f"✅ <b>News ON</b> — {len(NEWS_SOURCES)} sources\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
+            _wa_note = "" if WHALE_ALERT_API_KEY else "\n\n⚠️ WHALE_ALERT_API_KEY not set — nothing will post until it is."
+            send_reply(chat_id, f"✅ <b>News ON</b> — Whale Alert (Trending Insights){_wa_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
         elif parts[1].lower()=="off":
             SEND_NEWS = False; save_settings()
             send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
