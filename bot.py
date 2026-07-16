@@ -4564,6 +4564,7 @@ ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 /stats - Win/loss stats
 /session - Current session
 /tvstatus - TV connection
+/specialtimes - Special times, verified/unverified + win rate
 /force_reload - Clear TV bridge cache + 5min warmup (bridge only)
 
 <b>TRADE CONTROL</b>
@@ -4655,7 +4656,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/specialtimes"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5092,6 +5093,34 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "✅ Test sent — scroll up: does the 2nd message show <b>\"Reply to CRYPTO CLEXER\"</b> quoting the 1st message? If yes, reply-threading works correctly.")
         else:
             send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
+
+    elif cmd == "/specialtimes":
+        _st_labels = {"scan1": "Scan1", "scan2": "Scan2", "test": "Demo (TS1+TS2)"}
+        _st_lines = []
+        for _kind in ("scan1", "scan2", "test"):
+            _times = sorted(_SCAN_SPECIAL.get(_kind, set()))
+            if not _times:
+                continue
+            _st_lines.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}% threshold)")
+            for _hm in _times:
+                _unverified = _hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+                _key = _slot_key(_kind, _hm)
+                _stat = _slot_stats.get(_key)
+                _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
+                if _stat and (_stat["tp"] + _stat["sl"]) > 0:
+                    _total = _stat["tp"] + _stat["sl"]
+                    _wr = _stat["tp"] / _total * 100
+                    _stat_str = f"{_wr:.0f}% ({_stat['tp']}tp/{_stat['sl']}sl, streak {_stat.get('streak',0)})"
+                else:
+                    _stat_str = "no data yet"
+                _icon = "🔒" if _unverified else "✅"
+                _label = "UNVERIFIED — no copytrade" if _unverified else "VERIFIED"
+                _st_lines.append(f"  {_icon} {_hm_str} — {_label} — {_stat_str}")
+            _st_lines.append("")
+        if not _st_lines:
+            send_reply(chat_id, "No special times configured."); return
+        send_reply(chat_id, f"<b>⭐ Special Times</b>\n\n" + "\n".join(_st_lines).rstrip() +
+            "\n\n<i>✅ verified = copytrade live · 🔒 unverified = posts to channels but no real orders</i>\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/trade":
         parts_out = []
