@@ -1506,19 +1506,19 @@ def _evaluate_slot(kind: str, hm: tuple):
             _SCAN_SPECIAL.setdefault(kind, set()).add(hm)
             changed = True
             send_admin(f"⭐ <b>Auto-promoted</b> {kind} {hm_str} → SPECIAL + VERIFIED\n\n"
-                       f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl) — copytrade now enabled here.")
+                       f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl) — copytrade now enabled here.", pin=True)
     elif is_special and not is_unverified:
         if win_pct < threshold:
             _SCAN_SPECIAL_NO_COPY.setdefault(kind, set()).add(hm)
             changed = True
             send_admin(f"⚠️ <b>Auto-demoted</b> {kind} {hm_str} → UNVERIFIED\n\n"
-                       f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.")
+                       f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.", pin=True)
     elif is_unverified:
         if win_pct >= threshold and st.get("streak", 0) >= _SLOT_MIN_STREAK_FOR_REVERIFY:
             _SCAN_SPECIAL_NO_COPY[kind].discard(hm)
             changed = True
             send_admin(f"✅ <b>Auto-reverified</b> {kind} {hm_str} → VERIFIED\n\n"
-                       f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.")
+                       f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.", pin=True)
 
     if changed:
         _rebuild_schedules()
@@ -3524,16 +3524,22 @@ def send_telegram(text, include_ch2=True, with_bot_button=False):
         except Exception as e: print(f"  [TG ERROR] {cid}: {e}")
     return success
 
-def send_admin(text):
-    """Send message to admin DM only (not channel)."""
+def send_admin(text, pin: bool = False):
+    """Send message to admin DM only (not channel). pin=True also pins it
+    there — used for things the admin needs to keep visible/handy, like a
+    special-time promote/demote notice."""
     if not ADMIN_CHAT_ID: return
     text = _apply_premium_emojis(text)
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ADMIN_CHAT_ID, "text": text,
                   "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
-        if not r.json().get("ok"):
-            print(f"  [ADMIN MSG ERROR] Telegram rejected: {r.json().get('description')}")
+        rj = r.json()
+        if not rj.get("ok"):
+            print(f"  [ADMIN MSG ERROR] Telegram rejected: {rj.get('description')}")
+        elif pin:
+            _mid = rj.get("result", {}).get("message_id")
+            if _mid: _pin_message(ADMIN_CHAT_ID, _mid)
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
