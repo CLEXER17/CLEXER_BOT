@@ -844,28 +844,37 @@
   function vcSave(){
     const bal = document.getElementById("vcBalance").value;
     const lev = document.getElementById("vcLev").value;
-    if(CS) CS.setItem("vc_settings", JSON.stringify({bal, lev}));
-    else try{ localStorage.setItem("clexer_vc", JSON.stringify({bal, lev})); }catch(e){}
+    // CloudStorage.setItem/getItem throw synchronously (WebAppMethodUnsupported)
+    // on Telegram client versions that don't support CloudStorage (pre-6.1) —
+    // this used to abort the ENTIRE boot() sequence since vcLoad() runs first,
+    // taking the whole mini app down with it (blank chart, price stuck at "—").
+    // Always fall back to localStorage on any CS failure, not just when CS is absent.
+    try{
+      if(CS){ CS.setItem("vc_settings", JSON.stringify({bal, lev})); return; }
+    }catch(e){}
+    try{ localStorage.setItem("clexer_vc", JSON.stringify({bal, lev})); }catch(e){}
   }
   function vcLoad(){
-    if(CS){
-      CS.getItem("vc_settings", (err, val) => {
-        if(!err && val){
-          try{
-            const d = JSON.parse(val);
-            if(d.bal) document.getElementById("vcBalance").value = d.bal;
-            if(d.lev) document.getElementById("vcLev").value = d.lev;
-            calcVirtual();
-          }catch(e){}
-        }
-      });
-    } else {
-      try{
-        const d = JSON.parse(localStorage.getItem("clexer_vc")||"{}");
-        if(d.bal) document.getElementById("vcBalance").value = d.bal;
-        if(d.lev) document.getElementById("vcLev").value = d.lev;
-      }catch(e){}
-    }
+    try{
+      if(CS){
+        CS.getItem("vc_settings", (err, val) => {
+          if(!err && val){
+            try{
+              const d = JSON.parse(val);
+              if(d.bal) document.getElementById("vcBalance").value = d.bal;
+              if(d.lev) document.getElementById("vcLev").value = d.lev;
+              calcVirtual();
+            }catch(e){}
+          }
+        });
+        return;
+      }
+    }catch(e){}
+    try{
+      const d = JSON.parse(localStorage.getItem("clexer_vc")||"{}");
+      if(d.bal) document.getElementById("vcBalance").value = d.bal;
+      if(d.lev) document.getElementById("vcLev").value = d.lev;
+    }catch(e){}
   }
 
   // Virtual trade history — CloudStorage with localStorage fallback
@@ -874,16 +883,20 @@
   }
   function vhSave(arr){
     const data = JSON.stringify(arr.slice(-100));
-    if(CS) CS.setItem("vc_history", data);
+    try{ if(CS) CS.setItem("vc_history", data); }catch(e){}
     try{ localStorage.setItem("clexer_vh", data); }catch(e){}
   }
   function vhLoadCloud(cb){
-    if(CS){
-      CS.getItem("vc_history", (err, val) => {
-        if(!err && val){ try{ cb(JSON.parse(val)); return; }catch(e){} }
-        cb(vhLoad());
-      });
-    } else cb(vhLoad());
+    try{
+      if(CS){
+        CS.getItem("vc_history", (err, val) => {
+          if(!err && val){ try{ cb(JSON.parse(val)); return; }catch(e){} }
+          cb(vhLoad());
+        });
+        return;
+      }
+    }catch(e){}
+    cb(vhLoad());
   }
 
   function syncVirtualHistory(closedTrades, existingHist){
