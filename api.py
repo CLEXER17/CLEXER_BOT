@@ -380,9 +380,11 @@ def get_active_trades():
 
     # bot.py saves key "trade" (not "active_trade")
     active = state.get("trade") or state.get("active_trade")
-    # bot.py stores scan trades as lists
+    # bot.py stores scan/demo trades as lists
     scan1  = state.get("scan1_trades", [])
     scan2  = state.get("scan2_trades", [])
+    demo1  = state.get("demo1_trades", [])
+    demo2  = state.get("demo2_trades", [])
 
     positions = []
 
@@ -414,6 +416,10 @@ def get_active_trades():
         _add(t, "scan1")
     for t in (scan2 if isinstance(scan2, list) else scan2.values()):
         _add(t, "scan2")
+    for t in (demo1 if isinstance(demo1, list) else demo1.values()):
+        _add(t, "demo1")
+    for t in (demo2 if isinstance(demo2, list) else demo2.values()):
+        _add(t, "demo2")
 
     return {"positions": positions, "count": len(positions)}
 

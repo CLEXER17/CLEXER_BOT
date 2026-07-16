@@ -1691,6 +1691,8 @@ def save_state():
         "trade":        active_trade,
         "scan1_trades": scan1_trades,
         "scan2_trades": scan2_trades,
+        "demo1_trades": demo_scan1_trades,
+        "demo2_trades": demo_scan2_trades,
         "stats":        trade_stats,
         "history":      signal_history,
         "outcomes":     trade_outcomes,
@@ -1707,6 +1709,7 @@ def save_active_trade():
 
 def load_active_trade():
     global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
+    global demo_scan1_trades, demo_scan2_trades
     d = None
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     _local_mtime = os.path.getmtime(path) if os.path.exists(path) else 0
@@ -1744,8 +1747,12 @@ def load_active_trade():
                       f"entry_hit:{t.get('entry_hit')} tp1_hit:{t.get('tp1_hit')}")
             scan1_trades[:] = [x for x in d.get("scan1_trades", []) if x.get("signal")]
             scan2_trades[:] = [x for x in d.get("scan2_trades", []) if x.get("signal")]
+            demo_scan1_trades[:] = [x for x in d.get("demo1_trades", []) if x.get("signal")]
+            demo_scan2_trades[:] = [x for x in d.get("demo2_trades", []) if x.get("signal")]
             if scan1_trades: print(f"[STATE] Restored scan1: {[t['symbol'] for t in scan1_trades]}")
             if scan2_trades: print(f"[STATE] Restored scan2: {[t['symbol'] for t in scan2_trades]}")
+            if demo_scan1_trades: print(f"[STATE] Restored demo1: {[t['symbol'] for t in demo_scan1_trades]}")
+            if demo_scan2_trades: print(f"[STATE] Restored demo2: {[t['symbol'] for t in demo_scan2_trades]}")
             print(f"[STATE] Stats restored — SL:{trade_stats['total_sl']} "
                   f"TP1:{trade_stats['total_tp1']} TP2:{trade_stats['total_tp2']} "
                   f"Signals:{trade_stats['total_signals']}")
@@ -9370,6 +9377,8 @@ def _demo_monitor_loop():
                     for t in to_remove:
                         if t in demo_scan1_trades: demo_scan1_trades.remove(t)
                         if t in demo_scan2_trades: demo_scan2_trades.remove(t)
+                if to_remove:
+                    save_state()
         except Exception as _e:
             print(f"  [DEMO MONITOR] Error: {_e}")
 
@@ -9661,7 +9670,7 @@ def _run_test_scan(cid, scan_ver: int):
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
                 "entry": scan_entry, "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2,
-                "tp1_hit": False, "be_sl": 0, "created_at": time.time(),
+                "tp1_hit": False, "be_sl": 0, "created_at": time.time(), "entry_hit": True,
                 "scan_ver": scan_ver,
                 "tier_routed": _demo1_tier_routed,
                 "is_d48": _demo_is_d48,
@@ -9670,6 +9679,7 @@ def _run_test_scan(cid, scan_ver: int):
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
+            save_state()  # mini app's /trades/active reads this — without it, demo trades never appeared there
             log_trade_event({"type":f"demo{scan_ver}","coin":chosen_sym,"direction":scan_signal_val,
                 "signal_time":_ist_str_now(),"entry_price":scan_entry,
                 "sl_price":scan_sl,"tp1_price":scan_tp1,"tp2_price":scan_tp2,
