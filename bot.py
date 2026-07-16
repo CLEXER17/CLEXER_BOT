@@ -494,13 +494,16 @@ def _sl_reassurance_channels(tier_routed: bool, share_free: bool) -> list:
         return _free_and_vip_channel_ids()
     return [("vip", cid) for cid in _channels_by_tier("vip")]
 
-def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list):
+def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list, reply_map: dict = None):
     """Sent every real SL loss (not breakeven) — only to the tiers that actually
     received this trade's entry (Signal-only entries get nothing here; the
     Signal channel keeps its own separate SL message, unchanged).
-    No buttons — buttons are TP-only, per admin's instruction."""
+    No buttons — buttons are TP-only, per admin's instruction.
+    reply_map (from send_entry_signal): replies to the trade's entry post in each
+    channel it has a stored message_id for, so this threads with the signal."""
     if not channels:
         return
+    reply_map = reply_map or {}
     coin = symbol.replace("-USDT", "").replace("USDT", "")
     try:
         entry_str = f"{float(entry_price):,.4g}"
@@ -521,11 +524,7 @@ def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels
         f"💎 {_sl_line5}</blockquote>"
     )
     for _tag, cid in channels:
-        if not _send_via_true_forward(text, cid, f"sl-reassure-{_tag}", with_bot_button=False):
-            try:
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": cid, "text": text, "parse_mode": "HTML"}, timeout=10)
-            except Exception as e: print(f"  [SL REASSURE] {_tag} {cid}: {e}")
+        _send_plain_reply(cid, text, reply_to=reply_map.get(f"{_tag}:{cid}"))
 
 def _send_tp2_congrats():
     """Sent every TP2 hit — plain emoji, direct send (no forward needed),
@@ -3758,7 +3757,7 @@ def run_tick_check():
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
-                    _sl_reassurance_channels(True, active_trade.get("share_free", True)))
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"))
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -4109,7 +4108,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             if result == "SL":
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
-                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)))
+                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"))
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -4200,7 +4199,7 @@ def run_price_check():
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
-                    _sl_reassurance_channels(True, active_trade.get("share_free", True)))
+                    _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"))
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
