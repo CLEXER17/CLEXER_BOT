@@ -7866,6 +7866,13 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
+    _miniapp_base = MINI_APP_URL or CLEXER_API_URL
+    if _miniapp_base:
+        # Cache-busting query param — Telegram's Menu Button web app can get stuck
+        # serving a stale cached copy indefinitely on some clients even with
+        # server no-cache headers. An inline web_app button with a fresh URL
+        # every time it's rendered forces Telegram to treat it as a new resource.
+        rows.append([{"text": "📱 Open Mini App", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
     rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
                  {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
     if is_admin:
