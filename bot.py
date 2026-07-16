@@ -38,6 +38,8 @@ except ImportError:
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY",   "")
 AEROLINK_API_KEY    = os.getenv("AEROLINK_API_KEY",    "")   # separate key issued by aerolink.lat — never mix with ANTHROPIC_API_KEY
 AEROLINK_API_KEY_2  = os.getenv("AEROLINK_API_KEY_2",  "")   # backup Aerolink key — used automatically on retry if the primary fails
+AEROLINK_API_KEY_3  = os.getenv("AEROLINK_API_KEY_3",  "")   # 3rd Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_4  = os.getenv("AEROLINK_API_KEY_4",  "")   # 4th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
@@ -1577,12 +1579,16 @@ def _gw_model_tag(kind: str = "btc") -> str:
 
 def _claude_client(kind: str = "btc", attempt: int = 0):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
-    When that type's gateway is Aerolink, uses ONLY the separate AEROLINK_API_KEY +
+    When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
-    On a retry (attempt >= 1), automatically switches to AEROLINK_API_KEY_2 if one is
-    configured — so a failure on the primary Aerolink key doesn't fail the whole call."""
+    Up to 4 Aerolink key slots (AEROLINK_API_KEY..._4) are supported — on a retry
+    (attempt >= 1), rotates to the next CONFIGURED slot in order, skipping any empty
+    ones, so a failure on one key doesn't fail the whole call as long as another slot
+    has a key in it. Slot 1 is required; slots 2-4 are optional and can be left empty
+    until keys are added later."""
     if _ai_aerolink(kind) and AEROLINK_API_KEY:
-        key = AEROLINK_API_KEY_2 if (attempt >= 1 and AEROLINK_API_KEY_2) else AEROLINK_API_KEY
+        _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4) if k]
+        key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
