@@ -1387,8 +1387,8 @@ _SCAN_SPECIAL = {
 # Move a time out of here (once proven) to let copytrade start using it.
 _SCAN_SPECIAL_NO_COPY = {
     "scan1": {(9,2), (16,15)},
-    "scan2": {(5,23), (5,28), (9,27), (10,7)},
-    "test":  {(0,0), (1,9), (2,24), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    "scan2": {(2,23), (5,23), (5,28), (9,27), (10,7), (11,27), (13,7)},
+    "test":  {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 _scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
 _scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
