@@ -4565,7 +4565,7 @@ ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 /stats - Win/loss stats
 /session - Current session
 /tvstatus - TV connection
-/specialtimes - Special times, verified/unverified + win rate
+/st - Special times, verified/unverified + win rate
 /force_reload - Clear TV bridge cache + 5min warmup (bridge only)
 
 <b>TRADE CONTROL</b>
@@ -4657,7 +4657,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/specialtimes"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5095,7 +5095,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         else:
             send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
 
-    elif cmd == "/specialtimes":
+    elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "test": "DEMO TS1+TS2"}
         _st_blocks = []
         for _kind in ("scan1", "scan2", "test"):
