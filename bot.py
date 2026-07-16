@@ -4449,6 +4449,7 @@ def _handle_liquidation_msg(raw: str):
             f"<i>🛡️ Capital protected · {ist_str()}</i>"
         )
         send_telegram(msg_text)
+        send_to_tier_channels(msg_text, share_free=True)
         _last_liq_post_time = now
         latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
     except Exception as e:
