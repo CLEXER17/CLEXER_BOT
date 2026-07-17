@@ -8296,7 +8296,7 @@ def send_channel_picker_result(chat_id, tier, message_id=None):
             rows = [[{"text": "◀️  Back", "callback_data": "chanpick_open"}]]
         else:
             text = ("🆓 <b>Free Channel</b>\n\n<blockquote>👋 Welcome! Glad to have you here.\n\n"
-                     "You'll get a limited number of signals per day, shared with everyone — tap below to join:</blockquote>")
+                     "You'll get profitable signals per day, shared with everyone — tap below to join:</blockquote>")
             rows = [[{"text": c.get("label") or "Join", "url": c["link"]}] for c in chans if c.get("link")]
             if not rows:
                 text += "\n\n<i>No public join link set for it yet — ask the admin.</i>"
