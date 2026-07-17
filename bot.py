@@ -365,14 +365,12 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
             _free_markup = None
             _uname = _get_bot_username()
             if _uname:
-                _free_markup = {"inline_keyboard": [
+                _free_markup = {"inline_keyboard": [[
                     # Telegram deep-link start params only allow [A-Za-z0-9_-] — sig_id
                     # is "#CLEXxxxxxx", so the "#" must be stripped here (it would
                     # otherwise be parsed as a URL fragment and never reach the bot at
                     # all) and re-added when /start parses it back (see handle_command).
-                    [{"text": "🔓 Unlock Signal", "url": f"https://t.me/{_uname}?start=unlock_{sig_id.lstrip('#')}", "style": "primary"}],
-                    [{"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"},
-                     {"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"}]]}
+                    {"text": "🔓 Unlock Signal", "url": f"https://t.me/{_uname}?start=unlock_{sig_id.lstrip('#')}", "style": "primary"}]]}
             for cid in _channels_by_tier("free"):
                 mid = _send_plain_reply(cid, locked_text, reply_markup=_free_markup)
                 if mid: ids[f"free:{cid}"] = mid
