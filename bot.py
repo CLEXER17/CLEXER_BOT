@@ -3988,6 +3988,7 @@ def run_tick_check():
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP2")
+            _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
 
         # TP1 — use candle high/low
@@ -4045,6 +4046,7 @@ def run_tick_check():
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
+            _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
@@ -4152,6 +4154,25 @@ def _save_sig_snapshot(sig_id: str, symbol: str, direction: str, entry, sl, tp1,
     if len(_sig_snapshots) > 500:
         for _old in sorted(_sig_snapshots, key=lambda k: _sig_snapshots[k].get("created_at", 0))[:len(_sig_snapshots) - 500]:
             del _sig_snapshots[_old]
+    try:
+        with open(_SIG_SNAPSHOTS_FILE, "w") as f:
+            json.dump(_sig_snapshots, f)
+    except Exception as e:
+        print(f"[SIG SNAPSHOTS] local save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("sig_snapshots", _sig_snapshots)
+        except Exception as e:
+            print(f"[SIG SNAPSHOTS] central push error: {e}")
+
+def _close_sig_snapshot(sig_id: str, result: str):
+    """Marks a snapshot as closed once its trade hits a terminal outcome — the
+    Free-channel unlock flow checks this so a user is never asked to pay to
+    unlock a signal that has already finished (win or lose); they're told to
+    pick a different one instead."""
+    if not sig_id or sig_id not in _sig_snapshots:
+        return
+    _sig_snapshots[sig_id]["result"] = result
     try:
         with open(_SIG_SNAPSHOTS_FILE, "w") as f:
             json.dump(_sig_snapshots, f)
@@ -4364,6 +4385,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
+            _close_sig_snapshot(t.get("sig_id",""), f"TIMEOUT({pnl:+.2f}%)")
             _remove_scan_trade(ver, sym); return True
 
         price = get_bingx_price(sym)
@@ -4424,6 +4446,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _notify_free_late(sym, t, "TP2")
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
+            _close_sig_snapshot(t.get("sig_id",""), "TP2")
             _remove_scan_trade(ver, sym); return True
 
         if not t["tp1_hit"]:
@@ -4469,6 +4492,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
+            _close_sig_snapshot(t.get("sig_id",""), result)
             _remove_scan_trade(ver, sym); return True
 
     except Exception as e:
@@ -4530,7 +4554,9 @@ def run_price_check():
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
             send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2")
+            _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
+            reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
@@ -4560,6 +4586,7 @@ def run_price_check():
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
+            _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
@@ -7736,6 +7763,12 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     if sig_id in u.get("unlocked_sigs", []):
         send_reply(chat_id, _reveal_signal_text(snap, sig_id))
         return
+    if snap.get("result"):
+        # Trade already hit its terminal outcome (TP/SL/timeout/etc) — no point
+        # charging for a signal that's already over, tell them to try another.
+        send_reply(chat_id, f"⏰ <b>This signal already closed</b> — Result: <b>{snap['result']}</b>\n\n"
+                             f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
+        return
     spins = u.get("sig_spins", {})
     rows = []
     if sig_id in spins:
@@ -8943,7 +8976,10 @@ def command_listener():
                         _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
                         _amt = _u.get("sig_spins", {}).get(_sig_id)
                         _bal = _u.get("wallet_balance", 0)
-                        if _amt is None:
+                        if _sig_snapshots.get(_sig_id, {}).get("result"):
+                            # Closed between spin and pay — don't charge for a dead signal.
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        elif _amt is None:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Spin first.", "show_alert": True}, timeout=5)
                         elif _bal < _amt:
@@ -9802,6 +9838,7 @@ def _demo_monitor_loop():
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
+                        _close_sig_snapshot(sig_id, "TP2")
                         to_remove.append(t)
                     elif sl_hit:
                         lbl = "BE" if tp1hit else "SL"
@@ -9822,6 +9859,7 @@ def _demo_monitor_loop():
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
+                        _close_sig_snapshot(sig_id, result)
                         to_remove.append(t)
                     elif tp1_now:
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
@@ -9861,6 +9899,7 @@ def _demo_monitor_loop():
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
+                        _close_sig_snapshot(sig_id, f"TIMEOUT({pnl:+.2f}%)")
                         to_remove.append(t)
 
                 with _demo_monitor_lock:
@@ -10595,6 +10634,7 @@ def main():
                             f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
                             t.get("reply_map"), include_ch2=t.get("is_d48", False))
                         ct.on_close_all()
+                        _close_sig_snapshot(t.get("sig_id",""), "STRUCTURE_FLIP")
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
@@ -10609,6 +10649,7 @@ def main():
                             f"Bias confirmed.\n\n<i>🛡️ Capital protected</i>")
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
+                    _close_sig_snapshot(t.get("sig_id",""), "REPLACED")
                     reset_trade(); time.sleep(1)
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
