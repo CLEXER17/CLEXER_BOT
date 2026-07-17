@@ -7728,17 +7728,16 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
     else:
         rows.append([{"text": "🎰 Lucky Draw Spin", "callback_data": "vip_spin"}])
     if ADMIN_CHAT_ID:
-        rows.append([{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"}])
+        rows.append([{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}])
     rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "help_main"}])
     _spin_line = (f"🎰 Your spin this month: <b>${u['vip_spin_amount']:.2f}</b> — pay it above, or the full price."
                   if has_spin else
                   f"🎰 One spin per month (${VIP_SPIN_MIN:.0f}-${VIP_SPIN_MAX:.0f}) — the number you get is locked in for the month.")
     text = (f"👑 <b>Get VIP</b>\n\n<blockquote>{_spin_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
-    if message_id:
-        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
-    else:
-        send_reply(chat_id, text, reply_markup=markup)
+    # rotate=False — plain/no-color buttons on this screen, per admin request.
+    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
 
 # --- Free-channel signal unlock (wallet-funded, one spin per signal) ----------
 SIG_SPIN_MIN, SIG_SPIN_MAX = 0.03, 0.10
