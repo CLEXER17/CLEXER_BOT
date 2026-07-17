@@ -354,7 +354,7 @@ def _tp_buttons():
     if _uname:
         row.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
     if ADMIN_CHAT_ID:
-        row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
+        row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
     return {"inline_keyboard": [row]} if row else None
 
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None):
