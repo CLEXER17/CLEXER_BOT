@@ -8970,7 +8970,10 @@ def command_listener():
                             _play_spin_animation(_chat_id, _msg_id)
                             _u = ct._get(str(_cid))
                             _cur_month = now_ist().strftime("%Y-%m")
-                            if _u.get("vip_spin_month") != _cur_month:
+                            # Admin is exempt from the one-spin-per-month lock — unlimited
+                            # retries, for testing the spin without waiting for next month.
+                            _is_admin_cid = ADMIN_CHAT_ID and str(_cid) == str(ADMIN_CHAT_ID)
+                            if _is_admin_cid or _u.get("vip_spin_month") != _cur_month:
                                 _u = ct._db.get(str(_cid)) or ct._default_user(_cid)
                                 _u["vip_spin_amount"] = round(random.uniform(VIP_SPIN_MIN, VIP_SPIN_MAX), 2)
                                 _u["vip_spin_month"] = _cur_month
@@ -8998,7 +9001,9 @@ def command_listener():
                             _play_spin_animation(_chat_id, _msg_id)
                             _u = ct._db.get(str(_cid)) or ct._default_user(_cid)
                             _spins = _u.setdefault("sig_spins", {})
-                            if _sig_id not in _spins:
+                            # Admin is exempt from the one-spin-per-signal lock — unlimited retries.
+                            _is_admin_cid = ADMIN_CHAT_ID and str(_cid) == str(ADMIN_CHAT_ID)
+                            if _is_admin_cid or _sig_id not in _spins:
                                 _spins[_sig_id] = round(random.uniform(SIG_SPIN_MIN, SIG_SPIN_MAX), 2)
                                 ct._set(_cid, _u)
                             send_unlock_screen(_chat_id, _cid, _sig_id)
