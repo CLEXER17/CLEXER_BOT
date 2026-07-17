@@ -337,10 +337,14 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
     so later send_lifecycle_reply() calls can thread TP1/TP2/SL/Trailing-SL/timeout
     messages as genuine replies to this entry post in every channel it went to.
 
-    locked_text + sig_id: when both given, the FREE channel (only) gets this
-    redacted variant instead of `text`, plus an Unlock button deep-linking to
-    the bot's DM (/start unlock_<sig_id>) — everywhere else (legacy channels,
-    VIP) always gets the real, unredacted `text`, unchanged."""
+    locked_text + sig_id: when both given AND share_free is False (i.e. this
+    signal is genuinely VIP-exclusive — previously Free got NOTHING for these
+    at entry, only a generic "VIP hit TP1" teaser later via _notify_free_late),
+    the FREE channel now gets this redacted variant instead, plus an Unlock
+    button deep-linking to the bot's DM (/start unlock_<sig_id>). When
+    share_free is True, the signal was always meant to be free — Free keeps
+    getting the real, unredacted `text`, completely unchanged. VIP and the
+    legacy channels always get the real `text` either way."""
     ids = {}
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
@@ -354,20 +358,21 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
             mid = _send_plain_reply(cid, text)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
-            _free_markup = None
-            _free_text = text
-            if locked_text and sig_id:
-                _free_text = locked_text
-                _uname = _get_bot_username()
-                if _uname:
-                    _free_markup = {"inline_keyboard": [[
-                        # Telegram deep-link start params only allow [A-Za-z0-9_-] — sig_id
-                        # is "#CLEXxxxxxx", so the "#" must be stripped here (it would
-                        # otherwise be parsed as a URL fragment and never reach the bot at
-                        # all) and re-added when /start parses it back (see handle_command).
-                        {"text": "🔓 Unlock Signal", "url": f"https://t.me/{_uname}?start=unlock_{sig_id.lstrip('#')}", "style": "primary"}]]}
             for cid in _channels_by_tier("free"):
-                mid = _send_plain_reply(cid, _free_text, reply_markup=_free_markup)
+                mid = _send_plain_reply(cid, text)
+                if mid: ids[f"free:{cid}"] = mid
+        elif locked_text and sig_id:
+            _free_markup = None
+            _uname = _get_bot_username()
+            if _uname:
+                _free_markup = {"inline_keyboard": [[
+                    # Telegram deep-link start params only allow [A-Za-z0-9_-] — sig_id
+                    # is "#CLEXxxxxxx", so the "#" must be stripped here (it would
+                    # otherwise be parsed as a URL fragment and never reach the bot at
+                    # all) and re-added when /start parses it back (see handle_command).
+                    {"text": "🔓 Unlock Signal", "url": f"https://t.me/{_uname}?start=unlock_{sig_id.lstrip('#')}", "style": "primary"}]]}
+            for cid in _channels_by_tier("free"):
+                mid = _send_plain_reply(cid, locked_text, reply_markup=_free_markup)
                 if mid: ids[f"free:{cid}"] = mid
     return ids
 
