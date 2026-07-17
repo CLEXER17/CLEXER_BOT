@@ -198,8 +198,12 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
         f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
+    _locked_msg = (
+        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
+        f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
+        f"<i>🛡️ Capital protected</i>")
     send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
-        tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
+        tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
 
 def _apply_trail_sl_btc(price: float):
     if not TRAIL_SL_BTC or active_trade.get("trail_sl_moved") or active_trade.get("tp1_hit"):
@@ -220,8 +224,12 @@ def _apply_trail_sl_btc(price: float):
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
         f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
+    _locked_msg = (
+        f"🛡️ <b>Trailing SL — BTC</b>\n\n"
+        f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
+        f"<i>🛡️ Capital protected</i>")
     send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
-        tier_routed=True, share_free=active_trade.get("share_free", True))
+        tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 0   # max signals shared to free channels/users per day (0 = none shared)
@@ -388,26 +396,51 @@ def _tp_buttons():
         row.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     return {"inline_keyboard": [row]} if row else None
 
-def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None):
+def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None,
+                          locked_text: str = None):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
     to that trade's entry-signal message in every destination it has a stored
     message_id for (reply_map, from send_entry_signal). Uses plain sendMessage —
     forwardMessage can't set reply-to — so premium emoji fall back to plain glyphs
     on these specific messages. A destination missing from reply_map (e.g. entry
-    capture failed, or reply_map is empty/old-format) just gets a normal post."""
+    capture failed, or reply_map is empty/old-format) just gets a normal post.
+
+    locked_text: when given AND share_free is False (signal was locked at
+    entry), Free gets this redacted variant instead of nothing — same idea as
+    send_entry_signal's locked_text, for follow-ups like Trailing SL where a
+    generic "no real numbers" version still makes sense to show."""
     reply_map = reply_map or {}
+    ids = {}
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
-        _send_plain_reply(cid, text, reply_to=reply_map.get(f"ch{key}"), reply_markup=reply_markup)
+        mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"ch{key}"), reply_markup=reply_markup)
+        if mid: ids[f"ch{key}"] = mid
     if tier_routed:
         for cid in _channels_by_tier("vip"):
-            _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=reply_markup)
+            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=reply_markup)
+            if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
-                _send_plain_reply(cid, text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
+                mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
+                if mid: ids[f"free:{cid}"] = mid
+        elif locked_text:
+            for cid in _channels_by_tier("free"):
+                mid = _send_plain_reply(cid, locked_text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
+                if mid: ids[f"free:{cid}"] = mid
+    return ids
+
+def _send_sl_and_log(text: str, reply_map: dict, **kwargs) -> dict:
+    """Same as send_lifecycle_reply, but also logs any Free-channel message_id
+    into _free_sl_log — lets admin bulk-delete every SL/BE-hit post from Free
+    in one tap (/clearslfree) instead of manually removing them one by one."""
+    ids = send_lifecycle_reply(text, reply_map, **kwargs)
+    for k, v in (ids or {}).items():
+        if k.startswith("free:"):
+            _log_free_sl_message(k.split(":", 1)[1], v)
+    return ids
 
 def send_to_tier_channels(text: str, share_free: bool):
     """Sends to every registered VIP channel always, and to FREE channels only
@@ -4036,7 +4069,7 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
+                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -4045,10 +4078,10 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
+                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
+                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
@@ -4208,6 +4241,72 @@ def _load_sig_snapshots():
     except Exception as e:
         print(f"[SIG SNAPSHOTS] load error: {e}")
 
+# --- Free-channel SL message log — lets admin bulk-delete all SL/loss posts --
+# from the Free channel(s) in one tap, e.g. to keep the channel looking clean
+# of losses. Only SL/BE-hit messages are logged here, never TP/entry/other.
+_FREE_SL_LOG_FILE = os.path.join(DATA_DIR, "free_sl_log.json")
+_free_sl_log: list = []   # [{"cid": str, "message_id": int}, ...]
+
+def _log_free_sl_message(cid: str, message_id: int):
+    _free_sl_log.append({"cid": cid, "message_id": message_id})
+    if len(_free_sl_log) > 500:
+        del _free_sl_log[:len(_free_sl_log) - 500]
+    try:
+        with open(_FREE_SL_LOG_FILE, "w") as f:
+            json.dump(_free_sl_log, f)
+    except Exception as e:
+        print(f"[FREE SL LOG] save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("free_sl_log", _free_sl_log)
+        except Exception as e:
+            print(f"[FREE SL LOG] central push error: {e}")
+
+def _load_free_sl_log():
+    global _free_sl_log
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/free_sl_log")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_FREE_SL_LOG_FILE, r.json(), "FREE SL LOG")
+        if d is None and os.path.exists(_FREE_SL_LOG_FILE):
+            with open(_FREE_SL_LOG_FILE) as f:
+                d = json.load(f)
+        if d is not None:
+            _free_sl_log = d
+            print(f"[FREE SL LOG] Loaded {len(_free_sl_log)} logged message(s)")
+    except Exception as e:
+        print(f"[FREE SL LOG] load error: {e}")
+
+def _clear_free_sl_messages() -> tuple:
+    """Deletes every logged Free-channel SL/BE message from Telegram, then
+    clears the log. Returns (deleted_count, failed_count)."""
+    global _free_sl_log
+    ok = 0; fail = 0
+    for entry in _free_sl_log:
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                json={"chat_id": entry["cid"], "message_id": entry["message_id"]}, timeout=10)
+            if r.json().get("ok"):
+                ok += 1
+            else:
+                fail += 1
+        except Exception:
+            fail += 1
+    _free_sl_log = []
+    try:
+        with open(_FREE_SL_LOG_FILE, "w") as f:
+            json.dump(_free_sl_log, f)
+    except Exception as e:
+        print(f"[FREE SL LOG] save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("free_sl_log", _free_sl_log)
+        except Exception as e:
+            print(f"[FREE SL LOG] central push error: {e}")
+    return ok, fail
+
 def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     """Redacted Free-channel entry-signal variant — direction/entry/SL/TP
     replaced with lock placeholders. Same _scan_box template every other
@@ -4222,6 +4321,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     )
 
 _load_sig_snapshots()
+_load_free_sl_log()
 
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
@@ -4487,7 +4587,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
-            send_lifecycle_reply(_sl_msg, t.get("reply_map"), include_ch2=False,
+            _send_sl_and_log(_sl_msg, t.get("reply_map"), include_ch2=False,
                 tier_routed=(result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -4576,7 +4676,7 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
+                _send_sl_and_log(_sl_msg, _rmap, include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -4585,10 +4685,10 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
+                _send_sl_and_log(_sl_msg, _rmap, include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
+                _send_sl_and_log(_sl_msg, _rmap, include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
@@ -4907,7 +5007,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5880,6 +5980,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/addfunds":
         send_addfunds_screen(chat_id)
+
+    elif cmd == "/clearslfree":
+        if not _free_sl_log:
+            send_reply(chat_id, "📭 No logged SL/BE messages in Free channel(s) to clear."); return
+        _ask_confirm(chat_id, _check_id, "clear_free_sl",
+            f"Delete {len(_free_sl_log)} SL/BE-hit message(s) from Free channel(s)? This only removes SL/BE posts — TP/entry messages are untouched.",
+            "help_main")
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -7630,6 +7737,7 @@ _SETTINGS_SUBCATS = {
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
+        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged SL/BE-hit message from the Free channel(s)."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -7923,6 +8031,9 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
         uid = action_id.split(":", 1)[1]
         ct.reset_history(uid)
         result_text = "✅ <b>Your P&L history has been reset.</b>"
+    elif action_id == "clear_free_sl":
+        _ok, _fail = _clear_free_sl_messages()
+        result_text = f"✅ <b>Cleared {_ok} SL/BE message(s) from Free channel(s).</b>" + (f"\n⚠️ {_fail} failed to delete (already gone or too old)." if _fail else "")
     elif action_id == "closescan":
         s1 = len(scan1_trades); s2 = len(scan2_trades)
         _syms = {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
@@ -9904,7 +10015,7 @@ def _demo_monitor_loop():
                               f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
                               f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
+                        _send_sl_and_log(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
