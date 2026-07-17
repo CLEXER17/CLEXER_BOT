@@ -7048,16 +7048,23 @@ Reasoning: [one line]"""
                         if _share_free: _consume_free_quota()
                         _kind = "scan1" if scan_ver == 1 else "scan2"
                         _tier_routed = _scan_run_mode.get(_kind) == "special"
-                        _effective_share_free = True if _tier_routed else _share_free
+                        # Special-time signals used to bypass the daily free-quota gate
+                        # entirely (always share_free=True) — that both let Free receive
+                        # unlimited real signals past the daily cap, AND meant share_free
+                        # was never False for these, so they could never get the locked
+                        # Free-channel card or the _notify_free_late VIP-promo teaser.
+                        # Now special-time signals respect the same quota as everything
+                        # else: within quota -> real signal to Free; quota exhausted ->
+                        # locked card (tier_routed still routes it to VIP either way).
+                        _effective_share_free = _share_free
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
                         _save_sig_snapshot(slot_data["sig_id"], chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, _kind)
-                        # Only the whitelisted special slot times reach Free/VIP channels
-                        # (unconditionally, bypassing the daily free-quota gate) — every
-                        # regular-grid auto-run stays on the legacy channel only.
+                        # Regular-grid (non-special) auto-runs still never reach VIP/Free at
+                        # all (tier_routed=False) — legacy channel only, unchanged.
                         slot_data["reply_map"] = send_entry_signal(fmt_scan_signal(slot_data),
                             include_ch2=slot_data["is_d48"], tier_routed=_tier_routed, share_free=_effective_share_free,
                             locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
@@ -9835,6 +9842,7 @@ def _demo_monitor_loop():
                     be_sl  = float(t.get("be_sl", 0))
                     created = float(t.get("created_at", now))
                     tier_routed = t.get("tier_routed", False)
+                    share_free = t.get("share_free", False)
                     is_d48 = t.get("is_d48", False)
                     sig_id = t.get("sig_id","")
 
@@ -9869,9 +9877,9 @@ def _demo_monitor_loop():
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True, reply_markup=_tp_buttons())
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
-                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True, entry_date=_ist_date_str(created))
+                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
@@ -9892,7 +9900,7 @@ def _demo_monitor_loop():
                               f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
                               f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
@@ -9912,9 +9920,9 @@ def _demo_monitor_loop():
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
                               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True, reply_markup=_tp_buttons())
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp1(sym)
-                        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=True,
+                        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
                             entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP1")
@@ -9932,7 +9940,7 @@ def _demo_monitor_loop():
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
@@ -10231,8 +10239,14 @@ def _run_test_scan(cid, scan_ver: int):
             # slot times — everything else (regular grid, Demo Scan2) stays on the
             # legacy channel only.
             _demo1_tier_routed = scan_ver == 1 and _scan_run_mode.get("test") == "special"
+            # Used to hardcode share_free=True (bypassing the daily quota entirely
+            # for every TS1 special-time signal) — now respects the same quota as
+            # everything else: within quota -> real signal to Free; exhausted ->
+            # locked card instead of an unlimited real reveal.
+            _demo_share_free = _free_quota_available() if _demo1_tier_routed else False
+            if _demo_share_free: _consume_free_quota()
             _save_sig_snapshot(_demo_sig_id, chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, f"demo{scan_ver}")
-            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=_demo_is_d48, tier_routed=_demo1_tier_routed, share_free=True,
+            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=_demo_is_d48, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
                 locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id)
 
             slot_data = {
@@ -10241,6 +10255,7 @@ def _run_test_scan(cid, scan_ver: int):
                 "tp1_hit": False, "be_sl": 0, "created_at": time.time(), "entry_hit": True,
                 "scan_ver": scan_ver,
                 "tier_routed": _demo1_tier_routed,
+                "share_free": _demo_share_free,
                 "is_d48": _demo_is_d48,
                 "sig_id": _demo_sig_id,
                 "reply_map": _demo_reply_map,
