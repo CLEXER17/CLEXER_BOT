@@ -301,7 +301,7 @@ def _pin_message(chat_id, message_id, disable_notification: bool = True):
     except Exception as e:
         print(f"  [PIN] {chat_id} msg {message_id}: {e}")
 
-def _send_plain_reply(chat_id, text: str, reply_to=None):
+def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None):
     """Direct sendMessage (no forward trick) — premium emoji fall back to plain
     glyphs, but this lets the message reply to an earlier one (reply_to = that
     message's message_id). Returns the new message_id, or None on failure."""
@@ -309,6 +309,8 @@ def _send_plain_reply(chat_id, text: str, reply_to=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         rj = r.json()
@@ -344,7 +346,18 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
                 if mid: ids[f"free:{cid}"] = mid
     return ids
 
-def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True):
+def _tp_buttons():
+    """Open Bot + Contact Admin buttons — attached to every TP1/TP2 message,
+    per admin request, so users can act right from the win notification."""
+    row = []
+    _uname = _get_bot_username()
+    if _uname:
+        row.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
+    if ADMIN_CHAT_ID:
+        row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
+    return {"inline_keyboard": [row]} if row else None
+
+def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
     to that trade's entry-signal message in every destination it has a stored
     message_id for (reply_map, from send_entry_signal). Uses plain sendMessage —
@@ -357,13 +370,13 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
         if not cid: continue
         if channel_paused.get(key): continue
         if key == "2" and not include_ch2: continue
-        _send_plain_reply(cid, text, reply_to=reply_map.get(f"ch{key}"))
+        _send_plain_reply(cid, text, reply_to=reply_map.get(f"ch{key}"), reply_markup=reply_markup)
     if tier_routed:
         for cid in _channels_by_tier("vip"):
-            _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"))
+            _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=reply_markup)
         if share_free:
             for cid in _channels_by_tier("free"):
-                _send_plain_reply(cid, text, reply_to=reply_map.get(f"free:{cid}"))
+                _send_plain_reply(cid, text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
 
 def send_to_tier_channels(text: str, share_free: bool):
     """Sends to every registered VIP channel always, and to FREE channels only
@@ -3483,7 +3496,7 @@ PREMIUM_EMOJI_MAP = {
     "📊": "5231200819986047254", "📡": "6174682466356303760",
     "⏰": "5213349767672769194", "🕐": "5363857580777029543",
     "🕦": "5933544413740403607", "🛡": "6070930852647278292",
-    "📌": "5193159135004211919", "💬": "5233376087777501917",
+    "📌": "5193159135004211919", "💬": "5330237710655306682",
     "✨": "5325547803936572038", "🎉": "5208895581644140071",
     "🔺": "5980787993139481991", "🗂": "5332586662629227075",
     "▶️": "5264919878082509254", "👏": "5357052372600250759",
@@ -3948,7 +3961,7 @@ def run_tick_check():
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
-                tier_routed=True, share_free=active_trade.get("share_free", True))
+                tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
@@ -3966,7 +3979,7 @@ def run_tick_check():
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
                 send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
-                    tier_routed=True, share_free=active_trade.get("share_free", True))
+                    tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
                     entry_date=_ist_date_str(active_trade.get("entry_time")))
@@ -4319,7 +4332,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
             send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
-                tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
+                tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             ct.on_scan_tp2(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -4342,7 +4355,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
                 send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
-                    tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
+                    tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
                 ct.on_scan_tp1(sym)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -4434,7 +4447,7 @@ def run_price_check():
             log_trade_outcome("TP2_HIT", "hit during 1H check")
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
-            send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True))
+            send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2"); reset_trade(); return True
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
@@ -4472,7 +4485,7 @@ def run_price_check():
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
-            send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True))
+            send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
@@ -9437,7 +9450,7 @@ def _demo_monitor_loop():
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=True, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
@@ -9478,7 +9491,7 @@ def _demo_monitor_loop():
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
                               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=True, reply_markup=_tp_buttons())
                         ct.on_scan_tp1(sym)
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=True,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
