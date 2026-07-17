@@ -420,27 +420,42 @@ _daily_buckets: dict = {}   # entry_date str -> {"date","tp1","tp2","sl","free_t
 _daily_summary_last_sent_date = ""
 
 def _save_daily_buckets():
-    """Persists _daily_buckets to disk — without this, a Railway restart (which
-    happens on every deploy) silently wiped the whole day's TP1/TP2/SL tracking,
-    so the midnight recap found an empty bucket and skipped sending entirely.
-    Cheap to call on every _track_daily_result() update since the file is tiny."""
+    """Persists _daily_buckets both to local disk AND the central store — local
+    disk alone was the original bug: on Railway, the app filesystem is NOT
+    guaranteed to survive a redeploy unless DATA_DIR is on a mounted volume, so
+    a disk-only save can silently reset to empty on every push exactly like the
+    in-memory version did. Pushing to the central store (same one save_state()
+    and the slot-stats system use) makes this survive redeploys regardless of
+    whether local disk does. Cheap to call on every _track_daily_result()
+    update since the payload is tiny."""
+    _blob = {"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date}
     try:
         with open(os.path.join(DATA_DIR, "daily_buckets.json"), "w") as f:
-            json.dump({"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date}, f)
+            json.dump(_blob, f)
     except Exception as e:
-        print(f"[DAILY BUCKETS] save error: {e}")
+        print(f"[DAILY BUCKETS] local save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("daily_buckets", _blob)
+        except Exception as e:
+            print(f"[DAILY BUCKETS] central push error: {e}")
 
 def _load_daily_buckets():
     global _daily_buckets, _daily_summary_last_sent_date
     try:
+        d = None
         path = os.path.join(DATA_DIR, "daily_buckets.json")
-        if not os.path.exists(path):
-            return
-        with open(path) as f:
-            d = json.load(f)
-        _daily_buckets = d.get("buckets", {})
-        _daily_summary_last_sent_date = d.get("last_sent", "")
-        print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s) from disk")
+        if CLEXER_API_URL:
+            r = _central_get("/kv/daily_buckets")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(path, r.json(), "DAILY BUCKETS")
+        if d is None and os.path.exists(path):
+            with open(path) as f:
+                d = json.load(f)
+        if d is not None:
+            _daily_buckets = d.get("buckets", {})
+            _daily_summary_last_sent_date = d.get("last_sent", "")
+            print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s)")
     except Exception as e:
         print(f"[DAILY BUCKETS] load error: {e}")
 
@@ -1459,14 +1474,20 @@ def _slot_key(kind: str, hm: tuple) -> str:
 
 def _load_slot_state():
     """Restores _slot_stats AND any runtime-promoted/demoted _SCAN_SPECIAL /
-    _SCAN_SPECIAL_NO_COPY changes from disk — without this, an auto-promotion
-    would be silently lost on the next Railway restart/redeploy."""
+    _SCAN_SPECIAL_NO_COPY changes — checks the central store first (survives
+    redeploys even if local disk doesn't), falls back to local disk."""
     global _slot_stats
     try:
-        if not os.path.exists(_SLOT_STATE_FILE):
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/slot_auto_state")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_SLOT_STATE_FILE, r.json(), "SLOT AUTO")
+        if d is None and os.path.exists(_SLOT_STATE_FILE):
+            with open(_SLOT_STATE_FILE) as f:
+                d = json.load(f)
+        if d is None:
             return
-        with open(_SLOT_STATE_FILE) as f:
-            d = json.load(f)
         _slot_stats = d.get("stats", {})
         for kind, times in d.get("special", {}).items():
             _SCAN_SPECIAL.setdefault(kind, set()).update(tuple(hm) for hm in times)
@@ -1479,21 +1500,26 @@ def _load_slot_state():
         for kind in d.get("no_copy_removed", {}):
             for hm in d["no_copy_removed"][kind]:
                 _SCAN_SPECIAL_NO_COPY.get(kind, set()).discard(tuple(hm))
-        print(f"[SLOT AUTO] Loaded {len(_slot_stats)} tracked slots from disk")
+        print(f"[SLOT AUTO] Loaded {len(_slot_stats)} tracked slots")
     except Exception as e:
         print(f"[SLOT AUTO] load error: {e}")
 
 def _save_slot_state():
+    d = {
+        "stats": _slot_stats,
+        "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
+        "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
+    }
     try:
-        d = {
-            "stats": _slot_stats,
-            "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
-            "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
-        }
         with open(_SLOT_STATE_FILE, "w") as f:
             json.dump(d, f)
     except Exception as e:
-        print(f"[SLOT AUTO] save error: {e}")
+        print(f"[SLOT AUTO] local save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("slot_auto_state", d)
+        except Exception as e:
+            print(f"[SLOT AUTO] central push error: {e}")
 
 def _rebuild_schedules():
     global SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE
