@@ -7715,6 +7715,26 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
 VIP_MONTHLY_PRICE = 15.0
 VIP_SPIN_MIN, VIP_SPIN_MAX = 11.0, 16.0
 
+def _play_spin_animation(chat_id, message_id=None):
+    """Plays Telegram's own native slot-machine animation (sendDice with
+    emoji='🎰') — a real client-side spin lasting ~2.5s, not a fake text
+    countdown. Optionally blanks out the buttons on the current screen first
+    so the user can't double-tap Spin while it's playing. Runs in a background
+    thread (see callers) so this blocking sleep never stalls the main update
+    loop for other users."""
+    if message_id:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                json={"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}}, timeout=10)
+        except Exception:
+            pass
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDice",
+            json={"chat_id": chat_id, "emoji": "🎰"}, timeout=10)
+    except Exception as e:
+        print(f"  [SPIN ANIM] {e}")
+    time.sleep(2.5)   # matches roughly how long the native animation takes to settle
+
 def send_vip_offer_screen(chat_id, cid, message_id=None):
     """3-button VIP purchase screen: spin for a discounted $11-16 price (one
     spin per calendar month, locked once rolled), Contact Admin, or just pay
@@ -8946,14 +8966,17 @@ def command_listener():
 
                     # ── VIP lucky-draw purchase ───────────────────────────────
                     elif cb_data == "vip_spin":
-                        _u = ct._get(str(cb_cid))
-                        _cur_month = now_ist().strftime("%Y-%m")
-                        if _u.get("vip_spin_month") != _cur_month:
-                            _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
-                            _u["vip_spin_amount"] = round(random.uniform(VIP_SPIN_MIN, VIP_SPIN_MAX), 2)
-                            _u["vip_spin_month"] = _cur_month
-                            ct._set(cb_cid, _u)
-                        send_vip_offer_screen(cb_chat_id, cb_cid, message_id=cb_msg_id)
+                        def _do_vip_spin(_chat_id=cb_chat_id, _cid=cb_cid, _msg_id=cb_msg_id):
+                            _play_spin_animation(_chat_id, _msg_id)
+                            _u = ct._get(str(_cid))
+                            _cur_month = now_ist().strftime("%Y-%m")
+                            if _u.get("vip_spin_month") != _cur_month:
+                                _u = ct._db.get(str(_cid)) or ct._default_user(_cid)
+                                _u["vip_spin_amount"] = round(random.uniform(VIP_SPIN_MIN, VIP_SPIN_MAX), 2)
+                                _u["vip_spin_month"] = _cur_month
+                                ct._set(_cid, _u)
+                            send_vip_offer_screen(_chat_id, _cid)
+                        threading.Thread(target=_do_vip_spin, daemon=True).start()
                     elif cb_data.startswith("vip_pay:"):
                         _amount = float(cb_data.split(":", 1)[1])
                         _pay_url = _cryptopay_create_invoice(_amount, {"type": "vip", "cid": str(cb_cid)}, description="CLEXER VIP — 30 days")
@@ -8971,13 +8994,15 @@ def command_listener():
 
                     # ── Free-channel signal unlock ────────────────────────────
                     elif cb_data.startswith("sig_spin:"):
-                        _sig_id = cb_data.split(":", 1)[1]
-                        _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
-                        _spins = _u.setdefault("sig_spins", {})
-                        if _sig_id not in _spins:
-                            _spins[_sig_id] = round(random.uniform(SIG_SPIN_MIN, SIG_SPIN_MAX), 2)
-                            ct._set(cb_cid, _u)
-                        send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        def _do_sig_spin(_sig_id=cb_data.split(":", 1)[1], _chat_id=cb_chat_id, _cid=cb_cid, _msg_id=cb_msg_id):
+                            _play_spin_animation(_chat_id, _msg_id)
+                            _u = ct._db.get(str(_cid)) or ct._default_user(_cid)
+                            _spins = _u.setdefault("sig_spins", {})
+                            if _sig_id not in _spins:
+                                _spins[_sig_id] = round(random.uniform(SIG_SPIN_MIN, SIG_SPIN_MAX), 2)
+                                ct._set(_cid, _u)
+                            send_unlock_screen(_chat_id, _cid, _sig_id)
+                        threading.Thread(target=_do_sig_spin, daemon=True).start()
                     elif cb_data.startswith("sig_pay:"):
                         _sig_id = cb_data.split(":", 1)[1]
                         _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
