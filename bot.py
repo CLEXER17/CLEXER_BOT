@@ -377,14 +377,15 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
     return ids
 
 def _tp_buttons():
-    """Open Bot + Contact Admin buttons — attached to every TP1/TP2 message,
-    per admin request, so users can act right from the win notification."""
+    """Open Bot + Get VIP buttons — attached to every TP1/TP2 message, per
+    admin request, so users can act right from the win notification. Get VIP
+    deep-links straight into the /vip offer screen (same t.me/bot?start=vip
+    pattern used elsewhere) rather than just opening a blank DM."""
     row = []
     _uname = _get_bot_username()
     if _uname:
         row.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
-    if ADMIN_CHAT_ID:
-        row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
+        row.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     return {"inline_keyboard": [row]} if row else None
 
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None):
