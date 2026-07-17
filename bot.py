@@ -3424,7 +3424,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3467,6 +3467,7 @@ def load_settings():
             TRAIL_SL_DEMO1 = d.get("trail_sl_demo1", False)
             TRAIL_SL_DEMO2 = d.get("trail_sl_demo2", False)
             WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
+            VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -3517,6 +3518,7 @@ def save_settings():
             "trail_sl_demo1": TRAIL_SL_DEMO1,
             "trail_sl_demo2": TRAIL_SL_DEMO2,
             "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
+            "vip_monthly_price": VIP_MONTHLY_PRICE,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -5045,7 +5047,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5134,7 +5136,7 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -6026,6 +6028,26 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _ask_confirm(chat_id, _check_id, "clear_free_sl",
             f"Delete {_n} signal(s) that hit a real SL from Free channel(s)? For each one this removes its entry signal, its trailing-SL notice, and its SL-hit message — never BE/breakeven trades, and never other signals' trailing-SL messages.",
             "help_main")
+
+    elif cmd == "/resetspins":
+        _n = sum(1 for u in ct._db.values() if u.get("vip_spin_amount") or u.get("vip_spin_month"))
+        if not _n:
+            send_reply(chat_id, "📭 No users currently have a locked VIP spin price."); return
+        _ask_confirm(chat_id, _check_id, "reset_all_spins",
+            f"Reset the locked spin price for {_n} user(s)? Everyone will be able to spin again immediately, instead of waiting for next month.",
+            "help_main")
+
+    elif cmd == "/setvipprice":
+        if len(parts) < 2:
+            send_reply(chat_id, f"<b>VIP Monthly Price</b>\n\nCurrent: <b>${VIP_MONTHLY_PRICE:.2f}/month</b>\n\nUsage: <code>/setvipprice 15</code>"); return
+        try:
+            _new_price = float(parts[1])
+            if _new_price <= 0: raise ValueError
+        except ValueError:
+            send_reply(chat_id, "⚠️ Enter a valid number greater than 0, e.g. <code>/setvipprice 20</code>"); return
+        VIP_MONTHLY_PRICE = _new_price
+        save_settings()
+        send_reply(chat_id, f"✅ <b>VIP price set to ${VIP_MONTHLY_PRICE:.2f}/month</b>\n\n<i>🛡️ Capital protected</i>")
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -7779,6 +7801,8 @@ _SETTINGS_SUBCATS = {
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
         ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged SL/BE-hit message from the Free channel(s)."),
+        ("/resetspins", "🎰", "Reset All VIP Spins", "Clear every user's locked VIP spin price so everyone can spin again immediately."),
+        ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -8075,6 +8099,13 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
     elif action_id == "clear_free_sl":
         _ok, _fail = _clear_free_sl_messages()
         result_text = f"✅ <b>Deleted {_ok} message(s)</b> (entry + trailing-SL + SL-hit) for real-SL signals from Free channel(s). BE trades untouched." + (f"\n⚠️ {_fail} failed to delete (already gone or too old)." if _fail else "")
+    elif action_id == "reset_all_spins":
+        _n = 0
+        for _uid, _u in list(ct._db.items()):
+            if _u.get("vip_spin_amount") or _u.get("vip_spin_month"):
+                _u.pop("vip_spin_amount", None); _u.pop("vip_spin_month", None)
+                ct._set(_uid, _u); _n += 1
+        result_text = f"✅ <b>Reset the VIP spin lock for {_n} user(s).</b>\n\nEveryone can spin again right away."
     elif action_id == "closescan":
         s1 = len(scan1_trades); s2 = len(scan2_trades)
         _syms = {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
