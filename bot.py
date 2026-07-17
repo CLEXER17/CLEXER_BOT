@@ -41,6 +41,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
+CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot Crypto Pay API token — not wired to any feature yet, added ahead of time
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 5     # price check every 5s when trade active
