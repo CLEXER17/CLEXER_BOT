@@ -7932,10 +7932,11 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
         rows.append([{"text": f"💳 Pay ${_amt:.2f} (your spin price)", "callback_data": f"vip_pay:{_amt:.2f}"}])
     else:
         rows.append([{"text": "🎰 Lucky Draw Spin", "callback_data": "vip_spin"}])
-    if ADMIN_CHAT_ID:
-        rows.append([{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}])
     rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
-    rows.append([{"text": "◀️  Back", "callback_data": "help_main"}])
+    _last_row = [{"text": "◀️  Back", "callback_data": "help_main"}]
+    if ADMIN_CHAT_ID:
+        _last_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
+    rows.append(_last_row)
     _spin_line = (f"🎰 You got <b>${u['vip_spin_amount']:.2f}</b> in the lucky draw! Pay that above to unlock VIP for 1 month.\n\n"
                   f"Don't want it? Just pay the ${VIP_MONTHLY_PRICE:.0f}/month button below instead."
                   if has_spin else
@@ -7993,6 +7994,7 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
         rows.append([{"text": "🎰 Spin to see unlock price", "callback_data": f"sig_spin:{sig_id}"}])
         text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Spin once to see your unlock price (${SIG_SPIN_MIN:.2f}-${SIG_SPIN_MAX:.2f}) "
                 f"— whatever you get is locked in for this signal, no re-rolling.</blockquote>\n\n<i>🛡️ Capital protected</i>")
+    rows.append([{"text": "🏠 Main Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
     if message_id:
         _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
@@ -8000,7 +8002,8 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
         send_reply(chat_id, text, reply_markup=markup)
 
 def send_addfunds_screen(chat_id, message_id=None):
-    rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}]]
+    rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
+            [{"text": "◀️  Back", "callback_data": "help_main"}]]
     text = "💰 <b>Add Funds</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals.</blockquote>\n\n<i>🛡️ Capital protected</i>"
     markup = {"inline_keyboard": rows}
     if message_id:
