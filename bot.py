@@ -3587,6 +3587,7 @@ _STYLE_NONE_LABELS = (
     "My Copy Trade", "Trade Control", "Copy Admin", "TV & Advanced", "Broadcast & Channels",
     "Contact/Channel Settings", "Active BTC + all scan trades", "Current BTC price",
     "London / NY / Sleep session", "Last 5 signals", "Other Actions",
+    "Open Mini App", "Free Channel", "VIP Channel",
 )
 
 _STYLE_ROTATION = ("primary", "success", "danger")  # Bot API 9.4 defines only these 3 — no orange/pink/custom hex exists
