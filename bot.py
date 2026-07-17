@@ -328,13 +328,19 @@ def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None):
         print(f"  [PLAIN REPLY] {chat_id}: {e}")
     return None
 
-def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True) -> dict:
+def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True,
+                       locked_text: str = None, sig_id: str = None) -> dict:
     """Sends a trade's entry signal via plain sendMessage (confirmed via /testreply
     to render premium emoji correctly — the old forward-relay trick actually LOSES
     them despite the original assumption it preserved them), and captures each
     destination's message_id. Store the returned dict on the trade (t["reply_map"] = ...)
     so later send_lifecycle_reply() calls can thread TP1/TP2/SL/Trailing-SL/timeout
-    messages as genuine replies to this entry post in every channel it went to."""
+    messages as genuine replies to this entry post in every channel it went to.
+
+    locked_text + sig_id: when both given, the FREE channel (only) gets this
+    redacted variant instead of `text`, plus an Unlock button deep-linking to
+    the bot's DM (/start unlock_<sig_id>) — everywhere else (legacy channels,
+    VIP) always gets the real, unredacted `text`, unchanged."""
     ids = {}
     channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
     for key, cid in channels:
@@ -348,8 +354,20 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
             mid = _send_plain_reply(cid, text)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
+            _free_markup = None
+            _free_text = text
+            if locked_text and sig_id:
+                _free_text = locked_text
+                _uname = _get_bot_username()
+                if _uname:
+                    _free_markup = {"inline_keyboard": [[
+                        # Telegram deep-link start params only allow [A-Za-z0-9_-] — sig_id
+                        # is "#CLEXxxxxxx", so the "#" must be stripped here (it would
+                        # otherwise be parsed as a URL fragment and never reach the bot at
+                        # all) and re-added when /start parses it back (see handle_command).
+                        {"text": "🔓 Unlock Signal", "url": f"https://t.me/{_uname}?start=unlock_{sig_id.lstrip('#')}", "style": "primary"}]]}
             for cid in _channels_by_tier("free"):
-                mid = _send_plain_reply(cid, text)
+                mid = _send_plain_reply(cid, _free_text, reply_markup=_free_markup)
                 if mid: ids[f"free:{cid}"] = mid
     return ids
 
@@ -3841,6 +3859,15 @@ def fmt_signal(s):
         tag=s.get("sig_id",""),
     )
 
+def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
+    """Gens a sig_id, saves the signal snapshot (for the Free-channel unlock
+    flow), builds both the real and locked-Free-channel variants, and sends.
+    All 3 BTC entry call sites were byte-identical — consolidated here."""
+    signal["sig_id"] = _gen_signal_id()
+    _save_sig_snapshot(signal["sig_id"], SYMBOL, signal["signal"], signal["entry"], signal["sl"], signal["tp1"], signal["tp2"], "btc")
+    return send_entry_signal(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8"), tier_routed=True,
+        share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"])
+
 def fmt_update(status, price=None):
     t = active_trade; entry = t.get("entry") or 0
     _hdr = lambda emj, title: f"{emj} #{SYMBOL}"
@@ -4109,6 +4136,64 @@ def _gen_signal_id() -> str:
     """Unique per-trade ID shown on every lifecycle message (signal, TP1, TP2, SL,
     timeout) so the same trade can be found/grepped across the whole chat history."""
     return "#CLEX" + "".join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+
+# --- Signal snapshots — durable lookup for the Free-channel unlock flow -------
+# By the time a Free-channel user taps "Unlock", the live trade may already
+# have closed and been removed from scan1_trades/scan2_trades/demo lists — this
+# is the only durable source for "what were the real numbers" at unlock time.
+_SIG_SNAPSHOTS_FILE = os.path.join(DATA_DIR, "sig_snapshots.json")
+_sig_snapshots: dict = {}   # sig_id -> {symbol, direction, entry, sl, tp1, tp2, type}
+
+def _save_sig_snapshot(sig_id: str, symbol: str, direction: str, entry, sl, tp1, tp2, kind: str):
+    _sig_snapshots[sig_id] = {"symbol": symbol, "direction": direction, "entry": entry,
+                               "sl": sl, "tp1": tp1, "tp2": tp2, "type": kind, "created_at": time.time()}
+    # Bound memory/storage — keep the most recent 500 (unlocks only matter for
+    # signals still fresh enough to be worth revealing).
+    if len(_sig_snapshots) > 500:
+        for _old in sorted(_sig_snapshots, key=lambda k: _sig_snapshots[k].get("created_at", 0))[:len(_sig_snapshots) - 500]:
+            del _sig_snapshots[_old]
+    try:
+        with open(_SIG_SNAPSHOTS_FILE, "w") as f:
+            json.dump(_sig_snapshots, f)
+    except Exception as e:
+        print(f"[SIG SNAPSHOTS] local save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("sig_snapshots", _sig_snapshots)
+        except Exception as e:
+            print(f"[SIG SNAPSHOTS] central push error: {e}")
+
+def _load_sig_snapshots():
+    global _sig_snapshots
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/sig_snapshots")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_SIG_SNAPSHOTS_FILE, r.json(), "SIG SNAPSHOTS")
+        if d is None and os.path.exists(_SIG_SNAPSHOTS_FILE):
+            with open(_SIG_SNAPSHOTS_FILE) as f:
+                d = json.load(f)
+        if d is not None:
+            _sig_snapshots = d
+            print(f"[SIG SNAPSHOTS] Loaded {len(_sig_snapshots)} snapshot(s)")
+    except Exception as e:
+        print(f"[SIG SNAPSHOTS] load error: {e}")
+
+def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
+    """Redacted Free-channel entry-signal variant — direction/entry/SL/TP
+    replaced with lock placeholders. Same _scan_box template every other
+    lifecycle message uses, so it looks native rather than bolted-on."""
+    return _scan_box(
+        "Locked Signal", f"📣 #{coin}-USDT  |  {tag_label}",
+        [[f"🔒 {_smallcaps_title('Direction')}: Locked",
+          f"🔒 {_smallcaps_title('Entry')}: Locked",
+          "🔒 SL: Locked", "🔒 TP1: Locked", "🔒 TP2: Locked"],
+         [f"🔓 {_smallcaps_title('Tap Unlock below to reveal full details in your DM')}"]],
+        tag=sig_id,
+    )
+
+_load_sig_snapshots()
 
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
@@ -4564,6 +4649,76 @@ def _liquidation_ws_loop():
             print(f"  [LIQUIDATION] connection error: {e} — reconnecting in 10s")
         time.sleep(10)
 
+# --- CRYPTO PAY (@CryptoBot) — invoices + payment event poll loop -------------
+CRYPTO_PAY_BASE_URL = "https://pay.crypt.bot/api"
+
+def _cryptopay_create_invoice(amount_usd: float, payload_dict: dict, description: str = "") -> str:
+    """Creates a CryptoBot invoice, returns its pay_url or None on failure.
+    payload_dict is echoed back verbatim (as a JSON string) in the webhook
+    once paid — that's how api.py's /cryptopay/webhook knows what the payment
+    was for and which user, without us needing a separate pending-invoice table."""
+    if not CRYPTO_PAY_API_TOKEN:
+        print("  [CRYPTOPAY] CRYPTO_PAY_API_TOKEN not set"); return None
+    try:
+        r = requests.post(f"{CRYPTO_PAY_BASE_URL}/createInvoice",
+            headers={"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN},
+            json={"asset": "USDT", "amount": f"{amount_usd:.2f}",
+                  "description": description or "CLEXER payment",
+                  "payload": json.dumps(payload_dict)},
+            timeout=15)
+        rj = r.json()
+        if rj.get("ok"):
+            return rj["result"]["pay_url"]
+        print(f"  [CRYPTOPAY] createInvoice failed: {rj}")
+    except Exception as e:
+        print(f"  [CRYPTOPAY] createInvoice error: {e}")
+    return None
+
+def _cryptopay_grant_vip(cid: str, days: int = 30):
+    """Grants VIP for `days` days from today — mirrors /setvip's exact field
+    shape (copytrade.py's handle(), '/setvip <cid> <start> <end>' branch):
+    DD.MM.YYYY date strings, tier='vip', vip_grace_notified_at reset to 0."""
+    u = ct._db.get(str(cid)) or ct._default_user(cid)
+    start = now_ist(); end = start + timedelta(days=days)
+    u["tier"] = "vip"
+    u["vip_start"] = start.strftime("%d.%m.%Y")
+    u["vip_end"] = end.strftime("%d.%m.%Y")
+    u["vip_grace_notified_at"] = 0
+    ct._set(cid, u)
+
+def _poll_payment_events():
+    """Runs forever — every 30s, applies any unprocessed CryptoBot payment
+    events (wallet topup / VIP purchase) via ct._get/_set. Safe against races:
+    this is the one long-running process that owns ct._db in memory, and the
+    webhook (api.py, a separate stateless process) only ever INSERTs rows into
+    payment_events — never touches the user DB directly. See api.py's
+    /cryptopay/webhook and the payment_events table for the other half."""
+    if not CLEXER_API_URL:
+        print("  [PAYMENT EVENTS] CLEXER_API_URL not set — poll loop disabled"); return
+    while True:
+        try:
+            time.sleep(30)
+            hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
+            r = requests.get(f"{CLEXER_API_URL}/payment_events", params={"processed": "false"}, headers=hdrs, timeout=10)
+            if not r.ok:
+                continue
+            for ev in r.json().get("events", []):
+                try:
+                    cid = ev["cid"]; etype = ev["event_type"]; amount = float(ev["amount"])
+                    if etype == "topup":
+                        u = ct._db.get(str(cid)) or ct._default_user(cid)
+                        u["wallet_balance"] = round(u.get("wallet_balance", 0) + amount, 2)
+                        ct._set(cid, u)
+                        send_to_user(cid, f"💰 <b>Wallet credited</b>: +${amount:,.2f}\n\nNew balance: <b>${u['wallet_balance']:,.2f}</b>\n\n<i>🛡️ Capital protected</i>")
+                    elif etype == "vip":
+                        _cryptopay_grant_vip(cid, days=30)
+                        send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.\n\n<i>🛡️ Capital protected</i>")
+                    requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
+                except Exception as e:
+                    print(f"  [PAYMENT EVENTS] apply error for event {ev.get('id')}: {e}")
+        except Exception as e:
+            print(f"  [PAYMENT EVENTS] poll error: {e}")
+
 def check_news(force=False):
     """Kept for /latestnews compatibility — the liquidation feed posts live as
     events happen (see _liquidation_ws_loop), so there's nothing to "fetch on
@@ -4866,6 +5021,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _hm_from = (message or {}).get("from", {})
         _hm_uname = _hm_from.get("username") or _hm_from.get("first_name") or "there"
         _hm_uid = _hm_from.get("id", chat_id)
+        # Deep-link payload from a locked Free-channel signal's Unlock button
+        # (t.me/bot?start=unlock_XXXXXX) — "#" is stripped from sig_id when the
+        # button URL is built (Telegram deep-link params only allow [A-Za-z0-9_-]),
+        # so it must be re-added here to match the "#CLEXxxxxxx" keys in _sig_snapshots.
+        if cmd == "/start" and len(parts) > 1 and parts[1].startswith("unlock_"):
+            send_unlock_screen(chat_id, str(_hm_uid), "#" + parts[1][len("unlock_"):])
+            return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
 
     elif cmd in ("/go", "/resume"):
@@ -5675,6 +5837,12 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             WEEKEND_SLEEP_ENABLED = False; save_settings()
             send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
         else: send_reply(chat_id, "Usage: /ws on|off", reply_markup=_ws_btns)
+
+    elif cmd == "/vip":
+        send_vip_offer_screen(chat_id, str(_check_id))
+
+    elif cmd == "/addfunds":
+        send_addfunds_screen(chat_id)
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -6851,11 +7019,14 @@ Reasoning: [one line]"""
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
+                        _save_sig_snapshot(slot_data["sig_id"], chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, _kind)
                         # Only the whitelisted special slot times reach Free/VIP channels
                         # (unconditionally, bypassing the daily free-quota gate) — every
                         # regular-grid auto-run stays on the legacy channel only.
                         slot_data["reply_map"] = send_entry_signal(fmt_scan_signal(slot_data),
-                            include_ch2=slot_data["is_d48"], tier_routed=_tier_routed, share_free=_effective_share_free)
+                            include_ch2=slot_data["is_d48"], tier_routed=_tier_routed, share_free=_effective_share_free,
+                            locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
+                            sig_id=slot_data["sig_id"])
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
@@ -7506,6 +7677,93 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
         merged = [_back_row]
     _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id)
 
+VIP_MONTHLY_PRICE = 15.0
+VIP_SPIN_MIN, VIP_SPIN_MAX = 11.0, 16.0
+
+def send_vip_offer_screen(chat_id, cid, message_id=None):
+    """3-button VIP purchase screen: spin for a discounted $11-16 price (one
+    spin per calendar month, locked once rolled), Contact Admin, or just pay
+    the flat $15/month. Payment creates a CryptoBot invoice — actual VIP grant
+    happens later via _poll_payment_events() once the payment is confirmed,
+    never synchronously on the button tap."""
+    u = ct._get(str(cid))
+    cur_month = now_ist().strftime("%Y-%m")
+    has_spin = u.get("vip_spin_month") == cur_month and u.get("vip_spin_amount")
+    rows = []
+    if has_spin:
+        _amt = u["vip_spin_amount"]
+        rows.append([{"text": f"💳 Pay ${_amt:.2f} (your spin price)", "callback_data": f"vip_pay:{_amt:.2f}"}])
+    else:
+        rows.append([{"text": "🎰 Lucky Draw Spin", "callback_data": "vip_spin"}])
+    if ADMIN_CHAT_ID:
+        rows.append([{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"}])
+    rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
+    _spin_line = (f"🎰 Your spin this month: <b>${u['vip_spin_amount']:.2f}</b> — pay it above, or the full price."
+                  if has_spin else
+                  f"🎰 One spin per month (${VIP_SPIN_MIN:.0f}-${VIP_SPIN_MAX:.0f}) — the number you get is locked in for the month.")
+    text = (f"👑 <b>Get VIP</b>\n\n<blockquote>{_spin_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
+    markup = {"inline_keyboard": rows}
+    if message_id:
+        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
+    else:
+        send_reply(chat_id, text, reply_markup=markup)
+
+# --- Free-channel signal unlock (wallet-funded, one spin per signal) ----------
+SIG_SPIN_MIN, SIG_SPIN_MAX = 0.03, 0.10
+
+def _reveal_signal_text(snap: dict, sig_id: str) -> str:
+    arrow = "🟢 LONG" if snap["direction"] in ("BUY", "LONG") else "🔴 SHORT"
+    return _scan_box(
+        f"{snap['symbol']} Unlocked", f"🔓 #{snap['symbol']}",
+        [[arrow],
+         [f"🎯 {_smallcaps_title('Entry')}: <code>{snap['entry']:,.4g}</code>",
+          f"🛑 SL: <code>{snap['sl']:,.4g}</code>",
+          f"💰 TP1: <code>{snap['tp1']:,.4g}</code>",
+          f"🏆 TP2: <code>{snap['tp2']:,.4g}</code>"]],
+        tag=sig_id,
+    )
+
+def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
+    """DM screen shown after tapping a locked Free-channel signal's Unlock
+    button. One spin per signal (locked forever once rolled, per admin's
+    rule) — payment is a synchronous same-process wallet deduction, not a
+    CryptoBot invoice (amounts here are below CryptoBot's $1 minimum)."""
+    snap = _sig_snapshots.get(sig_id)
+    if not snap:
+        send_reply(chat_id, "⚠️ This signal is no longer available to unlock (too old, or already closed out).")
+        return
+    u = ct._get(str(cid))
+    if sig_id in u.get("unlocked_sigs", []):
+        send_reply(chat_id, _reveal_signal_text(snap, sig_id))
+        return
+    spins = u.get("sig_spins", {})
+    rows = []
+    if sig_id in spins:
+        _amt = spins[sig_id]
+        _bal = u.get("wallet_balance", 0)
+        rows.append([{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{sig_id}"}])
+        rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
+        text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
+                f"Wallet balance: <b>${_bal:.2f}</b></blockquote>\n\n<i>🛡️ Capital protected</i>")
+    else:
+        rows.append([{"text": "🎰 Spin to see unlock price", "callback_data": f"sig_spin:{sig_id}"}])
+        text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Spin once to see your unlock price (${SIG_SPIN_MIN:.2f}-${SIG_SPIN_MAX:.2f}) "
+                f"— whatever you get is locked in for this signal, no re-rolling.</blockquote>\n\n<i>🛡️ Capital protected</i>")
+    markup = {"inline_keyboard": rows}
+    if message_id:
+        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
+    else:
+        send_reply(chat_id, text, reply_markup=markup)
+
+def send_addfunds_screen(chat_id, message_id=None):
+    rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}]]
+    text = "💰 <b>Add Funds</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals.</blockquote>\n\n<i>🛡️ Capital protected</i>"
+    markup = {"inline_keyboard": rows}
+    if message_id:
+        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
+    else:
+        send_reply(chat_id, text, reply_markup=markup)
+
 def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     text = _apply_premium_emojis(text)
@@ -8045,6 +8303,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         rows.append([{"text": "📱 Open Mini App", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
     rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
                  {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
+    rows.append([{"text": "👑 Get VIP", "callback_data": "vip_menu"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
@@ -8644,6 +8903,74 @@ def command_listener():
                     # ── Weekend Sleep ON/OFF ────────────────────────────────────
                     elif cb_data in ("weekendsleep_on", "weekendsleep_off"):
                         _toggle_cmd(f"/ws {'on' if cb_data=='weekendsleep_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
+
+                    # ── VIP lucky-draw purchase ───────────────────────────────
+                    elif cb_data == "vip_spin":
+                        _u = ct._get(str(cb_cid))
+                        _cur_month = now_ist().strftime("%Y-%m")
+                        if _u.get("vip_spin_month") != _cur_month:
+                            _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
+                            _u["vip_spin_amount"] = round(random.uniform(VIP_SPIN_MIN, VIP_SPIN_MAX), 2)
+                            _u["vip_spin_month"] = _cur_month
+                            ct._set(cb_cid, _u)
+                        send_vip_offer_screen(cb_chat_id, cb_cid, message_id=cb_msg_id)
+                    elif cb_data.startswith("vip_pay:"):
+                        _amount = float(cb_data.split(":", 1)[1])
+                        _pay_url = _cryptopay_create_invoice(_amount, {"type": "vip", "cid": str(cb_cid)}, description="CLEXER VIP — 30 days")
+                        if _pay_url:
+                            _help_edit_or_send(cb_chat_id,
+                                f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Tap below to pay. VIP activates automatically within ~30s of payment confirming — no need to message anyone.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                {"inline_keyboard": [[{"text": f"💳 Pay ${_amount:.2f}", "url": _pay_url, "style": "primary"}],
+                                                      [{"text": "◀️  Back", "callback_data": "vip_menu"}]]},
+                                message_id=cb_msg_id)
+                        else:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the payment link — try again shortly.", "show_alert": True}, timeout=5)
+                    elif cb_data == "vip_menu":
+                        send_vip_offer_screen(cb_chat_id, cb_cid, message_id=cb_msg_id)
+
+                    # ── Free-channel signal unlock ────────────────────────────
+                    elif cb_data.startswith("sig_spin:"):
+                        _sig_id = cb_data.split(":", 1)[1]
+                        _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
+                        _spins = _u.setdefault("sig_spins", {})
+                        if _sig_id not in _spins:
+                            _spins[_sig_id] = round(random.uniform(SIG_SPIN_MIN, SIG_SPIN_MAX), 2)
+                            ct._set(cb_cid, _u)
+                        send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("sig_pay:"):
+                        _sig_id = cb_data.split(":", 1)[1]
+                        _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
+                        _amt = _u.get("sig_spins", {}).get(_sig_id)
+                        _bal = _u.get("wallet_balance", 0)
+                        if _amt is None:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Spin first.", "show_alert": True}, timeout=5)
+                        elif _bal < _amt:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": f"⚠️ Not enough balance (${_bal:.2f}) — tap Add Funds first.", "show_alert": True}, timeout=5)
+                        else:
+                            # Same-process wallet debit — no external payment involved here,
+                            # so this applies synchronously (safe: ct._set is race-free
+                            # within this one long-running process).
+                            _u["wallet_balance"] = round(_bal - _amt, 2)
+                            _u.setdefault("unlocked_sigs", []).append(_sig_id)
+                            ct._set(cb_cid, _u)
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                    elif cb_data == "addfunds_menu":
+                        send_addfunds_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("addfunds:"):
+                        _amt = float(cb_data.split(":", 1)[1])
+                        _pay_url = _cryptopay_create_invoice(_amt, {"type": "topup", "cid": str(cb_cid)}, description="CLEXER Wallet Top-Up")
+                        if _pay_url:
+                            _help_edit_or_send(cb_chat_id,
+                                f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Tap below to pay. Your wallet credits automatically within ~30s of payment confirming.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f}", "url": _pay_url, "style": "primary"}],
+                                                      [{"text": "◀️  Back", "callback_data": "addfunds_menu"}]]},
+                                message_id=cb_msg_id)
+                        else:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the payment link — try again shortly.", "show_alert": True}, timeout=5)
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
@@ -9828,7 +10155,9 @@ def _run_test_scan(cid, scan_ver: int):
             # slot times — everything else (regular grid, Demo Scan2) stays on the
             # legacy channel only.
             _demo1_tier_routed = scan_ver == 1 and _scan_run_mode.get("test") == "special"
-            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=_demo_is_d48, tier_routed=_demo1_tier_routed, share_free=True)
+            _save_sig_snapshot(_demo_sig_id, chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, f"demo{scan_ver}")
+            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=_demo_is_d48, tier_routed=_demo1_tier_routed, share_free=True,
+                locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id)
 
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
@@ -9952,6 +10281,7 @@ def main():
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
     threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
+    threading.Thread(target=_poll_payment_events, daemon=True).start()
 
     def _active_server_loop():
         while True:
@@ -10210,7 +10540,7 @@ def main():
                 if signal and not signal.get("_hold"):
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    signal["sig_id"] = _gen_signal_id(); signal["reply_map"] = send_entry_signal(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8"), tier_routed=True, share_free=_share_free)
+                    signal["reply_map"] = _send_btc_entry_signal(signal, _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     # MARKET orders filled instantly — send entry confirmation immediately
@@ -10268,7 +10598,7 @@ def main():
                         reset_trade(); time.sleep(1)
                         _share_free = _free_quota_available()
                         if _share_free: _consume_free_quota()
-                        signal["sig_id"] = _gen_signal_id(); signal["reply_map"] = send_entry_signal(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8"), tier_routed=True, share_free=_share_free)
+                        signal["reply_map"] = _send_btc_entry_signal(signal, _share_free)
                         set_trade(signal, _share_free)
                         ct.on_signal(signal, price, _share_free)
                 else:
@@ -10282,7 +10612,7 @@ def main():
                     reset_trade(); time.sleep(1)
                     _share_free = _free_quota_available()
                     if _share_free: _consume_free_quota()
-                    signal["sig_id"] = _gen_signal_id(); signal["reply_map"] = send_entry_signal(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8"), tier_routed=True, share_free=_share_free)
+                    signal["reply_map"] = _send_btc_entry_signal(signal, _share_free)
                     set_trade(signal, _share_free)
                     results = ct.on_signal(signal, price, _share_free)
                     ok = [r for r in results if r.startswith("✅")]

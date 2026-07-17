@@ -33,6 +33,7 @@ BOT_TOKEN       = os.environ["TELEGRAM_BOT_TOKEN"]
 ENCRYPTION_KEY  = os.environ["ENCRYPTION_KEY"].encode()
 DATA_DIR        = os.environ.get("DATA_DIR", "/data")
 STATE_FILE      = os.path.join(DATA_DIR, "clexer_state.json")
+CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot — verifies incoming webhook signatures
 
 fernet = Fernet(ENCRYPTION_KEY)
 
@@ -104,6 +105,20 @@ def init_db():
                     closed_at   TIMESTAMPTZ,
                     close_price NUMERIC,
                     pnl_usdt    NUMERIC
+                );
+
+                -- Append-only queue: the CryptoBot webhook only ever INSERTs here
+                -- (never touches ct_users directly), so there's no read-modify-write
+                -- race with bot.py, which owns the user DB in-process and polls this
+                -- table to apply wallet credits / VIP grants safely.
+                CREATE TABLE IF NOT EXISTS payment_events (
+                    id          SERIAL PRIMARY KEY,
+                    cid         TEXT NOT NULL,
+                    event_type  TEXT NOT NULL,
+                    amount      NUMERIC NOT NULL,
+                    meta        JSONB DEFAULT '{}',
+                    created_at  TIMESTAMPTZ DEFAULT NOW(),
+                    processed   BOOLEAN DEFAULT FALSE
                 );
             """)
             # Migrations — safe to run repeatedly (IF NOT EXISTS / DO NOTHING)
@@ -277,6 +292,86 @@ def kv_pull(key: str):
     except Exception as e:
         raise HTTPException(500, f"DB error: {e}")
 
+# ═════════════════════════════════════════════════════════════════════════════
+# CRYPTO PAY (@CryptoBot) webhook + payment event queue
+#
+# The webhook only ever INSERTs a row (see payment_events table above) and
+# sends an instant "payment received" DM — it never touches ct_users/wallet
+# balances directly. bot.py (the one process that owns the user DB in memory)
+# polls /payment_events?processed=false, applies each event via its existing
+# ct._get/_set, then acks it. This avoids a read-modify-write race between
+# this stateless webhook process and bot.py's long-running one.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _send_telegram_dm(chat_id, text: str):
+    """Direct Bot API call — api.py has BOT_TOKEN already (used for WebApp
+    initData verification) but never sent a message with it before now."""
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e:
+        print(f"[CRYPTOPAY] DM send error: {e}")
+
+@app.post("/cryptopay/webhook")
+async def cryptopay_webhook(request: Request):
+    raw = await request.body()
+    if CRYPTO_PAY_API_TOKEN:
+        sig = request.headers.get("crypto-pay-api-signature", "")
+        secret = hashlib.sha256(CRYPTO_PAY_API_TOKEN.encode()).digest()
+        expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            raise HTTPException(401, "Invalid signature")
+    body = json.loads(raw)
+    if body.get("update_type") != "invoice_paid":
+        return {"ok": True}   # ignore other update types (invoice_created, etc.)
+    invoice = body.get("payload", {})   # CryptoBot nests the actual invoice under "payload"
+    try:
+        meta = json.loads(invoice.get("payload", "{}"))   # our own metadata string, set at createInvoice time
+    except Exception:
+        meta = {}
+    cid = str(meta.get("cid", ""))
+    event_type = meta.get("type", "")
+    amount = float(invoice.get("amount", 0) or meta.get("amount", 0) or 0)
+    if not cid or not event_type:
+        print(f"[CRYPTOPAY] webhook missing cid/type in payload: {invoice.get('payload')}")
+        return {"ok": True}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO payment_events (cid, event_type, amount, meta)
+                    VALUES (%s, %s, %s, %s)
+                """, (cid, event_type, amount, json.dumps(meta)))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
+    _send_telegram_dm(cid, f"✅ <b>Payment received</b> — ${amount:,.2f}\n\nProcessing shortly...\n\n<i>🛡️ Capital protected</i>")
+    return {"ok": True}
+
+@app.get("/payment_events")
+def get_payment_events(request: Request, processed: bool = False):
+    _kv_check_secret(request)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM payment_events WHERE processed = %s ORDER BY id ASC LIMIT 100", (processed,))
+                rows = cur.fetchall()
+        return {"events": [dict(r) | {"created_at": r["created_at"].isoformat()} for r in rows]}
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
+
+@app.post("/payment_events/{event_id}/ack")
+def ack_payment_event(event_id: int, request: Request):
+    _kv_check_secret(request)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE payment_events SET processed = TRUE WHERE id = %s", (event_id,))
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(500, f"DB error: {e}")
+    return {"ok": True}
+
 # ── startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
@@ -300,7 +395,7 @@ def health():
 # Starts ON by default — send /miniapp resume from Telegram to go live
 _maintenance = {"on": True, "msg": "Under Maintenance — send /miniapp resume to go live"}
 
-_MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health")
+_MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health", "/cryptopay/", "/payment_events")
 
 @app.middleware("http")
 async def maintenance_gate(request: Request, call_next):
