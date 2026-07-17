@@ -198,7 +198,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
         f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
+    send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
 
 def _apply_trail_sl_btc(price: float):
@@ -220,7 +220,7 @@ def _apply_trail_sl_btc(price: float):
         f"🛡️ <b>Trailing SL — BTC</b>\n\n"
         f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
         f"<i>🛡️ Capital protected</i>")
-    send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
+    send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
         tier_routed=True, share_free=active_trade.get("share_free", True))
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
@@ -3871,7 +3871,7 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
     All 3 BTC entry call sites were byte-identical — consolidated here."""
     signal["sig_id"] = _gen_signal_id()
     _save_sig_snapshot(signal["sig_id"], SYMBOL, signal["signal"], signal["entry"], signal["sl"], signal["tp1"], signal["tp2"], "btc")
-    return send_entry_signal(fmt_signal(signal), include_ch2=(_gw_model_tag("btc") == "D4.8"), tier_routed=True,
+    return send_entry_signal(fmt_signal(signal), include_ch2=False, tier_routed=True,
         share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"])
 
 def fmt_update(status, price=None):
@@ -3976,7 +3976,7 @@ def run_tick_check():
                     f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
                     f"⚠️ <b>Trade is now LIVE — SL and TP active</b>\n\n"
                     f"✨ <i>🛡️ Capital protected</i>",
-                    active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False))
+                    active_trade.get("reply_map"), include_ch2=False)
             return False
 
         _apply_trail_sl_btc(price)
@@ -3990,7 +3990,7 @@ def run_tick_check():
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
-            send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
+            send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP2")
@@ -4009,7 +4009,7 @@ def run_tick_check():
                     f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=active_trade.get("is_d48", False),
+                send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
@@ -4035,7 +4035,7 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=_sl_in_ch2)
+                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -4044,10 +4044,10 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=_sl_in_ch2)
+                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=_sl_in_ch2)
+                send_lifecycle_reply(_sl_msg, active_trade.get("reply_map"), include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
@@ -4384,7 +4384,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             pnl = (price - entry) / entry * 100 * (1 if sig == "BUY" else -1) if price and entry else 0
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
-            send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=t.get("is_d48", False))
+            send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False)
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
@@ -4433,7 +4433,7 @@ def _tick_one(ver: int, t: dict) -> bool:
         if not t["entry_hit"]:
             # Shouldn't happen for MARKET trades, but safety fallback
             t["entry_hit"] = True
-            send_lifecycle_reply(fmt_scan_update("ENTRY_HIT", price, t), t.get("reply_map"), include_ch2=t.get("is_d48", False))
+            send_lifecycle_reply(fmt_scan_update("ENTRY_HIT", price, t), t.get("reply_map"), include_ch2=False)
 
         tp2_hit = (sig == "BUY" and check_high >= tp2) or (sig == "SELL" and check_low <= tp2)
         if tp2_hit:
@@ -4441,7 +4441,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
-            send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
+            send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             ct.on_scan_tp2(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -4465,7 +4465,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 trade_stats["scan_tp1"] += 1
                 trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
-                send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
+                send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
                 ct.on_scan_tp1(sym)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -4486,7 +4486,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             result = "BE" if t["tp1_hit"] else "SL"
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
-            send_lifecycle_reply(_sl_msg, t.get("reply_map"), include_ch2=t.get("is_d48", False),
+            send_lifecycle_reply(_sl_msg, t.get("reply_map"), include_ch2=False,
                 tier_routed=(result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -4547,11 +4547,11 @@ def run_price_check():
             trade_stats["missed_entries"] += 1
             log_trade_outcome("ENTRY_MISSED", f"price bypassed entry {active_trade['entry']:,.0f}")
             ct.on_cancel_limits()
-            send_lifecycle_reply(fmt_update("ENTRY_MISSED"), _rmap, include_ch2=_ch2_ok); reset_trade(); return True
+            send_lifecycle_reply(fmt_update("ENTRY_MISSED"), _rmap, include_ch2=False); reset_trade(); return True
         if not active_trade["entry_hit"] and detect_entry_invalidated(price, df_4h):
             log_trade_outcome("SETUP_INVALID", "4H closed past SL before entry")
             ct.on_cancel_limits()
-            send_lifecycle_reply(fmt_update("SETUP_INVALID"), _rmap, include_ch2=_ch2_ok); reset_trade(); return True
+            send_lifecycle_reply(fmt_update("SETUP_INVALID"), _rmap, include_ch2=False); reset_trade(); return True
         status = check_price_status(price, high_1h, low_1h, df_5m)
         print(f"  [1H] {active_trade['signal']} | {status}")
         if status == "TP2_HIT":
@@ -4559,7 +4559,7 @@ def run_price_check():
             log_trade_outcome("TP2_HIT", "hit during 1H check")
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
-            send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
+            send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             reset_trade(); return True
@@ -4575,7 +4575,7 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=_ch2_ok)
+                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -4584,10 +4584,10 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=_ch2_ok)
+                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=_ch2_ok)
+                send_lifecycle_reply(_sl_msg, _rmap, include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
@@ -4600,19 +4600,19 @@ def run_price_check():
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
-            send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=_ch2_ok, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
+            send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
                     "tp2": active_trade.get("tp2",0)},
                 entry_date=_ist_date_str(active_trade.get("entry_time")))
             _notify_free_late(SYMBOL, active_trade, "TP1")
-        elif status in ("STOP_HUNT",):      send_lifecycle_reply(fmt_update("STOP_HUNT"), _rmap, include_ch2=_ch2_ok)
+        elif status in ("STOP_HUNT",):      send_lifecycle_reply(fmt_update("STOP_HUNT"), _rmap, include_ch2=False)
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
             log_trade_outcome(status, ""); ct.on_cancel_limits()
-            send_lifecycle_reply(fmt_update(status), _rmap, include_ch2=_ch2_ok); reset_trade(); return True
+            send_lifecycle_reply(fmt_update(status), _rmap, include_ch2=False); reset_trade(); return True
         elif status == "WAITING_ENTRY":
-            active_trade["scan_count"] += 1; send_lifecycle_reply(fmt_update("WAITING_ENTRY", price), _rmap, include_ch2=_ch2_ok)
+            active_trade["scan_count"] += 1; send_lifecycle_reply(fmt_update("WAITING_ENTRY", price), _rmap, include_ch2=False)
         elif status == "RUNNING":
             active_trade["scan_count"] += 1  # trade running, no message needed
     except Exception as e: print(f"  [1H ERROR] {e}")
@@ -7067,7 +7067,7 @@ Reasoning: [one line]"""
                         # Regular-grid (non-special) auto-runs still never reach VIP/Free at
                         # all (tier_routed=False) — legacy channel only, unchanged.
                         slot_data["reply_map"] = send_entry_signal(fmt_scan_signal(slot_data),
-                            include_ch2=slot_data["is_d48"], tier_routed=_tier_routed, share_free=_effective_share_free,
+                            include_ch2=False, tier_routed=_tier_routed, share_free=_effective_share_free,
                             locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
                             sig_id=slot_data["sig_id"])
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
@@ -9880,7 +9880,7 @@ def _demo_monitor_loop():
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created))
                         _notify_free_late(sym, t, "TP2")
@@ -9903,7 +9903,7 @@ def _demo_monitor_loop():
                               f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
                               f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
@@ -9923,7 +9923,7 @@ def _demo_monitor_loop():
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
                               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp1(sym)
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
@@ -9943,7 +9943,7 @@ def _demo_monitor_loop():
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=is_d48, tier_routed=tier_routed, share_free=share_free)
+                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
@@ -10249,7 +10249,7 @@ def _run_test_scan(cid, scan_ver: int):
             _demo_share_free = _free_quota_available() if _demo1_tier_routed else False
             if _demo_share_free: _consume_free_quota()
             _save_sig_snapshot(_demo_sig_id, chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, f"demo{scan_ver}")
-            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=_demo_is_d48, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
+            _demo_reply_map = send_entry_signal(demo_msg, include_ch2=False, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
                 locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id)
 
             slot_data = {
@@ -10647,8 +10647,7 @@ def main():
                             f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
                             f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>\n\n"
                             f"✨ <i>🛡️ Capital protected</i>",
-                            include_ch2=active_trade.get("is_d48", False)
-                        )
+                            include_ch2=False                        )
                     active = ct.active_count()
                     if active == 0:
                         send_admin(f"⚠️ <b>Copy Trade</b>\n\nNo active copy users — signal NOT copied to BingX.\n\nUse /users to check.")
@@ -10687,7 +10686,7 @@ def main():
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
                             f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
-                            t.get("reply_map"), include_ch2=t.get("is_d48", False))
+                            t.get("reply_map"), include_ch2=False)
                         ct.on_close_all()
                         _close_sig_snapshot(t.get("sig_id",""), "STRUCTURE_FLIP")
                         reset_trade(); time.sleep(1)
