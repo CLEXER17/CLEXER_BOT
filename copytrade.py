@@ -337,7 +337,7 @@ def _default_user(username: str = "?") -> dict:
                            "total_pnl": 0.0, "won_usdt": 0.0, "lost_usdt": 0.0},
         "paused_by_admin": False,
         "joined":         _now_ist(),
-        "tier":           "vip",  # "vip" or "free" — set via /setvip /setfree; new users default VIP so nothing breaks silently
+        "tier":           "free",  # "vip" or "free" — set via /setvip (admin) or a real VIP payment; every new user starts Free
         "vip_start":      "",     # "DD.MM.YYYY" — only meaningful when tier == "vip" with an expiry
         "vip_end":        "",     # "DD.MM.YYYY" — VIP auto-downgrades to free after this date
         "vip_grace_notified_at": 0,  # set once the 24h renew-or-removed reminder has been sent
@@ -615,7 +615,7 @@ def _users_with_copy(share_free: bool = True) -> list[tuple[str, dict, str, str]
     for cid, user in list(_db.items()):
         if not user.get("copy_on") or not user.get("connected") or user.get("paused_by_admin"):
             continue
-        if not share_free and user.get("tier", "vip") == "free":
+        if not share_free and user.get("tier", "free") == "free":
             continue
         try:
             out.append((cid, user, _decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"])))
@@ -2479,7 +2479,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             paused   = " ⛔" if user.get("paused_by_admin") else ""
             risk     = user.get("risk_usdt")
             lev_str  = f"auto (max ${risk} loss)" if risk else f"{user.get('leverage',1)}x manual"
-            tier     = user.get("tier", "vip")
+            tier     = user.get("tier", "free")
             tier_tag = "⭐ VIP" if tier == "vip" else "🆓 FREE"
             lines.append(
                 f"{i}. {uname}{paused} | <code>{uid}</code>  {tier_tag}\n"
@@ -2526,7 +2526,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         paused = "\n⚠️ PAUSED BY ADMIN" if user.get("paused_by_admin") else ""
         _risk = user.get("risk_usdt")
         _lev_line = f"Auto-Risk: <b>max ${_risk} loss/trade</b> (leverage recalculated per trade)" if _risk else f"Leverage: <b>{user.get('leverage',1)}x manual</b>"
-        _tier = user.get("tier", "vip")
+        _tier = user.get("tier", "free")
         _tier_line = "⭐ <b>VIP</b>" + (f" (until {user['vip_end']})" if user.get("vip_end") else "") if _tier == "vip" else "🆓 <b>FREE</b>"
         _bingx_pnl_line = ""
         if user.get("connected"):

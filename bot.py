@@ -5418,7 +5418,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Copy trade: per-user for non-admin, global active users count for admin
         _user_ct = ct._get(str(chat_id))
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
-        _tier_val = (_user_ct or {}).get("tier", "vip")
+        _tier_val = (_user_ct or {}).get("tier", "free")
         _tier_tag = ("⭐ VIP" + (f" (until {_user_ct['vip_end']})" if _user_ct and _user_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
         _users_summary = _build_users_summary()
         send_reply(chat_id,
@@ -8396,7 +8396,7 @@ def send_vip_pick_screen(chat_id, message_id=None):
         _u_ct = ct._get(str(uid))
         tier_tag = ""
         if _u_ct:
-            tier_tag = "  ⭐" if _u_ct.get("tier", "vip") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
+            tier_tag = "  ⭐" if _u_ct.get("tier", "free") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
         label = (f"@{uname}" if uname else f"ID {uid}") + tier_tag
         rows.append([{"text": label, "callback_data": f"vip_pick:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
@@ -8416,7 +8416,7 @@ def send_free_pick_screen(chat_id, message_id=None):
         _u_ct = ct._get(str(uid))
         tier_tag = ""
         if _u_ct:
-            tier_tag = "  ⭐" if _u_ct.get("tier", "vip") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
+            tier_tag = "  ⭐" if _u_ct.get("tier", "free") == "vip" and _u_ct.get("connected") else ("  🆓" if _u_ct.get("connected") else "")
         label = (f"@{uname}" if uname else f"ID {uid}") + tier_tag
         rows.append([{"text": label, "callback_data": f"free_set:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
@@ -8543,7 +8543,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
             _pnl_s = f"+${_pnl:.2f} 🟢" if _pnl > 0 else (f"-${abs(_pnl):.2f} 🔴" if _pnl < 0 else "$0.00")
             _pnl_line = f"💰 Your Copy Trade P&L: <b>{_pnl_s}</b>\n\n"
         if _u_ct:
-            _tier_val = _u_ct.get("tier", "vip")
+            _tier_val = _u_ct.get("tier", "free")
             _tag = ("⭐ VIP" + (f" (until {_u_ct['vip_end']})" if _u_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
             _tier_line = f"🏷 Your Tier: <b>{_tag}</b>\n\n"
     text = (
