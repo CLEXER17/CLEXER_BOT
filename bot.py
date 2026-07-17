@@ -108,8 +108,14 @@ def is_ist_sleep():
     mins = now_ist().hour * 60 + now_ist().minute
     return 60 <= mins < 450
 
+WEEKEND_SLEEP_ENABLED = True   # /weekendsleep on|off — off = bot keeps running straight through Fri-Sun
+
 def is_weekend_sleep() -> bool:
-    """True from Friday 22:00 IST to Sunday 23:00 IST — full bot pause."""
+    """True from Friday 22:00 IST to Sunday 23:00 IST — full bot pause.
+    Admin can disable this entirely via /weekendsleep off to let the bot run
+    straight through the weekend instead."""
+    if not WEEKEND_SLEEP_ENABLED:
+        return False
     t = now_ist()
     wd = t.weekday()   # 0=Mon … 4=Fri, 5=Sat, 6=Sun
     mins = t.hour * 60 + t.minute
@@ -1606,32 +1612,20 @@ _load_slot_state()
 _load_daily_buckets()
 
 def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
-    """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
-    has its own independent model + gateway choice, set via /aiconfig.
-    TS2 (Demo Scan2) is forced to Opus 4.8 always, per admin request — see
-    _ai_aerolink() for the matching gateway override."""
-    if kind == "test" and scan_ver == 2:
-        return "claude-opus-4-8"
-    if _scan_run_mode.get(kind): return "claude-opus-4-8"
-    return {"btc": SCAN_MODEL, "scan1": SCAN1_MODEL, "scan2": SCAN2_MODEL, "test": TEST_MODEL}.get(kind, SCAN_MODEL)
+    """Which Claude model to use for this scan type. Forced to Opus 4.8 for
+    EVERYTHING right now, per admin request ('stop using D4.8, use A4.8 on
+    everything') — see _ai_aerolink() for the matching gateway override.
+    The old per-kind /aiconfig model settings (SCAN_MODEL etc.) are left
+    untouched in storage so they're easy to restore if this is ever reverted."""
+    return "claude-opus-4-8"
 
 def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
-    # TS2 (Demo Scan2) always goes through Aerolink + Opus 4.8 (A4.8), even at
-    # verified special times where TS1/other kinds would normally get Direct —
-    # admin explicitly wants every TS2 signal tagged A4.8, no exceptions.
-    if kind == "test" and scan_ver == 2:
-        return True
-    _mode = _scan_run_mode.get(kind)
-    if _mode == "special":
-        # Unverified special times (still tier-routed, still Opus 4.8, but not
-        # yet trusted for copytrade) go through Aerolink instead of Direct —
-        # only verified/proven special times get the Direct API gateway.
-        _trigger_hm = _scan_trigger_hm.get(kind)
-        if _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
-            return True
-        return False
-    if _mode == "regular": return True
-    return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
+    # Forced to Aerolink for EVERYTHING right now, per admin request ('stop
+    # using D4.8, use A4.8 on everything') — overrides the special/regular
+    # mode logic and every per-kind /aiconfig toggle (USE_AEROLINK,
+    # SCAN1_AEROLINK, etc.), which are left untouched in storage in case this
+    # gets reverted later.
+    return True
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers: A4.8/D4.8 (Aerolink/Direct + Opus 4.8)
@@ -3366,7 +3360,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3408,6 +3402,7 @@ def load_settings():
             TRAIL_SL_SCAN2 = d.get("trail_sl_scan2", False)
             TRAIL_SL_DEMO1 = d.get("trail_sl_demo1", False)
             TRAIL_SL_DEMO2 = d.get("trail_sl_demo2", False)
+            WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -3457,6 +3452,7 @@ def save_settings():
             "trail_sl_scan2": TRAIL_SL_SCAN2,
             "trail_sl_demo1": TRAIL_SL_DEMO1,
             "trail_sl_demo2": TRAIL_SL_DEMO2,
+            "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -4721,7 +4717,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/weekendsleep"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5661,6 +5657,23 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             SEND_NEWS = False; save_settings()
             send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
+
+    elif cmd == "/weekendsleep":
+        global WEEKEND_SLEEP_ENABLED
+        _ws_btns = {"inline_keyboard": [[
+            {"text": "🟢  ON",  "callback_data": "weekendsleep_on"},
+            {"text": "🔴  OFF", "callback_data": "weekendsleep_off"}]]}
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>Weekend Sleep</b>\n\nStatus: <b>{'✅ ON (bot pauses Fri 10PM → Sun 11PM IST)' if WEEKEND_SLEEP_ENABLED else '❌ OFF (bot runs straight through the weekend)'}</b>\n\n<i>🛡️ Capital protected</i>",
+                reply_markup=_ws_btns)
+        elif parts[1].lower() == "on":
+            WEEKEND_SLEEP_ENABLED = True; save_settings()
+            send_reply(chat_id, "✅ <b>Weekend Sleep ON</b> — bot will pause Fri 10PM → Sun 11PM IST as usual.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
+        elif parts[1].lower() == "off":
+            WEEKEND_SLEEP_ENABLED = False; save_settings()
+            send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
+        else: send_reply(chat_id, "Usage: /weekendsleep on|off", reply_markup=_ws_btns)
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -7400,6 +7413,7 @@ _SETTINGS_SUBCATS = {
     "extras": ("📰 Extras", [
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
+        ("/weekendsleep", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -8625,6 +8639,10 @@ def command_listener():
                     # ── News ON/OFF ───────────────────────────────────────────
                     elif cb_data in ("news_on", "news_off"):
                         _toggle_cmd(f"/news {'on' if cb_data=='news_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
+
+                    # ── Weekend Sleep ON/OFF ────────────────────────────────────
+                    elif cb_data in ("weekendsleep_on", "weekendsleep_off"):
+                        _toggle_cmd(f"/weekendsleep {'on' if cb_data=='weekendsleep_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
