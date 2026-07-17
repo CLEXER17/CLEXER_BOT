@@ -4312,7 +4312,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     replaced with lock placeholders. Same _scan_box template every other
     lifecycle message uses, so it looks native rather than bolted-on."""
     return _scan_box(
-        "Locked Signal", f"📣 #{coin}-USDT  |  {tag_label}",
+        "VIP Signal", f"📣 #{coin}-USDT  |  {tag_label}",
         [[f"🔒 {_smallcaps_title('Direction')}: Locked",
           f"🔒 {_smallcaps_title('Entry')}: Locked",
           "🔒 SL: Locked", "🔒 TP1: Locked", "🔒 TP2: Locked"],
