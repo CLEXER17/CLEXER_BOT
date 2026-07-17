@@ -649,7 +649,7 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     _uname = _get_bot_username()
     btns = []
     if _uname: btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
-    if ADMIN_CHAT_ID: btns.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}", "style": "primary"})
+    if _uname: btns.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     mkp = {"inline_keyboard": [btns]} if btns else None
     if result == "TP1":
         text = (
@@ -5059,6 +5059,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # so it must be re-added here to match the "#CLEXxxxxxx" keys in _sig_snapshots.
         if cmd == "/start" and len(parts) > 1 and parts[1].startswith("unlock_"):
             send_unlock_screen(chat_id, str(_hm_uid), "#" + parts[1][len("unlock_"):])
+            return
+        if cmd == "/start" and len(parts) > 1 and parts[1] == "vip":
+            send_vip_offer_screen(chat_id, str(_hm_uid))
             return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
 
