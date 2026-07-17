@@ -3447,7 +3447,17 @@ def save_settings():
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
     except Exception as e:
-        print(f"[SETTINGS] Save error: {e}")
+        print(f"[SETTINGS] Local save error: {e}")
+    # Previously only pushed to the central store during a manual /syncup —
+    # same bug class as the daily-recap/slot-stats issue: a redeploy between
+    # a settings change and the next manual sync could silently revert VIP/Free
+    # channel IDs, model toggles, copytrade flags, etc. back to whatever the
+    # central store last had (or defaults, if it never had anything).
+    if CLEXER_API_URL:
+        try:
+            _kv_push("bot_settings", _settings_blob)
+        except Exception as e:
+            print(f"[SETTINGS] Central push error: {e}")
 
 channel_paused = {"1": False, "2": False}  # per-channel pause state
 
