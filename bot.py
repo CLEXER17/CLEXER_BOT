@@ -419,6 +419,31 @@ def _all_channel_ids() -> list:
 _daily_buckets: dict = {}   # entry_date str -> {"date","tp1","tp2","sl","free_tp1","tp1_promo_sent","trades"}
 _daily_summary_last_sent_date = ""
 
+def _save_daily_buckets():
+    """Persists _daily_buckets to disk — without this, a Railway restart (which
+    happens on every deploy) silently wiped the whole day's TP1/TP2/SL tracking,
+    so the midnight recap found an empty bucket and skipped sending entirely.
+    Cheap to call on every _track_daily_result() update since the file is tiny."""
+    try:
+        with open(os.path.join(DATA_DIR, "daily_buckets.json"), "w") as f:
+            json.dump({"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date}, f)
+    except Exception as e:
+        print(f"[DAILY BUCKETS] save error: {e}")
+
+def _load_daily_buckets():
+    global _daily_buckets, _daily_summary_last_sent_date
+    try:
+        path = os.path.join(DATA_DIR, "daily_buckets.json")
+        if not os.path.exists(path):
+            return
+        with open(path) as f:
+            d = json.load(f)
+        _daily_buckets = d.get("buckets", {})
+        _daily_summary_last_sent_date = d.get("last_sent", "")
+        print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s) from disk")
+    except Exception as e:
+        print(f"[DAILY BUCKETS] load error: {e}")
+
 def _ist_date_str(epoch_seconds=None) -> str:
     """IST calendar-day string for a given epoch timestamp, or today if none given."""
     if epoch_seconds is None:
@@ -683,6 +708,7 @@ def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, fre
             bucket["tp1_promo_sent"] = True
             _send_tp1_streak_promo(symbol, tp1_detail or {})
     # TP2 congrats broadcast disabled — admin asked to stop sending it.
+    _save_daily_buckets()
 
 def _daily_summary_loop():
     """Background thread — fires the recap for the day that just ENDED, shortly
@@ -705,6 +731,7 @@ def _daily_summary_loop():
                     if bucket and bucket.get("trades"):
                         _send_daily_summary(bucket)
                         _daily_summary_last_sent_date = yesterday_str  # only lock once actually sent
+                        _save_daily_buckets()
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
         time.sleep(60)
@@ -1537,6 +1564,7 @@ def _ist_hm_from_epoch(epoch):
         return None
 
 _load_slot_state()
+_load_daily_buckets()
 
 def _ai_model(kind: str = "btc") -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
