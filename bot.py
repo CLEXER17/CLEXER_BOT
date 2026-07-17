@@ -7765,7 +7765,8 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
     _spin_line = (f"🎰 You got <b>${u['vip_spin_amount']:.2f}</b> in the lucky draw! Pay that above to unlock VIP for 1 month.\n\n"
                   f"Don't want it? Just pay the ${VIP_MONTHLY_PRICE:.0f}/month button below instead."
                   if has_spin else
-                  f"🎰 One spin per month (${VIP_SPIN_MIN:.0f}-${VIP_SPIN_MAX:.0f}) — the number you get is locked in for the month.")
+                  f"🎰 Spin the lucky draw for a random VIP price between <b>${VIP_SPIN_MIN:.0f}</b> and <b>${VIP_SPIN_MAX:.0f}</b> — could be lower than the ${VIP_MONTHLY_PRICE:.0f} full price! "
+                  f"You get one spin per month, and whatever you land on is locked in until you pay it or the month resets.")
     text = (f"👑 <b>Get VIP</b>\n\n<blockquote>{_spin_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
