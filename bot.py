@@ -108,11 +108,11 @@ def is_ist_sleep():
     mins = now_ist().hour * 60 + now_ist().minute
     return 60 <= mins < 450
 
-WEEKEND_SLEEP_ENABLED = True   # /weekendsleep on|off — off = bot keeps running straight through Fri-Sun
+WEEKEND_SLEEP_ENABLED = True   # /ws on|off — off = bot keeps running straight through Fri-Sun
 
 def is_weekend_sleep() -> bool:
     """True from Friday 22:00 IST to Sunday 23:00 IST — full bot pause.
-    Admin can disable this entirely via /weekendsleep off to let the bot run
+    Admin can disable this entirely via /ws off to let the bot run
     straight through the weekend instead."""
     if not WEEKEND_SLEEP_ENABLED:
         return False
@@ -4717,7 +4717,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/weekendsleep"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5658,7 +5658,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
 
-    elif cmd == "/weekendsleep":
+    elif cmd == "/ws":
         global WEEKEND_SLEEP_ENABLED
         _ws_btns = {"inline_keyboard": [[
             {"text": "🟢  ON",  "callback_data": "weekendsleep_on"},
@@ -5673,7 +5673,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         elif parts[1].lower() == "off":
             WEEKEND_SLEEP_ENABLED = False; save_settings()
             send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
-        else: send_reply(chat_id, "Usage: /weekendsleep on|off", reply_markup=_ws_btns)
+        else: send_reply(chat_id, "Usage: /ws on|off", reply_markup=_ws_btns)
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -7413,7 +7413,7 @@ _SETTINGS_SUBCATS = {
     "extras": ("📰 Extras", [
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
-        ("/weekendsleep", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
+        ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -8642,7 +8642,7 @@ def command_listener():
 
                     # ── Weekend Sleep ON/OFF ────────────────────────────────────
                     elif cb_data in ("weekendsleep_on", "weekendsleep_off"):
-                        _toggle_cmd(f"/weekendsleep {'on' if cb_data=='weekendsleep_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
+                        _toggle_cmd(f"/ws {'on' if cb_data=='weekendsleep_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
