@@ -1592,13 +1592,22 @@ def _ist_hm_from_epoch(epoch):
 _load_slot_state()
 _load_daily_buckets()
 
-def _ai_model(kind: str = "btc") -> str:
+def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
     """Which Claude model to use for this scan type — each of btc/scan1/scan2/test
-    has its own independent model + gateway choice, set via /aiconfig."""
+    has its own independent model + gateway choice, set via /aiconfig.
+    TS2 (Demo Scan2) is forced to Opus 4.8 always, per admin request — see
+    _ai_aerolink() for the matching gateway override."""
+    if kind == "test" and scan_ver == 2:
+        return "claude-opus-4-8"
     if _scan_run_mode.get(kind): return "claude-opus-4-8"
     return {"btc": SCAN_MODEL, "scan1": SCAN1_MODEL, "scan2": SCAN2_MODEL, "test": TEST_MODEL}.get(kind, SCAN_MODEL)
 
-def _ai_aerolink(kind: str = "btc") -> bool:
+def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
+    # TS2 (Demo Scan2) always goes through Aerolink + Opus 4.8 (A4.8), even at
+    # verified special times where TS1/other kinds would normally get Direct —
+    # admin explicitly wants every TS2 signal tagged A4.8, no exceptions.
+    if kind == "test" and scan_ver == 2:
+        return True
     _mode = _scan_run_mode.get(kind)
     if _mode == "special":
         # Unverified special times (still tier-routed, still Opus 4.8, but not
@@ -1611,14 +1620,14 @@ def _ai_aerolink(kind: str = "btc") -> bool:
     if _mode == "regular": return True
     return {"btc": USE_AEROLINK, "scan1": SCAN1_AEROLINK, "scan2": SCAN2_AEROLINK, "test": TEST_AEROLINK}.get(kind, USE_AEROLINK)
 
-def _gw_model_tag(kind: str = "btc") -> str:
+def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers: A4.8/D4.8 (Aerolink/Direct + Opus 4.8)
     or AF/DF (Aerolink/Direct + Fable 5)."""
-    gw = "A" if _ai_aerolink(kind) else "D"
-    mdl = "F" if _ai_model(kind) == "claude-fable-5" else "4.8"
+    gw = "A" if _ai_aerolink(kind, scan_ver) else "D"
+    mdl = "F" if _ai_model(kind, scan_ver) == "claude-fable-5" else "4.8"
     return f"{gw}{mdl}"
 
-def _claude_client(kind: str = "btc", attempt: int = 0):
+def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
@@ -1627,7 +1636,7 @@ def _claude_client(kind: str = "btc", attempt: int = 0):
     ones, so a failure on one key doesn't fail the whole call as long as another slot
     has a key in it. Slot 1 is required; slots 2-4 are optional and can be left empty
     until keys are added later."""
-    if _ai_aerolink(kind) and AEROLINK_API_KEY:
+    if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
         _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4) if k]
         key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
@@ -9701,14 +9710,14 @@ def _run_test_scan(cid, scan_ver: int):
             analysis = ""; _claude_ok = False
             for _attempt in range(3):
                 try:
-                    _using_aero = _ai_aerolink("test")
+                    _using_aero = _ai_aerolink("test", scan_ver)
                     _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
                                else "aerolink-key1" if _using_aero else "direct")
-                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test')} run_mode={_scan_run_mode.get('test')}")
-                    r2 = _claude_client("test", attempt=_attempt).messages.create(
-                        model=_ai_model("test"), max_tokens=500,
+                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get('test')}")
+                    r2 = _claude_client("test", attempt=_attempt, scan_ver=scan_ver).messages.create(
+                        model=_ai_model("test", scan_ver), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
-                    _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test"),
+                    _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
                     analysis = _claude_text(r2)
@@ -9772,7 +9781,7 @@ def _run_test_scan(cid, scan_ver: int):
             coin  = chosen_sym.replace("-USDT","")
             _demo_sig_id = _gen_signal_id()
             demo_msg = _scan_box(
-                "Alt Signal", f"📣 {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test')}",
+                "Alt Signal", f"📣 {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
                  [f"🎯 {_smallcaps_title('Entry')}: <code>{scan_entry:,.4g}</code>",
                   f"🛑 SL: <code>{scan_sl:,.4g}</code>  ({sl_pct:.1f}%)",
@@ -9782,7 +9791,7 @@ def _run_test_scan(cid, scan_ver: int):
                   f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
                 tag=_demo_sig_id,
             )
-            _demo_is_d48 = _gw_model_tag("test") == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+            _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
             # Demo Scan1 only reaches Free/VIP channels at its whitelisted special
             # slot times — everything else (regular grid, Demo Scan2) stays on the
             # legacy channel only.
@@ -9829,7 +9838,7 @@ def _run_test_scan(cid, scan_ver: int):
                 _trig_hm = _scan_trigger_hm.get("test")
                 _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                 _label = f"TS{scan_ver}"
-                _gw = _gw_model_tag("test")
+                _gw = _gw_model_tag("test", scan_ver)
                 if _demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried):
                     _no_sig_msg = _scan_box(
                         f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
