@@ -5686,12 +5686,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"📰 News:       <b>{_news_flag}</b>\n"
                 if is_admin else ""
             )
-            + f"\n{_next_btc_line}"
-            f"{_next_s1_line}"
-            f"{_next_s2_line}"
-            f"{_next_ts1_line}"
-            f"{_next_ts2_line}"
-            f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
+            + (
+                f"\n{_next_btc_line}"
+                f"{_next_s1_line}"
+                f"{_next_s2_line}"
+                f"{_next_ts1_line}"
+                f"{_next_ts2_line}"
+                if is_admin else ""
+            )
+            + f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
             + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
