@@ -41,7 +41,8 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
-CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot Crypto Pay API token — not wired to any feature yet, added ahead of time
+CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot Crypto Pay API token
+STARS_PER_USD = float(os.getenv("STARS_PER_USD", "62.5"))   # Telegram's real Stars rate: 100 Stars ≈ $1.60, i.e. $1 ≈ 62.5 Stars
 
 SYMBOL               = "BTCUSDT"
 TICK_INTERVAL        = 5     # price check every 5s when trade active
@@ -4848,10 +4849,12 @@ def _cryptopay_create_invoice(amount_usd: float, payload_dict: dict, description
         print(f"  [CRYPTOPAY] createInvoice error: {e}")
     return None
 
-def _cryptopay_grant_vip(cid: str, days: int = 30):
+def _grant_vip(cid: str, days: int = 30):
     """Grants VIP for `days` days from today — mirrors /setvip's exact field
     shape (copytrade.py's handle(), '/setvip <cid> <start> <end>' branch):
-    DD.MM.YYYY date strings, tier='vip', vip_grace_notified_at reset to 0."""
+    DD.MM.YYYY date strings, tier='vip', vip_grace_notified_at reset to 0.
+    Shared by both payment gateways (CryptoBot and Telegram Stars) since the
+    grant itself doesn't care how the user paid."""
     u = ct._db.get(str(cid)) or ct._default_user(cid)
     start = now_ist(); end = start + timedelta(days=days)
     u["tier"] = "vip"
@@ -4859,6 +4862,25 @@ def _cryptopay_grant_vip(cid: str, days: int = 30):
     u["vip_end"] = end.strftime("%d.%m.%Y")
     u["vip_grace_notified_at"] = 0
     ct._set(cid, u)
+
+def _stars_send_invoice(chat_id, title: str, description: str, payload_dict: dict, amount_usd: float) -> bool:
+    """Sends a Telegram Stars (XTR) invoice — Telegram renders its own native
+    pay button right in the chat, no external checkout page and no provider
+    token needed. payload_dict is echoed back verbatim as the invoice_payload
+    on the resulting successful_payment update (see command_listener), the
+    same role CryptoBot's invoice payload plays for _poll_payment_events."""
+    stars = max(1, round(amount_usd * STARS_PER_USD))
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendInvoice",
+            json={"chat_id": chat_id, "title": title[:32], "description": description[:255],
+                  "payload": json.dumps(payload_dict), "provider_token": "", "currency": "XTR",
+                  "prices": [{"label": title[:32], "amount": stars}]}, timeout=15)
+        rj = r.json()
+        if rj.get("ok"): return True
+        print(f"  [STARS] sendInvoice failed: {rj}")
+    except Exception as e:
+        print(f"  [STARS] sendInvoice error: {e}")
+    return False
 
 def _poll_payment_events():
     """Runs forever — every 30s, applies any unprocessed CryptoBot payment
@@ -4885,7 +4907,7 @@ def _poll_payment_events():
                         ct._set(cid, u)
                         send_to_user(cid, f"💰 <b>Wallet credited</b>: +${amount:,.2f}\n\nNew balance: <b>${u['wallet_balance']:,.2f}</b>\n\n<i>🛡️ Capital protected</i>")
                     elif etype == "vip":
-                        _cryptopay_grant_vip(cid, days=30)
+                        _grant_vip(cid, days=30)
                         send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.\n\n<i>🛡️ Capital protected</i>")
                     requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
                 except Exception as e:
@@ -7965,8 +7987,9 @@ def _reveal_signal_text(snap: dict, sig_id: str) -> str:
 def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     """DM screen shown after tapping a locked Free-channel signal's Unlock
     button. One spin per signal (locked forever once rolled, per admin's
-    rule) — payment is a synchronous same-process wallet deduction, not a
-    CryptoBot invoice (amounts here are below CryptoBot's $1 minimum)."""
+    rule) — wallet payment is a synchronous same-process deduction; Stars
+    payment goes through Telegram's own invoice instead (these amounts are
+    below CryptoBot's $1 minimum, so crypto isn't offered here)."""
     snap = _sig_snapshots.get(sig_id)
     if not snap:
         send_reply(chat_id, "⚠️ This signal is no longer available to unlock (too old, or already closed out).")
@@ -7993,7 +8016,8 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     if sig_id in spins:
         _amt = spins[sig_id]
         _bal = u.get("wallet_balance", 0)
-        rows.append([{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{sig_id}"}])
+        rows.append([{"text": f"💳 ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{sig_id}"},
+                      {"text": "⭐ Pay with Stars", "callback_data": f"sig_paystars:{sig_id}"}])
         rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
         text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
                 f"Wallet balance: <b>${_bal:.2f}</b></blockquote>\n\n<i>🛡️ Capital protected</i>")
@@ -8011,7 +8035,7 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
 def send_addfunds_screen(chat_id, message_id=None):
     rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
             [{"text": "◀️  Back", "callback_data": "help_main"}]]
-    text = "💰 <b>Add Funds</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals.</blockquote>\n\n<i>🛡️ Capital protected</i>"
+    text = "💰 <b>Add Funds</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals. Pay with crypto or Telegram Stars.</blockquote>\n\n<i>🛡️ Capital protected</i>"
     markup = {"inline_keyboard": rows}
     if message_id:
         _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
@@ -8790,7 +8814,7 @@ def command_listener():
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query"]}, timeout=25)
             data = r.json()
             if not data.get("ok"): time.sleep(5); continue
             for upd in data.get("result", []):
@@ -9187,16 +9211,31 @@ def command_listener():
                         threading.Thread(target=_do_vip_spin, daemon=True).start()
                     elif cb_data.startswith("vip_pay:"):
                         _amount = float(cb_data.split(":", 1)[1])
+                        _help_edit_or_send(cb_chat_id,
+                            f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                            {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"vip_paycrypto:{_amount:.2f}"},
+                                                  {"text": "⭐ Stars", "callback_data": f"vip_paystars:{_amount:.2f}"}],
+                                                 [{"text": "◀️  Back", "callback_data": "vip_menu"}]]},
+                            message_id=cb_msg_id)
+                    elif cb_data.startswith("vip_paycrypto:"):
+                        _amount = float(cb_data.split(":", 1)[1])
                         _pay_url = _cryptopay_create_invoice(_amount, {"type": "vip", "cid": str(cb_cid)}, description="CLEXER VIP — 30 days")
                         if _pay_url:
                             _help_edit_or_send(cb_chat_id,
                                 f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Tap below to pay. VIP activates automatically within ~30s of payment confirming — no need to message anyone.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amount:.2f}", "url": _pay_url, "style": "primary"}],
-                                                      [{"text": "◀️  Back", "callback_data": "vip_menu"}]]},
+                                                      [{"text": "◀️  Back", "callback_data": f"vip_pay:{_amount:.2f}"}]]},
                                 message_id=cb_msg_id)
                         else:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the payment link — try again shortly.", "show_alert": True}, timeout=5)
+                    elif cb_data.startswith("vip_paystars:"):
+                        _amount = float(cb_data.split(":", 1)[1])
+                        _ok = _stars_send_invoice(cb_chat_id, "CLEXER VIP — 30 days",
+                            f"VIP membership, 30 days (${_amount:.2f})", {"type": "vip", "cid": str(cb_cid)}, _amount)
+                        if not _ok:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
                     elif cb_data == "vip_menu":
                         send_vip_offer_screen(cb_chat_id, cb_cid, message_id=cb_msg_id)
 
@@ -9255,20 +9294,56 @@ def command_listener():
                             _u.setdefault("unlocked_sigs", []).append(_sig_id)
                             ct._set(cb_cid, _u)
                             send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("sig_paystars:"):
+                        _sig_id = cb_data.split(":", 1)[1]
+                        _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
+                        _amt = _u.get("sig_spins", {}).get(_sig_id)
+                        if _sig_snapshots.get(_sig_id, {}).get("result"):
+                            # Closed between spin and pay — don't charge for a dead signal.
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        elif _amt is None:
+                            try:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Spin first.", "show_alert": True}, timeout=5)
+                            except Exception as e:
+                                print(f"  [SIG PAY] answerCallbackQuery error: {e}")
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        else:
+                            _ok = _stars_send_invoice(cb_chat_id, "CLEXER Signal Unlock",
+                                f"Unlock signal {_sig_id} (${_amt:.2f})",
+                                {"type": "sig_unlock", "cid": str(cb_cid), "sig_id": _sig_id}, _amt)
+                            if not _ok:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
                     elif cb_data == "addfunds_menu":
                         send_addfunds_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("addfunds:"):
+                        _amt = float(cb_data.split(":", 1)[1])
+                        _help_edit_or_send(cb_chat_id,
+                            f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                            {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"addfundscrypto:{_amt:.2f}"},
+                                                  {"text": "⭐ Stars", "callback_data": f"addfundsstars:{_amt:.2f}"}],
+                                                 [{"text": "◀️  Back", "callback_data": "addfunds_menu"}]]},
+                            message_id=cb_msg_id)
+                    elif cb_data.startswith("addfundscrypto:"):
                         _amt = float(cb_data.split(":", 1)[1])
                         _pay_url = _cryptopay_create_invoice(_amt, {"type": "topup", "cid": str(cb_cid)}, description="CLEXER Wallet Top-Up")
                         if _pay_url:
                             _help_edit_or_send(cb_chat_id,
                                 f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Tap below to pay. Your wallet credits automatically within ~30s of payment confirming.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f}", "url": _pay_url, "style": "primary"}],
-                                                      [{"text": "◀️  Back", "callback_data": "addfunds_menu"}]]},
+                                                      [{"text": "◀️  Back", "callback_data": f"addfunds:{_amt:.2f}"}]]},
                                 message_id=cb_msg_id)
                         else:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the payment link — try again shortly.", "show_alert": True}, timeout=5)
+                    elif cb_data.startswith("addfundsstars:"):
+                        _amt = float(cb_data.split(":", 1)[1])
+                        _ok = _stars_send_invoice(cb_chat_id, "CLEXER Wallet Top-Up",
+                            f"Wallet top-up (${_amt:.2f})", {"type": "topup", "cid": str(cb_cid), "usd": _amt}, _amt)
+                        if not _ok:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
 
                     # ── BTC Mode V7/V9 ────────────────────────────────────────
                     elif cb_data in ("btcmode_v7", "btcmode_v9"):
@@ -9745,6 +9820,19 @@ def command_listener():
                             _dnav_send_file(cb_chat_id, _rtype, _year, _month, week=_week, message_id=cb_msg_id)
                     continue
 
+                # Telegram Stars checkout — must be answered within 10s of the user
+                # tapping Pay, before the successful_payment message ever arrives.
+                # We always approve; the invoice was only ever created for known
+                # amounts/types by our own code, so there's nothing to validate.
+                pcq = upd.get("pre_checkout_query")
+                if pcq:
+                    try:
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerPreCheckoutQuery",
+                            json={"pre_checkout_query_id": pcq["id"], "ok": True}, timeout=10)
+                    except Exception as e:
+                        print(f"  [STARS] answerPreCheckoutQuery error: {e}")
+                    continue
+
                 # Auto-approve/decline VIP channel join requests — only current VIP
                 # tier users get let in automatically; everyone else is declined.
                 jr = upd.get("chat_join_request")
@@ -9781,6 +9869,41 @@ def command_listener():
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
+
+                # Telegram Stars payment completed — arrives as a normal message
+                # carrying successful_payment, no webhook/poll loop needed (unlike
+                # CryptoBot, Stars payments settle inside Telegram itself). Mirrors
+                # _poll_payment_events' vip/topup handling for the crypto gateway.
+                sp = msg.get("successful_payment")
+                if sp:
+                    try:
+                        _sp_payload = json.loads(sp.get("invoice_payload") or "{}")
+                    except Exception:
+                        _sp_payload = {}
+                    _sp_stars = sp.get("total_amount", 0)
+                    _sp_type  = _sp_payload.get("type")
+                    _sp_cid   = _sp_payload.get("cid") or str(cid)
+                    if _sp_type == "vip":
+                        _grant_vip(_sp_cid, days=30)
+                        send_to_user(_sp_cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ⭐{_sp_stars:,} Stars · 30 days\n\nTap ⭐ VIP Channel in /help to get access.\n\n<i>🛡️ Capital protected</i>")
+                    elif _sp_type == "topup":
+                        _u = ct._db.get(str(_sp_cid)) or ct._default_user(_sp_cid)
+                        _sp_usd = float(_sp_payload.get("usd", _sp_stars / STARS_PER_USD))
+                        _u["wallet_balance"] = round(_u.get("wallet_balance", 0) + _sp_usd, 2)
+                        ct._set(_sp_cid, _u)
+                        send_to_user(_sp_cid, f"💰 <b>Wallet credited</b>: +${_sp_usd:,.2f} (⭐{_sp_stars:,} Stars)\n\nNew balance: <b>${_u['wallet_balance']:,.2f}</b>\n\n<i>🛡️ Capital protected</i>")
+                    elif _sp_type == "sig_unlock":
+                        _sp_sig_id = _sp_payload.get("sig_id")
+                        _u = ct._db.get(str(_sp_cid)) or ct._default_user(_sp_cid)
+                        _u.setdefault("unlocked_sigs", []).append(_sp_sig_id)
+                        ct._set(_sp_cid, _u)
+                        _sp_snap = _sig_snapshots.get(_sp_sig_id)
+                        if _sp_snap:
+                            send_to_user(_sp_cid, _reveal_signal_text(_sp_snap, _sp_sig_id))
+                        else:
+                            send_to_user(_sp_cid, f"✅ <b>Unlocked</b> (⭐{_sp_stars:,} Stars paid) — but this signal's snapshot expired, contact admin if it doesn't show up.\n\n<i>🛡️ Capital protected</i>")
+                    print(f"  [STARS] payment applied: type={_sp_type} cid={_sp_cid} stars={_sp_stars}")
+                    continue
 
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
                 register_user(cid, uname if uname != "?" else None)
