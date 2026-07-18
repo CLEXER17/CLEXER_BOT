@@ -10669,6 +10669,8 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
+                        if lbl == "SL":
+                            _track_daily_result(sym, "SL", tier_routed=tier_routed, entry_date=_ist_date_str(created))
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
                         _log_demo_history(t, lbl, cp, _dver)
