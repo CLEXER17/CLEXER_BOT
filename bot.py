@@ -4423,6 +4423,43 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
 _load_sig_snapshots()
 _load_free_sl_log()
 
+def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
+    """Renders the admin-only startup status message as an ASCII box, wrapped
+    in <pre> so Telegram shows it monospace and the borders actually line up.
+    Width auto-sizes to the longest row instead of a hardcoded value, since
+    dynamic fields (tv_status, source_status) vary in length. Lives inside
+    <pre> so it's excluded from the global smallcaps pass by design — box
+    art needs literal ASCII, not smallcaps glyphs, to render correctly."""
+    rows = [
+        ("📡", "TV Feed", tv_status),
+        ("🔄", "Source", source_status),
+        ("📈", "Charts", "ON" if charts_on else "OFF (default)"),
+        ("📰", "News Feed", "ON" if news_on else "OFF"),
+    ]
+    status_rows = [("⚠️", "Status", "PAUSED" if paused else "SCANNING")]
+    action_row = "▶️ Send /go to start scanning." if paused else "▶️ Scanning live."
+
+    def fmt(icon, label, val):
+        return f"{icon} {label:<10}: {val}"
+
+    body_lines = [fmt(*r) for r in rows]
+    status_lines = [fmt(*r) for r in status_rows] + [action_row]
+    title = "CLEXER v17.8.5 DEPLOYED"
+    inner_w = max(len(title), max(len(l) for l in body_lines + status_lines)) + 2
+
+    def border(l, m, r): return l + m * (inner_w + 2) + r
+    def pad(l):           return "║ " + l.ljust(inner_w - 1) + " ║"
+
+    out = [border("╔", "═", "╗"),
+           "║" + title.center(inner_w + 2) + "║",
+           border("╚", "═", "╝"), "",
+           border("╔", "═", "╗")]
+    out += [pad(l) for l in body_lines]
+    out.append(border("╠", "═", "╣"))
+    out += [pad(l) for l in status_lines]
+    out.append(border("╚", "═", "╝"))
+    return "<pre>" + "\n".join(out) + "</pre>"
+
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
     message (entry, TP1, TP2, SL, BE, timeout, etc.) — sections is a list of
@@ -10899,24 +10936,17 @@ def main():
     threading.Thread(target=_startup_sync, daemon=True).start()
 
     # Startup message → admin DM only
-    tv_line = ""
     if TV_BRIDGE_URL:
-        if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:   tv_line = "TV: ONLINE ✅\n"
-        elif tv_bridge_state["online"]:                                 tv_line = "TV: Bridge OK - TV not connected\n"
-        else:                                                           tv_line = "TV: OFFLINE - Binance fallback\n"
+        if tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]:   tv_status = "ONLINE"
+        elif tv_bridge_state["online"]:                                 tv_status = "Bridge OK, TV down"
+        else:                                                           tv_status = "OFFLINE"
     else:
-        tv_line = "TV: Not configured - Binance-only\n"
+        tv_status = "Not configured"
+    source_status = "Binance Fallback" if not (TV_BRIDGE_URL and tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]) else "TradingView"
 
-    send_admin(
-        f"<b>CLEXER V17.8.5 Deployed</b>\n"
-        f"---------------------\n"
-        f"{tv_line}"
-        f"Charts: {'ON' if SEND_CHARTS else 'OFF (default)'}\n"
-        f"News: {'ON' if SEND_NEWS else 'OFF (default)'}\n\n"
-        f"⚠️ <b>Bot is PAUSED</b>\n"
-        f"Send /go to start scanning.\n"
-        f"---------------------\n"
-        f"<i>🛡️ Capital protected</i>")
+    send_admin(_deploy_status_box(
+        tv_status=tv_status, source_status=source_status,
+        charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True))
 
     MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
