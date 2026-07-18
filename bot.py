@@ -36,6 +36,8 @@ AEROLINK_API_KEY_3  = os.getenv("AEROLINK_API_KEY_3",  "")   # 3rd Aerolink key 
 AEROLINK_API_KEY_4  = os.getenv("AEROLINK_API_KEY_4",  "")   # 4th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
+CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
+_CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-4-8"}
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
@@ -1147,45 +1149,50 @@ def _chat_is_image_request(text: str) -> bool:
 
 _CHAT_TEXT_MODEL = "gemini-3.5-flash"  # newest/smartest model with free quota on this account — only 5 RPM / 20 RPD though (vs 3.1-flash-lite's 500 RPD)
 
+# Shared by every /chat text engine (Gemini + Claude) so switching engines via
+# /model doesn't change tone/formatting rules — only which model answers.
+_CHAT_SYSTEM_PROMPT = (
+    "You are a helpful, friendly assistant inside a Telegram bot, chatting in an ongoing "
+    "conversation. Read the actual message, not just the topic of earlier messages — "
+    "each reply must directly answer or respond to what THIS specific message says.\n\n"
+    "CONVERSATION AWARENESS — critical:\n"
+    "- If the user's message is a complaint, venting, a reaction to your own last reply "
+    "(e.g. \"that reply was bad\", \"you didn't understand\", \"why so robotic\"), an opinion, "
+    "a short reaction, or small talk — do NOT treat it as a new factual question. Respond "
+    "naturally and briefly like a person would: acknowledge it, ask what they'd actually "
+    "like, or adjust — never generate an unrelated new table/topic in response to a complaint.\n"
+    "- Match the user's own language and tone. If they write in Hindi/Hinglish, reply in "
+    "Hindi/Hinglish naturally — don't force English structure onto a casual message.\n"
+    "- Most replies in a real conversation are short and plain. Do not manufacture structure "
+    "(tables, multi-point breakdowns) where the message doesn't call for it.\n\n"
+    "FORMATTING:\n"
+    "- Never use Markdown syntax (no **bold**, no ### headers, no - or * bullets). "
+    "Telegram does not render Markdown here, so raw asterisks/hashes show up as literal "
+    "garbage characters.\n"
+    "- Use Telegram HTML tags only: <b>bold</b> and <i>italic</i>. No other tags.\n"
+    "- Only reach for the 'Table Summary' format when the user is genuinely asking for a "
+    "comparison, multi-step breakdown, or list of options with more than one fact per item — "
+    "not for every reply. Format: one short header line (with emoji), a blank line, an "
+    "aligned table in a <pre></pre> block, optionally one italic note line. Example:\n\n"
+    "📍 <b>Cuttack to Jaipur — ~1,700 km</b>\n\n"
+    "<pre>Mode      Distance    Time\n"
+    "✈️ Air     ~1,700 km   5–9 hrs\n"
+    "🚂 Train   ~1,730 km   28–36 hrs\n"
+    "🚗 Road    ~1,700 km   30–35 hrs</pre>\n\n"
+    "<i>No direct flights — connects via Delhi/Mumbai/Kolkata</i>\n\n"
+    "- For anything else — direct questions, opinions, casual chat, complaints, single facts "
+    "— just reply in plain text/HTML, no table, no forced structure.\n"
+    "- Pick emoji that fit the topic naturally; don't add emoji-heavy tables to plain chat.\n"
+    "- Only add the \"educational only, not financial advice\" disclaimer when you actually "
+    "gave trading/investment advice or a prediction — never on unrelated questions (tech, "
+    "AI models, general knowledge, etc.), and never more than once every few messages in a row."
+)
+
 def _chat_call_gemini_text(history: list) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     body = {
         "contents": history,
-        "systemInstruction": {"parts": [{"text":
-            "You are a helpful, friendly assistant inside a Telegram bot, chatting in an ongoing "
-            "conversation. Read the actual message, not just the topic of earlier messages — "
-            "each reply must directly answer or respond to what THIS specific message says.\n\n"
-            "CONVERSATION AWARENESS — critical:\n"
-            "- If the user's message is a complaint, venting, a reaction to your own last reply "
-            "(e.g. \"that reply was bad\", \"you didn't understand\", \"why so robotic\"), an opinion, "
-            "a short reaction, or small talk — do NOT treat it as a new factual question. Respond "
-            "naturally and briefly like a person would: acknowledge it, ask what they'd actually "
-            "like, or adjust — never generate an unrelated new table/topic in response to a complaint.\n"
-            "- Match the user's own language and tone. If they write in Hindi/Hinglish, reply in "
-            "Hindi/Hinglish naturally — don't force English structure onto a casual message.\n"
-            "- Most replies in a real conversation are short and plain. Do not manufacture structure "
-            "(tables, multi-point breakdowns) where the message doesn't call for it.\n\n"
-            "FORMATTING:\n"
-            "- Never use Markdown syntax (no **bold**, no ### headers, no - or * bullets). "
-            "Telegram does not render Markdown here, so raw asterisks/hashes show up as literal "
-            "garbage characters.\n"
-            "- Use Telegram HTML tags only: <b>bold</b> and <i>italic</i>. No other tags.\n"
-            "- Only reach for the 'Table Summary' format when the user is genuinely asking for a "
-            "comparison, multi-step breakdown, or list of options with more than one fact per item — "
-            "not for every reply. Format: one short header line (with emoji), a blank line, an "
-            "aligned table in a <pre></pre> block, optionally one italic note line. Example:\n\n"
-            "📍 <b>Cuttack to Jaipur — ~1,700 km</b>\n\n"
-            "<pre>Mode      Distance    Time\n"
-            "✈️ Air     ~1,700 km   5–9 hrs\n"
-            "🚂 Train   ~1,730 km   28–36 hrs\n"
-            "🚗 Road    ~1,700 km   30–35 hrs</pre>\n\n"
-            "<i>No direct flights — connects via Delhi/Mumbai/Kolkata</i>\n\n"
-            "- For anything else — direct questions, opinions, casual chat, complaints, single facts "
-            "— just reply in plain text/HTML, no table, no forced structure.\n"
-            "- Pick emoji that fit the topic naturally; don't add emoji-heavy tables to plain chat.\n"
-            "- Only add the \"educational only, not financial advice\" disclaimer when you actually "
-            "gave trading/investment advice or a prediction — never on unrelated questions (tech, "
-            "AI models, general knowledge, etc.), and never more than once every few messages in a row."}]},
+        "systemInstruction": {"parts": [{"text": _CHAT_SYSTEM_PROMPT}]},
     }
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
     if not r.ok:
@@ -1193,6 +1200,23 @@ def _chat_call_gemini_text(history: list) -> str:
     d = r.json()
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
+
+def _chat_call_claude_text(history: list, model_id: str) -> str:
+    """Same conversation history format as Gemini (role 'user'/'model', one
+    text part each) — translated to Claude's 'user'/'assistant' shape so
+    /model can swap engines without touching how history is stored."""
+    messages = [{"role": "assistant" if h["role"] == "model" else "user",
+                 "content": h["parts"][0]["text"]} for h in history]
+    client = _claude_client("chat")
+    resp = client.messages.create(
+        model=model_id,
+        max_tokens=2000,
+        system=_CHAT_SYSTEM_PROMPT,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        messages=messages,
+    )
+    return _claude_text(resp) or "…"
 
 def _chat_generate_image(prompt: str):
     """Free, no-API-key image generation via Pollinations.ai (image.pollinations.ai) —
@@ -1212,7 +1236,7 @@ def _handle_chat_message(cid, text: str):
         return
     sess["last"] = time.time()
     _is_image = _chat_is_image_request(text)
-    if not _is_image and not GEMINI_API_KEY:
+    if not _is_image and CHAT_MODEL == "google" and not GEMINI_API_KEY:
         send_reply(cid, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         return
     try:
@@ -1229,7 +1253,10 @@ def _handle_chat_message(cid, text: str):
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            reply_text = _chat_call_gemini_text(sess["history"])
+            if CHAT_MODEL in _CHAT_MODEL_IDS:
+                reply_text = _chat_call_claude_text(sess["history"], _CHAT_MODEL_IDS[CHAT_MODEL])
+            else:
+                reply_text = _chat_call_gemini_text(sess["history"])
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
             send_reply(cid, reply_text)
         # Trim history to bound token usage
@@ -3425,7 +3452,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3469,6 +3496,7 @@ def load_settings():
             TRAIL_SL_DEMO2 = d.get("trail_sl_demo2", False)
             WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
             VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
+            CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -3520,6 +3548,7 @@ def save_settings():
             "trail_sl_demo2": TRAIL_SL_DEMO2,
             "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
             "vip_monthly_price": VIP_MONTHLY_PRICE,
+            "chat_model": CHAT_MODEL,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -5152,7 +5181,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5241,7 +5270,7 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -5569,20 +5598,42 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/chat":
         _chat_sessions[str(chat_id)] = {"last": time.time(), "history": []}
-        if not GEMINI_API_KEY:
+        if CHAT_MODEL == "google" and not GEMINI_API_KEY:
             send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         else:
+            _reply_note = "" if is_admin else "\n\n↩️ <b>Reply to this message</b> (or any of my replies) to keep chatting — plain messages won't trigger a response."
             send_reply(chat_id,
                 "💬 <b>Chat Session Started</b>\n\n"
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
                 "🎨 Need an image? Just describe what you want.\n\n"
-                "⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with /endchat.")
+                f"⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with /endchat.{_reply_note}")
 
     elif cmd == "/endchat":
         if _chat_sessions.pop(str(chat_id), None) is not None:
             send_reply(chat_id, "💬 <b>Chat Session Ended</b>\n\nType /chat anytime to start a new one.")
         else:
             send_reply(chat_id, "⚠️ You don't have an active chat session. Type /chat to start one.")
+
+    elif cmd == "/chatmodel" and is_admin:
+        _model_labels = {"google": "🟢 Google (Gemini)", "sonnet": "🔵 Sonnet 5", "opus": "🟠 Opus 4.8"}
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>/chat AI Engine</b>\n\nCurrent: <b>{_model_labels[CHAT_MODEL]}</b>\n\n"
+                f"Usage: /chatmodel g|s|o\n"
+                f"g = Google (Gemini, free) — default\n"
+                f"s = Sonnet 5 (Claude, highest Sonnet)\n"
+                f"o = Opus 4.8 (Claude, highest Opus)\n\n"
+                f"This is a global switch — every user's /chat uses whichever engine you pick here; "
+                f"users can't change it themselves.\n\n"
+                f"<i>Note: /model is already taken (scan-analysis model picker), so this lives at /chatmodel instead.</i>")
+        else:
+            _arg = parts[1].lower()
+            _new = {"g": "google", "s": "sonnet", "o": "opus"}.get(_arg)
+            if not _new:
+                send_reply(chat_id, "Usage: /chatmodel g|s|o")
+            else:
+                CHAT_MODEL = _new; save_settings()
+                send_reply(chat_id, f"<b>/chat engine → {_model_labels[CHAT_MODEL]}</b> ✅")
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
@@ -10169,7 +10220,12 @@ def command_listener():
                 if text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
                 elif str(cid) in _chat_sessions:
-                    _handle_chat_message(cid, text)
+                    # Regular users must reply to the bot's last message to get a
+                    # /chat answer — otherwise every plain message they send while
+                    # a session is open would trigger a reply. Admin is exempt.
+                    _is_admin_chat = ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)
+                    if _is_admin_chat or msg.get("reply_to_message"):
+                        _handle_chat_message(cid, text)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
 
