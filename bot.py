@@ -4426,50 +4426,26 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
 _load_sig_snapshots()
 _load_free_sl_log()
 
-# Premium custom emoji render as wider image stickers than a single monospace
-# character, which throws off the ASCII box's manually-padded right border —
-# so the box's own icons are excluded from the premium-emoji upgrade and
-# kept as plain, predictably-narrow unicode glyphs instead.
-_BOX_ICON_NO_PREMIUM = {ic: None for ic in ("📡", "🔄", "📈", "📰", "⚠️", "▶️")}
-
 def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
-    """Renders the admin-only startup status message as an ASCII box. Not
-    wrapped in <pre> — Telegram doesn't allow nested entities (premium
-    <tg-emoji>) inside <pre>/<code>, so that would silently kill the custom
-    icons. Padding is computed on the pre-smallcaps text; the global
-    smallcaps pass (_apply_premium_emojis → _smallcaps_body) swaps letters
-    1:1 via str.translate so line lengths — and therefore alignment — are
-    unaffected by running after this. /go stays literal/tappable since
-    _smallcaps_title() already exempts slash-commands."""
-    rows = [
-        ("📡", "TV Feed", tv_status),
-        ("🔄", "Source", source_status),
-        ("📈", "Charts", "ON" if charts_on else "OFF (default)"),
-        ("📰", "News Feed", "ON" if news_on else "OFF"),
-    ]
-    status_rows = [("⚠️", "Status", "PAUSED" if paused else "SCANNING")]
-    action_row = "▶️ Send /go to start scanning." if paused else "▶️ Scanning live."
-
-    def fmt(icon, label, val):
-        return f"{icon} {label:<10}: {val}"
-
-    body_lines = [fmt(*r) for r in rows]
-    status_lines = [fmt(*r) for r in status_rows] + [action_row]
-    title = "CLEXER v17.8.5 DEPLOYED"
-    inner_w = max(len(title), max(len(l) for l in body_lines + status_lines)) + 2
-
-    def border(l, m, r): return l + m * (inner_w + 2) + r
-    def pad(l):           return "║ " + l.ljust(inner_w - 1) + " ║"
-
-    out = [border("╔", "═", "╗"),
-           "║" + title.center(inner_w + 2) + "║",
-           border("╚", "═", "╝"), "",
-           border("╔", "═", "╗")]
-    out += [pad(l) for l in body_lines]
-    out.append(border("╠", "═", "╣"))
-    out += [pad(l) for l in status_lines]
-    out.append(border("╚", "═", "╝"))
-    return "\n".join(out)
+    """Renders the admin-only startup status message. No box-drawing borders —
+    Telegram only guarantees monospace alignment inside <pre>/<code>, and
+    <pre>/<code> don't allow nested entities (premium <tg-emoji>), so any
+    bordered box built outside <pre> drifts out of alignment depending on
+    device/font (confirmed live) while one built inside <pre> loses the
+    premium icons and the tappable /go link. A plain list sidesteps the
+    conflict entirely — premium icons and /go both work, nothing to misalign."""
+    status_line = "⚠️ <b>PAUSED</b>" if paused else "🟢 <b>SCANNING</b>"
+    action_line = "▶️ Send /go to start scanning." if paused else "▶️ Scanning live."
+    return (
+        f"👑 <b>CLEXER V17.8.5 Deployed</b>\n\n"
+        f"📡 TV Feed: {tv_status}\n"
+        f"🔄 Source: {source_status}\n"
+        f"📈 Charts: {'ON' if charts_on else 'OFF (default)'}\n"
+        f"📰 News Feed: {'ON' if news_on else 'OFF'}\n\n"
+        f"{status_line}\n"
+        f"{action_line}\n\n"
+        f"<i>🛡️ Capital protected</i>"
+    )
 
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
@@ -10957,8 +10933,7 @@ def main():
 
     send_admin(_deploy_status_box(
         tv_status=tv_status, source_status=source_status,
-        charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True),
-        emoji_overrides=_BOX_ICON_NO_PREMIUM)
+        charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True))
 
     MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
