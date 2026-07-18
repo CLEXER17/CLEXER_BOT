@@ -3610,17 +3610,39 @@ def _smallcaps_title(text: str) -> str:
             out.append(w[0].upper() + w[1:].lower().translate(_SMALLCAPS_MAP))
     return " ".join(out)
 
-def _apply_premium_emojis(text: str) -> str:
+def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
-    version; everyone else still sees the plain glyph (Telegram's own fallback)."""
+    version; everyone else still sees the plain glyph (Telegram's own fallback).
+    `overrides` lets a specific caller swap the emoji ID for one or more
+    glyphs (e.g. a distinct ⭐ for Stars-payment screens) without touching the
+    global PREMIUM_EMOJI_MAP used everywhere else."""
     if not PREMIUM_EMOJIS_ENABLED or not text:
         return text
-    for glyph, emoji_id in PREMIUM_EMOJI_MAP.items():
+    emap = {**PREMIUM_EMOJI_MAP, **overrides} if overrides else PREMIUM_EMOJI_MAP
+    for glyph, emoji_id in emap.items():
         if glyph in text:
             text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
     if "BingX" in text:
         text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
     return text
+
+# Distinct custom emoji ID for ⭐ specifically on Telegram-Stars payment
+# screens/buttons (VIP, signal unlock, add funds) — separate from the ⭐ used
+# elsewhere in the bot (PREMIUM_EMOJI_MAP), per admin request.
+PAYMENT_STAR_EMOJI_ID = "5190768311394130762"
+_PAYMENT_STAR_OVERRIDE = {"⭐️": PAYMENT_STAR_EMOJI_ID, "⭐": PAYMENT_STAR_EMOJI_ID}
+
+def _star_button(text: str, callback_data: str = None, url: str = None) -> dict:
+    """Builds an inline-keyboard button whose leading ⭐ renders as the
+    dedicated payment-Stars custom emoji (icon_custom_emoji_id) instead of
+    the plain glyph or the bot's other global ⭐ mapping."""
+    label = text.replace("⭐", "", 1).strip() if text.startswith("⭐") else text
+    btn = {"text": label, "icon_custom_emoji_id": PAYMENT_STAR_EMOJI_ID}
+    if callback_data is not None:
+        btn["callback_data"] = callback_data
+    if url is not None:
+        btn["url"] = url
+    return btn
 
 _STYLE_SUCCESS_HINTS = ("Turn ON", "🟢", "Yes, confirm", "Adopt", "💾 Save", "✅")
 _STYLE_DANGER_HINTS  = ("Turn OFF", "🔴", "Cancel", "Remove", "Reset", "❌ Close", "🗑", "🚫", "❌")
@@ -7963,9 +7985,9 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
         rows.append([{"text": _smallcaps_title("🎰 Lucky Draw Spin ($)"), "callback_data": "vip_spin"}])
     if has_star_spin:
         _samt = u["vip_star_spin_amount"]
-        rows.append([{"text": f"⭐ Pay {_samt:,} Stars (your ⭐ spin price)", "callback_data": f"vip_paystarsflat:{_samt}"}])
+        rows.append([_star_button(f"⭐ Pay {_samt:,} Stars (your spin price)", callback_data=f"vip_paystarsflat:{_samt}")])
     else:
-        rows.append([{"text": _smallcaps_title("🎰 Lucky Draw Spin (⭐)"), "callback_data": "vip_starspin"}])
+        rows.append([_star_button(_smallcaps_title("⭐ Lucky Draw Spin"), callback_data="vip_starspin")])
     rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
     _last_row = [{"text": "◀️  Back", "callback_data": "help_main"}]
     if ADMIN_CHAT_ID:
@@ -7983,7 +8005,7 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
             f"{_dollar_line}\n\n{_star_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
-    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
+    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
 
 # --- Free-channel signal unlock (wallet-funded, one spin per signal) ----------
 SIG_SPIN_MIN, SIG_SPIN_MAX = 0.01, 0.05
@@ -8037,14 +8059,14 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     else:
         rows.append([{"text": _smallcaps_title("🎰 Spin To See Price ($)"), "callback_data": f"sig_spin:{sig_id}"}])
         _wallet_line = f"Spin once to see your $ unlock price (${SIG_SPIN_MIN:.2f}-${SIG_SPIN_MAX:.2f}) — locked in for this signal, no re-rolling."
-    rows.append([{"text": "⭐ Unlock for 1 Star", "callback_data": f"sig_unlockstar:{sig_id}"}])
+    rows.append([_star_button("⭐ Unlock for 1 Star", callback_data=f"sig_unlockstar:{sig_id}")])
     rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
     rows.append([{"text": "🏠 Main Menu", "callback_data": "help_main"}])
     text = (f"🔒 <b>{_smallcaps_title('Signal Locked')}</b>\n\n<blockquote>{_wallet_line}\n\n"
             f"Or skip the spin entirely — unlock instantly for a flat <b>⭐ 1 Star</b>, no spinning needed.</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
-    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
+    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
 
 def send_addfunds_screen(chat_id, message_id=None):
     rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
@@ -8054,9 +8076,9 @@ def send_addfunds_screen(chat_id, message_id=None):
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
 
-def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True):
+def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True, emoji_overrides=None):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-    text = _apply_premium_emojis(text)
+    text = _apply_premium_emojis(text, overrides=emoji_overrides)
     markup = _style_keyboard(markup, rotate=rotate)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "reply_markup": markup or {"inline_keyboard": []}, "disable_web_page_preview": True}
@@ -9226,9 +9248,9 @@ def command_listener():
                         _help_edit_or_send(cb_chat_id,
                             f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                             {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"vip_paycrypto:{_amount:.2f}"},
-                                                  {"text": "⭐ Stars", "callback_data": f"vip_paystars:{_amount:.2f}"}],
+                                                  _star_button("⭐ Stars", callback_data=f"vip_paystars:{_amount:.2f}")],
                                                  [{"text": "◀️  Back", "callback_data": "vip_menu"}]]},
-                            message_id=cb_msg_id)
+                            message_id=cb_msg_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
                     elif cb_data.startswith("vip_paycrypto:"):
                         _amount = float(cb_data.split(":", 1)[1])
                         _pay_url = _cryptopay_create_invoice(_amount, {"type": "vip", "cid": str(cb_cid)}, description="CLEXER VIP — 30 days")
@@ -9317,10 +9339,10 @@ def command_listener():
                                 f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
                                 f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up, or unlock instantly for a flat ⭐ 1 Star instead.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{_sig_id}"}],
-                                                      [{"text": "⭐ Unlock for 1 Star", "callback_data": f"sig_unlockstar:{_sig_id}"}],
+                                                      [_star_button("⭐ Unlock for 1 Star", callback_data=f"sig_unlockstar:{_sig_id}")],
                                                       [{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}],
                                                       [{"text": "🏠 Main Menu", "callback_data": "help_main"}]]},
-                                message_id=cb_msg_id, rotate=False)
+                                message_id=cb_msg_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
                         else:
                             # Same-process wallet debit — no external payment involved here,
                             # so this applies synchronously (safe: ct._set is race-free
@@ -9373,9 +9395,9 @@ def command_listener():
                         _help_edit_or_send(cb_chat_id,
                             f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                             {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"addfundscrypto:{_amt:.2f}"},
-                                                  {"text": "⭐ Stars", "callback_data": f"addfundsstars:{_amt:.2f}"}],
+                                                  _star_button("⭐ Stars", callback_data=f"addfundsstars:{_amt:.2f}")],
                                                  [{"text": "◀️  Back", "callback_data": "addfunds_menu"}]]},
-                            message_id=cb_msg_id)
+                            message_id=cb_msg_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
                     elif cb_data.startswith("addfundscrypto:"):
                         _amt = float(cb_data.split(":", 1)[1])
                         _pay_url = _cryptopay_create_invoice(_amt, {"type": "topup", "cid": str(cb_cid)}, description="CLEXER Wallet Top-Up")
