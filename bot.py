@@ -4424,12 +4424,14 @@ _load_sig_snapshots()
 _load_free_sl_log()
 
 def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
-    """Renders the admin-only startup status message as an ASCII box, wrapped
-    in <pre> so Telegram shows it monospace and the borders actually line up.
-    Width auto-sizes to the longest row instead of a hardcoded value, since
-    dynamic fields (tv_status, source_status) vary in length. Lives inside
-    <pre> so it's excluded from the global smallcaps pass by design — box
-    art needs literal ASCII, not smallcaps glyphs, to render correctly."""
+    """Renders the admin-only startup status message as an ASCII box. Not
+    wrapped in <pre> — Telegram doesn't allow nested entities (premium
+    <tg-emoji>) inside <pre>/<code>, so that would silently kill the custom
+    icons. Padding is computed on the pre-smallcaps text; the global
+    smallcaps pass (_apply_premium_emojis → _smallcaps_body) swaps letters
+    1:1 via str.translate so line lengths — and therefore alignment — are
+    unaffected by running after this. /go stays literal/tappable since
+    _smallcaps_title() already exempts slash-commands."""
     rows = [
         ("📡", "TV Feed", tv_status),
         ("🔄", "Source", source_status),
@@ -4458,7 +4460,7 @@ def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news
     out.append(border("╠", "═", "╣"))
     out += [pad(l) for l in status_lines]
     out.append(border("╚", "═", "╝"))
-    return "<pre>" + "\n".join(out) + "</pre>"
+    return "\n".join(out)
 
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     """Shared decorative box template for every Scan1/Scan2/Demo lifecycle
