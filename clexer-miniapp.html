@@ -363,7 +363,9 @@
   let curP = "30D";
 
   const dec = s => s==="BTCUSDT"?1:(s==="ETHUSDT"||s==="BNBUSDT")?2:s==="SOLUSDT"?2:8;
-  const fmt = (n,d) => Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+  // minimumFractionDigits:0 trims trailing zeros — d is just the cap, not a
+  // forced pad, so 0.385 stays "0.385" instead of "0.38500000".
+  const fmt = (n,d) => Number(n).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:d});
 
   /* ---------- tab switching ---------- */
   function switchTab(name){
