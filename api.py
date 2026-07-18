@@ -34,6 +34,8 @@ ENCRYPTION_KEY  = os.environ["ENCRYPTION_KEY"].encode()
 DATA_DIR        = os.environ.get("DATA_DIR", "/data")
 STATE_FILE      = os.path.join(DATA_DIR, "clexer_state.json")
 CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot — verifies incoming webhook signatures
+ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID", "")   # same value as bot.py's — must be set here too for /trades/active's admin view
+IST = timezone(timedelta(hours=5, minutes=30))
 
 fernet = Fernet(ENCRYPTION_KEY)
 
@@ -468,10 +470,69 @@ def get_price(sym: str = "BTC-USDT"):
 # TRADES endpoints
 # ═════════════════════════════════════════════════════════════════════════════
 
+_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test", "demo2": "test"}
+
+def _kv_dict(key: str) -> dict:
+    """Reads a kv_store blob directly (same table kv_pull/kv_push use) —
+    used here to pull ct_users (tier lookup) and slot_auto_state (special/
+    unverified schedule sets) without an internal HTTP round-trip."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data_json FROM kv_store WHERE key = %s", (key,))
+                row = cur.fetchone()
+        return (row["data_json"] if row else {}) or {}
+    except Exception:
+        return {}
+
+def _trade_category(kind: str, created_at, special: dict, no_copy: dict) -> str:
+    """Same verified/unverified/non-special classification bot.py's /status
+    uses, reimplemented here since api.py is a separate process with no
+    access to bot.py's in-memory _SCAN_SPECIAL/_SCAN_SPECIAL_NO_COPY sets —
+    slot_auto_state (pushed by bot.py's _save_slot_state) carries the same
+    data centrally instead."""
+    if not created_at:
+        return "nonspecial"
+    try:
+        dt = datetime.fromtimestamp(float(created_at), timezone.utc) + IST
+        hm = [dt.hour, dt.minute]
+    except Exception:
+        return "nonspecial"
+    sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
+    if hm in no_copy.get(sched_kind, []):
+        return "unverified"
+    if hm in special.get(sched_kind, []):
+        return "verified"
+    return "nonspecial"
+
 @app.get("/trades/active")
-def get_active_trades():
-    """Return all active trades from bot state. No auth required — public bot positions."""
+def get_active_trades(request: Request):
+    """Returns active trades, filtered by the requesting viewer's tier —
+    same rule as bot.py's /status: admin sees everything tagged by category,
+    VIP sees only verified trades, Free sees only trades it actually got
+    (share_free) plus a locked VIP tag (no numbers) for anything VIP-only.
+    initData is optional (kept back-compat with older public callers), but
+    an unauthenticated/unrecognized caller is treated as Free — the most
+    restrictive default — never as admin/VIP."""
     state = read_state()
+
+    viewer_tier = "free"
+    is_admin_view = False
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    if init_data:
+        try:
+            u = verify_init_data(init_data)
+            uid = str(u.get("id", ""))
+            if uid:
+                is_admin_view = bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)
+                ct_users = _kv_dict("ct_users")
+                viewer_tier = (ct_users.get(uid) or {}).get("tier", "free")
+        except Exception:
+            pass
+
+    slot_state = _kv_dict("slot_auto_state")
+    special  = slot_state.get("special", {})
+    no_copy  = slot_state.get("no_copy", {})
 
     # bot.py saves key "trade" (not "active_trade")
     active = state.get("trade") or state.get("active_trade")
@@ -483,12 +544,40 @@ def get_active_trades():
 
     positions = []
 
-    def _add(t: dict, source: str):
+    def _add(t: dict, source: str, filterable: bool):
         if not t or not t.get("signal"):
             return
         raw_side = t.get("signal", t.get("direction", "LONG"))
         side = "LONG" if raw_side in ("LONG", "BUY") else "SHORT"
         entry_hit = bool(t.get("entry_hit") or t.get("entry_type") == "MARKET")
+
+        # BTC ("main") is intentionally never filtered — shown to everyone,
+        # same as bot.py's /status. Scan/demo trades are gated by tier.
+        if filterable:
+            cat = _trade_category(source, t.get("created_at"), special, no_copy)
+            share_free  = t.get("share_free", True)
+            tier_routed = t.get("tier_routed", True)
+            if is_admin_view:
+                reveal, tag = True, cat
+            elif viewer_tier == "vip":
+                reveal, tag = (cat == "verified"), None
+            else:
+                reveal, tag = share_free, None
+            if not reveal:
+                # is_admin_view always sets reveal=True above, so this path
+                # only runs for Free (locked VIP tag) or VIP-hidden trades.
+                if viewer_tier != "vip" and tier_routed:
+                    positions.append({
+                        "symbol": None, "side": None, "status": "LOCKED",
+                        "entry": None, "tp1": None, "tp2": None, "sl": None,
+                        "qty": None, "leverage": None, "tp1_hit": False,
+                        "source": source, "opened_at": t.get("opened_at"),
+                        "locked": True, "tag": "vip",
+                    })
+                return
+        else:
+            tag = None
+
         positions.append({
             "symbol":  t.get("symbol", "BTCUSDT" if source == "main" else ""),
             "side":    side,
@@ -502,19 +591,21 @@ def get_active_trades():
             "tp1_hit": bool(t.get("tp1_hit", False)),
             "source":  source,
             "opened_at": t.get("opened_at"),
+            "locked":  False,
+            **({"category": tag} if tag else {}),
         })
 
     if active:
-        _add(active, "main")
+        _add(active, "main", filterable=False)
     # scan lists: each element is a trade dict
     for t in (scan1 if isinstance(scan1, list) else scan1.values()):
-        _add(t, "scan1")
+        _add(t, "scan1", filterable=True)
     for t in (scan2 if isinstance(scan2, list) else scan2.values()):
-        _add(t, "scan2")
+        _add(t, "scan2", filterable=True)
     for t in (demo1 if isinstance(demo1, list) else demo1.values()):
-        _add(t, "demo1")
+        _add(t, "demo1", filterable=True)
     for t in (demo2 if isinstance(demo2, list) else demo2.values()):
-        _add(t, "demo2")
+        _add(t, "demo2", filterable=True)
 
     return {"positions": positions, "count": len(positions)}
 

@@ -1706,6 +1706,36 @@ def _ist_hm_from_epoch(epoch):
     except Exception:
         return None
 
+def _status_trade_cat(kind: str, created_at) -> str:
+    """Classifies a scan/demo trade as 'verified' (special + copy-enabled),
+    'unverified' (special but auto-demoted), or 'nonspecial' — shared by
+    /status and /trade to gate which viewer tier can see it, and by admin's
+    view to tag which category a trade belongs to."""
+    _hm = _ist_hm_from_epoch(created_at)
+    if not _hm:
+        return "nonspecial"
+    _sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
+    if _hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind, set()):
+        return "unverified"
+    if _hm in _SCAN_SPECIAL.get(_sched_kind, set()):
+        return "verified"
+    return "nonspecial"
+
+_CAT_TAG = {"verified": "⭐", "unverified": "⚠️", "nonspecial": "➖"}
+
+def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: str, full_view: bool):
+    """Decides whether a scan/demo trade should be fully revealed, shown as
+    a locked VIP tag, or hidden entirely for a given viewer — the same rule
+    /status and /trade both apply. Returns (reveal: bool, show_locked_tag: bool)."""
+    if full_view:
+        return True, False
+    if viewer_tier == "vip":
+        return (cat == "verified"), False
+    # free / unregistered
+    if share_free:
+        return True, False
+    return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
+
 _load_slot_state()
 _load_daily_buckets()
 
@@ -5559,37 +5589,16 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _user_ct = ct._get(str(chat_id))
         _tier_val = (_user_ct or {}).get("tier", "free")
         _full_status_view = is_admin or is_co_admin(_check_id)
-        _CAT_TAG = {"verified": "⭐", "unverified": "⚠️", "nonspecial": "➖"}
-        def _status_trade_cat(kind: str, created_at) -> str:
-            _hm = _ist_hm_from_epoch(created_at)
-            if not _hm:
-                return "nonspecial"
-            _sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
-            if _hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind, set()):
-                return "unverified"
-            if _hm in _SCAN_SPECIAL.get(_sched_kind, set()):
-                return "verified"
-            return "nonspecial"
         def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra=""):
             _cat = _status_trade_cat(kind, created_at)
             _dir = "🟢" if sig == "BUY" else "🔴"
-            if _full_status_view:
-                _reveal = True
-                _prefix = f"{_CAT_TAG.get(_cat,'➖')} "
-            elif _tier_val == "vip":
-                _reveal = (_cat == "verified")
-                _prefix = ""
-            else:  # free / unregistered
-                _reveal = share_free
-                _prefix = ""
+            _reveal, _locked = _trade_reveal(_cat, share_free, tier_routed, _tier_val, _full_status_view)
+            _prefix = f"{_CAT_TAG.get(_cat,'➖')} " if (_reveal and _full_status_view) else ""
             if _reveal:
                 return (f"\n\n<b>{label}:</b> {_prefix}{_dir} {sig} {sym}\n"
                         f"Entry:{entry:,.4g} {'✅' if entry_hit else '⏳'}  "
                         f"SL:{sl:,.4g}  TP1:{tp1:,.4g} {'✔️' if tp1_hit else ''}{extra}")
-            # Free viewer, VIP-exclusive trade: locked tag, no numbers.
-            # VIP viewer with an unverified/non-special trade: hide entirely
-            # (an "upgrade to view" tag makes no sense to someone already VIP).
-            if _tier_val != "vip" and tier_routed:
+            if _locked:
                 return f"\n\n<b>{label}:</b> 🔒 VIP-exclusive signal — upgrade to view"
             return ""
         scan_lines = ""
@@ -5802,6 +5811,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/trade":
         parts_out = []
+        # Same viewer-tier filtering as /status — admin/co-admin sees
+        # everything (tagged by category), VIP sees only verified trades,
+        # Free sees trades it actually got plus a locked VIP tag for the
+        # rest. BTC is intentionally unfiltered, shown to everyone.
+        _trade_user_ct = ct._get(str(chat_id))
+        _trade_tier_val = (_trade_user_ct or {}).get("tier", "free")
+        _trade_full_view = is_admin or is_co_admin(_check_id)
         # BTC trade
         t = active_trade
         if t["signal"]:
@@ -5818,6 +5834,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Scan trades — all from both lists
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
             for sc in _lst:
+                _kind = f"scan{_ver}"
+                _cat = _status_trade_cat(_kind, sc.get('created_at'))
+                _reveal, _locked = _trade_reveal(_cat, sc.get('share_free', True), sc.get('tier_routed', True),
+                                                  _trade_tier_val, _trade_full_view)
+                if not _reveal:
+                    if _locked:
+                        parts_out.append(f"<b>Scan{_ver} Trade</b>\n\n🔒 VIP-exclusive signal — upgrade to view")
+                    continue
                 try:
                     sp = get_bingx_price(sc["symbol"])
                     spl = f"Current: <b>{sp:,.4g}</b>\n" if sp else ""
@@ -5825,8 +5849,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 # Check tp1_hit from bot state OR from any copy user's state
                 _tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc["symbol"])
                 _sl_label = f"<b>{sc['sl']:,.4g}</b>" + (" ← BE" if _tp1_hit else "")
+                _cat_tag = f"{_CAT_TAG.get(_cat,'➖')} " if _trade_full_view else ""
                 parts_out.append(
-                    f"<b>Scan{_ver} Trade</b>\n\n{sc['signal']} - {sc['symbol']}\n{spl}"
+                    f"<b>Scan{_ver} Trade</b>\n\n{_cat_tag}{sc['signal']} - {sc['symbol']}\n{spl}"
                     f"Entry: <b>{sc['entry']:,.4g}</b> {'✅' if sc.get('entry_hit') else '⏳ pending'}\n"
                     f"SL:    {_sl_label}\n"
                     f"TP1:   <b>{sc['tp1']:,.4g}</b> {'✅ HIT' if _tp1_hit else '⏳ pending'}\n"
@@ -5835,11 +5860,21 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # Demo trades
         for _dlst in (demo_scan1_trades, demo_scan2_trades):
             for dc in _dlst:
+                _dver = dc.get('scan_ver', 1)
+                _kind = f"demo{_dver}"
+                _cat = _status_trade_cat(_kind, dc.get('created_at'))
+                _reveal, _locked = _trade_reveal(_cat, dc.get('share_free', True), dc.get('tier_routed', True),
+                                                  _trade_tier_val, _trade_full_view)
+                if not _reveal:
+                    if _locked:
+                        parts_out.append(f"<b>TS{_dver} ALT SIGNAL</b>\n\n🔒 VIP-exclusive signal — upgrade to view")
+                    continue
                 try: _dcp = get_bingx_price(dc.get("symbol","")); _dcpl = f"Current: <b>{_dcp:,.4g}</b>\n" if _dcp else ""
                 except: _dcp = 0; _dcpl = ""
                 _dpnl = (_dcp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _dcp and dc.get("entry") else 0
+                _cat_tag = f"{_CAT_TAG.get(_cat,'➖')} " if _trade_full_view else ""
                 parts_out.append(
-                    f"<b>TS{dc.get('scan_ver',1)} ALT SIGNAL</b>\n\n{dc['signal']} - {dc.get('symbol','?')}\n{_dcpl}"
+                    f"<b>TS{_dver} ALT SIGNAL</b>\n\n{_cat_tag}{dc['signal']} - {dc.get('symbol','?')}\n{_dcpl}"
                     f"Entry: <b>{dc.get('entry',0):,.4g}</b> ✅ (MARKET)\n"
                     f"SL:    <b>{dc.get('sl',0):,.4g}</b>\n"
                     f"TP1:   <b>{dc.get('tp1',0):,.4g}</b> {'✅ HIT' if dc.get('tp1_hit') else '⏳ pending'}\n"
