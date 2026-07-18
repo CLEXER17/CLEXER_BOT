@@ -3610,20 +3610,50 @@ def _smallcaps_title(text: str) -> str:
             out.append(w[0].upper() + w[1:].lower().translate(_SMALLCAPS_MAP))
     return " ".join(out)
 
+GLOBAL_SMALLCAPS_ENABLED = True   # every outbound message body + button label rendered in smallcaps, per admin request
+
+_HTML_TAG_RE = re.compile(r'(<[^>]+>)')
+
+def _smallcaps_body(text: str) -> str:
+    """Runs _smallcaps_title() over a full HTML message body instead of a
+    short title — splits on HTML tags so tag syntax/attributes are never
+    touched, and skips the contents of <code>/<pre> blocks entirely so
+    prices, tickers, and other exact values stay unmangled."""
+    if not text:
+        return text
+    parts = _HTML_TAG_RE.split(text)
+    out = []
+    skip = 0
+    for part in parts:
+        if part.startswith("<") and part.endswith(">"):
+            inner = part.strip("<>").lstrip("/").split()[0].lower() if part.strip("<>").lstrip("/") else ""
+            if inner in ("code", "pre"):
+                skip = max(0, skip - 1) if part.startswith("</") else skip + 1
+            out.append(part)
+        else:
+            out.append(part if skip > 0 else _smallcaps_title(part))
+    return "".join(out)
+
 def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
     version; everyone else still sees the plain glyph (Telegram's own fallback).
     `overrides` lets a specific caller swap the emoji ID for one or more
     glyphs (e.g. a distinct ⭐ for Stars-payment screens) without touching the
-    global PREMIUM_EMOJI_MAP used everywhere else."""
-    if not PREMIUM_EMOJIS_ENABLED or not text:
+    global PREMIUM_EMOJI_MAP used everywhere else. Also applies the bot-wide
+    smallcaps text style (GLOBAL_SMALLCAPS_ENABLED) as the last step, after
+    emoji glyphs are wrapped, so the "BingX" glyph-swap match above always
+    runs against unmangled text first."""
+    if not text:
         return text
-    emap = {**PREMIUM_EMOJI_MAP, **overrides} if overrides else PREMIUM_EMOJI_MAP
-    for glyph, emoji_id in emap.items():
-        if glyph in text:
-            text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
-    if "BingX" in text:
-        text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
+    if PREMIUM_EMOJIS_ENABLED:
+        emap = {**PREMIUM_EMOJI_MAP, **overrides} if overrides else PREMIUM_EMOJI_MAP
+        for glyph, emoji_id in emap.items():
+            if glyph in text:
+                text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
+        if "BingX" in text:
+            text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
+    if GLOBAL_SMALLCAPS_ENABLED:
+        text = _smallcaps_body(text)
     return text
 
 # Distinct custom emoji ID for ⭐ specifically on Telegram-Stars payment
@@ -3689,6 +3719,8 @@ def _style_keyboard(markup, rotate=True):
                         stripped = label.replace(glyph, "", 1).strip()
                         btn["text"] = stripped if stripped else label
                         break
+            if GLOBAL_SMALLCAPS_ENABLED and "text" in btn:
+                btn["text"] = _smallcaps_title(btn["text"])
     return markup
 
 def send_telegram(text, include_ch2=True, with_bot_button=False):
