@@ -611,20 +611,43 @@ def get_active_trades(request: Request):
 
 
 @app.get("/trades/history")
-def get_trade_history():
-    state  = read_state()
-    # bot.py saves as "outcomes"; also check scan_history
-    closed = state.get("outcomes", state.get("trade_outcomes", []))
-    scan_h = state.get("scan_history", [])
-    all_history = list(reversed((closed + scan_h)[-50:]))
-    return {"history": all_history, "total": len(closed) + len(scan_h)}
+def get_trade_history(user: dict = Depends(get_current_user)):
+    """Per-user closed-trade history — previously returned the bot's GLOBAL
+    scan_history/outcomes (same list for every viewer, regardless of
+    whether they even have copytrade on). Now reads each user's own
+    trade_log from ct_users, populated by copytrade.py's _record_pnl() —
+    covers users who set up copytrade via the bot's own commands, not just
+    the Mini App's connect flow, since both write to the same ct_users record."""
+    ct_users = _kv_dict("ct_users")
+    urec = ct_users.get(str(user.get("id", "")), {})
+    log = list(reversed(urec.get("trade_log", [])[-50:]))
+    history = [{
+        "symbol": t.get("symbol"), "direction": t.get("side"),
+        "pnl": t.get("pnl"), "result": t.get("result"),
+        "closed_at": t.get("closed_at"),
+    } for t in log]
+    return {"history": history, "total": len(history)}
 
 
 @app.get("/trades/stats")
-def get_trade_stats():
-    state = read_state()
-    stats = state.get("stats", state.get("trade_stats", {}))
-    return stats
+def get_trade_stats(user: dict = Depends(get_current_user)):
+    """Per-user win/loss/P&L stats — see get_trade_history() for why this no
+    longer reads the bot's global trade_stats. avg_r and best_session aren't
+    tracked per-user anywhere yet, so they come back as neutral defaults
+    rather than fabricated numbers."""
+    ct_users = _kv_dict("ct_users")
+    urec = ct_users.get(str(user.get("id", "")), {})
+    h = urec.get("history", {}) or {}
+    won  = h.get("won_usdt", 0.0)
+    lost = h.get("lost_usdt", 0.0)
+    return {
+        "wins": h.get("profit", 0),
+        "losses": h.get("loss", 0),
+        "total_pnl": h.get("total_pnl", 0.0),
+        "profit_factor": round(won / lost, 2) if lost else (won and "∞" or 0),
+        "avg_r": 0,
+        "best_session": "—",
+    }
 
 # ═════════════════════════════════════════════════════════════════════════════
 # BINGX credentials endpoints
