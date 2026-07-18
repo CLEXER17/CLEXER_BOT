@@ -3644,16 +3644,19 @@ def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
     version; everyone else still sees the plain glyph (Telegram's own fallback).
     `overrides` lets a specific caller swap the emoji ID for one or more
     glyphs (e.g. a distinct ⭐ for Stars-payment screens) without touching the
-    global PREMIUM_EMOJI_MAP used everywhere else. Also applies the bot-wide
-    smallcaps text style (GLOBAL_SMALLCAPS_ENABLED) as the last step, after
-    emoji glyphs are wrapped, so the "BingX" glyph-swap match above always
-    runs against unmangled text first."""
+    global PREMIUM_EMOJI_MAP used everywhere else — mapping a glyph to None
+    excludes it from custom-emoji wrapping entirely (kept as the plain,
+    predictably-narrow glyph), e.g. for fixed-width ASCII-box layouts where
+    a wider custom-emoji sticker would throw off manual padding. Also
+    applies the bot-wide smallcaps text style (GLOBAL_SMALLCAPS_ENABLED) as
+    the last step, after emoji glyphs are wrapped, so the "BingX" glyph-swap
+    match above always runs against unmangled text first."""
     if not text:
         return text
     if PREMIUM_EMOJIS_ENABLED:
         emap = {**PREMIUM_EMOJI_MAP, **overrides} if overrides else PREMIUM_EMOJI_MAP
         for glyph, emoji_id in emap.items():
-            if glyph in text:
+            if emoji_id is not None and glyph in text:
                 text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
         if "BingX" in text:
             text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
@@ -3746,12 +3749,12 @@ def send_telegram(text, include_ch2=True, with_bot_button=False):
         except Exception as e: print(f"  [TG ERROR] {cid}: {e}")
     return success
 
-def send_admin(text, pin: bool = False):
+def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
     """Send message to admin DM only (not channel). pin=True also pins it
     there — used for things the admin needs to keep visible/handy, like a
     special-time promote/demote notice."""
     if not ADMIN_CHAT_ID: return
-    text = _apply_premium_emojis(text)
+    text = _apply_premium_emojis(text, overrides=emoji_overrides)
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ADMIN_CHAT_ID, "text": text,
@@ -4422,6 +4425,12 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
 
 _load_sig_snapshots()
 _load_free_sl_log()
+
+# Premium custom emoji render as wider image stickers than a single monospace
+# character, which throws off the ASCII box's manually-padded right border —
+# so the box's own icons are excluded from the premium-emoji upgrade and
+# kept as plain, predictably-narrow unicode glyphs instead.
+_BOX_ICON_NO_PREMIUM = {ic: None for ic in ("📡", "🔄", "📈", "📰", "⚠️", "▶️")}
 
 def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
     """Renders the admin-only startup status message as an ASCII box. Not
@@ -10948,7 +10957,8 @@ def main():
 
     send_admin(_deploy_status_box(
         tv_status=tv_status, source_status=source_status,
-        charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True))
+        charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True),
+        emoji_overrides=_BOX_ICON_NO_PREMIUM)
 
     MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
