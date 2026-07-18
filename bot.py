@@ -113,6 +113,7 @@ def is_ist_sleep():
     return 60 <= mins < 450
 
 WEEKEND_SLEEP_ENABLED = True   # /ws on|off — off = bot keeps running straight through Fri-Sun
+STATS_VISIBLE_TO_USERS = True  # /statsaccess on|off — off hides /stats from regular users (admin/co-admin always keep it)
 
 def is_weekend_sleep() -> bool:
     """True from Friday 22:00 IST to Sunday 23:00 IST — full bot pause.
@@ -148,6 +149,7 @@ _test_scan2_last_hour = -1
 last_scan_tick_time = 0
 signal_history        = []
 scan_history          = []   # closed scan trades — appended on TP/SL/missed
+demo_history          = []   # closed TS1/TS2 (demo) trades — same shape as scan_history, "dver" instead of "ver"
 trade_outcomes        = []
 force_scan            = threading.Event()
 bot_paused            = threading.Event()  # PAUSE: freezes everything
@@ -1882,6 +1884,7 @@ def save_state():
         "history":      signal_history,
         "outcomes":     trade_outcomes,
         "scan_history": scan_history,
+        "demo_history": demo_history,
     }
     try:
         with open(STATE_FILE, "w") as f:
@@ -1906,7 +1909,7 @@ def save_active_trade():
 
 def load_active_trade():
     global active_trade, scan1_trades, scan2_trades, trade_stats, signal_history, trade_outcomes, scan_history
-    global demo_scan1_trades, demo_scan2_trades
+    global demo_scan1_trades, demo_scan2_trades, demo_history
     d = None
     path = STATE_FILE if os.path.exists(STATE_FILE) else ACTIVE_TRADE_FILE
     _local_mtime = os.path.getmtime(path) if os.path.exists(path) else 0
@@ -1937,6 +1940,7 @@ def load_active_trade():
             signal_history[:] = d.get("history", [])
             trade_outcomes[:]  = d.get("outcomes", [])
             scan_history[:]    = d.get("scan_history", [])
+            demo_history[:]    = d.get("demo_history", [])
             t = d.get("trade", {})
             if t.get("signal"):
                 active_trade = t
@@ -3488,7 +3492,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK, TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3533,6 +3537,7 @@ def load_settings():
             WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
             VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
             CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
+            STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
             SIGNAL_CHANNEL_LINK    = d.get("signal_channel_link",    "")
@@ -3585,6 +3590,7 @@ def save_settings():
             "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
             "vip_monthly_price": VIP_MONTHLY_PRICE,
             "chat_model": CHAT_MODEL,
+            "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
             "signal_channel_link":    SIGNAL_CHANNEL_LINK,
@@ -4300,6 +4306,26 @@ def _log_scan_history(t: dict, result: str, close_price: float):
         "ver":         t.get("ver", 1),
     })
     if len(scan_history) > 30: scan_history.pop(0)
+    save_state()
+
+def _log_demo_history(t: dict, result: str, close_price: float, dver: int):
+    """Append a closed TS1/TS2 (demo) trade to demo_history (max 30) — same
+    shape as _log_scan_history, keyed by 'dver' instead of 'ver' since demo
+    trades aren't scan1/scan2 signals."""
+    demo_history.append({
+        "time":        ist_str(),
+        "symbol":      t.get("symbol", "?"),
+        "signal":      t.get("signal", "?"),
+        "entry":       t.get("entry", 0),
+        "sl":          t.get("sl", 0),
+        "tp1":         t.get("tp1", 0),
+        "tp2":         t.get("tp2", 0),
+        "result":      result,          # TP1 / TP2 / SL / BE / TIMEOUT(...)
+        "close_price": close_price,
+        "tp1_hit":     t.get("tp1_hit", False),
+        "dver":        dver,
+    })
+    if len(demo_history) > 30: demo_history.pop(0)
     save_state()
 
 def _remove_scan_trade(ver: int, symbol: str):
@@ -5245,7 +5271,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5334,7 +5360,7 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -5892,20 +5918,38 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _hist_btns_rows = [[
             {"text": "📡 BTC",   "callback_data": "history_btc"},
             {"text": "🔍 Scan1", "callback_data": "history_scan1"},
-            {"text": "🔍 Scan2", "callback_data": "history_scan2"},
-        ]]
+            {"text": "🔍 Scan2", "callback_data": "history_scan2"}],
+            [{"text": "🧪 TS1", "callback_data": "history_ts1"},
+             {"text": "🧪 TS2", "callback_data": "history_ts2"}],
+        ]
         if is_admin:
             _hist_btns_rows.append([{"text": "🗑 Reset History", "callback_data": "reset_signal_history"}])
         _hist_btns = {"inline_keyboard": _hist_btns_rows}
+        # Last 5 only ever shows wins (TP1/TP2/BE) — SL and any TIMEOUT result
+        # (win or loss) are excluded entirely, per admin request.
+        def _is_shown_result(res: str) -> bool:
+            return not (res.startswith("SL") or res.startswith("TIMEOUT"))
         if sub in ("scan1", "scan2"):
             ver = sub[-1]
-            _sh = [s for s in scan_history if str(s.get("ver","1")) == ver]
+            _sh = [s for s in scan_history if str(s.get("ver","1")) == ver and _is_shown_result(s.get("result","?"))]
             if not _sh:
-                send_reply(chat_id, f"📜 <b>Scan{ver} History</b>\n\nNo signals yet.", reply_markup=_hist_btns); return
-            lines = [f"📜 <b>Scan{ver} History (last 5)</b>"]
+                send_reply(chat_id, f"📜 <b>Scan{ver} History</b>\n\nNo wins yet.", reply_markup=_hist_btns); return
+            lines = [f"📜 <b>Scan{ver} History (last 5 wins)</b>"]
             for s in reversed(_sh[-5:]):
                 res = s.get("result","?")
-                em = "🏆" if res=="TP2" else ("💰" if res in ("TP1","BE") else "❌")
+                em = "🏆" if res=="TP2" else "💰"
+                lines.append(f"{em} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
+                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n   {s['time']}")
+            send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
+        elif sub in ("ts1", "ts2"):
+            dver = sub[-1]
+            _dh = [s for s in demo_history if str(s.get("dver",1)) == dver and _is_shown_result(s.get("result","?"))]
+            if not _dh:
+                send_reply(chat_id, f"📜 <b>TS{dver} History</b>\n\nNo wins yet.", reply_markup=_hist_btns); return
+            lines = [f"📜 <b>TS{dver} History (last 5 wins)</b>"]
+            for s in reversed(_dh[-5:]):
+                res = s.get("result","?")
+                em = "🏆" if res=="TP2" else "💰"
                 lines.append(f"{em} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
                     f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n   {s['time']}")
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
@@ -5920,6 +5964,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
 
     elif cmd == "/stats":
+        if not STATS_VISIBLE_TO_USERS and not is_admin and not is_co_admin(_check_id):
+            send_reply(chat_id, "⚠️ Win rate & trade statistics are currently disabled by admin."); return
         ts = trade_stats
         btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
         btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
@@ -6288,6 +6334,23 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             WEEKEND_SLEEP_ENABLED = False; save_settings()
             send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
         else: send_reply(chat_id, "Usage: /ws on|off", reply_markup=_ws_btns)
+
+    elif cmd == "/statsaccess" and is_admin:
+        _sa_btns = {"inline_keyboard": [[
+            {"text": "🟢  ON",  "callback_data": "statsaccess_on"},
+            {"text": "🔴  OFF", "callback_data": "statsaccess_off"}]]}
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>Win Rate & Trade Stats — User Access</b>\n\nStatus: <b>{'✅ ON (users can see /stats)' if STATS_VISIBLE_TO_USERS else '❌ OFF (hidden from users)'}</b>\n\n"
+                f"Admin and co-admin always keep access regardless of this setting.\n\n<i>🛡️ Capital protected</i>",
+                reply_markup=_sa_btns)
+        elif parts[1].lower() == "on":
+            STATS_VISIBLE_TO_USERS = True; save_settings()
+            send_reply(chat_id, "✅ <b>Win Rate & Trade Stats → ON</b> — users can now see /stats again.\n\n<i>🛡️ Capital protected</i>", reply_markup=_sa_btns)
+        elif parts[1].lower() == "off":
+            STATS_VISIBLE_TO_USERS = False; save_settings()
+            send_reply(chat_id, "❌ <b>Win Rate & Trade Stats → OFF</b> — hidden from regular users (admin/co-admin unaffected).\n\n<i>🛡️ Capital protected</i>", reply_markup=_sa_btns)
+        else: send_reply(chat_id, "Usage: /statsaccess on|off", reply_markup=_sa_btns)
 
     elif cmd == "/vip":
         send_vip_offer_screen(chat_id, str(_check_id))
@@ -9001,6 +9064,8 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
 
     rows = []
     for cmd, emoji, desc in cmds:
+        if cmd == "/stats" and not STATS_VISIBLE_TO_USERS and not is_admin and not is_co_admin(chat_id):
+            continue
         rows.append([{"text": f"{emoji}  {desc}", "callback_data": f"help_cmd:{cmd}"}])
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
@@ -9466,6 +9531,10 @@ def command_listener():
                     elif cb_data in ("weekendsleep_on", "weekendsleep_off"):
                         _toggle_cmd(f"/ws {'on' if cb_data=='weekendsleep_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
 
+                    # ── Win Rate & Trade Stats — user access ON/OFF ─────────────
+                    elif cb_data in ("statsaccess_on", "statsaccess_off") and cb_is_admin:
+                        _toggle_cmd(f"/statsaccess {'on' if cb_data=='statsaccess_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
+
                     # ── VIP lucky-draw purchase ───────────────────────────────
                     elif cb_data == "vip_spin":
                         def _do_vip_spin(_chat_id=cb_chat_id, _cid=cb_cid, _msg_id=cb_msg_id):
@@ -9705,7 +9774,7 @@ def command_listener():
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_btca_text), "parse_mode": "HTML",
                                   "reply_markup": _style_keyboard(_btca_mkp)}, timeout=10)
-                    elif cb_data in ("history_btc", "history_scan1", "history_scan2"):
+                    elif cb_data in ("history_btc", "history_scan1", "history_scan2", "history_ts1", "history_ts2"):
                         sub = cb_data.replace("history_", "")
                         _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_win":
@@ -10558,6 +10627,7 @@ def _demo_monitor_loop():
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
+                        _log_demo_history(t, "TP2", cp, _dver)
                         _close_sig_snapshot(sig_id, "TP2")
                         to_remove.append(t)
                     elif sl_hit:
@@ -10579,6 +10649,7 @@ def _demo_monitor_loop():
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
+                        _log_demo_history(t, lbl, cp, _dver)
                         _close_sig_snapshot(sig_id, result)
                         to_remove.append(t)
                     elif tp1_now:
@@ -10619,6 +10690,7 @@ def _demo_monitor_loop():
                         ct.on_scan_sl(sym)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
+                        _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
                         _close_sig_snapshot(sig_id, f"TIMEOUT({pnl:+.2f}%)")
                         to_remove.append(t)
 
