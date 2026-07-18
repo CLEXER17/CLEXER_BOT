@@ -7918,6 +7918,7 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
 
 VIP_MONTHLY_PRICE = 15.0
 VIP_SPIN_MIN, VIP_SPIN_MAX = 11.0, 16.0
+VIP_STAR_DISCOUNT_MAX = 0.10   # star lucky draw: up to 10% off the $-in-stars price, never more
 
 def _play_spin_animation(chat_id, message_id=None):
     """Plays Telegram's own native slot-machine animation (sendDice with
@@ -7940,37 +7941,52 @@ def _play_spin_animation(chat_id, message_id=None):
     time.sleep(2.5)   # matches roughly how long the native animation takes to settle
 
 def send_vip_offer_screen(chat_id, cid, message_id=None):
-    """3-button VIP purchase screen: spin for a discounted $11-16 price (one
-    spin per calendar month, locked once rolled), Contact Admin, or just pay
-    the flat $15/month. Payment creates a CryptoBot invoice — actual VIP grant
-    happens later via _poll_payment_events() once the payment is confirmed,
-    never synchronously on the button tap."""
+    """VIP purchase screen with two independent lucky draws — a $ spin
+    ($11-16) and a ⭐ Stars spin (up to 10% off the $-in-stars price) — each
+    one spin per calendar month, locked once rolled, plus the flat
+    $15/month button and Contact Admin. Payment creates a CryptoBot/Stars
+    invoice — actual VIP grant happens later via _poll_payment_events() /
+    the successful_payment handler once payment is confirmed, never
+    synchronously on the button tap."""
     u = ct._get(str(cid))
     cur_month = now_ist().strftime("%Y-%m")
     has_spin = u.get("vip_spin_month") == cur_month and u.get("vip_spin_amount")
+    has_star_spin = u.get("vip_star_spin_month") == cur_month and u.get("vip_star_spin_amount")
+    star_base = round(VIP_MONTHLY_PRICE * STARS_PER_USD)
+    star_min = round(star_base * (1 - VIP_STAR_DISCOUNT_MAX))
+
     rows = []
     if has_spin:
         _amt = u["vip_spin_amount"]
-        rows.append([{"text": f"💳 Pay ${_amt:.2f} (your spin price)", "callback_data": f"vip_pay:{_amt:.2f}"}])
+        rows.append([{"text": f"💳 Pay ${_amt:.2f} (your $ spin price)", "callback_data": f"vip_pay:{_amt:.2f}"}])
     else:
-        rows.append([{"text": "🎰 Lucky Draw Spin", "callback_data": "vip_spin"}])
+        rows.append([{"text": _smallcaps_title("🎰 Lucky Draw Spin ($)"), "callback_data": "vip_spin"}])
+    if has_star_spin:
+        _samt = u["vip_star_spin_amount"]
+        rows.append([{"text": f"⭐ Pay {_samt:,} Stars (your ⭐ spin price)", "callback_data": f"vip_paystarsflat:{_samt}"}])
+    else:
+        rows.append([{"text": _smallcaps_title("🎰 Lucky Draw Spin (⭐)"), "callback_data": "vip_starspin"}])
     rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
     _last_row = [{"text": "◀️  Back", "callback_data": "help_main"}]
     if ADMIN_CHAT_ID:
         _last_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
     rows.append(_last_row)
-    _spin_line = (f"🎰 You got <b>${u['vip_spin_amount']:.2f}</b> in the lucky draw! Pay that above to unlock VIP for 1 month.\n\n"
-                  f"Don't want it? Just pay the ${VIP_MONTHLY_PRICE:.0f}/month button below instead."
-                  if has_spin else
-                  f"🎰 Spin the lucky draw for a random VIP price between <b>${VIP_SPIN_MIN:.0f}</b> and <b>${VIP_SPIN_MAX:.0f}</b> — could be lower than the ${VIP_MONTHLY_PRICE:.0f} full price! "
-                  f"You get one spin per month, and whatever you land on is locked in until you pay it or the month resets.")
-    text = (f"👑 <b>Get VIP</b>\n\n<blockquote>{_spin_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
+
+    _dollar_line = (f"You got <b>${u['vip_spin_amount']:.2f}</b> on the $ draw — pay that above to unlock VIP for 1 month."
+                     if has_spin else
+                     f"🎰 <b>$ draw:</b> random VIP price between <b>${VIP_SPIN_MIN:.0f}</b> and <b>${VIP_SPIN_MAX:.0f}</b> — could beat the ${VIP_MONTHLY_PRICE:.0f} full price.")
+    _star_line = (f"You got <b>⭐{u['vip_star_spin_amount']:,}</b> on the ⭐ draw — pay that above to unlock VIP for 1 month."
+                  if has_star_spin else
+                  f"🎰 <b>⭐ draw:</b> random Stars price between <b>⭐{star_min:,}</b> and <b>⭐{star_base:,}</b> — up to 10% off.")
+    text = (f"👑 <b>{_smallcaps_title('Get VIP')}</b>\n\n<blockquote>"
+            f"Two lucky draws, one spin each per month — spin for a discounted $ price, a discounted ⭐ Stars price, or skip straight to the flat ${VIP_MONTHLY_PRICE:.0f}/month. Whatever you land on stays locked in until paid or the month resets.\n\n"
+            f"{_dollar_line}\n\n{_star_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
 
 # --- Free-channel signal unlock (wallet-funded, one spin per signal) ----------
-SIG_SPIN_MIN, SIG_SPIN_MAX = 0.03, 0.10
+SIG_SPIN_MIN, SIG_SPIN_MAX = 0.01, 0.05
 
 def _reveal_signal_text(snap: dict, sig_id: str) -> str:
     arrow = "🟢 LONG" if snap["direction"] in ("BUY", "LONG") else "🔴 SHORT"
@@ -8016,31 +8032,27 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     if sig_id in spins:
         _amt = spins[sig_id]
         _bal = u.get("wallet_balance", 0)
-        rows.append([{"text": f"💳 ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{sig_id}"},
-                      {"text": "⭐ Pay with Stars", "callback_data": f"sig_paystars:{sig_id}"}])
-        rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
-        text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
-                f"Wallet balance: <b>${_bal:.2f}</b></blockquote>\n\n<i>🛡️ Capital protected</i>")
+        rows.append([{"text": f"💳 ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{sig_id}"}])
+        _wallet_line = f"Your $ unlock price: <b>${_amt:.2f}</b> (locked in for this signal) — wallet balance: <b>${_bal:.2f}</b>."
     else:
-        rows.append([{"text": "🎰 Spin to see unlock price", "callback_data": f"sig_spin:{sig_id}"}])
-        text = (f"🔒 <b>Signal Locked</b>\n\n<blockquote>Spin once to see your unlock price (${SIG_SPIN_MIN:.2f}-${SIG_SPIN_MAX:.2f}) "
-                f"— whatever you get is locked in for this signal, no re-rolling.</blockquote>\n\n<i>🛡️ Capital protected</i>")
+        rows.append([{"text": _smallcaps_title("🎰 Spin To See Price ($)"), "callback_data": f"sig_spin:{sig_id}"}])
+        _wallet_line = f"Spin once to see your $ unlock price (${SIG_SPIN_MIN:.2f}-${SIG_SPIN_MAX:.2f}) — locked in for this signal, no re-rolling."
+    rows.append([{"text": "⭐ Unlock for 1 Star", "callback_data": f"sig_unlockstar:{sig_id}"}])
+    rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
     rows.append([{"text": "🏠 Main Menu", "callback_data": "help_main"}])
+    text = (f"🔒 <b>{_smallcaps_title('Signal Locked')}</b>\n\n<blockquote>{_wallet_line}\n\n"
+            f"Or skip the spin entirely — unlock instantly for a flat <b>⭐ 1 Star</b>, no spinning needed.</blockquote>\n\n<i>🛡️ Capital protected</i>")
     markup = {"inline_keyboard": rows}
-    if message_id:
-        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
-    else:
-        send_reply(chat_id, text, reply_markup=markup)
+    # rotate=False — plain/no-color buttons on this screen, per admin request.
+    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
 
 def send_addfunds_screen(chat_id, message_id=None):
     rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
             [{"text": "◀️  Back", "callback_data": "help_main"}]]
-    text = "💰 <b>Add Funds</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals. Pay with crypto or Telegram Stars.</blockquote>\n\n<i>🛡️ Capital protected</i>"
+    text = f"💰 <b>{_smallcaps_title('Add Funds')}</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals. Pay with crypto or Telegram Stars.</blockquote>\n\n<i>🛡️ Capital protected</i>"
     markup = {"inline_keyboard": rows}
-    if message_id:
-        _help_edit_or_send(chat_id, text, markup, message_id, rotate=True)
-    else:
-        send_reply(chat_id, text, reply_markup=markup)
+    # rotate=False — plain/no-color buttons on this screen, per admin request.
+    _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
 
 def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -9238,6 +9250,28 @@ def command_listener():
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
                     elif cb_data == "vip_menu":
                         send_vip_offer_screen(cb_chat_id, cb_cid, message_id=cb_msg_id)
+                    elif cb_data == "vip_starspin":
+                        def _do_vip_starspin(_chat_id=cb_chat_id, _cid=cb_cid, _msg_id=cb_msg_id):
+                            _play_spin_animation(_chat_id, _msg_id)
+                            _u = ct._get(str(_cid))
+                            _cur_month = now_ist().strftime("%Y-%m")
+                            _is_admin_cid = ADMIN_CHAT_ID and str(_cid) == str(ADMIN_CHAT_ID)
+                            if _is_admin_cid or _u.get("vip_star_spin_month") != _cur_month:
+                                _u = ct._db.get(str(_cid)) or ct._default_user(_cid)
+                                _star_base = round(VIP_MONTHLY_PRICE * STARS_PER_USD)
+                                _star_min = round(_star_base * (1 - VIP_STAR_DISCOUNT_MAX))
+                                _u["vip_star_spin_amount"] = random.randint(_star_min, _star_base)
+                                _u["vip_star_spin_month"] = _cur_month
+                                ct._set(_cid, _u)
+                            send_vip_offer_screen(_chat_id, _cid)
+                        threading.Thread(target=_do_vip_starspin, daemon=True).start()
+                    elif cb_data.startswith("vip_paystarsflat:"):
+                        _stars = int(cb_data.split(":", 1)[1])
+                        _ok = _stars_send_invoice(cb_chat_id, "CLEXER VIP — 30 days",
+                            f"VIP membership, 30 days (⭐{_stars:,})", {"type": "vip", "cid": str(cb_cid)}, _stars / STARS_PER_USD)
+                        if not _ok:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
 
                     # ── Free-channel signal unlock ────────────────────────────
                     elif cb_data.startswith("sig_spin:"):
@@ -9281,11 +9315,12 @@ def command_listener():
                             _short = round(_amt - _bal, 2)
                             _help_edit_or_send(cb_chat_id,
                                 f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
-                                f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up, or unlock instantly for a flat ⭐ 1 Star instead.</blockquote>\n\n<i>🛡️ Capital protected</i>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{_sig_id}"}],
+                                                      [{"text": "⭐ Unlock for 1 Star", "callback_data": f"sig_unlockstar:{_sig_id}"}],
                                                       [{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}],
                                                       [{"text": "🏠 Main Menu", "callback_data": "help_main"}]]},
-                                message_id=cb_msg_id, rotate=True)
+                                message_id=cb_msg_id, rotate=False)
                         else:
                             # Same-process wallet debit — no external payment involved here,
                             # so this applies synchronously (safe: ct._set is race-free
@@ -9312,6 +9347,22 @@ def command_listener():
                             _ok = _stars_send_invoice(cb_chat_id, "CLEXER Signal Unlock",
                                 f"Unlock signal {_sig_id} (${_amt:.2f})",
                                 {"type": "sig_unlock", "cid": str(cb_cid), "sig_id": _sig_id}, _amt)
+                            if not _ok:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
+                    elif cb_data.startswith("sig_unlockstar:"):
+                        _sig_id = cb_data.split(":", 1)[1]
+                        _u = ct._db.get(str(cb_cid)) or ct._default_user(cb_cid)
+                        if _sig_id in _u.get("unlocked_sigs", []):
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        elif _sig_snapshots.get(_sig_id, {}).get("result"):
+                            # Closed between locking and paying — don't charge for a dead signal.
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
+                        else:
+                            # Flat 1 Star, no spin required — separate from the $ wallet-spin path.
+                            _ok = _stars_send_invoice(cb_chat_id, "CLEXER Signal Unlock",
+                                f"Unlock signal {_sig_id} (⭐1)",
+                                {"type": "sig_unlock", "cid": str(cb_cid), "sig_id": _sig_id}, 1 / STARS_PER_USD)
                             if not _ok:
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                     json={"callback_query_id": cb["id"], "text": "⚠️ Couldn't create the Stars invoice — try again shortly.", "show_alert": True}, timeout=5)
