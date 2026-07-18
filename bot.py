@@ -4981,6 +4981,12 @@ def _grant_vip(cid: str, days: int = 30):
     u["vip_grace_notified_at"] = 0
     ct._set(cid, u)
 
+# Tracks each unpaid Stars invoice's own message_id, keyed by (cid, type, sig_id) —
+# so once successful_payment arrives, the invoice card itself can be deleted
+# instead of sitting in the chat forever after payment. sig_id is "" for
+# vip/topup payloads (only one field-set that can collide on cid+type there).
+_pending_star_invoices: dict = {}
+
 def _stars_send_invoice(chat_id, title: str, description: str, payload_dict: dict, amount_usd: float) -> bool:
     """Sends a Telegram Stars (XTR) invoice — Telegram renders its own native
     pay button right in the chat, no external checkout page and no provider
@@ -4994,7 +5000,12 @@ def _stars_send_invoice(chat_id, title: str, description: str, payload_dict: dic
                   "payload": json.dumps(payload_dict), "provider_token": "", "currency": "XTR",
                   "prices": [{"label": title[:32], "amount": stars}]}, timeout=15)
         rj = r.json()
-        if rj.get("ok"): return True
+        if rj.get("ok"):
+            _mid = rj.get("result", {}).get("message_id")
+            if _mid:
+                _key = (str(chat_id), payload_dict.get("type"), payload_dict.get("sig_id", ""))
+                _pending_star_invoices[_key] = _mid
+            return True
         print(f"  [STARS] sendInvoice failed: {rj}")
     except Exception as e:
         print(f"  [STARS] sendInvoice error: {e}")
@@ -10099,6 +10110,19 @@ def command_listener():
                             send_to_user(_sp_cid, _reveal_signal_text(_sp_snap, _sp_sig_id))
                         else:
                             send_to_user(_sp_cid, f"✅ <b>Unlocked</b> (⭐{_sp_stars:,} Stars paid) — but this signal's snapshot expired, contact admin if it doesn't show up.\n\n<i>🛡️ Capital protected</i>")
+                    # Delete the invoice card itself now that it's paid — Telegram
+                    # leaves it sitting in the chat forever otherwise, since the
+                    # successful_payment update is a separate new message, not an
+                    # edit of the invoice. Best-effort: a delete failure (e.g. the
+                    # 48h window, or the key was never captured) is non-fatal.
+                    _inv_key = (str(cid), _sp_type, _sp_payload.get("sig_id", ""))
+                    _inv_mid = _pending_star_invoices.pop(_inv_key, None)
+                    if _inv_mid:
+                        try:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                                json={"chat_id": cid, "message_id": _inv_mid}, timeout=10)
+                        except Exception as e:
+                            print(f"  [STARS] delete invoice msg error: {e}")
                     print(f"  [STARS] payment applied: type={_sp_type} cid={_sp_cid} stars={_sp_stars}")
                     continue
 
