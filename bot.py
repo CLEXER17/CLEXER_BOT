@@ -5079,7 +5079,7 @@ FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 
 <i>Note: 2 uses per command per hour</i>"""
 
-FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat"}
+FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat","/endchat"}
 
 # False = scan uses BingX candles + matplotlib (default, no TV bridge needed)
 # True  = scan uses TV bridge candles + TV screenshots (old behaviour)
@@ -5515,7 +5515,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 "💬 <b>Chat Session Started</b>\n\n"
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
                 "🎨 Need an image? Just describe what you want.\n\n"
-                "⏳ Session will automatically close after 5 minutes of inactivity.")
+                "⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with /endchat.")
+
+    elif cmd == "/endchat":
+        if _chat_sessions.pop(str(chat_id), None) is not None:
+            send_reply(chat_id, "💬 <b>Chat Session Ended</b>\n\nType /chat anytime to start a new one.")
+        else:
+            send_reply(chat_id, "⚠️ You don't have an active chat session. Type /chat to start one.")
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
