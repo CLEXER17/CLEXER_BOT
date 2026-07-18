@@ -3597,12 +3597,17 @@ _SMALLCAPS_MAP = str.maketrans(
 def _smallcaps_title(text: str) -> str:
     """'Likely breaks' -> 'Lɪᴋᴇʟʏ Bʀᴇᴀᴋꜱ' — first letter of each word stays a
     normal capital, the rest render in small-caps unicode glyphs. Acronyms
-    (AI, BTC, EMA20, ...) are left untouched instead of getting mangled."""
+    (AI, BTC, EMA20, ...) and slash-commands (/go, /help, ...) are left
+    untouched instead of getting mangled — a command has to stay literal
+    text for Telegram to keep it tappable/copyable."""
     words = text.split(" ")
     out = []
     for w in words:
         if not w:
             out.append(w); continue
+        if w.startswith("/"):
+            out.append(w)  # slash-command — leave as-is
+            continue
         letters = [c for c in w if c.isalpha()]
         if letters and len(letters) > 1 and all(c.isupper() for c in letters):
             out.append(w)  # acronym — leave as-is
