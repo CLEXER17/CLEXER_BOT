@@ -9222,11 +9222,31 @@ def command_listener():
                             # Closed between spin and pay — don't charge for a dead signal.
                             send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
                         elif _amt is None:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                                json={"callback_query_id": cb["id"], "text": "⚠️ Spin first.", "show_alert": True}, timeout=5)
+                            try:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": "⚠️ Spin first.", "show_alert": True}, timeout=5)
+                            except Exception as e:
+                                print(f"  [SIG PAY] answerCallbackQuery error: {e}")
+                            send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
                         elif _bal < _amt:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                                json={"callback_query_id": cb["id"], "text": f"⚠️ Not enough balance (${_bal:.2f}) — tap Add Funds first.", "show_alert": True}, timeout=5)
+                            # Belt-and-suspenders: the popup alert is the primary feedback,
+                            # but also redraw the screen with the shortfall spelled out in
+                            # the message body itself — if the alert silently fails to reach
+                            # the user (expired callback, network hiccup), they still see why
+                            # nothing happened instead of the button just going quiet.
+                            try:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                    json={"callback_query_id": cb["id"], "text": f"⚠️ Not enough balance (${_bal:.2f}) — tap Add Funds first.", "show_alert": True}, timeout=5)
+                            except Exception as e:
+                                print(f"  [SIG PAY] answerCallbackQuery error: {e}")
+                            _short = round(_amt - _bal, 2)
+                            _help_edit_or_send(cb_chat_id,
+                                f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
+                                f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{_sig_id}"}],
+                                                      [{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}],
+                                                      [{"text": "🏠 Main Menu", "callback_data": "help_main"}]]},
+                                message_id=cb_msg_id, rotate=True)
                         else:
                             # Same-process wallet debit — no external payment involved here,
                             # so this applies synchronously (safe: ct._set is race-free
