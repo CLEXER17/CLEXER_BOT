@@ -7976,10 +7976,17 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
         send_reply(chat_id, _reveal_signal_text(snap, sig_id))
         return
     if snap.get("result"):
-        # Trade already hit its terminal outcome (TP/SL/timeout/etc) — no point
-        # charging for a signal that's already over, tell them to try another.
-        send_reply(chat_id, f"⏰ <b>This signal already closed</b> — Result: <b>{snap['result']}</b>\n\n"
-                             f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
+        # Trade already hit its terminal outcome (TP/SL/BE/timeout/etc) — no
+        # point charging for a signal that's already over, tell them to try
+        # another. Only reveal the result if it was an actual TP hit (a win) —
+        # never mention a loss/BE/timeout outcome, so a losing/neutral trade
+        # doesn't get advertised as such to someone who never paid to see it.
+        if snap["result"].startswith("TP"):
+            send_reply(chat_id, f"🏆 <b>This signal already closed — {snap['result']} Hit!</b>\n\n"
+                                 f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
+        else:
+            send_reply(chat_id, f"⏰ <b>This signal already closed.</b>\n\n"
+                                 f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
         return
     spins = u.get("sig_spins", {})
     rows = []
