@@ -3863,10 +3863,16 @@ def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None):
         # Captured (not actually sent yet) — store raw text. The eventual
         # _help_edit_or_send() call that delivers it applies premium-emoji
         # processing exactly once; pre-applying here too caused double-wrapping
-        # (e.g. "🔀 🔀 BingX").
+        # (e.g. "🔀 🔀 BingX"). emoji_overrides must be stashed too — a
+        # captured command (e.g. tapping the /status button from the help
+        # menu, instead of typing it) previously lost any per-call override
+        # entirely, since only the final _help_edit_or_send() call actually
+        # applies premium-emoji processing and it had no way to know about it.
         _reply_capture[cid_str]["texts"].append(text)
         if reply_markup:
             _reply_capture[cid_str]["markup"] = reply_markup
+        if emoji_overrides:
+            _reply_capture[cid_str].setdefault("emoji_overrides", {}).update(emoji_overrides)
         return
     text = _apply_premium_emojis(text, overrides=emoji_overrides)
     reply_markup = _style_keyboard(reply_markup)
@@ -8232,7 +8238,8 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
         merged = cap_mkp["inline_keyboard"] + [_back_row]
     else:
         merged = [_back_row]
-    _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id)
+    _help_edit_or_send(chat_id, result_text, {"inline_keyboard": merged}, message_id=msg_id,
+        emoji_overrides=captured.get("emoji_overrides"))
 
 VIP_MONTHLY_PRICE = 15.0
 VIP_SPIN_MIN, VIP_SPIN_MAX = 11.0, 16.0
@@ -9462,7 +9469,8 @@ def command_listener():
                                 merged_rows = cap_mkp["inline_keyboard"] + _back_markup["inline_keyboard"]
                             else:
                                 merged_rows = _back_markup["inline_keyboard"]
-                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": merged_rows}, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": merged_rows}, message_id=cb_msg_id,
+                                emoji_overrides=captured.get("emoji_overrides"))
 
                     # ── Copytrade ON/OFF ─────────────────────────────────────
                     elif cb_data in ("copytrade_on", "copytrade_off"):
@@ -9493,9 +9501,11 @@ def command_listener():
                         result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
                         cap_mkp = captured.get("markup")
                         if cap_mkp and "inline_keyboard" in cap_mkp:
-                            _help_edit_or_send(cb_chat_id, result_text, cap_mkp, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, cap_mkp, message_id=cb_msg_id,
+                                emoji_overrides=captured.get("emoji_overrides"))
                         else:
-                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _nc_back_cb}]]}, message_id=cb_msg_id)
+                            _help_edit_or_send(cb_chat_id, result_text, {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _nc_back_cb}]]}, message_id=cb_msg_id,
+                                emoji_overrides=captured.get("emoji_overrides"))
                     elif cb_data == "nocopy_type":
                         _nc_back_cb, _ = _find_back_target("/nocopy")
                         pending_input[cb_cid] = {"cmd": "/nocopy", "msg_id": cb_msg_id, "cat_id": _nc_back_cb}
@@ -10328,7 +10338,8 @@ def command_listener():
                             captured = _reply_capture.pop(cid_str, {})
                             result_text = "\n\n".join(captured.get("texts", [])) or "✅ Connected"
                             if _pi_msg_id:
-                                _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id)
+                                _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id,
+                                    emoji_overrides=captured.get("emoji_overrides"))
                             else:
                                 send_reply(cid, result_text, reply_markup=_back_mkp)
                         else:
@@ -10419,7 +10430,8 @@ def command_listener():
                         else:
                             final_mkp = _back_mkp
                         if _pi_msg_id:
-                            _help_edit_or_send(cid, result_text, final_mkp, message_id=_pi_msg_id)
+                            _help_edit_or_send(cid, result_text, final_mkp, message_id=_pi_msg_id,
+                                emoji_overrides=captured.get("emoji_overrides"))
                         else:
                             send_reply(cid, result_text, reply_markup=final_mkp)
                     continue
