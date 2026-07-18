@@ -3821,7 +3821,7 @@ def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
 
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
 
-def send_reply(chat_id, text, reply_markup=None):
+def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None):
     cid_str = str(chat_id)
     if cid_str in _reply_capture:
         # Captured (not actually sent yet) — store raw text. The eventual
@@ -3832,7 +3832,7 @@ def send_reply(chat_id, text, reply_markup=None):
         if reply_markup:
             _reply_capture[cid_str]["markup"] = reply_markup
         return
-    text = _apply_premium_emojis(text)
+    text = _apply_premium_emojis(text, overrides=emoji_overrides)
     reply_markup = _style_keyboard(reply_markup)
     try:
         payload = {"chat_id": chat_id, "text": text,
@@ -5549,20 +5549,63 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         src = get_current_source()
         tv_status = ("ONLINE" if (tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
             else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - BingX fallback") if TV_BRIDGE_URL else "Not configured - BingX"
+        # Per-viewer trade visibility: admin/co-admin sees everything, tagged
+        # by verified/unverified/non-special so they can tell which slots are
+        # copy-trade-safe; VIP sees only verified (special + copy-enabled)
+        # signals; Free sees only trades it actually got (share_free=True),
+        # plus a locked "VIP-exclusive" tag (no numbers) for anything that
+        # was routed to VIP only — never a fully-hidden trade Free never
+        # heard of at all, and never a full reveal of a VIP-only trade.
+        _user_ct = ct._get(str(chat_id))
+        _tier_val = (_user_ct or {}).get("tier", "free")
+        _full_status_view = is_admin or is_co_admin(_check_id)
+        _CAT_TAG = {"verified": "⭐", "unverified": "⚠️", "nonspecial": "➖"}
+        def _status_trade_cat(kind: str, created_at) -> str:
+            _hm = _ist_hm_from_epoch(created_at)
+            if not _hm:
+                return "nonspecial"
+            _sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
+            if _hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind, set()):
+                return "unverified"
+            if _hm in _SCAN_SPECIAL.get(_sched_kind, set()):
+                return "verified"
+            return "nonspecial"
+        def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra=""):
+            _cat = _status_trade_cat(kind, created_at)
+            _dir = "🟢" if sig == "BUY" else "🔴"
+            if _full_status_view:
+                _reveal = True
+                _prefix = f"{_CAT_TAG.get(_cat,'➖')} "
+            elif _tier_val == "vip":
+                _reveal = (_cat == "verified")
+                _prefix = ""
+            else:  # free / unregistered
+                _reveal = share_free
+                _prefix = ""
+            if _reveal:
+                return (f"\n\n<b>{label}:</b> {_prefix}{_dir} {sig} {sym}\n"
+                        f"Entry:{entry:,.4g} {'✅' if entry_hit else '⏳'}  "
+                        f"SL:{sl:,.4g}  TP1:{tp1:,.4g} {'✔️' if tp1_hit else ''}{extra}")
+            # Free viewer, VIP-exclusive trade: locked tag, no numbers.
+            # VIP viewer with an unverified/non-special trade: hide entirely
+            # (an "upgrade to view" tag makes no sense to someone already VIP).
+            if _tier_val != "vip" and tier_routed:
+                return f"\n\n<b>{label}:</b> 🔒 VIP-exclusive signal — upgrade to view"
+            return ""
         scan_lines = ""
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
             for sc in _lst:
-                scan_lines += (f"\n\n<b>Scan{_ver}:</b> {sc['signal']} {sc['symbol']}\n"
-                    f"Entry:{sc['entry']:,.4g} {'✅' if sc.get('entry_hit') else '⏳'}  "
-                    f"SL:{sc['sl']:,.4g}  TP1:{sc['tp1']:,.4g} {'✅' if sc.get('tp1_hit') else ''}")
+                scan_lines += _status_line(f"Scan{_ver}", sc['signal'], sc['symbol'], sc['entry'], sc['sl'], sc['tp1'],
+                    sc.get('entry_hit'), sc.get('tp1_hit'), sc.get('share_free', True), sc.get('tier_routed', True),
+                    f"scan{_ver}", sc.get('created_at'))
         for _dlst in (demo_scan1_trades, demo_scan2_trades):
             for dc in _dlst:
                 _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
                 _pnl = (_cp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _cp and dc.get("entry") else 0
-                _dc_tp1 = "✅" if dc.get('tp1_hit') else f"{dc.get('tp1',0):,.4g}"
-                scan_lines += (f"\n\n<b>TS{dc.get('scan_ver',1)}</b> {dc['signal']} {dc.get('symbol','?')}\n"
-                    f"Entry:{dc.get('entry',0):,.4g}  SL:{dc.get('sl',0):,.4g}  "
-                    f"TP1:{_dc_tp1}  P/L:{_pnl:+.2f}%")
+                _dver = dc.get('scan_ver', 1)
+                scan_lines += _status_line(f"TS{_dver}", dc['signal'], dc.get('symbol','?'), dc.get('entry',0), dc.get('sl',0), dc.get('tp1',0),
+                    True, dc.get('tp1_hit'), dc.get('share_free', True), dc.get('tier_routed', True),
+                    f"demo{_dver}", dc.get('created_at'), extra=f"  P/L:{_pnl:+.2f}%")
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
@@ -5586,9 +5629,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _model_lbl   = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
         _gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
         # Copy trade: per-user for non-admin, global active users count for admin
-        _user_ct = ct._get(str(chat_id))
+        # (_user_ct / _tier_val already computed above for the trade-visibility filter)
         _copy_flag = "✅ ON" if (_user_ct and _user_ct.get("copy_on")) else "❌ OFF"
-        _tier_val = (_user_ct or {}).get("tier", "free")
         _tier_tag = ("⭐ VIP" + (f" (until {_user_ct['vip_end']})" if _user_ct and _user_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
         _users_summary = _build_users_summary()
         send_reply(chat_id,
@@ -5619,7 +5661,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
             + f"\n<b>BTC Trade:</b>\n{ti}"
-            + scan_lines)
+            + scan_lines,
+            emoji_overrides={"🟢": "5262747715552438702", "🔴": "5809816842713174497", "✔️": "5206607081334906820"})
 
     elif cmd == "/price":
         try:
