@@ -3603,7 +3603,10 @@ PREMIUM_EMOJI_MAP = {
     "⚠️": "5213181173026533794", "👑": "6120766436219555441",
     "👋": "5258029071207505708", "🏷️": "6016997440777883054",
     "🏷": "6016997440777883054",
-    "⭐️": "5839390003238540432", "⭐": "5839390003238540432",
+    # VIP tier-label star (e.g. "⭐ VIP") — distinct from the Stars-payment ⭐
+    # override (PAYMENT_STAR_EMOJI_ID below), which wins on payment screens
+    # since per-call overrides take precedence over this global map.
+    "⭐️": "5314546133538715992", "⭐": "5314546133538715992",
     "👇": "6222198028854367391",
     "⏳": "5215327832040811010", "🔄": "5978846612087114958",
     "⚙️": "5341715473882955310", "💵": "5215239948420003628",
@@ -3711,6 +3714,20 @@ def _star_button(text: str, callback_data: str = None, url: str = None) -> dict:
     the plain glyph or the bot's other global ⭐ mapping."""
     label = text.replace("⭐", "", 1).strip() if text.startswith("⭐") else text
     btn = {"text": label, "icon_custom_emoji_id": PAYMENT_STAR_EMOJI_ID}
+    if callback_data is not None:
+        btn["callback_data"] = callback_data
+    if url is not None:
+        btn["url"] = url
+    return btn
+
+# Distinct custom emoji ID for 💰 specifically on the VIP-buying screen's
+# flat-price button — separate from the 💰 used elsewhere in the bot.
+VIP_MONEYBAG_EMOJI_ID = "5458675903028535170"
+
+def _vip_moneybag_button(text: str, callback_data: str = None, url: str = None) -> dict:
+    """Same pattern as _star_button but for the 💰 icon on VIP-buy buttons."""
+    label = text.replace("💰", "", 1).strip() if text.startswith("💰") else text
+    btn = {"text": label, "icon_custom_emoji_id": VIP_MONEYBAG_EMOJI_ID}
     if callback_data is not None:
         btn["callback_data"] = callback_data
     if url is not None:
@@ -8123,7 +8140,7 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
         rows.append([_star_button(f"⭐ Pay {_samt:,} Stars (your spin price)", callback_data=f"vip_paystarsflat:{_samt}")])
     else:
         rows.append([_star_button(_smallcaps_title("⭐ Lucky Draw Spin"), callback_data="vip_starspin")])
-    rows.append([{"text": f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", "callback_data": f"vip_pay:{VIP_MONTHLY_PRICE:.2f}"}])
+    rows.append([_vip_moneybag_button(f"💰 ${VIP_MONTHLY_PRICE:.0f}/month", callback_data=f"vip_pay:{VIP_MONTHLY_PRICE:.2f}")])
     _last_row = [{"text": "◀️  Back", "callback_data": "help_main"}]
     if ADMIN_CHAT_ID:
         _last_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
