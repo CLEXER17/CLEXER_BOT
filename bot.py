@@ -731,9 +731,10 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
 def _build_recap_text(trades: list, date_str: str) -> str:
-    tp2_list = [t for t in trades if t["result"] == "TP2"]
-    tp1_list = [t for t in trades if t["result"] == "TP1"]
-    sl_list  = [t for t in trades if t["result"] == "SL"]
+    tp2_list  = [t for t in trades if t["result"] == "TP2"]
+    tp1_list  = [t for t in trades if t["result"] == "TP1"]
+    sl_list   = [t for t in trades if t["result"] == "SL"]
+    to_list   = [t for t in trades if t["result"] == "TIMEOUT"]
     lines = [f"📊 <b>Daily Recap — {date_str}</b>\n"]
     if tp2_list:
         lines.append("🏆 <b>TP2 Hit:</b>")
@@ -746,6 +747,10 @@ def _build_recap_text(trades: list, date_str: str) -> str:
     if sl_list:
         lines.append("🛑 <b>SL Hit:</b>")
         lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
+        lines.append("")
+    if to_list:
+        lines.append("⏰ <b>Timeout:</b>")
+        lines += [f"➖ {t['symbol']} — {t['time']}" for t in to_list]
     return "\n".join(lines)
 
 def _send_daily_summary(tracker: dict):
@@ -4728,6 +4733,8 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
                 "entry_price": entry, "sl_price": t.get("sl",0)})
+            _track_daily_result(sym, "TIMEOUT", tier_routed=bool(t.get("tier_routed")),
+                entry_date=_ist_date_str(t.get("created_at")))
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
             _close_sig_snapshot(t.get("sig_id",""), f"TIMEOUT({pnl:+.2f}%)")
@@ -10703,6 +10710,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
+                        _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, entry_date=_ist_date_str(created))
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
                         _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
