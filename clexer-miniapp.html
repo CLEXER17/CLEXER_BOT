@@ -278,6 +278,16 @@
       <span class="unreal bgup up" id="unrealP">+$0.00 unrealized</span>
     </div>
     <div class="wrap">
+      <div class="two" style="margin-bottom:12px">
+        <div class="card" style="padding:10px 12px">
+          <div style="font-size:11px;color:var(--muted)">🔥 Streak</div>
+          <div class="v up" id="streakVal" style="font-size:16px;margin-top:2px">0</div>
+        </div>
+        <div class="card" style="padding:10px 12px">
+          <div style="font-size:11px;color:var(--muted)">⚖️ Risk exposure</div>
+          <div class="v" id="riskExp" style="font-size:16px;margin-top:2px">—</div>
+        </div>
+      </div>
       <div class="toggle" id="ptoggle"><button data-p="7D">7D</button><button data-p="30D" class="on">30D</button><button data-p="ALL">ALL</button></div>
       <div class="card">
         <div class="curvehead"><span class="ttl" style="margin:0">Equity Curve</span><span id="gainPct" class="up">+0.0%</span></div>
@@ -288,9 +298,28 @@
         <div class="barsscroll"><svg id="dailyBars"></svg></div>
         <div class="barslegend"><span><i class="sw" style="background:var(--long)"></i>Gain day</span><span><i class="sw" style="background:var(--short)"></i>Loss day</span><span><i class="sw" style="background:var(--gold)"></i>Today</span></div>
       </div>
+      <div class="ttl" style="margin:14px 2px 8px">Best / Worst Trade</div>
+      <div class="two" style="margin-bottom:0">
+        <div class="card" style="padding:10px 12px">
+          <div style="font-size:11px;color:var(--muted)">Best</div>
+          <div id="bestSym" style="font-size:13px;font-weight:600;margin-top:2px">—</div>
+          <div class="v up" id="bestPnl" style="font-size:14px">$0</div>
+        </div>
+        <div class="card" style="padding:10px 12px">
+          <div style="font-size:11px;color:var(--muted)">Worst</div>
+          <div id="worstSym" style="font-size:13px;font-weight:600;margin-top:2px">—</div>
+          <div class="v down" id="worstPnl" style="font-size:14px">$0</div>
+        </div>
+      </div>
       <div class="two">
         <div class="card donutcard"><div class="donut"><svg width="112" height="112"><circle cx="56" cy="56" r="44" fill="none" stroke="#1E242E" stroke-width="11"/><circle id="arc" cx="56" cy="56" r="44" fill="none" stroke="#00D18F" stroke-width="11" stroke-linecap="round" stroke-dasharray="276.5" stroke-dashoffset="276.5"/></svg><div class="center"><div class="pct" id="wr">0%</div><div class="lbl">Win Rate</div></div></div></div>
         <div class="card record"><div class="recrow"><span class="k">Wins</span><span class="v up" id="wins">0</span></div><div class="recrow"><span class="k">Losses</span><span class="v down" id="losses">0</span></div><div class="bar"><i id="winbar" style="width:0%"></i></div><div class="recrow"><span class="k">Trades</span><span class="v" id="trades">0</span></div></div>
+      </div>
+      <div class="card"><div class="ttl">P/L by Coin</div><div id="coinPnl"></div></div>
+      <div class="card">
+        <div class="ttl" style="margin-bottom:10px">This Month</div>
+        <div id="pfCalendar"></div>
+        <div id="pfDayDetail"></div>
       </div>
       <div class="metrics">
         <div class="metric"><div class="k">Realized P/L</div><div class="v up" id="pnlP">$0</div></div>
@@ -757,6 +786,64 @@
     u.className="unreal "+(tot>=0?"bgup up":"bgdown down");
   }
 
+  function renderPortfolioCalendar(dailyMap){
+    const now=new Date();
+    const y=now.getFullYear(), m=now.getMonth();
+    const firstDow=(new Date(y,m,1).getDay()+6)%7;
+    const daysInMonth=new Date(y,m+1,0).getDate();
+    const todayStr=now.toISOString().slice(0,10);
+    let cells=[];
+    for(let i=0;i<firstDow;i++) cells.push(null);
+    for(let d=1;d<=daysInMonth;d++) cells.push(d);
+    const dow=['M','T','W','T','F','S','S'];
+    let html='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;font-size:10px;color:var(--muted);text-align:center;margin-bottom:6px">'+dow.map(x=>`<div>${x}</div>`).join('')+'</div>';
+    for(let w=0;w<cells.length;w+=7){
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px">';
+      for(let i=w;i<w+7;i++){
+        const d=cells[i];
+        if(!d){ html+='<div></div>'; continue; }
+        const dateStr=y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+        const v=dailyMap[dateStr];
+        const isToday=dateStr===todayStr;
+        let bg='var(--border)', fg='var(--muted)', valTxt='';
+        if(v!==undefined){
+          if(v>0){ bg='var(--long)'; fg='#04342C'; }
+          else if(v<0){ bg='var(--short)'; fg='#501313'; }
+          else { bg='#0F6E56'; fg='var(--text)'; }
+          valTxt=(v>=0?'+':'')+fmt(v,0);
+        }
+        const ring=isToday?'border:1px solid var(--gold);':'';
+        html+=`<div class="pfday" data-date="${dateStr}" data-v="${v!==undefined?v:''}" style="aspect-ratio:1;border-radius:4px;background:${bg};${ring}display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer">`+
+          `<span style="font-size:7px;color:${fg};opacity:.85">${d}</span>`+
+          (v!==undefined?`<span style="font-size:8px;color:${fg}">${valTxt}</span>`:'')+
+        `</div>`;
+      }
+      html+='</div>';
+    }
+    html+='<div style="display:flex;justify-content:flex-end;gap:10px;font-size:10px;color:var(--muted);margin-top:2px">'+
+      '<span style="display:flex;align-items:center;gap:4px"><i style="width:8px;height:8px;border-radius:2px;background:var(--short);display:inline-block"></i>Loss</span>'+
+      '<span style="display:flex;align-items:center;gap:4px"><i style="width:8px;height:8px;border-radius:2px;background:var(--border);display:inline-block"></i>No trade</span>'+
+      '<span style="display:flex;align-items:center;gap:4px"><i style="width:8px;height:8px;border-radius:2px;background:var(--long);display:inline-block"></i>Gain</span>'+
+    '</div>';
+    document.getElementById("pfCalendar").innerHTML=html;
+    document.getElementById("pfDayDetail").innerHTML='';
+    document.querySelectorAll(".pfday").forEach(el=>{
+      el.addEventListener("click",()=>{
+        const v=el.dataset.v;
+        const detail=document.getElementById("pfDayDetail");
+        if(v===""){ detail.innerHTML=''; return; }
+        const num=parseFloat(v);
+        const balTxt=(document.getElementById("balance").textContent||"$0").replace(/[$,]/g,"");
+        const balNum=parseFloat(balTxt)||0;
+        const pct=balNum>0?(num/balNum*100):0;
+        detail.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--gold);border-radius:8px;padding:8px 10px;margin-top:8px">`+
+          `<span style="font-size:11px;color:var(--muted)">${el.dataset.date}</span>`+
+          `<span style="font-size:12px;font-weight:700;color:${num>=0?"var(--long)":"var(--short)"}">${num>=0?"+":"-"}$${fmt(Math.abs(num),2)} <span style="color:var(--muted);font-weight:400">(${pct>=0?"+":""}${pct.toFixed(1)}%)</span></span>`+
+        `</div>`;
+      });
+    });
+  }
+
   async function loadPortfolio(p){
     curP=p;
     // load stats from API
@@ -786,6 +873,7 @@
     // load closed trades
     try{
       const hist = await api("/trades/history");
+      const h = hist.history||[];
       // sync virtual history (async — loads from CloudStorage first)
       vhLoadCloud(existing => {
         const updated = syncVirtualHistory(hist.history||[], existing);
@@ -805,6 +893,51 @@
       });
       const days=Object.keys(dailyMap).sort().slice(-30);
       if(days.length) renderDailyBars(days.map(d=>dailyMap[d]));
+
+      // streak — trailing same-result run counting back from the most recent trade
+      let streak=0, streakWin=null;
+      for(const c of h){
+        const win = c.result==="WIN" || (c.pnl||0)>=0;
+        if(streakWin===null) streakWin=win;
+        if(win!==streakWin) break;
+        streak++;
+      }
+      const streakEl=document.getElementById("streakVal");
+      streakEl.textContent = h.length ? (streak+" "+(streakWin?("win"+(streak!==1?"s":"")):("loss"+(streak!==1?"es":"")))) : "—";
+      streakEl.className = "v "+(streakWin===false?"down":"up");
+
+      // best / worst trade
+      if(h.length){
+        const best=h.reduce((a,b)=>(b.pnl||0)>(a.pnl||0)?b:a);
+        const worst=h.reduce((a,b)=>(b.pnl||0)<(a.pnl||0)?b:a);
+        document.getElementById("bestSym").textContent=(best.symbol||"—").replace("USDT","")+"/USDT";
+        document.getElementById("bestPnl").textContent="+$"+fmt(Math.abs(best.pnl||0),2);
+        document.getElementById("worstSym").textContent=(worst.symbol||"—").replace("USDT","")+"/USDT";
+        document.getElementById("worstPnl").textContent="-$"+fmt(Math.abs(worst.pnl||0),2);
+      }
+
+      // P/L by coin
+      const coinMap={};
+      h.forEach(c=>{ const s=c.symbol||"?"; coinMap[s]=(coinMap[s]||0)+(c.pnl||0); });
+      const coinRows=Object.entries(coinMap).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,5);
+      const maxCoinAbs=Math.max(1,...coinRows.map(r=>Math.abs(r[1])));
+      document.getElementById("coinPnl").innerHTML = coinRows.length ? coinRows.map(([sym,v])=>{
+        const pos=v>=0, pct=Math.round(Math.abs(v)/maxCoinAbs*100);
+        return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">`+
+          `<div style="width:56px;font-size:12px;font-family:var(--mono)">${sym.replace("USDT","")}</div>`+
+          `<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="width:${pct}%;height:100%;background:${pos?"var(--long)":"var(--short)"}"></div></div>`+
+          `<div style="width:64px;text-align:right;font-size:12px;font-family:var(--mono);color:${pos?"var(--long)":"var(--short)"}">${pos?"+":"-"}$${fmt(Math.abs(v),2)}</div>`+
+        `</div>`;
+      }).join("") : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No closed trades yet</div>';
+
+      // monthly calendar — reuses dailyMap already built above
+      renderPortfolioCalendar(dailyMap);
+
+      // risk exposure — open-position margin vs total balance
+      const balTxt0=(document.getElementById("balance").textContent||"$0").replace(/[$,]/g,"");
+      const balNum0=parseFloat(balTxt0)||0;
+      const marginSum=Object.values(TRADES).reduce((a,t)=>a+((t.qty&&t.lev)?(t.qty*t.entry/t.lev):0),0);
+      document.getElementById("riskExp").textContent = balNum0>0 ? fmt(marginSum/balNum0*100,1)+"%" : "—";
 
       // equity curve from cumulative pnl
       const hist30=[...hist.history||[]].reverse().slice(0,30);
