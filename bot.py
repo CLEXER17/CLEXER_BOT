@@ -715,11 +715,17 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
             "💎 Crypto Clexer VIP\n"
             "📩 DM now for VIP access.</blockquote>"
         )
+    # Thread this as a genuine reply to the locked/redacted entry post that
+    # went out to Free at signal time (same reply_map + _send_plain_reply
+    # mechanism send_lifecycle_reply uses for TP1/TP2/SL) — so this promo
+    # visibly quotes the exact signal it's talking about, instead of landing
+    # as an unrelated standalone post. Falls back to a normal post if no
+    # entry message_id was captured for a given channel (e.g. old trade,
+    # pre-locked-signal feature, or the capture failed).
+    _reply_map = trade.get("reply_map", {})
     for cid in free_chans:
         try:
-            payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
-            if mkp: payload["reply_markup"] = mkp
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
+            _send_plain_reply(cid, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
 def _build_recap_text(trades: list, date_str: str) -> str:
