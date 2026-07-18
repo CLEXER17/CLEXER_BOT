@@ -8123,6 +8123,13 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
     the successful_payment handler once payment is confirmed, never
     synchronously on the button tap."""
     u = ct._get(str(cid))
+    if u.get("tier") == "vip":
+        _until = f" until <b>{u['vip_end']}</b>" if u.get("vip_end") else ""
+        _help_edit_or_send(chat_id,
+            f"👑 <b>{_smallcaps_title('You Are Already VIP')}</b>\n\n<blockquote>Your VIP is active{_until} — no need to buy another one.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_main"}]]},
+            message_id, rotate=False)
+        return
     cur_month = now_ist().strftime("%Y-%m")
     has_spin = u.get("vip_spin_month") == cur_month and u.get("vip_spin_amount")
     has_star_spin = u.get("vip_star_spin_month") == cur_month and u.get("vip_star_spin_amount")
@@ -8746,6 +8753,8 @@ def send_go_screen(chat_id, message_id=None):
 
 def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     _sees_scanadmin_cats = is_admin or is_co_admin(cid if cid is not None else chat_id)
+    _u_ct = ct._get(str(cid)) if cid is not None else None
+    _is_vip_user = bool(_u_ct and _u_ct.get("tier") == "vip")
     rows = []
     for cat_id, (label, admin_only, _) in _HELP_CATS.items():
         if admin_only and not is_admin:
@@ -8778,7 +8787,8 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         rows.append([{"text": "📱 Open Mini App", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
     rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
                  {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
-    rows.append([{"text": "👑 Get VIP", "callback_data": "vip_menu"}])
+    if not _is_vip_user:
+        rows.append([{"text": "👑 Get VIP", "callback_data": "vip_menu"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
@@ -8788,7 +8798,6 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     _pnl_line = ""
     _tier_line = ""
     if cid is not None:
-        _u_ct = ct._get(str(cid))
         if _u_ct and _u_ct.get("connected"):
             _h = _u_ct.get("history", {})
             _pnl = _h.get("total_pnl", 0.0)
