@@ -5601,7 +5601,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if CHAT_MODEL == "google" and not GEMINI_API_KEY:
             send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         else:
-            _reply_note = "" if is_admin else "\n\n↩️ <b>Reply to this message</b> (or any of my replies) to keep chatting — plain messages won't trigger a response."
+            _reply_note = "" if is_admin else "\n\n↪️ <b>Forward a message here</b> to get a reply — plain typed messages won't trigger a response."
             send_reply(chat_id,
                 "💬 <b>Chat Session Started</b>\n\n"
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
@@ -10220,11 +10220,15 @@ def command_listener():
                 if text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
                 elif str(cid) in _chat_sessions:
-                    # Regular users must reply to the bot's last message to get a
-                    # /chat answer — otherwise every plain message they send while
-                    # a session is open would trigger a reply. Admin is exempt.
+                    # Regular users must actually forward a message into the chat
+                    # to get a /chat answer — plain typed messages don't trigger a
+                    # reply. forward_origin is the current Bot API field; forward_from
+                    # / forward_from_chat / forward_date are the pre-7.0 fields, kept
+                    # as a fallback for older forwarded-message shapes. Admin is exempt.
                     _is_admin_chat = ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)
-                    if _is_admin_chat or msg.get("reply_to_message"):
+                    _is_forward = bool(msg.get("forward_origin") or msg.get("forward_from")
+                                        or msg.get("forward_from_chat") or msg.get("forward_date"))
+                    if _is_admin_chat or _is_forward:
                         _handle_chat_message(cid, text)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
