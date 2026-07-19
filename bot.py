@@ -5728,8 +5728,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             + (
                 f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
                 f"🔍 Alt Scan:   {_alt_flag}\n"
-                f"🧠 AI Model:   <b>{_model_lbl}</b>\n"
-                f"🔌 Gateway:    <b>{_gateway_lbl}</b>\n"
+                f"🧠 BTC Model:  <b>{_model_lbl}</b>\n"
+                f"🔌 BTC Gateway:<b>{_gateway_lbl}</b>\n"
+                f"<i>(Scan1/Scan2/TS1/TS2 each have their own via /aiconfig)</i>\n"
                 if is_admin else ""
             )
             + f"🔄 Copy Trade: <b>{_copy_flag}</b>\n"
@@ -9012,8 +9013,8 @@ def send_go_screen(chat_id, message_id=None):
     text = (
         f"▶️ <b>Bot RUNNING</b>\n\n"
         f"<blockquote>All scans, monitoring and alerts active.\n\n"
-        f"🧠 Model:  <b>{_go_model_lbl}</b>\n"
-        f"🔌 Gateway: <b>{_go_gateway_lbl}</b>\n\n"
+        f"🧠 BTC Model:  <b>{_go_model_lbl}</b>\n"
+        f"🔌 BTC Gateway: <b>{_go_gateway_lbl}</b>\n\n"
         f"{_go_btc_line}"
         f"{_go_s1_line}"
         f"{_go_s2_line}\n"
