@@ -5945,29 +5945,39 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         # (win or loss) are excluded entirely, per admin request.
         def _is_shown_result(res: str) -> bool:
             return not (res.startswith("SL") or res.startswith("TIMEOUT"))
+        def _fmt_hist_entry(s: dict) -> list:
+            res = s.get("result", "?")
+            em = "🏆" if res == "TP2" else "💰"
+            price = s.get("tp2") if res == "TP2" else s.get("tp1", 0)
+            try:
+                _dt = datetime.strptime(s.get("time", ""), "%d %b %Y  %I:%M %p IST")
+                _tstr = f"{_dt.day} {_dt.strftime('%b')} • {_dt.strftime('%I:%M %p')}"
+            except Exception:
+                _tstr = s.get("time", "")
+            return [f"{em} {s['symbol']} • {s['signal']}",
+                    f"🎯 {res} Hit • {price:,.4g}",
+                    f"🕒 {_tstr}"]
         if sub in ("scan1", "scan2"):
             ver = sub[-1]
             _sh = [s for s in scan_history if str(s.get("ver","1")) == ver and _is_shown_result(s.get("result","?"))]
             if not _sh:
                 send_reply(chat_id, f"📜 <b>Scan{ver} History</b>\n\nNo wins yet.", reply_markup=_hist_btns); return
-            lines = [f"📜 <b>Scan{ver} History (last 5 wins)</b>"]
-            for s in reversed(_sh[-5:]):
-                res = s.get("result","?")
-                em = "🏆" if res=="TP2" else "💰"
-                lines.append(f"{em} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
-                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n   {s['time']}")
+            _entries = list(reversed(_sh[-5:]))
+            lines = [f"📜 <b>Scan{ver} History</b>", ""]
+            for i, s in enumerate(_entries):
+                lines += _fmt_hist_entry(s)
+                if i < len(_entries) - 1: lines.append("──────────────")
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
         elif sub in ("ts1", "ts2"):
             dver = sub[-1]
             _dh = [s for s in demo_history if str(s.get("dver",1)) == dver and _is_shown_result(s.get("result","?"))]
             if not _dh:
                 send_reply(chat_id, f"📜 <b>TS{dver} History</b>\n\nNo wins yet.", reply_markup=_hist_btns); return
-            lines = [f"📜 <b>TS{dver} History (last 5 wins)</b>"]
-            for s in reversed(_dh[-5:]):
-                res = s.get("result","?")
-                em = "🏆" if res=="TP2" else "💰"
-                lines.append(f"{em} {s['signal']} {s['symbol']} @ {s['entry']:,.4g}  → <b>{res}</b>\n"
-                    f"   SL:{s['sl']:,.4g}  TP1:{s['tp1']:,.4g}  TP2:{s['tp2']:,.4g}\n   {s['time']}")
+            _entries = list(reversed(_dh[-5:]))
+            lines = [f"📜 <b>TS{dver} History</b>", ""]
+            for i, s in enumerate(_entries):
+                lines += _fmt_hist_entry(s)
+                if i < len(_entries) - 1: lines.append("──────────────")
             send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
         else:
             if not signal_history:
