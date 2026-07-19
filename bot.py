@@ -1334,6 +1334,10 @@ _NP_CONFIG = {
     "setrisk":     {"label": "Auto-Risk (Max Loss)",    "unit": "USDT", "cmd": "/setrisk",     "decimals": True},
     "tp1size":     {"label": "TP1 Close %",             "unit": "%",    "cmd": "/tp1size",     "decimals": False},
     "freelimit":   {"label": "Free Channel Share %", "unit": "%", "cmd": "/freelimit", "decimals": False},
+    "wrscan1":     {"label": "Scan1 Win Rate Target",  "unit": "%", "cmd": "/wrscan1", "decimals": False},
+    "wrscan2":     {"label": "Scan2 Win Rate Target",  "unit": "%", "cmd": "/wrscan2", "decimals": False},
+    "wrts1":       {"label": "TS1 Win Rate Target",    "unit": "%", "cmd": "/wrts1",   "decimals": False},
+    "wrts2":       {"label": "TS2 Win Rate Target",    "unit": "%", "cmd": "/wrts2",   "decimals": False},
 }
 
 _pp_state: dict = {}       # cid → {"action","kind","symbol","idx","digits": str, "back_cb": str} — tap price-picker
@@ -3586,6 +3590,7 @@ def load_settings():
             SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
             USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
             _apply_aicfg_grid(d.get("aicfg_grid"))
+            _SLOT_EVAL_THRESHOLD.update(d.get("slot_eval_threshold", {}))
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
             CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
@@ -3634,6 +3639,7 @@ def save_settings():
             "scan_model":       SCAN_MODEL,
             "use_aerolink":     USE_AEROLINK,
             "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
+            "slot_eval_threshold": dict(_SLOT_EVAL_THRESHOLD),
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
@@ -5341,7 +5347,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -6517,6 +6523,27 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, f"<b>TP1 Close % Set</b>\n\n{pct}% closes at TP1, {100-pct}% rides to TP2.")
         except ValueError:
             send_reply(chat_id, "Please enter a valid number 1–99.")
+
+    elif cmd == "/winrate" and is_scanadmin:
+        send_winrate_screen(chat_id)
+
+    elif cmd in ("/wrscan1", "/wrscan2", "/wrts1", "/wrts2") and is_scanadmin:
+        _wr_kind = {"/wrscan1": "scan1", "/wrscan2": "scan2", "/wrts1": "demo1", "/wrts2": "demo2"}[cmd]
+        _wr_label = {"scan1": "Scan1", "scan2": "Scan2", "demo1": "TS1", "demo2": "TS2"}[_wr_kind]
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"<b>{_wr_label} Win Rate Target</b>\n\nCurrent: <b>{_SLOT_EVAL_THRESHOLD[_wr_kind]}%</b>\n\n"
+                f"Use the tap keypad or type a number 1–99.")
+            return
+        try:
+            n = int(parts[1])
+            if n < 1 or n > 99:
+                send_reply(chat_id, "Win rate target must be 1–99."); return
+            _SLOT_EVAL_THRESHOLD[_wr_kind] = n
+            save_settings()
+            send_reply(chat_id, f"<b>{_wr_label} Win Rate Target Set</b>\n\n{n}% required to promote/stay verified.")
+        except ValueError:
+            send_reply(chat_id, "Please enter a valid whole number.")
 
     elif cmd == "/freelimit" and is_admin:
         if len(parts) < 2:
@@ -8260,6 +8287,7 @@ _SETTINGS_SUBCATS = {
         ("/resetspins", "🎰", "Reset All VIP Spins", "Clear every user's locked VIP spin price so everyone can spin again immediately."),
         ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
         ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
+        ("/winrate", "🎯", "Win Rate Targets", "Set the promote/demote win-rate target independently for Scan1, Scan2, TS1, and TS2."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -8734,6 +8762,21 @@ def send_userstats_list(chat_id, kind, message_id=None):
 _AICFG_KIND_LABELS = {"scan1": "🔍 Scan1", "scan2": "🔍 Scan2", "test1": "🧪 TS1", "test2": "🧪 TS2"}
 _AICFG_TIER_LABELS = {"verified": "⭐ Verified", "unverified": "⚠️ Unverified", "nonspecial": "➖ Nonspecial"}
 
+def send_winrate_screen(chat_id, message_id=None):
+    _wr_rows = [
+        ("scan1", "🔍 Scan1", "wrscan1"), ("scan2", "🔍 Scan2", "wrscan2"),
+        ("demo1", "🧪 TS1", "wrts1"), ("demo2", "🧪 TS2", "wrts2"),
+    ]
+    rows = [[{"text": f"{label}: {_SLOT_EVAL_THRESHOLD[kind]}%", "callback_data": f"winrate_open:{np_key}"}]
+            for kind, label, np_key in _wr_rows]
+    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    _help_edit_or_send(chat_id,
+        "<b>🎯 Win Rate Targets</b>\n\n"
+        "<blockquote>The % win rate a time slot needs to hit (with at least 4 wins) to auto-promote to "
+        "verified/VIP-routed, or to stay verified before auto-demoting to unverified.\n"
+        "Tap a type below to change its target.</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_aiconfig_screen(chat_id, message_id=None):
     """Top level — pick which scan type's grid to edit. BTC gets its own row
     too, but skips the tier level (always verified, no unverified/nonspecial
@@ -9183,6 +9226,8 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         send_adminlinks_screen(chat_id, message_id=msg_id)
     elif back_cb == "userstats_open":
         send_userstats_screen(chat_id, message_id=msg_id)
+    elif back_cb == "winrate_open":
+        send_winrate_screen(chat_id, message_id=msg_id)
     elif back_cb == "aicfg_open":
         send_aiconfig_screen(chat_id, message_id=msg_id)
     elif back_cb.startswith("aicfg_open:"):
@@ -10027,6 +10072,11 @@ def command_listener():
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "freelimit_open" and cb_is_admin:
                         _np_state[str(cb_cid)] = {"target": "freelimit", "digits": "", "back_cb": "channelmgmt_open"}
+                        _np_render(cb_chat_id, cb_cid, cb_msg_id)
+                    elif cb_data == "winrate_open" and cb_is_scanadmin:
+                        send_winrate_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("winrate_open:") and cb_is_scanadmin:
+                        _np_state[str(cb_cid)] = {"target": cb_data.split(":", 1)[1], "digits": "", "back_cb": "winrate_open"}
                         _np_render(cb_chat_id, cb_cid, cb_msg_id)
                     elif cb_data == "chanpick_open":
                         send_channel_picker_screen(cb_chat_id, message_id=cb_msg_id)
