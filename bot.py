@@ -8449,8 +8449,19 @@ def _np_render(chat_id, cid, msg_id):
     cfg = _NP_CONFIG[st["target"]]
     digits = st["digits"]
     value_str = digits if digits else "0"
+    _extra = ""
+    if st["target"] == "freelimit":
+        _verified_n = sum(len(_SCAN_SPECIAL.get(k, set())) - len(_SCAN_SPECIAL_NO_COPY.get(k, set()))
+                           for k in ("scan1", "scan2", "test"))
+        _tr = _free_signal_tracker
+        _today_n = _tr.get("total", 0); _shared_n = _tr.get("shared", 0)
+        _actual_pct = round(_shared_n / _today_n * 100) if _today_n else 0
+        _extra = (f"📊 Verified times (all slots): <b>{_verified_n}</b>\n"
+                   f"🔧 Current setting: <b>{FREE_SIGNAL_DAILY_LIMIT}%</b>\n"
+                   f"📅 Today: {_shared_n}/{_today_n} shared ({_actual_pct}%)\n\n")
     text = (
         f"🔢 <b>Set {cfg['label']}</b>\n\n"
+        f"{_extra}"
         f"Entering: <code>{value_str}</code> {cfg['unit']}\n\n"
         f"<i>Tap digits to build the value{' — use . for cents, e.g. 0.5' if cfg['decimals'] else ''}.</i>")
     rows = [
