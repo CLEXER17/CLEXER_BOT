@@ -1639,17 +1639,17 @@ def _load_slot_state():
         if d is None:
             return
         _slot_stats = d.get("stats", {})
+        # FULL REPLACE, not update() — _save_slot_state() always writes the
+        # complete current set for every kind, so the saved list is the
+        # authoritative state. update() would only ever ADD times back in
+        # (from the hardcoded module-level defaults on a fresh restart) and
+        # could never express a REMOVAL — e.g. a reverify that discards a
+        # time from no_copy would silently revert to locked/unverified on
+        # every redeploy, since the hardcoded default still had it.
         for kind, times in d.get("special", {}).items():
-            _SCAN_SPECIAL.setdefault(kind, set()).update(tuple(hm) for hm in times)
+            _SCAN_SPECIAL[kind] = set(tuple(hm) for hm in times)
         for kind, times in d.get("no_copy", {}).items():
-            _SCAN_SPECIAL_NO_COPY.setdefault(kind, set()).update(tuple(hm) for hm in times)
-        # A demotion needs to be able to REMOVE a time from no_copy (re-verify)
-        # or SPECIAL could shrink in code between deploys — rebuild no_copy to
-        # only contain times that are still actually special, and drop any
-        # saved "removed" markers by trusting disk as the full override.
-        for kind in d.get("no_copy_removed", {}):
-            for hm in d["no_copy_removed"][kind]:
-                _SCAN_SPECIAL_NO_COPY.get(kind, set()).discard(tuple(hm))
+            _SCAN_SPECIAL_NO_COPY[kind] = set(tuple(hm) for hm in times)
         print(f"[SLOT AUTO] Loaded {len(_slot_stats)} tracked slots")
     except Exception as e:
         print(f"[SLOT AUTO] load error: {e}")
