@@ -794,7 +794,7 @@ def _send_daily_summary(tracker: dict):
                 _pin_message(cid, _mid)
 
 def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
-                         tp1_detail: dict = None, entry_date: str = None):
+                         tp1_detail: dict = None, entry_date: str = None, sig_id: str = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
     Drives the 3rd-Free-TP1-of-the-day promo and feeds the end-of-day recap.
     entry_date: the IST calendar day this TRADE was opened on (not today) —
@@ -805,16 +805,22 @@ def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, fre
     tier_routed trades are eligible for the recap at all (Signal-only never appears).
     free_shown: True if also visible in the Free channel — builds Free's own
     (shorter) recap and gates the 3rd-TP1 streak promo.
-    tp1_detail: {'tag','side','tp1','sl_be','tp2'} for the promo's message."""
+    tp1_detail: {'tag','side','tp1','sl_be','tp2'} for the promo's message.
+    sig_id: same trade's signal id — when the trade later runs to TP2, its
+    earlier TP1 recap line (same sig_id) is dropped so the recap only ever
+    shows the trade's final/best result, not both TP1 and TP2 for one trade."""
     date_str = entry_date or _ist_date_str()
     bucket = _get_daily_bucket(date_str)
     key = result.lower()
     bucket[key] = bucket.get(key, 0) + 1
     if tier_routed:
+        if result == "TP2" and sig_id:
+            bucket["trades"] = [tr for tr in bucket["trades"]
+                                 if not (tr.get("sig_id") == sig_id and tr.get("result") == "TP1")]
         bucket["trades"].append({
             "symbol": symbol, "result": result,
             "time": now_ist().strftime("%I:%M %p IST"),
-            "free_shown": free_shown, "tier_routed": True,
+            "free_shown": free_shown, "tier_routed": True, "sig_id": sig_id,
         })
     if result == "TP1" and free_shown:
         bucket["free_tp1"] = bucket.get("free_tp1", 0) + 1
@@ -4199,7 +4205,7 @@ def run_tick_check():
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             ct.on_tp2(entry, tp2); reset_trade(); return True
@@ -4220,7 +4226,7 @@ def run_tick_check():
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
-                    entry_date=_ist_date_str(active_trade.get("entry_time")))
+                    entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
         # SL — use candle low/high to catch wick SL hits
@@ -4794,7 +4800,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
             _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
-                entry_date=_ist_date_str(t.get("created_at")))
+                entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
             _notify_free_late(sym, t, "TP2")
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
@@ -4820,7 +4826,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
                 _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
                     tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
-                    entry_date=_ist_date_str(t.get("created_at")))
+                    entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
                 _notify_free_late(sym, t, "TP1")
 
         sl_margin = sl * 0.002
@@ -4906,7 +4912,7 @@ def run_price_check():
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
             send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time"))); _notify_free_late(SYMBOL, active_trade, "TP2")
+            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             reset_trade(); return True
         elif status == "SL_HIT":
@@ -4951,7 +4957,7 @@ def run_price_check():
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
                     "tp2": active_trade.get("tp2",0)},
-                entry_date=_ist_date_str(active_trade.get("entry_time")))
+                entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_lifecycle_reply(fmt_update("STOP_HUNT"), _rmap, include_ch2=False)
         elif status in ("ENTRY_MISSED","SETUP_INVALID"):
@@ -10656,7 +10662,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
-                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created))
+                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
@@ -10705,7 +10711,7 @@ def _demo_monitor_loop():
                         ct.on_scan_tp1(sym)
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
-                            entry_date=_ist_date_str(created))
+                            entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP1")
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
