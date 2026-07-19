@@ -5949,13 +5949,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             res = s.get("result", "?")
             em = "🏆" if res == "TP2" else "💰"
             price = s.get("tp2") if res == "TP2" else s.get("tp1", 0)
+            label = "TP1" if res == "BE" else res
             try:
                 _dt = datetime.strptime(s.get("time", ""), "%d %b %Y  %I:%M %p IST")
                 _tstr = f"{_dt.day} {_dt.strftime('%b')} • {_dt.strftime('%I:%M %p')}"
             except Exception:
                 _tstr = s.get("time", "")
             return [f"{em} {s['symbol']} • {s['signal']}",
-                    f"🎯 {res} Hit • {price:,.4g}",
+                    f"🎯 {label} Hit • {price:,.4g}",
                     f"🕒 {_tstr}"]
         if sub in ("scan1", "scan2"):
             ver = sub[-1]
