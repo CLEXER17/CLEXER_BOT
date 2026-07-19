@@ -591,7 +591,7 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
     coin = symbol.replace("-USDT", "").replace("USDT", "")
     tag = detail.get("tag", "?"); side = detail.get("side", "?")
     tp1 = detail.get("tp1", 0); sl_be = detail.get("sl_be", 0); tp2 = detail.get("tp2", 0)
-    arrow = "🟢" if side == "BUY" else "🔴"
+    arrow = "🟩" if side == "BUY" else "🟥"
     text = (
         f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>\n"
         f"{arrow} {side}\n"
@@ -3666,6 +3666,7 @@ channel_paused = {"1": False, "2": False}  # per-channel pause state
 # the plain emoji glyph automatically for non-Premium viewers.
 PREMIUM_EMOJI_MAP = {
     "🟢": "5215685881989442149", "🔴": "4926956800005112527",
+    "🟩": "5262747715552438702", "🟥": "5809816842713174497",  # BUY/SELL-only direction icon on signal cards (distinct from the generic 🟢/🔴 used for toggles/checks elsewhere)
     "🛑": "5366040905927113475", "🎯": "5461009483314517035",
     "🏆": "5188344996356448758", "✅": "6120713655366455614",
     "❌": "6120660741369369103", "🚫": "5240241223632954241",
@@ -4086,7 +4087,7 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
-    e   = "🟢" if s["signal"]=="BUY" else "🔴"
+    e   = "🟩" if s["signal"]=="BUY" else "🟥"
     ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
     wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
     ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
@@ -4215,7 +4216,7 @@ def run_tick_check():
                 ct.on_entry_hit(entry, sl, tp1, tp2)
                 send_lifecycle_reply(
                     f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
-                    f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig} — {SYMBOL}</b>\n\n"
+                    f"{'🟩' if sig=='BUY' else '🟥'} <b>{sig} — {SYMBOL}</b>\n\n"
                     f"🎯 Entry:  <b>{entry:,.0f}</b>  |  📊 Price: <b>{price:,.2f}</b>\n"
                     f"🛡️ SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
                     f"💰 TP1:   <b>{tp1:,.0f}</b>\n"
@@ -4234,7 +4235,7 @@ def run_tick_check():
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
-                f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
+                f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
@@ -4252,7 +4253,7 @@ def run_tick_check():
                 save_active_trade()
                 ct.on_tp1(entry, tp1)
                 _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
-                    f"{'🟢' if sig=='BUY' else '🔴'} {sig} {SYMBOL}\n"
+                    f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
                 send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
@@ -4674,7 +4675,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
     msgs = {
         "ENTRY_HIT": _scan_box(
             "Entry Triggered", _hdr("🚀", "Entry Triggered"),
-            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>  |  📊 {_smallcaps_title('Price')}: <code>{price:,.4g}</code>",
               f"🛑 SL: <code>{t.get('sl',0):,.4g}</code>", f"💰 TP1: <code>{tp1:,.4g}</code>", f"🏆 TP2: <code>{tp2:,.4g}</code>"],
              [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
@@ -4682,21 +4683,21 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "TP1_HIT": _scan_box(
             "TP1 Hit", _hdr_notime("💰", "TP1 Hit"),
-            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}", f"✅ TP1: <code>{tp1:,.4g}</code>",
+            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}", f"✅ TP1: <code>{tp1:,.4g}</code>",
               f"🛡️ {_smallcaps_title('SL moved to BE')}: <code>{entry:,.4g}</code>",
               f"🚀 {_smallcaps_title('Riding TP2')}: <code>{tp2:,.4g}</code>..."]],
             tag=_sid,
         ),
         "TP2_HIT": _scan_box(
             "TP2 Hit", _hdr_notime("🏆", "TP2 Hit"),
-            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
               f"✅ {_smallcaps_title('Full profit')} @ TP2: <code>{tp2:,.4g}</code>"]],
             tag=_sid,
         ),
         "SL_HIT": (
             _scan_box(
                 "BE Exit", _hdr_notime("🛡️", "BE Exit"),
-                [[f"{'🟢' if sig=='BUY' else '🔴'} {sig}",
+                [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
                   f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
                   f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
                  [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
@@ -4718,7 +4719,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         ),
         "TIMEOUT": _scan_box(
             "Timeout", _hdr("⏰", "Timeout"),
-            [[f"{'🟢' if sig=='BUY' else '🔴'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
+            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
               f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"],
              [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
             tag=_sid,
@@ -6865,7 +6866,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     tp1h  = "✅" if t.get("tp1_hit") else "⏳"
                     cp    = get_bingx_price(sym)
                     pnl   = (cp - entry) / entry * 100 * (1 if sig=="BUY" else -1) if entry and cp else 0
-                    lines.append(f"{'🟢' if sig=='BUY' else '🔴'} {sym}  Entry:{entry:,.4g}  SL:{sl:,.4g}  TP1:{tp1h}  P/L:{pnl:+.2f}%")
+                    lines.append(f"{'🟩' if sig=='BUY' else '🟥'} {sym}  Entry:{entry:,.4g}  SL:{sl:,.4g}  TP1:{tp1h}  P/L:{pnl:+.2f}%")
                 trades_str = "\n".join(lines)
             send_reply(chat_id,
                 f"🧪 <b>Test Mode: {state}</b>\n"
@@ -10771,7 +10772,7 @@ def _demo_monitor_loop():
                         tp2_now = tp1hit and tp2 > 0 and cp <= tp2
 
                     coin = sym.replace("-USDT","")
-                    arrow = "🟢" if sig == "BUY" else "🔴"
+                    arrow = "🟩" if sig == "BUY" else "🟥"
                     if tp2_now:
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
@@ -11536,7 +11537,7 @@ def main():
                     if signal.get("entry_type", "MARKET") == "MARKET":
                         send_telegram(
                             f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
-                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} <b>{signal['signal']} {SYMBOL}</b>\n"
+                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} <b>{signal['signal']} {SYMBOL}</b>\n"
                             f"🎯 Entry: <b>{signal['entry']:,.0f}</b>  ✅ MARKET FILLED\n"
                             f"🛑 SL:    <b>{signal['sl']:,.0f}</b>\n"
                             f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
@@ -11580,7 +11581,7 @@ def main():
                         send_lifecycle_reply(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
-                            f"{'🟢' if signal['signal']=='BUY' else '🔴'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
+                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
                             t.get("reply_map"), include_ch2=False)
                         ct.on_close_all()
                         _close_sig_snapshot(t.get("sig_id",""), "STRUCTURE_FLIP")
