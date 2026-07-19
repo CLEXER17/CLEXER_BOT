@@ -1611,7 +1611,7 @@ _scan_trigger_hm = {"scan1": None, "scan2": None, "test1": None, "test2": None} 
 # (never hit TP1), LOSS, or a negative-P/L timeout. TP1 alone is never a
 # terminal state in this bot (the runner keeps riding to TP2/BE/timeout), so
 # it's not tracked as its own event — only these 4 terminal outcomes are.
-_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "demo1": 35, "demo2": 35}
+_SLOT_EVAL_THRESHOLD = {"scan1": 55, "scan2": 55, "demo1": 50, "demo2": 50}
 _SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
 _SLOT_MIN_STREAK_FOR_REVERIFY = 2
 # demo1/demo2 each map to their own independent schedule kind (test1/test2).
