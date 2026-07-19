@@ -8718,16 +8718,20 @@ _AICFG_KIND_LABELS = {"scan1": "🔍 Scan1", "scan2": "🔍 Scan2", "test1": "�
 _AICFG_TIER_LABELS = {"verified": "⭐ Verified", "unverified": "⚠️ Unverified", "nonspecial": "➖ Nonspecial"}
 
 def send_aiconfig_screen(chat_id, message_id=None):
-    """Top level — pick which scan type's grid to edit (BTC isn't here, it
-    has no special/unverified/nonspecial split — use /model, /gateway for it)."""
-    rows = [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
+    """Top level — pick which scan type's grid to edit. BTC gets its own row
+    too, but skips the tier level (always verified, no unverified/nonspecial
+    split) — tapping it jumps straight to the model+gateway combo screen."""
+    _btc_gw  = "Aerolink" if USE_AEROLINK else "Direct"
+    _btc_mdl = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
+    rows = [[{"text": f"₿ BTC: {_btc_gw} · {_btc_mdl}", "callback_data": "aicfg_open2:btc:verified"}]]
+    rows += [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     _help_edit_or_send(chat_id,
         "<b>🧠 AI Model & Gateway — By Scan Type & Trade Type</b>\n\n"
         "<blockquote>Each scan type (Scan1, Scan2, TS1, TS2) picks its own model + gateway "
         "independently PER classification (⭐ Verified / ⚠️ Unverified / ➖ Nonspecial) — 12 slots total.\n"
-        "BTC has its own separate model/gateway via /model and /gateway (always verified, no split).\n"
-        "Tap a scan type below.</blockquote>",
+        "BTC has one combo (always verified, no split) — tap it to change.\n"
+        "Tap a type below.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_aiconfig_kind_screen(chat_id, kind, message_id=None):
@@ -8744,19 +8748,26 @@ def send_aiconfig_kind_screen(chat_id, kind, message_id=None):
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_aiconfig_type_screen(chat_id, kind, tier, message_id=None):
-    """Third level — pick the actual model+gateway combo for this (scan type, tier) cell."""
-    klabel = _AICFG_KIND_LABELS.get(kind, kind); tlabel = _AICFG_TIER_LABELS.get(tier, tier)
-    cfg = AICFG_GRID[kind][tier]
-    cur_model, cur_aero = cfg["model"], cfg["aerolink"]
+    """Third level — pick the actual model+gateway combo. BTC has no grid
+    cell (uses SCAN_MODEL/USE_AEROLINK directly, "tier" is ignored for it)."""
+    if kind == "btc":
+        klabel, tlabel = "₿ BTC", ""
+        cur_model, cur_aero = SCAN_MODEL, USE_AEROLINK
+        _back_cb = "aicfg_open"
+    else:
+        klabel = _AICFG_KIND_LABELS.get(kind, kind); tlabel = f" · {_AICFG_TIER_LABELS.get(tier, tier)}"
+        cfg = AICFG_GRID[kind][tier]
+        cur_model, cur_aero = cfg["model"], cfg["aerolink"]
+        _back_cb = f"aicfg_open:{kind}"
     def mark(m, a): return "✅ " if (cur_model == m and cur_aero == a) else ""
     rows = [
         [{"text": f"{mark('claude-opus-4-8', False)}Direct · Opus 4.8",    "callback_data": f"aicfg_set:{kind}:{tier}:direct:opus"}],
         [{"text": f"{mark('claude-fable-5', False)}Direct · Fable 5",     "callback_data": f"aicfg_set:{kind}:{tier}:direct:fable"}],
         [{"text": f"{mark('claude-opus-4-8', True)}Aerolink · Opus 4.8",   "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:opus"}],
         [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:fable"}],
-        [{"text": "◀️  Back", "callback_data": f"aicfg_open:{kind}"}],
+        [{"text": "◀️  Back", "callback_data": _back_cb}],
     ]
-    _help_edit_or_send(chat_id, f"<b>{klabel} · {tlabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
+    _help_edit_or_send(chat_id, f"<b>{klabel}{tlabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_entrystyle_screen(chat_id, message_id=None):
@@ -9955,8 +9966,12 @@ def command_listener():
                         _, _kind, _tier, _gw, _mdl = cb_data.split(":", 4)
                         _model_val = "claude-opus-4-8" if _mdl == "opus" else "claude-fable-5"
                         _aero_val = (_gw == "aerolink")
-                        AICFG_GRID[_kind][_tier]["model"] = _model_val
-                        AICFG_GRID[_kind][_tier]["aerolink"] = _aero_val
+                        if _kind == "btc":
+                            global SCAN_MODEL, USE_AEROLINK
+                            SCAN_MODEL = _model_val; USE_AEROLINK = _aero_val
+                        else:
+                            AICFG_GRID[_kind][_tier]["model"] = _model_val
+                            AICFG_GRID[_kind][_tier]["aerolink"] = _aero_val
                         save_settings()
                         send_aiconfig_type_screen(cb_chat_id, _kind, _tier, message_id=cb_msg_id)
                     elif cb_data == "trailsl_btc_on" and cb_is_scanadmin:
