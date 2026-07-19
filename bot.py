@@ -155,17 +155,17 @@ force_scan            = threading.Event()
 bot_paused            = threading.Event()  # PAUSE: freezes everything
 bot_stopped           = threading.Event()  # STOP: blocks new scans only, monitoring continues
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
-SCAN_MODEL             = "claude-opus-4-8"  # BTC's model — switch via /model button or /aiconfig (also the "Verified" tier's model, since BTC is always verified)
-USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button or /aiconfig (also the "Verified" tier's gateway)
-# /aiconfig is now split by trade CLASSIFICATION (verified/unverified/nonspecial),
-# not by scan type — every scan type (Scan1, Scan2, TS1, TS2) picks its model+
-# gateway per-run based on which of these 3 categories that run falls into.
-# "Verified" reuses SCAN_MODEL/USE_AEROLINK above (BTC is always verified, so
-# this avoids a redundant duplicate control for the same tier).
-AICFG_UNVERIFIED_MODEL    = "claude-opus-4-8"  # set via /aiconfig
-AICFG_UNVERIFIED_AEROLINK = False              # set via /aiconfig
-AICFG_NONSPECIAL_MODEL    = "claude-opus-4-8"  # set via /aiconfig
-AICFG_NONSPECIAL_AEROLINK = False              # set via /aiconfig
+SCAN_MODEL             = "claude-opus-4-8"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
+USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
+
+# /aiconfig — full grid: each of Scan1/Scan2/TS1/TS2 picks its OWN model+gateway
+# independently PER classification (verified/unverified/nonspecial), 12 slots
+# total. BTC is not part of this grid (see SCAN_MODEL/USE_AEROLINK above).
+def _aicfg_default_tier(): return {"model": "claude-opus-4-8", "aerolink": False}
+AICFG_GRID = {
+    kind: {tier: _aicfg_default_tier() for tier in ("verified", "unverified", "nonspecial")}
+    for kind in ("scan1", "scan2", "test1", "test2")
+}
 ZONE_ENTRY_ENABLED = False  # Scan1/Scan2 entry style — MARKET (instant) vs ZONE (limit order at a price range's midpoint). Set via /entrystyle
 _ZONE_BAND_PCT = 0.008      # zone width — ±0.8% around the computed entry price
 CO_ADMIN_CHAT_ID  = ""    # a single trusted friend who gets ONE extra permission: /tradelog. No user mgmt, no billing, no resets, no broadcast.
@@ -874,8 +874,7 @@ _SETTINGS_PROFILES = {"mine": {}, "coadmin": {}}  # each holds a snapshot of eve
 def _snapshot_scan_settings() -> dict:
     return {
         "scan_model": SCAN_MODEL, "use_aerolink": USE_AEROLINK,
-        "aicfg_unverified_model": AICFG_UNVERIFIED_MODEL, "aicfg_unverified_aerolink": AICFG_UNVERIFIED_AEROLINK,
-        "aicfg_nonspecial_model": AICFG_NONSPECIAL_MODEL, "aicfg_nonspecial_aerolink": AICFG_NONSPECIAL_AEROLINK,
+        "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
         "zone_entry_enabled": ZONE_ENTRY_ENABLED,
         "tp1_close_pct": ct.TP1_CLOSE_PCT,
         "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
@@ -887,17 +886,25 @@ def _snapshot_scan_settings() -> dict:
         "demo1_ct_enabled": ct.DEMO1_CT_ENABLED, "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
     }
 
+def _apply_aicfg_grid(saved: dict):
+    """Merges a saved aicfg_grid dict into AICFG_GRID IN PLACE (no `global`
+    needed — only nested values are mutated, the dict itself is never rebound)."""
+    if not saved:
+        return
+    for kind in AICFG_GRID:
+        for tier in AICFG_GRID[kind]:
+            cell = (saved.get(kind) or {}).get(tier)
+            if cell:
+                AICFG_GRID[kind][tier]["model"] = cell.get("model", AICFG_GRID[kind][tier]["model"])
+                AICFG_GRID[kind][tier]["aerolink"] = cell.get("aerolink", AICFG_GRID[kind][tier]["aerolink"])
+
 def _apply_scan_settings(d: dict):
-    global SCAN_MODEL, USE_AEROLINK, AICFG_UNVERIFIED_MODEL, AICFG_UNVERIFIED_AEROLINK
-    global AICFG_NONSPECIAL_MODEL, AICFG_NONSPECIAL_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
+    global SCAN_MODEL, USE_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
     global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
     if not d:
         return  # nothing snapshotted yet for this profile — leave current values as-is
     SCAN_MODEL = d.get("scan_model", SCAN_MODEL); USE_AEROLINK = d.get("use_aerolink", USE_AEROLINK)
-    AICFG_UNVERIFIED_MODEL = d.get("aicfg_unverified_model", AICFG_UNVERIFIED_MODEL)
-    AICFG_UNVERIFIED_AEROLINK = d.get("aicfg_unverified_aerolink", AICFG_UNVERIFIED_AEROLINK)
-    AICFG_NONSPECIAL_MODEL = d.get("aicfg_nonspecial_model", AICFG_NONSPECIAL_MODEL)
-    AICFG_NONSPECIAL_AEROLINK = d.get("aicfg_nonspecial_aerolink", AICFG_NONSPECIAL_AEROLINK)
+    _apply_aicfg_grid(d.get("aicfg_grid"))
     ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", ZONE_ENTRY_ENABLED)
     ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
     SCAN1_AUTO_ENABLED = d.get("scan1_auto", SCAN1_AUTO_ENABLED); SCAN2_AUTO_ENABLED = d.get("scan2_auto", SCAN2_AUTO_ENABLED)
@@ -1767,14 +1774,21 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
 _load_slot_state()
 _load_daily_buckets()
 
+def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
+    """Maps a scan kind (+ scan_ver for TS1/TS2) to its AICFG_GRID row key
+    (scan1/scan2/test1/test2), or None for btc/chat (not part of the grid —
+    those use SCAN_MODEL/USE_AEROLINK directly, always "verified")."""
+    if kind in ("btc", "chat"):
+        return None
+    return f"test{scan_ver}" if kind == "test" else kind
+
 def _ai_category(kind: str = "btc", scan_ver: int = None) -> str:
     """Maps a scan kind (+ scan_ver for TS1/TS2) to its verified/unverified/
-    nonspecial classification — this is what /aiconfig's 3 tiers are keyed by,
-    instead of the old per-scan-type split. BTC (and /chat) have no schedule-
-    slot concept and are always treated as verified."""
-    if kind in ("btc", "chat"):
+    nonspecial classification for that run — this is the column /aiconfig's
+    grid is keyed by. BTC has no schedule-slot concept and is always verified."""
+    sched_kind = _ai_sched_kind(kind, scan_ver)
+    if sched_kind is None:
         return "verified"
-    sched_kind = f"test{scan_ver}" if kind == "test" else kind
     if _scan_run_mode.get(sched_kind) != "special":
         return "nonspecial"
     _hm = _scan_trigger_hm.get(sched_kind)
@@ -1783,19 +1797,19 @@ def _ai_category(kind: str = "btc", scan_ver: int = None) -> str:
     return "verified"
 
 def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
-    """Which Claude model to use — driven by the run's verified/unverified/
-    nonspecial classification (set via /aiconfig), not by scan type."""
-    cat = _ai_category(kind, scan_ver)
-    if cat == "verified":
+    """Which Claude model to use — driven by (scan type x classification),
+    the full AICFG_GRID set via /aiconfig. BTC always uses SCAN_MODEL."""
+    sched_kind = _ai_sched_kind(kind, scan_ver)
+    if sched_kind is None:
         return SCAN_MODEL
-    return AICFG_UNVERIFIED_MODEL if cat == "unverified" else AICFG_NONSPECIAL_MODEL
+    return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["model"]
 
 def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
-    """Which gateway to use — same verified/unverified/nonspecial split as _ai_model()."""
-    cat = _ai_category(kind, scan_ver)
-    if cat == "verified":
+    """Which gateway to use — same (scan type x classification) grid as _ai_model()."""
+    sched_kind = _ai_sched_kind(kind, scan_ver)
+    if sched_kind is None:
         return USE_AEROLINK
-    return AICFG_UNVERIFIED_AEROLINK if cat == "unverified" else AICFG_NONSPECIAL_AEROLINK
+    return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers: A4.8/D4.8 (Aerolink/Direct + Opus 4.8)
@@ -3532,7 +3546,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, AICFG_UNVERIFIED_MODEL, AICFG_UNVERIFIED_AEROLINK, AICFG_NONSPECIAL_MODEL, AICFG_NONSPECIAL_AEROLINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3555,10 +3569,7 @@ def load_settings():
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
             SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
             USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
-            AICFG_UNVERIFIED_MODEL    = d.get("aicfg_unverified_model", AICFG_UNVERIFIED_MODEL)
-            AICFG_NONSPECIAL_MODEL    = d.get("aicfg_nonspecial_model", AICFG_NONSPECIAL_MODEL)
-            AICFG_UNVERIFIED_AEROLINK = d.get("aicfg_unverified_aerolink", AICFG_UNVERIFIED_AEROLINK)
-            AICFG_NONSPECIAL_AEROLINK = d.get("aicfg_nonspecial_aerolink", AICFG_NONSPECIAL_AEROLINK)
+            _apply_aicfg_grid(d.get("aicfg_grid"))
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
             CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
@@ -3606,10 +3617,7 @@ def save_settings():
             "test_scan":        TEST_SCAN_ENABLED,
             "scan_model":       SCAN_MODEL,
             "use_aerolink":     USE_AEROLINK,
-            "aicfg_unverified_model":    AICFG_UNVERIFIED_MODEL,
-            "aicfg_unverified_aerolink": AICFG_UNVERIFIED_AEROLINK,
-            "aicfg_nonspecial_model":    AICFG_NONSPECIAL_MODEL,
-            "aicfg_nonspecial_aerolink": AICFG_NONSPECIAL_AEROLINK,
+            "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
@@ -8124,7 +8132,7 @@ _SCAN_SUBCATS = {
         ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals."),
     ]),
     "system": ("🧠 AI & Gateway", [
-        ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway independently for Verified, Unverified, and Nonspecial trades."),
+        ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
@@ -8705,40 +8713,49 @@ def send_userstats_list(chat_id, kind, message_id=None):
         {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "userstats_open"}]]},
         message_id=message_id)
 
-_AICFG_LABELS = {"verified": "⭐ Verified", "unverified": "⚠️ Unverified", "nonspecial": "➖ Nonspecial"}
-
-def _aicfg_tier_model(tier: str) -> str:
-    return {"verified": SCAN_MODEL, "unverified": AICFG_UNVERIFIED_MODEL, "nonspecial": AICFG_NONSPECIAL_MODEL}[tier]
-
-def _aicfg_tier_aerolink(tier: str) -> bool:
-    return {"verified": USE_AEROLINK, "unverified": AICFG_UNVERIFIED_AEROLINK, "nonspecial": AICFG_NONSPECIAL_AEROLINK}[tier]
+_AICFG_KIND_LABELS = {"scan1": "🔍 Scan1", "scan2": "🔍 Scan2", "test1": "🧪 TS1", "test2": "🧪 TS2"}
+_AICFG_TIER_LABELS = {"verified": "⭐ Verified", "unverified": "⚠️ Unverified", "nonspecial": "➖ Nonspecial"}
 
 def send_aiconfig_screen(chat_id, message_id=None):
-    rows = []
-    for tier, label in _AICFG_LABELS.items():
-        gw  = "Aerolink" if _aicfg_tier_aerolink(tier) else "Direct"
-        mdl = "Opus 4.8" if _aicfg_tier_model(tier) == "claude-opus-4-8" else "Fable 5"
-        rows.append([{"text": f"{label}: {gw} · {mdl}", "callback_data": f"aicfg_open:{tier}"}])
+    """Top level — pick which scan type's grid to edit (BTC isn't here, it
+    has no special/unverified/nonspecial split — use /model, /gateway for it)."""
+    rows = [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     _help_edit_or_send(chat_id,
-        "<b>🧠 AI Model & Gateway — By Trade Type</b>\n\n"
-        "<blockquote>Verified, Unverified, and Nonspecial trades each pick their own model + gateway "
-        "independently — applies across BTC, Scan1, Scan2, TS1 and TS2 alike.\n"
-        "Tap a type below to change its combo.</blockquote>",
+        "<b>🧠 AI Model & Gateway — By Scan Type & Trade Type</b>\n\n"
+        "<blockquote>Each scan type (Scan1, Scan2, TS1, TS2) picks its own model + gateway "
+        "independently PER classification (⭐ Verified / ⚠️ Unverified / ➖ Nonspecial) — 12 slots total.\n"
+        "BTC has its own separate model/gateway via /model and /gateway (always verified, no split).\n"
+        "Tap a scan type below.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
-def send_aiconfig_type_screen(chat_id, tier, message_id=None):
-    label = _AICFG_LABELS.get(tier, tier)
-    cur_model = _aicfg_tier_model(tier); cur_aero = _aicfg_tier_aerolink(tier)
+def send_aiconfig_kind_screen(chat_id, kind, message_id=None):
+    """Second level — pick which of the 3 classifications to edit for this scan type."""
+    klabel = _AICFG_KIND_LABELS.get(kind, kind)
+    rows = []
+    for tier, tlabel in _AICFG_TIER_LABELS.items():
+        cfg = AICFG_GRID[kind][tier]
+        gw  = "Aerolink" if cfg["aerolink"] else "Direct"
+        mdl = "Opus 4.8" if cfg["model"] == "claude-opus-4-8" else "Fable 5"
+        rows.append([{"text": f"{tlabel}: {gw} · {mdl}", "callback_data": f"aicfg_open2:{kind}:{tier}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "aicfg_open"}])
+    _help_edit_or_send(chat_id, f"<b>{klabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Tap a trade type to change its combo:</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def send_aiconfig_type_screen(chat_id, kind, tier, message_id=None):
+    """Third level — pick the actual model+gateway combo for this (scan type, tier) cell."""
+    klabel = _AICFG_KIND_LABELS.get(kind, kind); tlabel = _AICFG_TIER_LABELS.get(tier, tier)
+    cfg = AICFG_GRID[kind][tier]
+    cur_model, cur_aero = cfg["model"], cfg["aerolink"]
     def mark(m, a): return "✅ " if (cur_model == m and cur_aero == a) else ""
     rows = [
-        [{"text": f"{mark('claude-opus-4-8', False)}Direct · Opus 4.8",    "callback_data": f"aicfg_set:{tier}:direct:opus"}],
-        [{"text": f"{mark('claude-fable-5', False)}Direct · Fable 5",     "callback_data": f"aicfg_set:{tier}:direct:fable"}],
-        [{"text": f"{mark('claude-opus-4-8', True)}Aerolink · Opus 4.8",   "callback_data": f"aicfg_set:{tier}:aerolink:opus"}],
-        [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{tier}:aerolink:fable"}],
-        [{"text": "◀️  Back", "callback_data": "aicfg_open"}],
+        [{"text": f"{mark('claude-opus-4-8', False)}Direct · Opus 4.8",    "callback_data": f"aicfg_set:{kind}:{tier}:direct:opus"}],
+        [{"text": f"{mark('claude-fable-5', False)}Direct · Fable 5",     "callback_data": f"aicfg_set:{kind}:{tier}:direct:fable"}],
+        [{"text": f"{mark('claude-opus-4-8', True)}Aerolink · Opus 4.8",   "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:opus"}],
+        [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:fable"}],
+        [{"text": "◀️  Back", "callback_data": f"aicfg_open:{kind}"}],
     ]
-    _help_edit_or_send(chat_id, f"<b>{label} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
+    _help_edit_or_send(chat_id, f"<b>{klabel} · {tlabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_entrystyle_screen(chat_id, message_id=None):
@@ -9140,7 +9157,7 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
     elif back_cb == "aicfg_open":
         send_aiconfig_screen(chat_id, message_id=msg_id)
     elif back_cb.startswith("aicfg_open:"):
-        send_aiconfig_type_screen(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
+        send_aiconfig_kind_screen(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
     elif back_cb == "entrystyle_open":
         send_entrystyle_screen(chat_id, message_id=msg_id)
     elif back_cb == "coadmin_open":
@@ -9928,21 +9945,19 @@ def command_listener():
                         send_userstats_list(cb_chat_id, "blocked", message_id=cb_msg_id)
                     elif cb_data == "aicfg_open" and cb_is_scanadmin:
                         send_aiconfig_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("aicfg_open2:") and cb_is_scanadmin:
+                        _, _ao_kind, _ao_tier = cb_data.split(":", 2)
+                        send_aiconfig_type_screen(cb_chat_id, _ao_kind, _ao_tier, message_id=cb_msg_id)
                     elif cb_data.startswith("aicfg_open:") and cb_is_scanadmin:
-                        send_aiconfig_type_screen(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
+                        send_aiconfig_kind_screen(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
                     elif cb_data.startswith("aicfg_set:") and cb_is_scanadmin:
-                        global SCAN_MODEL, USE_AEROLINK, AICFG_UNVERIFIED_MODEL, AICFG_UNVERIFIED_AEROLINK, AICFG_NONSPECIAL_MODEL, AICFG_NONSPECIAL_AEROLINK
-                        _, _tier, _gw, _mdl = cb_data.split(":", 3)
+                        _, _kind, _tier, _gw, _mdl = cb_data.split(":", 4)
                         _model_val = "claude-opus-4-8" if _mdl == "opus" else "claude-fable-5"
                         _aero_val = (_gw == "aerolink")
-                        if _tier == "verified":
-                            SCAN_MODEL = _model_val; USE_AEROLINK = _aero_val
-                        elif _tier == "unverified":
-                            AICFG_UNVERIFIED_MODEL = _model_val; AICFG_UNVERIFIED_AEROLINK = _aero_val
-                        else:
-                            AICFG_NONSPECIAL_MODEL = _model_val; AICFG_NONSPECIAL_AEROLINK = _aero_val
+                        AICFG_GRID[_kind][_tier]["model"] = _model_val
+                        AICFG_GRID[_kind][_tier]["aerolink"] = _aero_val
                         save_settings()
-                        send_aiconfig_type_screen(cb_chat_id, _tier, message_id=cb_msg_id)
+                        send_aiconfig_type_screen(cb_chat_id, _kind, _tier, message_id=cb_msg_id)
                     elif cb_data == "trailsl_btc_on" and cb_is_scanadmin:
                         global TRAIL_SL_BTC
                         TRAIL_SL_BTC = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
