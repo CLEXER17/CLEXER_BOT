@@ -8740,7 +8740,7 @@ def send_userstats_screen(chat_id, message_id=None):
         [{"text": f"👥 Total Users ({_n_total})", "callback_data": "userstats_total"}],
         [{"text": f"🟢 Using Copy Trade ({_n_active})", "callback_data": "userstats_active"}],
         [{"text": f"🚫 Blocked Bot ({_n_blocked})", "callback_data": "userstats_blocked"}],
-        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+        [{"text": "◀️  Back", "callback_data": "copyadmin_sub:directory"}],
     ]
     _help_edit_or_send(chat_id,
         "📊 <b>User Stats</b>\n\n<blockquote>Tap a category to see the users with DM links.</blockquote>",
@@ -8769,7 +8769,7 @@ def send_winrate_screen(chat_id, message_id=None):
     ]
     rows = [[{"text": f"{label}: {_SLOT_EVAL_THRESHOLD[kind]}%", "callback_data": f"winrate_open:{np_key}"}]
             for kind, label, np_key in _wr_rows]
-    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "settings_sub:extras"}])
     _help_edit_or_send(chat_id,
         "<b>🎯 Win Rate Targets</b>\n\n"
         "<blockquote>The % win rate a time slot needs to hit (with at least 4 wins) to auto-promote to "
@@ -8785,7 +8785,7 @@ def send_aiconfig_screen(chat_id, message_id=None):
     _btc_mdl = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
     rows = [[{"text": f"₿ BTC: {_btc_gw} · {_btc_mdl}", "callback_data": "aicfg_open2:btc:verified"}]]
     rows += [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
-    rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
     _help_edit_or_send(chat_id,
         "<b>🧠 AI Model & Gateway — By Scan Type & Trade Type</b>\n\n"
         "<blockquote>Each scan type (Scan1, Scan2, TS1, TS2) picks its own model + gateway "
@@ -8835,7 +8835,7 @@ def send_entrystyle_screen(chat_id, message_id=None):
     rows = [
         [{"text": f"{'✅ ' if _is_market else ''}📍 Market Entry", "callback_data": "entrystyle:market"}],
         [{"text": f"{'✅ ' if not _is_market else ''}📩 Zone Entry",  "callback_data": "entrystyle:zone"}],
-        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+        [{"text": "◀️  Back", "callback_data": "scan_sub:system"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>🎯 Scan Entry Style</b>\n\n"
@@ -8957,7 +8957,7 @@ def send_coadmin_screen(chat_id, message_id=None):
         [{"text": "👤 Choose Co-Admin", "callback_data": "coadmin_pick"}],
         [{"text": f"Active: {_profile_lbl}", "callback_data": "noop"}],
         [{"text": f"🔀 Switch to {_switch_to_lbl} Settings", "callback_data": "profile_switch"}],
-        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+        [{"text": "◀️  Back", "callback_data": "copyadmin_sub:coadmin"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>🤝 Co-Admin</b>\n\n"
@@ -9049,7 +9049,7 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🧪 Demo2 Copy Trade  {_demo2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctdemo2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctdemo2_off"}],
-        [{"text": "◀️  Back to Menu", "callback_data": "help_main"}],
+        [{"text": "◀️  Back", "callback_data": "scan_sub:toggles"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>📋 Copy Trade — By Type</b>\n\n"
@@ -9630,7 +9630,7 @@ def command_listener():
                                         "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
-                                             "/trailsl": send_trailsl_screen}
+                                             "/trailsl": send_trailsl_screen, "/winrate": send_winrate_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
