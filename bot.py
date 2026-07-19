@@ -1772,6 +1772,22 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
     return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
 
 _load_slot_state()
+
+# Self-heal on startup: a promote/demote/reverify only ever fires live, right
+# when a trade closes at that exact slot — if a redeploy happened between an
+# evaluation and the next trade at that same time, the loaded state could be
+# stale relative to what the numbers actually say (this is what silently
+# reverted this morning's Scan1 9:02 reverify back to locked). Re-running the
+# check for every tracked slot here corrects any such staleness immediately
+# on every restart, instead of waiting for the next trade at that exact slot.
+for _sk, _st in list(_slot_stats.items()):
+    try:
+        _k, _hm_str = _sk.split("|", 1)
+        _h, _m = _hm_str.split(".")
+        _evaluate_slot(_k, (int(_h), int(_m)))
+    except Exception as _e:
+        print(f"[SLOT AUTO] startup re-evaluate error for {_sk}: {_e}")
+
 _load_daily_buckets()
 
 def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
