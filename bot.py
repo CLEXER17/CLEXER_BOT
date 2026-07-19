@@ -1756,8 +1756,9 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
         return True, False
     if viewer_tier == "vip":
         return (cat == "verified"), False
-    # free / unregistered
-    if share_free:
+    # free / unregistered — tier_routed required too, so a stray share_free=True
+    # on a never-VIP-routed (Signal-only) trade can never leak it to Free.
+    if tier_routed and share_free:
         return True, False
     return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
 
@@ -7630,18 +7631,16 @@ Reasoning: [one line]"""
                         trade_stats["scan_signals"] += 1
                         trade_stats[f"scan{scan_ver}_signals"] += 1
                         save_state()
-                        _share_free = _free_quota_available()
-                        if _share_free: _consume_free_quota()
                         _kind = "scan1" if scan_ver == 1 else "scan2"
                         _tier_routed = _scan_run_mode.get(_kind) == "special"
-                        # Special-time signals used to bypass the daily free-quota gate
-                        # entirely (always share_free=True) — that both let Free receive
-                        # unlimited real signals past the daily cap, AND meant share_free
-                        # was never False for these, so they could never get the locked
-                        # Free-channel card or the _notify_free_late VIP-promo teaser.
-                        # Now special-time signals respect the same quota as everything
-                        # else: within quota -> real signal to Free; quota exhausted ->
-                        # locked card (tier_routed still routes it to VIP either way).
+                        # Only verified/special-time (tier_routed) signals ever compete
+                        # for the Free-channel share — a regular-grid (Signal-only, never
+                        # posted to VIP/Free) trade must never consume quota or be marked
+                        # share_free=True, since /status's free-viewer reveal check trusts
+                        # this flag on its own (see _trade_reveal) and would otherwise leak
+                        # a trade that was never actually shown anywhere near Free.
+                        _share_free = _free_quota_available() if _tier_routed else False
+                        if _share_free: _consume_free_quota()
                         _effective_share_free = _share_free
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
