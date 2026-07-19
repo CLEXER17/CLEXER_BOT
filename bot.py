@@ -880,7 +880,7 @@ def _snapshot_scan_settings() -> dict:
         "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
         "test_scan": TEST_SCAN_ENABLED, "btc_analysis": btc_analysis_enabled,
         "scan1_schedule": list(SCAN1_SCHEDULE), "scan2_schedule": list(SCAN2_SCHEDULE),
-        "scan1_test_schedule": list(SCAN1_TEST_SCHEDULE),
+        "scan1_test_schedule": list(SCAN1_TEST_SCHEDULE), "scan2_test_schedule": list(SCAN2_TEST_SCHEDULE),
         "btc_ct_enabled": ct.BTC_CT_ENABLED, "scan1_ct_enabled": ct.SCAN1_CT_ENABLED,
         "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
         "demo1_ct_enabled": ct.DEMO1_CT_ENABLED, "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
@@ -889,7 +889,7 @@ def _snapshot_scan_settings() -> dict:
 def _apply_scan_settings(d: dict):
     global SCAN_MODEL, USE_AEROLINK, SCAN1_MODEL, SCAN1_AEROLINK, SCAN2_MODEL, SCAN2_AEROLINK
     global TEST_MODEL, TEST_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
-    global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE
+    global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
     if not d:
         return  # nothing snapshotted yet for this profile — leave current values as-is
     SCAN_MODEL = d.get("scan_model", SCAN_MODEL); USE_AEROLINK = d.get("use_aerolink", USE_AEROLINK)
@@ -902,6 +902,7 @@ def _apply_scan_settings(d: dict):
     TEST_SCAN_ENABLED = d.get("test_scan", TEST_SCAN_ENABLED); btc_analysis_enabled = d.get("btc_analysis", btc_analysis_enabled)
     SCAN1_SCHEDULE = d.get("scan1_schedule", SCAN1_SCHEDULE); SCAN2_SCHEDULE = d.get("scan2_schedule", SCAN2_SCHEDULE)
     SCAN1_TEST_SCHEDULE = d.get("scan1_test_schedule", SCAN1_TEST_SCHEDULE)
+    SCAN2_TEST_SCHEDULE = d.get("scan2_test_schedule", SCAN2_TEST_SCHEDULE)
     ct.BTC_CT_ENABLED = d.get("btc_ct_enabled", ct.BTC_CT_ENABLED); ct.SCAN1_CT_ENABLED = d.get("scan1_ct_enabled", ct.SCAN1_CT_ENABLED)
     ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", ct.SCAN2_CT_ENABLED)
     ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", ct.DEMO1_CT_ENABLED); ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", ct.DEMO2_CT_ENABLED)
@@ -1566,7 +1567,10 @@ def _claude_text(msg):
 _SCAN_SPECIAL = {
     "scan1": {(3,2), (5,23), (9,2), (16,15), (12,2), (23,23), (7,23)},
     "scan2": {(2,23), (11,27), (12,3), (13,7), (5,23), (5,28), (6,23), (9,27), (10,7), (7,7)},
-    "test":  {(3,24), (8,24), (15,24), (17,10), (0,0), (0,9), (0,27), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    # test1 (TS1) and test2 (TS2) start out as copies of the old shared "test"
+    # set — now fully independent, each can be promoted/demoted on its own.
+    "test1": {(3,24), (8,24), (15,24), (17,10), (0,0), (0,9), (0,27), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    "test2": {(3,24), (8,24), (15,24), (17,10), (0,0), (0,9), (0,27), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 # Newly-added special times that aren't verified yet — they still post to
 # VIP/Free like any special time, but copytrade must NEVER auto-execute real
@@ -1575,10 +1579,11 @@ _SCAN_SPECIAL = {
 _SCAN_SPECIAL_NO_COPY = {
     "scan1": {(9,2), (16,15)},
     "scan2": {(2,23), (5,23), (5,28), (9,27), (10,7), (11,27), (13,7)},
-    "test":  {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    "test1": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
+    "test2": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
-_scan_run_mode = {"scan1": None, "scan2": None, "test": None}  # None | "special" | "regular"
-_scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
+_scan_run_mode = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # None | "special" | "regular"
+_scan_trigger_hm = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
 # ─── Auto promote/demote special times by live win rate ────────────────────
 # Per-slot (kind, hour:minute) outcome tracker that automatically:
@@ -1589,23 +1594,19 @@ _scan_trigger_hm = {"scan1": None, "scan2": None, "test": None}  # exact (hour,m
 #   3. Re-promotes an UNVERIFIED special time back to verified once win% is
 #      back above threshold AND it has strung together >=2 wins in a row
 #      since its last real SL (a "clean streak", not just an overall average).
-# Thresholds: 41% for scan1/scan2, 35% for demo1/demo2 (TS1/TS2 track win-rate
-# stats separately, but still run off the same shared _SCAN_SPECIAL["test"]/
-# _SCAN_SPECIAL_NO_COPY["test"] schedule, so a promotion/demotion triggered by
-# either one's stats still applies to both — see _SLOT_SCHEDULE_KIND below).
+# Thresholds: 41% for scan1/scan2, 35% for demo1/demo2. TS1 and TS2 now run
+# fully independent schedules and win-rate tracking — a promotion/demotion on
+# one never affects the other (see _SLOT_SCHEDULE_KIND below).
 # A win = TP2, BE (SL after TP1 already hit — that trade already banked TP1,
 # so it's a win not a loss), or a positive-P/L timeout. A loss = a real SL
 # (never hit TP1), LOSS, or a negative-P/L timeout. TP1 alone is never a
 # terminal state in this bot (the runner keeps riding to TP2/BE/timeout), so
 # it's not tracked as its own event — only these 4 terminal outcomes are.
-_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "test": 35, "demo1": 35, "demo2": 35}
+_SLOT_EVAL_THRESHOLD = {"scan1": 41, "scan2": 41, "demo1": 35, "demo2": 35}
 _SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
 _SLOT_MIN_STREAK_FOR_REVERIFY = 2
-# demo1/demo2 track win-rate stats SEPARATELY (own tp/sl/streak per clock time)
-# even though TS1 and TS2 still fire off the exact same _SCAN_SPECIAL["test"]/
-# _SCAN_SPECIAL_NO_COPY["test"] schedule and can't be independently verified —
-# this maps each stats-tracking kind to the schedule kind it actually shares.
-_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "test": "test", "demo1": "test", "demo2": "test"}
+# demo1/demo2 each map to their own independent schedule kind (test1/test2).
+_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
 _SLOT_STATE_FILE = os.path.join(DATA_DIR, "slot_auto_state.json")
 _slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
 
@@ -1662,10 +1663,11 @@ def _save_slot_state():
             print(f"[SLOT AUTO] central push error: {e}")
 
 def _rebuild_schedules():
-    global SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE
+    global SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
     SCAN1_SCHEDULE = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
     SCAN2_SCHEDULE = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
-    SCAN1_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test"] | _regular_grid(9, 27, _SCAN_SPECIAL["test"]))
+    SCAN1_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test1"] | _regular_grid(9, 27, _SCAN_SPECIAL["test1"]))
+    SCAN2_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"]))
 
 def _evaluate_slot(kind: str, hm: tuple):
     key = _slot_key(kind, hm)
@@ -1677,7 +1679,7 @@ def _evaluate_slot(kind: str, hm: tuple):
         return
     win_pct = st["tp"] / total * 100
     threshold = _SLOT_EVAL_THRESHOLD[kind]
-    sched_kind = _SLOT_SCHEDULE_KIND[kind]   # demo1/demo2 both resolve to "test" — the actual shared schedule
+    sched_kind = _SLOT_SCHEDULE_KIND[kind]   # demo1->test1, demo2->test2 — each independent
     is_special = hm in _SCAN_SPECIAL.get(sched_kind, set())
     is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(sched_kind, set())
     changed = False
@@ -5300,7 +5302,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5389,7 +5391,7 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
 def handle_command(text, chat_id, message=None, sender_id=None):
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -5673,12 +5675,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
-        _next_test  = _next_special_time("test")
+        _next_test1 = _next_special_time("test1")
+        _next_test2 = _next_special_time("test2")
         _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
         _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
         _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
-        _next_ts1_line = f"⏰ Next TS1:        <b>{_next_test}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS1:        <b>OFF</b>\n"
-        _next_ts2_line = f"⏰ Next TS2:        <b>{_next_test}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS2:        <b>OFF</b>\n"
+        _next_ts1_line = f"⏰ Next TS1:        <b>{_next_test1}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS1:        <b>OFF</b>\n"
+        _next_ts2_line = f"⏰ Next TS2:        <b>{_next_test2}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS2:        <b>OFF</b>\n"
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
@@ -5805,7 +5808,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         _st_blocks = []
         for _kind in ("scan1", "scan2", "demo1", "demo2"):
-            _sched_kind = _SLOT_SCHEDULE_KIND[_kind]   # demo1/demo2 share the "test" schedule
+            _sched_kind = _SLOT_SCHEDULE_KIND[_kind]   # demo1->test1, demo2->test2 — each independent
             _times = sorted(_SCAN_SPECIAL.get(_sched_kind, set()))
             if not _times:
                 continue
@@ -6674,12 +6677,12 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _altd_btns = {"inline_keyboard": [[
             {"text": "📋  Manual Times", "callback_data": "alt_manual:3"},
         ], [
-            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:demo"},
+            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:demo1"},
         ]]}
         _sched_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN1_TEST_SCHEDULE)
         if len(parts) < 2:
             send_reply(chat_id,
-                f"⏰ <b>Demo/Test Schedule</b>\n\n"
+                f"⏰ <b>TS1 Schedule</b>\n\n"
                 f"Current times:\n<code>{_sched_str}</code>\n\n"
                 f"<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
@@ -6699,8 +6702,40 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _test_triggered_today.clear()
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_TEST_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
-            send_reply(chat_id, f"✅ <b>Demo → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
+            send_reply(chat_id, f"✅ <b>TS1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd_btns); return
+
+    elif cmd == "/altdemo2" and is_scanadmin:
+        _altd2_btns = {"inline_keyboard": [[
+            {"text": "📋  Manual Times", "callback_data": "alt_manual:4"},
+        ], [
+            {"text": "🔢  Tap to Pick Times", "callback_data": "tp_start:demo2"},
+        ]]}
+        _sched2_str = "  ".join(f"{h}:{m:02d}" for h,m in SCAN2_TEST_SCHEDULE)
+        if len(parts) < 2:
+            send_reply(chat_id,
+                f"⏰ <b>TS2 Schedule</b>\n\n"
+                f"Current times:\n<code>{_sched2_str}</code>\n\n"
+                f"<i>🛡️ Capital protected</i>", reply_markup=_altd2_btns); return
+        if parts[1].lower() == "manual" and len(parts) > 2:
+            new_slots = []; rejected = []
+            for t in parts[2:]:
+                try:
+                    sep = "." if "." in t else ":"
+                    h, m = t.split(sep); h, m = int(h), int(m)
+                    if 0 <= h <= 23 and 0 <= m <= 59:
+                        new_slots.append((h, m))
+                    else:
+                        rejected.append(t)
+                except: rejected.append(t)
+            if not new_slots:
+                send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25</code>"); return
+            SCAN2_TEST_SCHEDULE = sorted(set(new_slots))
+            _test_triggered_today.clear()
+            _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_TEST_SCHEDULE)
+            _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
+            send_reply(chat_id, f"✅ <b>TS2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd2_btns); return
+        send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd2_btns); return
 
     elif cmd == "/tradelog" and (is_admin or is_co_admin(chat_id)):
         if not os.path.exists(TRADE_LOG_CSV):
@@ -8082,7 +8117,8 @@ _SCAN_SUBCATS = {
     "schedule": ("⏰ Schedule Editor", [
         ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
         ("/alt2",    "⏰", "Scan2 Times",       "Edit the exact hour:minute slots Scan2 fires at."),
-        ("/altdemo", "⏰", "Demo/Test Times",   "Edit the exact hour:minute slots the demo scan fires at."),
+        ("/altdemo", "⏰", "TS1 Times",   "Edit the exact hour:minute slots TS1 (demo scan1) fires at."),
+        ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
     ]),
     "run": ("🔍 Run Now", [
         ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
@@ -8206,8 +8242,9 @@ _BROADCAST_SUBCATS = {
 }
 
 # ─── Tap-to-pick time keypad (digit entry for Scan1/Scan2/Demo schedules) ─────
-_TP_LABELS  = {"scan1": "Scan1", "scan2": "Scan2", "demo": "Demo/Test"}
-_TP_APPLYCMD = {"scan1": "/alt manual", "scan2": "/alt2 manual", "demo": "/altdemo manual"}
+_TP_LABELS  = {"scan1": "Scan1", "scan2": "Scan2", "demo": "Demo/Test", "demo1": "TS1", "demo2": "TS2"}
+_TP_APPLYCMD = {"scan1": "/alt manual", "scan2": "/alt2 manual", "demo": "/altdemo manual",
+                 "demo1": "/altdemo manual", "demo2": "/altdemo2 manual"}
 _TP_BACKCAT  = {"scan1": "scan", "scan2": "scan", "demo": "scan"}
 
 def _tp_render(chat_id, cid, msg_id):
@@ -8452,7 +8489,7 @@ def _np_render(chat_id, cid, msg_id):
     _extra = ""
     if st["target"] == "freelimit":
         _verified_n = sum(len(_SCAN_SPECIAL.get(k, set())) - len(_SCAN_SPECIAL_NO_COPY.get(k, set()))
-                           for k in ("scan1", "scan2", "test"))
+                           for k in ("scan1", "scan2", "test1", "test2"))
         _tr = _free_signal_tracker
         _today_n = _tr.get("total", 0); _shared_n = _tr.get("shared", 0)
         _actual_pct = round(_shared_n / _today_n * 100) if _today_n else 0
@@ -10216,19 +10253,20 @@ def command_listener():
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("alt_loop:") or cb_data.startswith("alt_manual:"):
                         _mode, _ver = cb_data.split(":")
-                        _cmd = "/alt" if _ver == "1" else "/alt2"
+                        _cmd = {"1": "/alt", "2": "/alt2", "3": "/altdemo", "4": "/altdemo2"}[_ver]
+                        _lbl = {"1": "Scan1", "2": "Scan2", "3": "TS1", "4": "TS2"}[_ver]
                         _alt_back_cb, _ = _find_back_target(_cmd)
                         if _mode == "alt_loop":
                             pending_input[cb_cid] = {"cmd": _cmd, "step": "loop", "msg_id": None, "cat_id": _alt_back_cb}
                             send_reply(cb_chat_id,
-                                f"🔁 <b>Loop Mode — Scan{_ver}</b>\n\n"
+                                f"🔁 <b>Loop Mode — {_lbl}</b>\n\n"
                                 f"Type the minute <b>(0–59)</b>:\n"
                                 f"Bot will run every hour at that minute.\n\n"
                                 f"<i>Example: type <code>2</code> → runs at 1:02, 2:02, 3:02, 4:02...</i>")
                         else:
                             pending_input[cb_cid] = {"cmd": _cmd, "step": "manual", "msg_id": None, "cat_id": _alt_back_cb}
                             send_reply(cb_chat_id,
-                                f"📋 <b>Manual Times — Scan{_ver}</b>\n\n"
+                                f"📋 <b>Manual Times — {_lbl}</b>\n\n"
                                 f"Type your specific times separated by spaces:\n\n"
                                 f"<i>Example: <code>2.02 2.23 14.25 15.26 15.46</code></i>")
 
@@ -10515,8 +10553,10 @@ def _regular_grid(minute_a: int, minute_b: int, special: set, near_thresh: int =
 SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
 # Scan2: special times (Direct+Opus, tier-routed) + hourly :07/:27 regular grid (Aerolink+Opus, Signal-only)
 SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
-# Demo: special times (Direct+Opus, Demo1 tier-routed) + hourly :09/:27 regular grid (Aerolink+Opus, Signal-only)
-SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test"] | _regular_grid(9, 27, _SCAN_SPECIAL["test"]))
+# TS1: special times (Direct+Opus, tier-routed) + hourly :09/:27 regular grid (Aerolink+Opus, Signal-only)
+SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test1"] | _regular_grid(9, 27, _SCAN_SPECIAL["test1"]))
+# TS2: independent schedule, same shape as TS1 but its own special/regular times
+SCAN2_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"]))
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
 _last_midnight_date = None   # for midnight reset
@@ -10767,35 +10807,27 @@ def _demo_monitor_loop():
         except Exception as _e:
             print(f"  [DEMO MONITOR] Error: {_e}")
 
-_test_run_pending = {"count": 0}
-_test_run_lock = threading.Lock()
-
 def _run_test_scan_and_clear_flag(cid, scan_ver: int):
-    """Wrapper for the auto-scheduled Demo Scan1/Scan2 triggers — ensures the "test"
-    run-mode override clears only once BOTH TS1 and TS2 have finished, regardless of
-    which exit path _run_test_scan takes (slots full, no coins, error, etc.). TS1 and
-    TS2 fire from the same trigger tick and both read _scan_run_mode["test"]/
-    _scan_trigger_hm["test"] throughout their (possibly multi-second, multi-Claude-call)
-    run — clearing it as soon as just one of them finishes would make the other read a
-    stale/cleared value mid-run (e.g. its own "no signal" notice silently not firing)."""
+    """Wrapper for the auto-scheduled TS1/TS2 triggers — TS1 and TS2 now run
+    fully independent schedules/verified-time tracking (test1/test2), so each
+    just clears its own run-mode flag once its run finishes."""
+    _kind = f"test{scan_ver}"
     try:
         _run_test_scan(cid, scan_ver)
     finally:
-        with _test_run_lock:
-            _test_run_pending["count"] -= 1
-            if _test_run_pending["count"] <= 0:
-                _scan_run_mode["test"] = None
+        _scan_run_mode[_kind] = None
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
     trade orders too, if Demo1/Demo2 copy trade is turned ON."""
     import re as _re, math as _math
     lbl = "S1" if scan_ver == 1 else "S2"
+    _kind = f"test{scan_ver}"
     send_admin(f"🧪 <b>[TEST] Scalp V1 Scan{lbl}</b>  {ist_str()}\n\nDemo scan starting...\n\n<i>- CLEXER TEST -</i>")
 
     demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
     _max_demo_slots = 6
-    _demo_is_special_now = _scan_run_mode.get("test") == "special"
+    _demo_is_special_now = _scan_run_mode.get(_kind) == "special"
     with _demo_monitor_lock:
         if len(demo_list) >= _max_demo_slots and not _demo_is_special_now:
             send_admin(f"🚫 <b>[TEST] Scan{lbl} slots full ({_max_demo_slots}/{_max_demo_slots})</b>\n\nAll demo slots occupied. Waiting for close.\n\n<i>- CLEXER TEST -</i>")
@@ -11046,10 +11078,10 @@ def _run_test_scan(cid, scan_ver: int):
                 tag=_demo_sig_id,
             )
             _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
-            # Demo Scan1 only reaches Free/VIP channels at its whitelisted special
-            # slot times — everything else (regular grid, Demo Scan2) stays on the
-            # legacy channel only.
-            _demo1_tier_routed = scan_ver == 1 and _scan_run_mode.get("test") == "special"
+            # TS1 and TS2 each reach Free/VIP channels at their OWN independent
+            # whitelisted special slot times (test1/test2) — everything else
+            # (regular grid) stays on the legacy channel only.
+            _demo1_tier_routed = _scan_run_mode.get(_kind) == "special"
             # Used to hardcode share_free=True (bypassing the daily quota entirely
             # for every TS1 special-time signal) — now respects the same quota as
             # everything else: within quota -> real signal to Free; exhausted ->
@@ -11086,8 +11118,8 @@ def _run_test_scan(cid, scan_ver: int):
             # even when Demo1/Demo2 copy trade is turned ON.
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
-            _demo_trigger_hm = _scan_trigger_hm.get("test")
-            _demo_is_unverified = _demo1_tier_routed and _demo_trigger_hm in _SCAN_SPECIAL_NO_COPY.get("test", set())
+            _demo_trigger_hm = _scan_trigger_hm.get(_kind)
+            _demo_is_unverified = _demo1_tier_routed and _demo_trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
             if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified:
                 _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}
@@ -11098,9 +11130,9 @@ def _run_test_scan(cid, scan_ver: int):
 
         if not signal_placed:
             tried_str = ", ".join(tried) if tried else "none"
-            _test_is_special_now = _scan_run_mode.get("test") == "special"
+            _test_is_special_now = _scan_run_mode.get(_kind) == "special"
             if _test_is_special_now:
-                _trig_hm = _scan_trigger_hm.get("test")
+                _trig_hm = _scan_trigger_hm.get(_kind)
                 _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                 _label = f"TS{scan_ver}"
                 _gw = _gw_model_tag("test", scan_ver)
@@ -11351,24 +11383,22 @@ def main():
                         _scan_trigger_hm["scan2"] = _cur_hm
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
-            # Test demo Scan1: special times (Direct) + hourly :09/:27 regular grid (Aerolink)
+            # TS1: own independent special times (Direct) + hourly :09/:27 regular grid (Aerolink)
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
-                print(f"  [TEST-SCAN] Demo Scan1 at {_ist_now.strftime('%H:%M')} IST (1min after scan1)")
+                print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
-                    _scan_run_mode["test"] = "special" if _cur_hm in _SCAN_SPECIAL["test"] else "regular"
-                    _scan_trigger_hm["test"] = _cur_hm
-                    with _test_run_lock:
-                        _test_run_pending["count"] += 1
+                    _scan_run_mode["test1"] = "special" if _cur_hm in _SCAN_SPECIAL["test1"] else "regular"
+                    _scan_trigger_hm["test1"] = _cur_hm
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
-            # Test demo Scan2: same trigger slots, mirrors real Scan2's schedule
-            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
+            # TS2: own independent special times + schedule — fully separate from TS1
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
                 _test_triggered_today.add((_cur_hm, 2))
-                print(f"  [TEST-SCAN] Demo Scan2 at {_ist_now.strftime('%H:%M')} IST (1min after scan2)")
+                print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
-                    with _test_run_lock:
-                        _test_run_pending["count"] += 1
+                    _scan_run_mode["test2"] = "special" if _cur_hm in _SCAN_SPECIAL["test2"] else "regular"
+                    _scan_trigger_hm["test2"] = _cur_hm
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
 
             # Sleep hours

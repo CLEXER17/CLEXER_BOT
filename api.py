@@ -470,7 +470,7 @@ def get_price(sym: str = "BTC-USDT"):
 # TRADES endpoints
 # ═════════════════════════════════════════════════════════════════════════════
 
-_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test", "demo2": "test"}
+_SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
 
 def _kv_dict(key: str) -> dict:
     """Reads a kv_store blob directly (same table kv_pull/kv_push use) —
