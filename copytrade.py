@@ -941,10 +941,13 @@ def on_cancel_limits():
             print(f"[CT] on_cancel_limits {cid}: {e}")
 
 
-def on_entry_hit(entry: float, sl: float, tp2: float):
+def on_entry_hit(entry: float, sl: float, tp1: float, tp2: float):
     """
     Pullback entry triggered — limit order should have filled.
-    Place SL + TP orders for copy users who had a pending limit order.
+    Place SL + TP1 + TP2 orders for copy users who had a pending limit order,
+    same TP1_CLOSE_PCT-based split as the MARKET-entry path in on_signal() —
+    previously this only placed a single 50%-qty TP2 order and never a TP1 at
+    all, so pullback entries never actually closed the TP1_CLOSE_PCT% partial.
     Only acts on users with an active limit_order_id (TV signal copies).
     """
     for cid, user, api_key, api_secret in _users_with_copy():
@@ -955,21 +958,25 @@ def on_entry_hit(entry: float, sl: float, tp2: float):
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
             qty        = user.get("pos_qty", 0.001)
-            half_qty   = max(round(qty / 2, 4), 0.001)
+            tp1_qty, tp2_qty = _tp1_split(qty)
 
             # Place SL for full qty
             sl_r = _place_order(api_key, api_secret, close_side, "STOP_MARKET",
                                 qty, stop_price=sl, position_side=pos_side)
-            # Place TP2 for 50% — TP1 will close the other half
-            tp_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
-                                half_qty, stop_price=tp2, position_side=pos_side)
+            # Place TP1 for TP1_CLOSE_PCT% of qty
+            tp1_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                 tp1_qty, stop_price=tp1, position_side=pos_side)
+            # Place TP2 for the remaining qty
+            tp2_r = _place_order(api_key, api_secret, close_side, "TAKE_PROFIT_MARKET",
+                                 tp2_qty, stop_price=tp2, position_side=pos_side)
 
             user["in_position"]    = True
             user["sl_order_id"]    = str((sl_r.get("data") or {}).get("order", {}).get("orderId", ""))
-            user["tp_order_id"]    = str((tp_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            user["tp1_order_id"]   = str((tp1_r.get("data") or {}).get("order", {}).get("orderId", ""))
+            user["tp_order_id"]    = str((tp2_r.get("data") or {}).get("order", {}).get("orderId", ""))
             user["limit_order_id"] = ""
             _set(cid, user)
-            print(f"[CT] on_entry_hit {cid}: SL@{sl:,.0f} TP2@{tp2:,.0f} placed")
+            print(f"[CT] on_entry_hit {cid}: SL@{sl:,.0f} TP1@{tp1:,.0f} TP2@{tp2:,.0f} placed")
         except Exception as e:
             print(f"[CT] on_entry_hit {cid}: {e}")
 
@@ -2574,7 +2581,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 _cancel_all_orders(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
             except: pass
         with _lock:
-            del _db[target]; _save()
+            del _db[target]
+            _save()
+            try:
+                push_to_central()
+            except Exception as e:
+                print(f"[CT] /kick central push error: {e}")
         send_reply_fn(chat_id,
             f"<b>User Removed</b>\n\n"
             f"<blockquote>@{user.get('username','?')} (ID:{target})\n"

@@ -196,8 +196,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     t["sl"] = new_sl
     t["trail_sl_moved"] = True
     ct.update_scan_sl(t["symbol"], new_sl)
-    if ver <= 2:
-        save_state()
+    save_state()
     tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
     _msg = (
         f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
@@ -4192,7 +4191,7 @@ def run_tick_check():
             if entry_touched:
                 active_trade["entry_hit"] = True
                 save_active_trade()
-                ct.on_entry_hit(entry, sl, tp2)
+                ct.on_entry_hit(entry, sl, tp1, tp2)
                 send_lifecycle_reply(
                     f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
                     f"{'🟢' if sig=='BUY' else '🔴'} <b>{sig} — {SYMBOL}</b>\n\n"
@@ -4841,6 +4840,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                     tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
                     entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
                 _notify_free_late(sym, t, "TP1")
+                save_state()  # persist tp1_hit + breakeven SL immediately — a restart before final close must not revert to the pre-TP1 SL
 
         sl_margin = sl * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
@@ -6613,7 +6613,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
             except: send_reply(chat_id, "❌ Usage: /alt loop 02"); return
             SCAN1_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
-            _scan1_triggered_today.clear()
+            _clear_own_triggers(_scan1_triggered_today, 1)
             send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
         # /alt manual 2.02 2.23 14.25  → specific times (supports both . and : separator)
         if parts[1].lower() == "manual" and len(parts) > 2:
@@ -6630,7 +6630,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25 15.46</code>"); return
             SCAN1_SCHEDULE = sorted(set(new_slots))
-            _scan1_triggered_today.clear()
+            _clear_own_triggers(_scan1_triggered_today, 1)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
             send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
@@ -6653,7 +6653,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
             except: send_reply(chat_id, "❌ Usage: /alt2 loop 24"); return
             SCAN2_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
-            _auto_scan2_last_hour = -1
+            _clear_own_triggers(_scan1_triggered_today, 2)
             send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []; rejected = []
@@ -6669,6 +6669,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>12.24 15.24 19.24</code>"); return
             SCAN2_SCHEDULE = sorted(set(new_slots))
+            _clear_own_triggers(_scan1_triggered_today, 2)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
             send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
@@ -6700,7 +6701,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25</code>"); return
             SCAN1_TEST_SCHEDULE = sorted(set(new_slots))
-            _test_triggered_today.clear()
+            _clear_own_triggers(_test_triggered_today, 1)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_TEST_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
             send_reply(chat_id, f"✅ <b>TS1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
@@ -6732,7 +6733,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             if not new_slots:
                 send_reply(chat_id, "❌ Type times like: <code>2.02 2.23 14.25</code>"); return
             SCAN2_TEST_SCHEDULE = sorted(set(new_slots))
-            _test_triggered_today.clear()
+            _clear_own_triggers(_test_triggered_today, 2)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_TEST_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
             send_reply(chat_id, f"✅ <b>TS2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd2_btns); return
@@ -8244,7 +8245,7 @@ _BROADCAST_SUBCATS = {
 _TP_LABELS  = {"scan1": "Scan1", "scan2": "Scan2", "demo": "Demo/Test", "demo1": "TS1", "demo2": "TS2"}
 _TP_APPLYCMD = {"scan1": "/alt manual", "scan2": "/alt2 manual", "demo": "/altdemo manual",
                  "demo1": "/altdemo manual", "demo2": "/altdemo2 manual"}
-_TP_BACKCAT  = {"scan1": "scan", "scan2": "scan", "demo": "scan"}
+_TP_BACKCAT  = {"scan1": "scan", "scan2": "scan", "demo": "scan", "demo1": "scan", "demo2": "scan"}
 
 def _tp_render(chat_id, cid, msg_id):
     st = _tp_state.get(str(cid))
@@ -10558,6 +10559,17 @@ SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test1"] | _reg
 SCAN2_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"]))
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
+
+def _clear_own_triggers(tracker_set: set, ver: int):
+    """_scan1_triggered_today and _test_triggered_today are each SHARED between
+    two scan versions — ver 1's entries are raw (h,m) tuples, ver 2's are tagged
+    ((h,m), 2). A schedule-editor command for one version must only clear its
+    OWN entries — wiping the whole set would also drop the other version's
+    dedup state, letting it auto-trigger a second time in the same minute."""
+    if ver == 1:
+        tracker_set.difference_update({e for e in list(tracker_set) if not isinstance(e[0], tuple)})
+    else:
+        tracker_set.difference_update({e for e in list(tracker_set) if isinstance(e[0], tuple)})
 _last_midnight_date = None   # for midnight reset
 
 ALT_SCAN_MINUTE  = 2        # kept for /alt command reference — not used for auto-trigger
@@ -10774,6 +10786,7 @@ def _demo_monitor_loop():
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
                             entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP1")
+                        save_state()  # persist tp1_hit + BE SL immediately — trade stays open (no to_remove append) so the loop's own save_state() below wouldn't otherwise run for this branch
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
