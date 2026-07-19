@@ -2,7 +2,7 @@
 CLEXER Signal Bot V17.8.5
 """
 
-import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string
+import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string, math
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
@@ -241,8 +241,8 @@ def _apply_trail_sl_btc(price: float):
         if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
-FREE_SIGNAL_DAILY_LIMIT = 0   # max signals shared to free channels/users per day (0 = none shared)
-_free_signal_tracker = {"date": "", "count": 0}  # resets automatically when the IST date rolls over
+FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
+_free_signal_tracker = {"date": "", "total": 0, "shared": 0}  # resets automatically when the IST date rolls over
 
 def _channels_by_tier(tier: str) -> list:
     return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id")]
@@ -252,15 +252,25 @@ def _in_free_window() -> bool:
     return 6 <= now.hour < 19  # 06:00–19:00 IST
 
 def _free_quota_available() -> bool:
+    """FREE_SIGNAL_DAILY_LIMIT rule (now a %, not a raw count): out of every
+    day's verified/special signals, that % also gets shared to Free (e.g. 40%
+    with 10 verified fires that day -> 4 shown in Free). Every call counts
+    toward that day's total (one call per verified fire), and returns True
+    (share it) only while doing so keeps shared/total at or under the %  —
+    this naturally spreads the share across the whole day instead of front-
+    or back-loading it."""
     global _free_signal_tracker
     now = datetime.now(timezone.utc) + IST
     today = now.strftime("%Y-%m-%d")
     if _free_signal_tracker.get("date") != today:
-        _free_signal_tracker = {"date": today, "count": 0}
-    return _in_free_window() and _free_signal_tracker["count"] < FREE_SIGNAL_DAILY_LIMIT
+        _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
+    _free_signal_tracker["total"] += 1
+    if not _in_free_window():
+        return False
+    return _free_signal_tracker["shared"] < math.ceil(_free_signal_tracker["total"] * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
 
 def _consume_free_quota():
-    _free_signal_tracker["count"] = _free_signal_tracker.get("count", 0) + 1
+    _free_signal_tracker["shared"] = _free_signal_tracker.get("shared", 0) + 1
 
 _BOT_USERNAME = None
 
@@ -1313,7 +1323,7 @@ _NP_CONFIG = {
     "setleverage": {"label": "Leverage",                "unit": "x",    "cmd": "/setleverage", "decimals": False},
     "setrisk":     {"label": "Auto-Risk (Max Loss)",    "unit": "USDT", "cmd": "/setrisk",     "decimals": True},
     "tp1size":     {"label": "TP1 Close %",             "unit": "%",    "cmd": "/tp1size",     "decimals": False},
-    "freelimit":   {"label": "Free Channel Daily Limit", "unit": "signals/day", "cmd": "/freelimit", "decimals": False},
+    "freelimit":   {"label": "Free Channel Share %", "unit": "%", "cmd": "/freelimit", "decimals": False},
 }
 
 _pp_state: dict = {}       # cid → {"action","kind","symbol","idx","digits": str, "back_cb": str} — tap price-picker
@@ -6468,16 +6478,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
     elif cmd == "/freelimit" and is_admin:
         if len(parts) < 2:
             send_reply(chat_id,
-                f"<b>Free Channel Daily Limit</b>\n\nCurrent: <b>{FREE_SIGNAL_DAILY_LIMIT}</b> signals/day "
-                f"(window 06:00–19:00 IST)\n\nUse the tap keypad or type a number 0–50.")
+                f"<b>Free Channel Share %</b>\n\nCurrent: <b>{FREE_SIGNAL_DAILY_LIMIT}%</b> of each day's "
+                f"verified/special signals also shown in Free (window 06:00–19:00 IST)\n\n"
+                f"Use the tap keypad or type a number 0–100.")
             return
         try:
             n = int(parts[1])
-            if n < 0 or n > 50:
-                send_reply(chat_id, "Limit must be 0–50."); return
+            if n < 0 or n > 100:
+                send_reply(chat_id, "Share % must be 0–100."); return
             FREE_SIGNAL_DAILY_LIMIT = n
             save_settings()
-            send_reply(chat_id, f"<b>Free Channel Daily Limit Set</b>\n\n{n} signals/day, 06:00–19:00 IST.")
+            send_reply(chat_id, f"<b>Free Channel Share % Set</b>\n\n{n}% of verified signals now shared to Free, 06:00–19:00 IST.")
         except ValueError:
             send_reply(chat_id, "Please enter a valid whole number.")
 
@@ -8734,7 +8745,7 @@ def send_channelmgmt_screen(chat_id, message_id=None):
         rows.append([{"text": "🗑 Remove", "callback_data": f"chrm_remove:{i}"}])
     rows.append([{"text": "➕ Add VIP Channel", "callback_data": "chrm_add:vip"}])
     rows.append([{"text": "➕ Add Free Channel", "callback_data": "chrm_add:free"}])
-    rows.append([{"text": f"🔢 Free Daily Limit: {FREE_SIGNAL_DAILY_LIMIT}", "callback_data": "freelimit_open"}])
+    rows.append([{"text": f"🔢 Free Share: {FREE_SIGNAL_DAILY_LIMIT}%", "callback_data": "freelimit_open"}])
     rows.append([{"text": "◀️  Back", "callback_data": "broadcast_sub:channels"}])
     _help_edit_or_send(chat_id,
         "<b>📡 Channels — VIP / Free</b>\n\n"
