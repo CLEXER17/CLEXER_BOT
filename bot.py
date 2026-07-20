@@ -5516,7 +5516,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5630,20 +5630,25 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
         return
 
-    if cmd == "/forceclose" and is_admin:
+    if cmd in ("/forceclose", "/fc") and is_admin:
         if len(parts) < 4:
             send_reply(chat_id,
                 "<b>Force Close a Stuck Trade</b>\n\n"
                 "For when a redeploy made the bot lose track of a trade that already "
                 "closed on BingX — runs the exact same close path as if the bot had "
                 "caught it live (channel announcement, recap, win-rate tracking).\n\n"
-                "Usage: <code>/forceclose scan1|scan2|ts1|ts2 SYMBOL tp1|tp2|sl|be</code>\n"
-                "Example: <code>/forceclose scan2 HOME tp2</code>")
+                "Usage: <code>/fc s1|s2|t1|t2 SYMBOL tp1|tp2|sl|be</code>\n"
+                "Example: <code>/fc s2 home tp2</code>")
             return
         _fc_kind = parts[1].lower(); _fc_symbol = parts[2]; _fc_result = parts[3]
-        _fc_map = {"scan1": (1, "scan"), "scan2": (2, "scan"), "ts1": (1, "demo"), "ts2": (2, "demo")}
+        _fc_map = {
+            "scan1": (1, "scan"), "s1": (1, "scan"),
+            "scan2": (2, "scan"), "s2": (2, "scan"),
+            "ts1": (1, "demo"), "t1": (1, "demo"),
+            "ts2": (2, "demo"), "t2": (2, "demo"),
+        }
         if _fc_kind not in _fc_map:
-            send_reply(chat_id, "First arg must be scan1, scan2, ts1, or ts2."); return
+            send_reply(chat_id, "First arg must be s1, s2, t1, or t2 (or scan1/scan2/ts1/ts2)."); return
         _fc_ver, _fc_type = _fc_map[_fc_kind]
         _fc_result_text = (_force_close_scan_trade(_fc_ver, _fc_symbol, _fc_result) if _fc_type == "scan"
             else _force_close_demo_trade(_fc_ver, _fc_symbol, _fc_result))
