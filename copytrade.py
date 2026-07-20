@@ -1912,15 +1912,19 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                 tp1   = float(user.get("tp1", 0))
                 tp2   = float(user.get("tp2", 0))
                 reason = _detect_close_reason(BINGX_SYMBOL, entry, sl, tp1, tp2)
-                user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0
-                user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
-                _set(cid, user)
                 msg = f"🔔 @{uname} BTC trade {reason}"
                 fixes.append(msg); print(f"[CT] {msg}")
                 if notify_fn: notify_fn(f"📊 <b>BTC trade closed @{uname}</b>\n{reason}")
+                _ghost_handled = False
                 if ghost_close_fn and "hit" in reason:
-                    try: ghost_close_fn(BINGX_SYMBOL, reason)
+                    try:
+                        ghost_close_fn(BINGX_SYMBOL, reason)
+                        _ghost_handled = True
                     except Exception as e: print(f"[CT] ghost_close_fn BTC: {e}")
+                if not _ghost_handled:
+                    user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0
+                    user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
+                    _set(cid, user)
 
             # ── Ghost state: bot thinks scan open but BingX has nothing (all 4 slots) ──
             for _gp in _ALL_SLOT_PREFIXES:
@@ -1933,13 +1937,20 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                     tp1   = float(user.get(f"{_gp}tp1", 0))
                     tp2   = float(user.get(f"{_gp}tp2", 0))
                     reason = _detect_close_reason(scan_sym, entry, sl, tp1, tp2)
-                    _clear_scan_state(cid, user, scan_sym)
                     msg = f"🔔 @{uname} {scan_sym} ({_gp.rstrip('_')}) {reason}"
                     fixes.append(msg); print(f"[CT] {msg}")
                     if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
                     if ghost_close_fn and "hit" in reason:
+                        # Downstream (on_scan_sl/on_scan_tp1/on_scan_tp2, called via
+                        # _force_close_scan_trade/_force_close_demo_trade) needs this
+                        # user's slot data (entry/sl/qty) to still be present to record
+                        # their P&L into trade_log — it clears state itself once done.
+                        # Clearing it here FIRST was a race that made this exact user's
+                        # closed trade silently never make it into their Portfolio.
                         try: ghost_close_fn(scan_sym, reason)
                         except Exception as e: print(f"[CT] ghost_close_fn {scan_sym}: {e}")
+                        else: continue
+                    _clear_scan_state(cid, user, scan_sym)
 
             # ── Check every real BingX position ──
             for sym, pos in pos_by_sym.items():
