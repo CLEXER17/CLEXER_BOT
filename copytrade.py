@@ -985,10 +985,12 @@ def on_sl(entry: float = 0, sl: float = 0, tp1_hit: bool = False):
         if entry > 0 and sl > 0:
             pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
             _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "BE" if tp1_hit else "SL")
-            user["history"]["total"] += 1
             if not tp1_hit:
+                user["history"]["total"] += 1
                 user["history"]["loss"] += 1
-            # else: breakeven exit after a partial win — neither a win nor a loss,
+            # else: breakeven exit after a partial win — already counted once when
+            # TP1 hit (on_tp1 increments total+profit) — this is the SAME trade's
+            # second half, not a new one, so don't double-count "total" here.
             # so it's excluded from both buckets rather than skewing the win rate
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
@@ -1674,11 +1676,12 @@ def on_scan_sl(symbol: str):
             if entry_price and sl_price and close_qty > 0:
                 pnl = _calc_pnl(user[f"{p}side"], entry_price, sl_price, close_qty)
                 _record_pnl(user, pnl, symbol, user[f"{p}side"], "BE" if tp1_hit else "SL")
-                user["history"]["total"] += 1
                 if not tp1_hit:
+                    user["history"]["total"] += 1
                     user["history"]["loss"] += 1
-                # else: breakeven exit after a partial win — not a loss, excluded
-                # from both buckets rather than skewing the win rate
+                # else: breakeven exit after a partial win — already counted once
+                # when TP1 hit (on_scan_tp1 increments total+profit) — this is the
+                # SAME trade's second half, don't double-count "total" here too.
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol} pnl record: {e}")
         _clear_scan_state(cid, user, symbol)

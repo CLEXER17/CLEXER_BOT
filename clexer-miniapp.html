@@ -856,14 +856,37 @@
     });
   }
 
+  // A trade that hits TP1 then closes at BE/TP2/SL produces TWO trade_log rows
+  // (one order fill each) sharing the same symbol+closed_at minute -- correct
+  // as raw bookkeeping (2 real fills = 2 real P&L events), but every downstream
+  // stat (best/worst, streak, recent-closed count) needs to see it as ONE trade.
+  function mergeTradeHistory(list){
+    const out=[]; const used=new Set();
+    for(let i=0;i<list.length;i++){
+      if(used.has(i)) continue;
+      const c=list[i]; const merged=Object.assign({},c);
+      for(let j=i+1;j<list.length;j++){
+        if(used.has(j)) continue;
+        const o=list[j];
+        if(o.symbol===c.symbol && o.closed_at===c.closed_at){
+          merged.pnl=(merged.pnl||0)+(o.pnl||0);
+          if(merged.result==="TP1" && o.result!=="TP1") merged.result=o.result;
+          used.add(j);
+        }
+      }
+      used.add(i); out.push(merged);
+    }
+    return out;
+  }
+
   async function loadPortfolio(p){
     curP=p;
     // load real BingX balance (cached server-side, refreshed ~every 60s)
-    let realBal=0;
+    let realBal=0, realInTrade=0;
     try{
       const b = await api("/copy/balance");
       if(b.available){
-        realBal=b.balance||0;
+        realBal=b.balance||0; realInTrade=b.in_trade||0;
         document.getElementById("balance").textContent="$"+fmt(b.balance,2);
         document.getElementById("avail").textContent="$"+fmt(b.avail,2);
         document.getElementById("intrade").textContent="$"+fmt(b.in_trade,2);
@@ -900,16 +923,21 @@
     // load closed trades
     try{
       const hist = await api("/trades/history");
-      const h = hist.history||[];
+      // A trade that hits TP1 then closes at BE/TP2/SL creates TWO trade_log
+      // rows (one per real order fill) sharing the same symbol+closed_at —
+      // correct as raw bookkeeping, but must count as ONE trade for streak/
+      // best-worst/recent-closed, not two. Merge them here before anything
+      // downstream uses the list.
+      const h = mergeTradeHistory(hist.history||[]);
       updateUnreal();
-      document.getElementById("closedlist").innerHTML=(hist.history||[]).slice(0,10).map(c=>{
+      document.getElementById("closedlist").innerHTML=h.slice(0,10).map(c=>{
         const win=c.result==="WIN"||c.pnl>0;
         return `<div class="row"><div style="display:flex;align-items:center;gap:9px"><span class="tag ${(c.direction||"long").toLowerCase()}">${(c.direction||"LONG").toUpperCase()}</span><div><div style="font-family:var(--mono);font-size:13px;font-weight:600">${(c.symbol||"").replace("USDT","")}/USDT</div><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px">${c.closed_at||""}</div></div></div><div style="text-align:right"><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:14px;font-weight:700">${win?"+":"-"}$${fmt(Math.abs(c.pnl||0),2)}</div><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:10px;margin-top:1px">${c.result||""}</div></div></div>`;
       }).join("") || '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:12px 0">No closed trades yet</div>';
 
       // build simple daily P/L from history
       const dailyMap={};
-      (hist.history||[]).forEach(c=>{
+      h.forEach(c=>{
         const day=(c.closed_at||"").slice(0,10);
         if(day) dailyMap[day]=(dailyMap[day]||0)+(c.pnl||0);
       });
@@ -966,16 +994,16 @@
       // monthly calendar — reuses dailyMap already built above
       renderPortfolioCalendar(dailyMap);
 
-      // risk exposure — open-position margin vs total balance
-      const balTxt0=(document.getElementById("balance").textContent||"$0").replace(/[$,]/g,"");
-      const balNum0=parseFloat(balTxt0)||0;
-      const marginSum=Object.values(TRADES).reduce((a,t)=>a+((t.qty&&t.lev)?(t.qty*t.entry/t.lev):0),0);
-      document.getElementById("riskExp").textContent = balNum0>0 ? fmt(marginSum/balNum0*100,1)+"%" : "—";
+      // risk exposure — real used margin (from BingX, via /copy/balance) vs
+      // total balance. Previously reconstructed from the shared TRADES object,
+      // which only has qty/lev data if the Trades tab happened to load first
+      // (loadTrades() populates it) -- unreliable if Portfolio was opened first.
+      document.getElementById("riskExp").textContent = realBal>0 ? fmt(realInTrade/realBal*100,1)+"%" : "—";
 
       // equity curve from cumulative pnl, expressed as % of the REAL account
       // balance (was dividing by a hardcoded 100 regardless of account size,
       // so a real $0.44 gain on a $15 account rounded to "0.0%" every time)
-      const hist30=[...hist.history||[]].reverse().slice(0,30);
+      const hist30=[...h].reverse().slice(0,30);
       if(hist30.length>=1){
         const histSum=hist30.reduce((a,c)=>a+(c.pnl||0),0);
         let startBal=realBal-histSum;
