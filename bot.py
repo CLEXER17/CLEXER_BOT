@@ -177,70 +177,133 @@ TRAIL_SL_DEMO1 = False
 TRAIL_SL_DEMO2 = False
 
 def _apply_trail_sl(ver: int, t: dict, price: float):
-    """Fixed 50/50 rule: once price reaches the halfway point to TP1, move SL to
-    the halfway point between the original SL and entry — locks in more capital
-    without waiting for TP1 itself. Runs once per trade (trail_sl_moved guards it).
+    """Fixed 50/50 rule, two phases:
+    Phase 1 (pre-TP1): once price reaches the halfway point to TP1, move SL to
+    the halfway point between the original SL and entry.
+    Phase 2 (post-TP1): SL sits at breakeven after TP1 — once price reaches the
+    halfway point between that breakeven SL and TP2, move SL up to that point,
+    locking in more than just breakeven before TP2 itself hits.
+    Each phase runs once (trail_sl_moved / trail_sl2_moved guards it), and each
+    replaces the OTHER phase's still-open trailing message (deleted at TP1 hit
+    for phase 1's, and at TP2/SL close for phase 2's — see _delete_trail_sl_messages).
     ver: 1=Scan1, 2=Scan2, 3=Demo1, 4=Demo2 — ct.update_scan_sl() looks the symbol
     up across all slot prefixes (including demo1/demo2), so this also moves any
     real copy-user SL that's mirroring a demo trade."""
-    if t.get("trail_sl_moved") or t.get("tp1_hit"):
-        return
     enabled = {1: TRAIL_SL_SCAN1, 2: TRAIL_SL_SCAN2, 3: TRAIL_SL_DEMO1, 4: TRAIL_SL_DEMO2}.get(ver, False)
     if not enabled:
         return
-    entry = t["entry"]; tp1 = t["tp1"]; sig = t["signal"]
-    orig_sl = t.get("trail_sl_orig", t["sl"])
-    t["trail_sl_orig"] = orig_sl
-    midpoint_price = (entry + tp1) / 2
-    hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
-    if not hit:
-        return
-    new_sl = (orig_sl + entry) / 2
-    t["sl"] = new_sl
-    t["trail_sl_moved"] = True
-    ct.update_scan_sl(t["symbol"], new_sl)
-    save_state()
-    tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
-    _msg = (
-        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-        f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
-        f"<i>🛡️ Capital protected</i>")
-    _locked_msg = (
-        f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-        f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
-        f"<i>🛡️ Capital protected</i>")
-    _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
-        tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
-    t["trail_sl_msg_ids"] = _trail_ids or {}
-    for _k, _v in (_trail_ids or {}).items():
-        if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+    sig = t["signal"]; tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
+    if not t.get("tp1_hit"):
+        if t.get("trail_sl_moved"):
+            return
+        entry = t["entry"]; tp1 = t["tp1"]
+        orig_sl = t.get("trail_sl_orig", t["sl"])
+        t["trail_sl_orig"] = orig_sl
+        midpoint_price = (entry + tp1) / 2
+        hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
+        if not hit:
+            return
+        new_sl = (orig_sl + entry) / 2
+        t["sl"] = new_sl
+        t["trail_sl_moved"] = True
+        ct.update_scan_sl(t["symbol"], new_sl)
+        save_state()
+        _msg = (
+            f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
+            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _locked_msg = (
+            f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
+            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
+            tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
+        t["trail_sl_msg_ids"] = _trail_ids or {}
+        for _k, _v in (_trail_ids or {}).items():
+            if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+    else:
+        if t.get("trail_sl2_moved"):
+            return
+        be_sl = t["sl"]; tp2 = t["tp2"]
+        midpoint2 = (be_sl + tp2) / 2
+        hit2 = (sig == "BUY" and price >= midpoint2) or (sig == "SELL" and price <= midpoint2)
+        if not hit2:
+            return
+        t["sl"] = midpoint2
+        t["trail_sl2_moved"] = True
+        ct.update_scan_sl(t["symbol"], midpoint2)
+        save_state()
+        _msg = (
+            f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
+            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.4g}</code> → <code>{midpoint2:,.4g}</code> to lock in more profit.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _locked_msg = (
+            f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
+            f"Price reached halfway to TP2 — SL moved up to lock in more profit.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
+            tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
+        t["trail_sl_msg_ids"] = _trail_ids or {}
+        for _k, _v in (_trail_ids or {}).items():
+            if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid2", _v)
 
 def _apply_trail_sl_btc(price: float):
-    if not TRAIL_SL_BTC or active_trade.get("trail_sl_moved") or active_trade.get("tp1_hit"):
+    if not TRAIL_SL_BTC:
         return
-    entry = active_trade["entry"]; tp1 = active_trade["tp1"]; sig = active_trade["signal"]
-    orig_sl = active_trade.get("trail_sl_orig", active_trade["sl"])
-    active_trade["trail_sl_orig"] = orig_sl
-    midpoint_price = (entry + tp1) / 2
-    hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
-    if not hit:
-        return
-    new_sl = (orig_sl + entry) / 2
-    active_trade["sl"] = new_sl
-    active_trade["trail_sl_moved"] = True
-    ct.on_update_sl(new_sl)
-    save_active_trade()
-    _msg = (
-        f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-        f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
-        f"<i>🛡️ Capital protected</i>")
-    _locked_msg = (
-        f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-        f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
-        f"<i>🛡️ Capital protected</i>")
-    _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
-        tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
-    active_trade["trail_sl_msg_ids"] = _trail_ids or {}
+    sig = active_trade["signal"]
+    if not active_trade.get("tp1_hit"):
+        if active_trade.get("trail_sl_moved"):
+            return
+        entry = active_trade["entry"]; tp1 = active_trade["tp1"]
+        orig_sl = active_trade.get("trail_sl_orig", active_trade["sl"])
+        active_trade["trail_sl_orig"] = orig_sl
+        midpoint_price = (entry + tp1) / 2
+        hit = (sig == "BUY" and price >= midpoint_price) or (sig == "SELL" and price <= midpoint_price)
+        if not hit:
+            return
+        new_sl = (orig_sl + entry) / 2
+        active_trade["sl"] = new_sl
+        active_trade["trail_sl_moved"] = True
+        ct.on_update_sl(new_sl)
+        save_active_trade()
+        _msg = (
+            f"🛡️ <b>Trailing SL — BTC</b>\n\n"
+            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _locked_msg = (
+            f"🛡️ <b>Trailing SL — BTC</b>\n\n"
+            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
+            tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
+        active_trade["trail_sl_msg_ids"] = _trail_ids or {}
+        for _k, _v in (_trail_ids or {}).items():
+            if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+    else:
+        if active_trade.get("trail_sl2_moved"):
+            return
+        be_sl = active_trade["sl"]; tp2 = active_trade["tp2"]
+        midpoint2 = (be_sl + tp2) / 2
+        hit2 = (sig == "BUY" and price >= midpoint2) or (sig == "SELL" and price <= midpoint2)
+        if not hit2:
+            return
+        active_trade["sl"] = midpoint2
+        active_trade["trail_sl2_moved"] = True
+        ct.on_update_sl(midpoint2)
+        save_active_trade()
+        _msg = (
+            f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
+            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.0f}</code> → <code>{midpoint2:,.0f}</code> to lock in more profit.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _locked_msg = (
+            f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
+            f"Price reached halfway to TP2 — SL moved up to lock in more profit.\n\n"
+            f"<i>🛡️ Capital protected</i>")
+        _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
+            tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
+        active_trade["trail_sl_msg_ids"] = _trail_ids or {}
+        for _k, _v in (_trail_ids or {}).items():
+            if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid2", _v)
     for _k, _v in (_trail_ids or {}).items():
         if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
 
@@ -4276,6 +4339,7 @@ def run_tick_check():
         tp2_hit = (sig=="BUY" and check_high >= tp2) or (sig=="SELL" and check_low <= tp2)
         if tp2_hit:
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
+            _delete_trail_sl_messages(active_trade)
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
@@ -4314,6 +4378,7 @@ def run_tick_check():
         if sl_hit:
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
+            _delete_trail_sl_messages(active_trade)
             log_trade_outcome("SL_HIT", f"{n} in a row, low:{check_low:,.0f} sl:{sl:,.0f}")
             # Suppress ch2 if SL hit within 10 min of entry (stop hunt / quick SL)
             _entry_ts = t.get("entry_time", 0)
@@ -4811,6 +4876,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             price = get_bingx_price(sym)
             pnl = (price - entry) / entry * 100 * (1 if sig == "BUY" else -1) if price and entry else 0
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
+            _delete_trail_sl_messages(t)
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
             send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False)
             ct.on_scan_sl(sym)
@@ -4869,6 +4935,7 @@ def _tick_one(ver: int, t: dict) -> bool:
         if tp2_hit:
             trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
             trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
+            _delete_trail_sl_messages(t)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
             send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
@@ -4916,6 +4983,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             trade_stats["scan_sl"] += 1
             trade_stats[f"scan{ver}_sl"] += 1
             result = "BE" if t["tp1_hit"] else "SL"
+            _delete_trail_sl_messages(t)
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
             _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
@@ -4988,6 +5056,7 @@ def run_price_check():
         print(f"  [1H] {active_trade['signal']} | {status}")
         if status == "TP2_HIT":
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
+            _delete_trail_sl_messages(active_trade)
             log_trade_outcome("TP2_HIT", "hit during 1H check")
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
@@ -4998,6 +5067,7 @@ def run_price_check():
         elif status == "SL_HIT":
             trade_stats["total_sl"] += 1; trade_stats["consecutive_sl"] += 1
             n = trade_stats["consecutive_sl"]
+            _delete_trail_sl_messages(active_trade)
             log_trade_outcome("SL_HIT", f"{n} in a row during 1H check")
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
@@ -10872,6 +10942,7 @@ def _demo_monitor_loop():
                     coin = sym.replace("-USDT","")
                     arrow = "🟩" if sig == "BUY" else "🟥"
                     if tp2_now:
+                        _delete_trail_sl_messages(t)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
@@ -10895,6 +10966,7 @@ def _demo_monitor_loop():
                         lbl = "BE" if tp1hit else "SL"
                         result = "BREAKEVEN" if tp1hit else "LOSS"
                         _sl_exit = be_sl if tp1hit and be_sl else sl
+                        _delete_trail_sl_messages(t)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":_sl_exit,
@@ -10939,6 +11011,7 @@ def _demo_monitor_loop():
                         save_state()  # persist tp1_hit + BE SL immediately — trade stays open (no to_remove append) so the loop's own save_state() below wouldn't otherwise run for this branch
                     elif timeout_hit:
                         pnl = (cp - entry) / entry * 100 * (1 if sig == "BUY" else -1)
+                        _delete_trail_sl_messages(t)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
