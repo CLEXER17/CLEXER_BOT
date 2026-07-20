@@ -822,7 +822,7 @@
           if(v>0){ bg='var(--long)'; fg='#04342C'; }
           else if(v<0){ bg='var(--short)'; fg='#501313'; }
           else { bg='#0F6E56'; fg='var(--text)'; }
-          valTxt=(v>=0?'+':'')+fmt(v,0);
+          valTxt=(v>=0?'+':'')+fmt(v,2);
         }
         const ring=isToday?'border:1px solid var(--gold);':'';
         html+=`<div class="pfday" data-date="${dateStr}" data-v="${v!==undefined?v:''}" style="aspect-ratio:1;border-radius:4px;background:${bg};${ring}display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer">`+
@@ -918,9 +918,11 @@
         const best=h.reduce((a,b)=>(b.pnl||0)>(a.pnl||0)?b:a);
         const worst=h.reduce((a,b)=>(b.pnl||0)<(a.pnl||0)?b:a);
         document.getElementById("bestSym").textContent=(best.symbol||"—").replace("USDT","")+"/USDT";
-        document.getElementById("bestPnl").textContent="+$"+fmt(Math.abs(best.pnl||0),2);
+        document.getElementById("bestPnl").textContent=((best.pnl||0)>=0?"+":"-")+"$"+fmt(Math.abs(best.pnl||0),2);
+        document.getElementById("bestPnl").className="v "+((best.pnl||0)>=0?"up":"down");
         document.getElementById("worstSym").textContent=(worst.symbol||"—").replace("USDT","")+"/USDT";
-        document.getElementById("worstPnl").textContent="-$"+fmt(Math.abs(worst.pnl||0),2);
+        document.getElementById("worstPnl").textContent=((worst.pnl||0)>=0?"+":"-")+"$"+fmt(Math.abs(worst.pnl||0),2);
+        document.getElementById("worstPnl").className="v "+((worst.pnl||0)>=0?"up":"down");
       }
 
       // P/L by coin
