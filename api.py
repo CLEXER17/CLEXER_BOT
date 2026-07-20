@@ -531,6 +531,7 @@ def get_active_trades(request: Request):
     viewer_tier = "free"
     is_admin_view = False
     my_symbols = set()   # symbols the caller personally has an open copytrade position on
+    my_qty = {}; my_lev = {}   # symbol -> caller's own qty/leverage, since the shared feed doesn't know per-user size
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     if init_data:
         try:
@@ -543,7 +544,10 @@ def get_active_trades(request: Request):
                 viewer_tier = urec.get("tier", "free")
                 for p in _ALL_SLOT_PREFIXES:
                     sym = urec.get(f"{p}symbol")
-                    if sym: my_symbols.add(sym)
+                    if sym:
+                        my_symbols.add(sym)
+                        my_qty[sym] = urec.get(f"{p}qty")
+                        my_lev[sym] = urec.get("leverage")
         except Exception:
             pass
 
@@ -600,16 +604,17 @@ def get_active_trades(request: Request):
         else:
             tag = None
 
+        _sym = t.get("symbol", "BTCUSDT" if source == "main" else "")
         positions.append({
-            "symbol":  t.get("symbol", "BTCUSDT" if source == "main" else ""),
+            "symbol":  _sym,
             "side":    side,
             "status":  "RUNNING" if entry_hit else "PENDING",
             "entry":   t.get("entry"),
             "tp1":     t.get("tp1"),
             "tp2":     t.get("tp2"),
             "sl":      t.get("sl"),
-            "qty":     t.get("qty"),
-            "leverage":t.get("leverage", 10),
+            "qty":     t.get("qty") or my_qty.get(_sym),
+            "leverage":t.get("leverage") or my_lev.get(_sym) or 10,
             "tp1_hit": bool(t.get("tp1_hit", False)),
             "source":  source,
             "opened_at": t.get("opened_at"),
@@ -714,14 +719,23 @@ def bingx_status(user: dict = Depends(get_current_user)):
         with conn.cursor() as cur:
             cur.execute("SELECT api_key_enc, connected_at FROM bingx_credentials WHERE tg_id = %s", (user["id"],))
             row = cur.fetchone()
-    if not row:
-        return {"connected": False}
-    api_key = fernet.decrypt(bytes(row["api_key_enc"])).decode()
-    return {
-        "connected":    True,
-        "key_hint":     "••••" + api_key[-4:],
-        "connected_at": row["connected_at"].isoformat() if row["connected_at"] else None,
-    }
+    if row:
+        api_key = fernet.decrypt(bytes(row["api_key_enc"])).decode()
+        return {
+            "connected":    True,
+            "key_hint":     "••••" + api_key[-4:],
+            "connected_at": row["connected_at"].isoformat() if row["connected_at"] else None,
+        }
+    # Not in this table — but the user may have connected via the bot's own
+    # /connect command instead, which writes to the separate ct_users blob
+    # (a different encryption key from this table's, so it can't be decrypted
+    # here for a key_hint) — check that too so the Mini App doesn't wrongly
+    # ask them to reconnect when they're already connected via the bot.
+    ct_users = _kv_dict("ct_users")
+    urec = ct_users.get(str(user["id"]), {})
+    if urec.get("connected") and urec.get("api_key_enc"):
+        return {"connected": True, "key_hint": "•••• (via bot)", "connected_at": None}
+    return {"connected": False}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # COPY SETTINGS endpoints
