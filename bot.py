@@ -5794,7 +5794,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if CHAT_MODEL == "google" and not GEMINI_API_KEY:
             send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         else:
-            _reply_note = "" if is_admin else "\n\n↪️ <b>Forward a message here</b> to get a reply — plain typed messages won't trigger a response."
+            _is_admin_own_chat = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
+            _reply_note = "" if _is_admin_own_chat else ("\n\n↪️ In a group: <b>reply directly to one of my messages</b> to get a response.\n"
+                "In a private chat: <b>forward a message here</b> instead — plain typed messages won't trigger a response.")
             send_reply(chat_id,
                 "💬 <b>Chat Session Started</b>\n\n"
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
@@ -10639,15 +10641,21 @@ def command_listener():
                 if text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
                 elif str(cid) in _chat_sessions:
-                    # Regular users must actually forward a message into the chat
-                    # to get a /chat answer — plain typed messages don't trigger a
-                    # reply. forward_origin is the current Bot API field; forward_from
-                    # / forward_from_chat / forward_date are the pre-7.0 fields, kept
-                    # as a fallback for older forwarded-message shapes. Admin is exempt.
+                    # Regular users must actually forward a message (in a private
+                    # chat) or reply directly to one of the bot's own messages (in
+                    # a group — forwarding into a group you're already chatting in
+                    # doesn't make sense, and typing the full @username every time
+                    # is annoying) to get a /chat answer — plain typed messages
+                    # don't trigger a reply on their own. forward_origin is the
+                    # current Bot API field; forward_from / forward_from_chat /
+                    # forward_date are the pre-7.0 fields, kept as a fallback for
+                    # older forwarded-message shapes. Admin's own private chat is exempt.
                     _is_admin_chat = ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)
                     _is_forward = bool(msg.get("forward_origin") or msg.get("forward_from")
                                         or msg.get("forward_from_chat") or msg.get("forward_date"))
-                    if _is_admin_chat or _is_forward:
+                    _reply_to = msg.get("reply_to_message") or {}
+                    _is_reply_to_bot = bool(_reply_to.get("from", {}).get("is_bot"))
+                    if _is_admin_chat or _is_forward or _is_reply_to_bot:
                         _handle_chat_message(cid, text)
         except Exception as e: print(f"  [CMD] {e}")
         time.sleep(2)
