@@ -712,6 +712,25 @@ def disconnect_bingx(user: dict = Depends(get_current_user)):
     return {"connected": False}
 
 
+@app.get("/copy/balance")
+def get_copy_balance(user: dict = Depends(get_current_user)):
+    """Real BingX balance for the Mini App Portfolio tab — served from the
+    cache bot.py refreshes every ~60s (copytrade.py's start_balance_sync_loop),
+    since api.py can't decrypt ct_users' API keys to fetch this live itself."""
+    ct_users = _kv_dict("ct_users")
+    urec = ct_users.get(str(user["id"]), {}) or {}
+    if not urec.get("connected") or "balance_usdt" not in urec:
+        return {"available": False}
+    return {
+        "available":   True,
+        "balance":     urec.get("balance_usdt", 0.0),
+        "avail":       urec.get("avail_usdt", 0.0),
+        "in_trade":    urec.get("intrade_usdt", 0.0),
+        "unrealized":  urec.get("unrealized_usdt", 0.0),
+        "updated_at":  urec.get("balance_updated_at"),
+    }
+
+
 @app.get("/bingx/status")
 def bingx_status(user: dict = Depends(get_current_user)):
     upsert_user(user)

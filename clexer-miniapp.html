@@ -858,6 +858,19 @@
 
   async function loadPortfolio(p){
     curP=p;
+    // load real BingX balance (cached server-side, refreshed ~every 60s)
+    try{
+      const b = await api("/copy/balance");
+      if(b.available){
+        document.getElementById("balance").textContent="$"+fmt(b.balance,2);
+        document.getElementById("avail").textContent="$"+fmt(b.avail,2);
+        document.getElementById("intrade").textContent="$"+fmt(b.in_trade,2);
+        const u=b.unrealized||0;
+        const uEl=document.getElementById("unrealP");
+        uEl.textContent=(u>=0?"+":"-")+"$"+fmt(Math.abs(u),2)+" unrealized";
+        uEl.className="unreal "+(u>=0?"bgup up":"bgdown down");
+      }
+    }catch(e){ console.warn("loadPortfolio balance:", e); }
     // load stats from API
     try{
       const stats = await api("/trades/stats");

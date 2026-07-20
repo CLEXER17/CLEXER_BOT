@@ -470,6 +470,66 @@ def _test_api(api_key: str, api_secret: str) -> tuple[bool, str]:
         return True, ""
     return False, result.get("msg", "invalid key")
 
+def _get_balance(api_key: str, api_secret: str) -> dict:
+    """Fetches real BingX USDT-M futures balance. Returns {} on any failure —
+    callers must treat that as 'couldn't fetch', not 'balance is zero'."""
+    r = _bingx("GET", "/openApi/swap/v2/user/balance", api_key, api_secret, {})
+    if r.get("code") != 0:
+        return {}
+    bal = ((r.get("data") or {}).get("balance")) or {}
+    if not bal:
+        return {}
+    try:
+        return {
+            "balance":   float(bal.get("balance", 0) or 0),
+            "equity":    float(bal.get("equity", bal.get("balance", 0)) or 0),
+            "available": float(bal.get("availableMargin", 0) or 0),
+            "used":      float(bal.get("usedMargin", 0) or 0),
+            "unrealized":float(bal.get("unrealizedProfit", 0) or 0),
+        }
+    except (TypeError, ValueError):
+        return {}
+
+def sync_all_balances():
+    """Fetches and caches real BingX balance for every connected user (not just
+    copy_on ones — Portfolio balance should show regardless of copy trade
+    state) into their ct_users record, so api.py's Mini App endpoint can serve
+    it without needing live BingX credentials itself (api.py can't decrypt
+    ct_users' api_key_enc — different encryption key from its own table)."""
+    for cid, user in list(_db.items()):
+        if not user.get("connected") or not user.get("api_key_enc"):
+            continue
+        try:
+            api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
+            bal = _get_balance(api_key, api_secret)
+            if not bal:
+                continue
+            user["balance_usdt"]    = bal["equity"]
+            user["avail_usdt"]      = bal["available"]
+            user["intrade_usdt"]    = bal["used"]
+            user["unrealized_usdt"] = bal["unrealized"]
+            user["balance_updated_at"] = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d %H:%M")
+            _set(cid, user)
+        except Exception as e:
+            print(f"[CT] sync_all_balances {cid}: {e}")
+
+def start_balance_sync_loop(interval_seconds: int = 60):
+    """Background thread — refreshes every connected user's cached BingX
+    balance on an interval, so the Mini App's Portfolio balance/equity curve
+    is never more than ~1 minute stale."""
+    import threading as _th
+    def _loop():
+        time.sleep(20)  # initial delay to let bot fully start
+        while True:
+            try:
+                sync_all_balances()
+            except Exception as e:
+                print(f"[CT] balance sync loop error: {e}")
+            time.sleep(interval_seconds)
+    t = _th.Thread(target=_loop, daemon=True)
+    t.start()
+    print(f"[CT] Balance sync started — refreshes every {interval_seconds}s")
+
 def _set_leverage(api_key: str, api_secret: str, side: str, leverage: int) -> bool:
     pos_side = "LONG" if side == "BUY" else "SHORT"
     r = _bingx("POST", "/openApi/swap/v2/trade/leverage", api_key, api_secret, {

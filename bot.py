@@ -11489,6 +11489,11 @@ def main():
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, ghost_close_fn=_ghost_confirm_close, interval_hours=1)
 
+    # Start balance sync — refreshes every connected user's cached BingX balance
+    # every 60s, so the Mini App's Portfolio balance/equity curve stays fresh
+    # (api.py can't fetch this itself — it can't decrypt ct_users' API keys)
+    ct.start_balance_sync_loop(interval_seconds=60)
+
     # Startup sync check — alert admin if any orphan positions exist
     def _startup_sync():
         time.sleep(10)  # wait for db to load
