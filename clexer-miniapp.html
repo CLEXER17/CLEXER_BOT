@@ -463,6 +463,7 @@
       const data = await api("/trades/active");
       TRADES = {};
       for(const t of data.positions){
+        if(t.locked || !t.symbol) continue; // VIP-locked placeholder has no real symbol/side — skip, don't crash the renderer
         TRADES[t.symbol] = {
           side: t.side,
           status: t.status,
@@ -479,8 +480,8 @@
     }catch(e){
       console.warn("loadTrades error:", e);
     }
-    renderTradeCards();
-    calcVirtual();
+    try{ renderTradeCards(); }catch(e){ console.warn("renderTradeCards error:", e); }
+    try{ calcVirtual(); }catch(e){ console.warn("calcVirtual error:", e); }
   }
 
   function renderTradeCards(){
