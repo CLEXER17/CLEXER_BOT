@@ -472,6 +472,18 @@ def get_price(sym: str = "BTC-USDT"):
 
 _SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
 
+# Mirrors copytrade.py's _SCAN_SLOTS — the per-user field prefixes for each of
+# the (up to 6 concurrent) positions per scan type. Used to find symbols the
+# calling user personally has an open copytrade position on, so their OWN
+# money in a trade is never hidden by the verified/unverified/nonspecial tier
+# filter below (that filter is for the shared public feed, not personal positions).
+_ALL_SLOT_PREFIXES = (
+    ["s1_", "s1b_", "s1c_", "s1d_", "s1e_", "s1f_"] +
+    ["scan_", "s2b_", "s2c_", "s2d_", "s2e_", "s2f_"] +
+    ["d1_", "d1b_", "d1c_", "d1d_", "d1e_", "d1f_"] +
+    ["d2_", "d2b_", "d2c_", "d2d_", "d2e_", "d2f_"]
+)
+
 def _kv_dict(key: str) -> dict:
     """Reads a kv_store blob directly (same table kv_pull/kv_push use) —
     used here to pull ct_users (tier lookup) and slot_auto_state (special/
@@ -518,6 +530,7 @@ def get_active_trades(request: Request):
 
     viewer_tier = "free"
     is_admin_view = False
+    my_symbols = set()   # symbols the caller personally has an open copytrade position on
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     if init_data:
         try:
@@ -526,7 +539,11 @@ def get_active_trades(request: Request):
             if uid:
                 is_admin_view = bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)
                 ct_users = _kv_dict("ct_users")
-                viewer_tier = (ct_users.get(uid) or {}).get("tier", "free")
+                urec = ct_users.get(uid) or {}
+                viewer_tier = urec.get("tier", "free")
+                for p in _ALL_SLOT_PREFIXES:
+                    sym = urec.get(f"{p}symbol")
+                    if sym: my_symbols.add(sym)
         except Exception:
             pass
 
@@ -563,6 +580,11 @@ def get_active_trades(request: Request):
                 reveal, tag = (cat == "verified"), None
             else:
                 reveal, tag = share_free, None
+            if not reveal and t.get("symbol") in my_symbols:
+                # Caller's own real copytrade position — always visible to
+                # them regardless of the shared-feed tier filter, same as
+                # bot.py's /mytrade never filters a user's own BingX position.
+                reveal = True
             if not reveal:
                 # is_admin_view always sets reveal=True above, so this path
                 # only runs for Free (locked VIP tag) or VIP-hidden trades.
