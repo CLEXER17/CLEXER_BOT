@@ -564,6 +564,22 @@ def _get_position(api_key: str, api_secret: str) -> dict:
                 return pos
     return {}
 
+def _get_all_positions(api_key: str, api_secret: str) -> list:
+    """Same as _get_position but across EVERY symbol, not just BTC-USDT —
+    _get_position alone misses any open Scan1/Scan2/TS1/TS2 copytrade position
+    (those open on whatever coin the scan picked, never BTC), which was making
+    /mytrade report 'No Open Position' for users who actually had live
+    positions on BingX from scan-based copytrade."""
+    r = _bingx("GET", "/openApi/swap/v2/user/positions", api_key, api_secret, {})
+    out = []
+    if r.get("code") == 0:
+        data = r.get("data") or {}
+        positions = data if isinstance(data, list) else data.get("positions", [])
+        for pos in positions:
+            if isinstance(pos, dict) and abs(float(pos.get("positionAmt", 0))) > 0:
+                out.append(pos)
+    return out
+
 def _calc_qty(size_usdt: float, price: float, leverage: int) -> float:
     if price <= 0: return 0.001
     qty = (size_usdt * leverage) / price
@@ -2323,24 +2339,29 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 reply_markup=_connect_btn); return
         try:
             api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
-            pos = _get_position(api_key, api_secret)
-            if not pos:
+            positions = _get_all_positions(api_key, api_secret)
+            if not positions:
                 _no_pos_line = _sc("You don't have an open position yet.")
                 send_reply_fn(chat_id, f"<b>No Open Position</b>\n\n<blockquote>{_no_pos_line}\n\n<i>🛡️ Capital protected</i></blockquote>")
             else:
-                amt   = float(pos.get("positionAmt", 0))
-                pnl   = float(pos.get("unrealizedProfit", 0))
-                entry = float(pos.get("avgPrice", 0))
-                lev   = pos.get("leverage","?")
-                side  = "LONG" if amt > 0 else "SHORT"
-                pnl_s = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                _blocks = []
+                for pos in positions:
+                    amt   = float(pos.get("positionAmt", 0))
+                    pnl   = float(pos.get("unrealizedProfit", 0))
+                    entry = float(pos.get("avgPrice", 0))
+                    lev   = pos.get("leverage","?")
+                    sym   = pos.get("symbol", BINGX_SYMBOL).replace("-USDT","")
+                    side  = "LONG" if amt > 0 else "SHORT"
+                    pnl_s = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                    _blocks.append(
+                        f"{'🟢' if side=='LONG' else '🔴'} {side} {abs(amt):.4f} {sym}\n"
+                        f"{_sc('Entry')}:    <b>{entry:,.4g}</b>\n"
+                        f"{_sc('Leverage')}: <b>{lev}x</b>\n"
+                        f"{_sc('PnL')}:      <b>{pnl_s}</b>")
+                _title = "Your BingX Position" if len(_blocks) == 1 else f"Your BingX Positions ({len(_blocks)})"
                 send_reply_fn(chat_id,
-                    f"<b>Your BingX Position</b>\n\n"
-                    f"<blockquote>{'🟢' if side=='LONG' else '🔴'} {side} {abs(amt):.4f} BTC\n\n"
-                    f"{_sc('Entry')}:    <b>{entry:,.2f}</b>\n"
-                    f"{_sc('Leverage')}: <b>{lev}x</b>\n"
-                    f"{_sc('PnL')}:      <b>{pnl_s}</b>\n\n"
-                    f"<i>🛡️ Capital protected</i></blockquote>")
+                    f"<b>{_title}</b>\n\n<blockquote>" + "\n\n".join(_blocks) +
+                    f"\n\n<i>🛡️ Capital protected</i></blockquote>")
         except Exception as e:
             send_reply_fn(chat_id, f"{_sc('Error')}: {e}")
 
