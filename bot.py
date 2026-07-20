@@ -7868,7 +7868,15 @@ Reasoning: [one line]"""
                         _scan_cycle_placed.add(chosen_sym)
 
                     # ── BUY or SELL — place trade ──────────────────────────────
-                    scan_entry = cp   # always live price
+                    # `cp` was captured when this candidate was first picked, BEFORE
+                    # the chart-fetch + Claude analysis that can take several minutes
+                    # (screenshots, retries across up to 3 candidates) — refetch right
+                    # here so the recorded entry (and SL/TP1/TP2 offsets from it) match
+                    # where price actually is now, not where it was minutes ago. MARKET
+                    # orders fill at the real current price on BingX regardless, so a
+                    # stale `cp` here was only ever hurting our OWN entry/SL/TP accuracy,
+                    # not the real fill.
+                    scan_entry = get_bingx_price(chosen_sym) or cp
                     scan_sl    = _parse("SL")
                     entry_type = "MARKET"
 
@@ -11495,7 +11503,10 @@ def _run_test_scan(cid, scan_ver: int):
             if swing_level_str == "NONE" or scan_sl_raw <= 0:
                 print(f"  [TEST] {chosen_sym}: no swing level found — WAIT"); continue
 
-            scan_entry = cp
+            # Same staleness issue as the real Scan1/Scan2 path — `cp` was captured
+            # before the chart-fetch + Claude analysis, refetch so entry/SL/TP match
+            # where price actually is now, not where it was minutes ago.
+            scan_entry = get_bingx_price(chosen_sym) or cp
             sl_dist = abs(scan_entry - scan_sl_raw)
             sl_pct  = sl_dist / scan_entry * 100
 
