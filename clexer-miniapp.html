@@ -883,7 +883,7 @@
       countUp(document.getElementById("wins"),wins,"",0);
       countUp(document.getElementById("losses"),losses,"",0);
       countUp(document.getElementById("trades"),total,"",0);
-      countUp(document.getElementById("pnlP"),Math.abs(pnl),(pnl>=0?"+":"-")+"$",0);
+      countUp(document.getElementById("pnlP"),Math.abs(pnl),(pnl>=0?"+":"-")+"$",2);
       document.getElementById("pnlP").className="v "+(pnl>=0?"up":"down");
 
       const arc=document.getElementById("arc");
