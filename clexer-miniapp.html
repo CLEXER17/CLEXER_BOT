@@ -772,7 +772,7 @@
       const strokeAttr=isToday?' stroke="#FFB020" stroke-width="1.5"':'';
       parts.push('<rect x="'+(cx-barW/2).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+barW+'" height="'+h.toFixed(1)+'" rx="4" fill="'+color+'" opacity="0.92"'+strokeAttr+'/>');
       const valY=isPos?(midY-h-7):(midY+h+15);
-      parts.push('<text x="'+cx+'" y="'+valY.toFixed(1)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="'+color+'">'+(isPos?"+":"")+Math.round(v)+'</text>');
+      parts.push('<text x="'+cx+'" y="'+valY.toFixed(1)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="'+color+'">'+(isPos?"+":"")+fmt(v,2)+'</text>');
       parts.push('<text x="'+cx+'" y="'+(height-8)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#6B7480">'+(i+1)+'</text>');
     });
     const svg=document.getElementById("dailyBars");
@@ -780,7 +780,7 @@
     svg.setAttribute("viewBox","0 0 "+width+" "+height);
     svg.innerHTML=parts.join("");
     const tot=document.getElementById("dailyTot");
-    tot.textContent=(total>=0?"+":"-")+"$"+fmt(Math.abs(Math.round(total)),0);
+    tot.textContent=(total>=0?"+":"-")+"$"+fmt(Math.abs(total),2);
     tot.className=total>=0?"up":"down";
   }
 
