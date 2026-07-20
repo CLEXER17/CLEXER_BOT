@@ -1901,9 +1901,15 @@ def _run_agentrouter_cli(prompt: str, model: str = "claude-opus-4-8", timeout: i
                             text=True, timeout=timeout)
         out = (r.stdout or "").strip()
         err = (r.stderr or "").strip()
-        if not out and err:
-            return f"⚠️ CLI error: {err[:1500]}"
-        return out or "⚠️ Empty response from CLI."
+        if not out and not err:
+            return "⚠️ Empty response from CLI."
+        parts = []
+        if out:
+            parts.append(out)
+        if err:
+            parts.append(f"[stderr]\n{err[:1500]}")
+        parts.append(f"[exit_code={r.returncode}]")
+        return "\n\n".join(parts)
     except FileNotFoundError:
         return "⚠️ `claude` CLI not found — Node.js/CLI install may not have completed on this deploy."
     except subprocess.TimeoutExpired:
