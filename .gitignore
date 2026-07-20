@@ -4,7 +4,6 @@ __pycache__/
 backups/
 *.json
 !package.json
-!railpack.json
 *.csv
 .env
 bot_p1.py

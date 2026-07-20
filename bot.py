@@ -35,8 +35,6 @@ AEROLINK_API_KEY_2  = os.getenv("AEROLINK_API_KEY_2",  "")   # backup Aerolink k
 AEROLINK_API_KEY_3  = os.getenv("AEROLINK_API_KEY_3",  "")   # 3rd Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_API_KEY_4  = os.getenv("AEROLINK_API_KEY_4",  "")   # 4th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
-AGENTROUTER_AUTH_TOKEN = os.getenv("AGENTROUTER_AUTH_TOKEN", "")   # AgentRouter only accepts the real Claude Code CLI as a client — /testar shells out to it, not a direct API call. Test-only, not wired into any live scan.
-AGENTROUTER_BASE_URL   = os.getenv("AGENTROUTER_BASE_URL",   "https://agentrouter.org/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
 _CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-4-8"}
@@ -1881,129 +1879,6 @@ for _sk, _st in list(_slot_stats.items()):
         print(f"[SLOT AUTO] startup re-evaluate error for {_sk}: {_e}")
 
 _load_daily_buckets()
-
-def _run_agentrouter_cli(prompt: str, model: str = "claude-opus-4-8", timeout: int = 90) -> str:
-    """Test-only helper — AgentRouter only accepts requests from the real
-    Claude Code CLI binary (confirmed: direct API calls get 401 'unauthorized
-    client detected'), so this shells out to the actual installed CLI instead
-    of making a normal API call. Requires Node.js + `npm install -g
-    @anthropic-ai/claude-code` in the deploy image (see nixpacks.toml).
-    Returns the raw stdout text, or an error string starting with '⚠️'."""
-    if not AGENTROUTER_AUTH_TOKEN:
-        return "⚠️ AGENTROUTER_AUTH_TOKEN not set."
-    env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = AGENTROUTER_BASE_URL
-    env["ANTHROPIC_AUTH_TOKEN"] = AGENTROUTER_AUTH_TOKEN
-    env["ANTHROPIC_MODEL"] = model
-    env["CLAUDE_CODE_USE_AUTH_TOKEN"] = "true"
-    try:
-        r = subprocess.run(["claude", "-p", prompt], env=env, capture_output=True,
-                            text=True, timeout=timeout)
-        out = (r.stdout or "").strip()
-        err = (r.stderr or "").strip()
-        if not out and not err:
-            return "⚠️ Empty response from CLI."
-        parts = []
-        if out:
-            parts.append(out)
-        if err:
-            parts.append(f"[stderr]\n{err[:1500]}")
-        parts.append(f"[exit_code={r.returncode}]")
-        return "\n\n".join(parts)
-    except FileNotFoundError:
-        return "⚠️ `claude` CLI not found — Node.js/CLI install may not have completed on this deploy."
-    except subprocess.TimeoutExpired:
-        return f"⚠️ Timed out after {timeout}s."
-    except Exception as e:
-        return f"⚠️ {e}"
-
-def _test_agentrouter_scan1(cid):
-    """Admin-only /testar — runs the SAME candidate-selection formula as the
-    real Scan1, builds a comparable analysis prompt, and sends it through
-    AgentRouter's CLI ONLY — for comparing output quality/speed. Deliberately
-    has ZERO side effects: no scan1_trades entry, no log_trade_event, no
-    _track_daily_result, no api-cost logging, no save_state — nothing is
-    tracked or recorded anywhere, purely a one-off read-only test."""
-    import math as _math, re as _re
-    send_reply(cid, "🧪 <b>AgentRouter Test (S1-style)</b>\n\nFetching top mover...")
-    try:
-        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker", timeout=15).json()
-    except Exception as e:
-        send_reply(cid, f"⚠️ BingX ticker fetch failed: {e}"); return
-    skip = {"USDC","BUSD","DAI","TUSD","FDUSD","USDP","FRAX","USDT","BTC","BTCDOM"}
-    movers = []
-    for t in r.get("data", []):
-        sym = t.get("symbol", "")
-        if not sym.endswith("-USDT"): continue
-        base = sym.replace("-USDT", "")
-        if base in skip: continue
-        vol = float(t.get("quoteVolume", 0) or t.get("volume", 0) or 0)
-        chg = float(t.get("priceChangePercent", 0) or 0)
-        px  = float(t.get("lastPrice", 0) or 0)
-        if vol < 2_000_000 or px <= 0 or abs(chg) > 200: continue
-        if _re.search(r'\d', base) or len(base) > 10 or "USD" in base: continue
-        if not _re.match(r'^[A-Z]+$', base): continue
-        score = (abs(chg) ** 1.5) * (_math.sqrt(vol / 1e6))  # same formula as Scan1 (V1)
-        movers.append({"sym": sym, "base": base, "price": px, "change": chg, "vol_m": round(vol/1e6, 1), "score": score})
-    if not movers:
-        send_reply(cid, "❌ No coins found from BingX ticker."); return
-    movers.sort(key=lambda x: x["score"], reverse=True)
-    cand = movers[0]
-    chosen_sym = cand["sym"]; cp = cand["price"]
-
-    df_4h = bingx_klines(chosen_sym, "4h", 30)
-    df_1h = bingx_klines(chosen_sym, "1h", 20)
-    df_5m = bingx_klines(chosen_sym, "5m", 15)
-    smc = (f"=== {chosen_sym} DATA SUMMARY ===\nPrice: {cp:,.6g}\n24h Change: {cand['change']:+.2f}%\n"
-           f"Volume (24h): ${cand['vol_m']}M\n")
-    if df_4h is not None and len(df_4h) >= 5:
-        smc += f"4H last 5 closes: {[round(x,4) for x in df_4h['close'].values[-5:].tolist()]}\n"
-    if df_1h is not None and len(df_1h) >= 5:
-        smc += f"1H last 5 closes: {[round(x,4) for x in df_1h['close'].values[-5:].tolist()]}\n"
-    if df_5m is not None and len(df_5m) >= 5:
-        smc += f"5M last 5 closes: {[round(x,4) for x in df_5m['close'].values[-5:].tolist()]}\n"
-
-    prompt = f"""{smc}
-Session: {get_session()} | Current price: {cp:,.6g}
-
-You are CLEXER. Analyze {chosen_sym}. Decide: is this coin ready for MARKET entry RIGHT NOW?
-If not → WAIT. Do not force. Go directly to output.
-
-RULES:
-1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
-2. 1H: must agree with 4H or be neutral. Opposite=WAIT
-3. 5M NOW: higher lows forming=BUY ready, lower highs forming=SELL ready, choppy/mixed=WAIT
-4. Entry = {cp:,.6g} (MARKET, fills now)
-5. SL = lowest low of last 3-5 x 5M candles (BUY) or highest high (SELL). Min 1.5%, Max 4%. +0.3% buffer.
-6. TP1 = entry ± sl_dist×1.5. TP2 = entry ± sl_dist×3
-7. Confidence: HIGH=all 3 TFs agree clearly. MED=4H+1H agree, 5M forming. LOW=only 4H clear.
-8. HARD BLOCK→WAIT: last 4H candle <-6%, price fell >10% in 2 candles, 4H/1H opposite, 5M choppy.
-
-OUTPUT ONLY (no steps, no working, replace bracketed values):
-Signal: BUY / SELL / WAIT
-Entry: {cp:,.6g}
-Entry_Type: MARKET
-SL: [number only]
-TP1: [number only]
-TP2: [number only]
-R:R: [number only]
-Confidence: HIGH / MED / LOW
-Reasoning: [one line]"""
-
-    send_reply(cid, f"🎯 Candidate: <b>{chosen_sym}</b> ({cand['change']:+.2f}%, ${cand['vol_m']}M vol)\n\n⏳ Calling AgentRouter CLI (control prompt)...")
-    t0 = time.time()
-    control_output = _run_agentrouter_cli("Reply with exactly: TEST OK", timeout=60)
-    control_elapsed = time.time() - t0
-    send_reply(cid,
-        f"🧪 <b>Control Prompt</b> ({control_elapsed:.1f}s, {len('Reply with exactly: TEST OK')} chars)\n\n"
-        f"<pre>{_html.escape(control_output[:1000])}</pre>")
-
-    t0 = time.time()
-    output = _run_agentrouter_cli(prompt)
-    elapsed = time.time() - t0
-    send_reply(cid,
-        f"🧪 <b>AgentRouter Result</b> ({elapsed:.1f}s, {len(prompt)} chars)\n\n<pre>{_html.escape(output[:3500])}</pre>\n\n"
-        f"<i>Test only — nothing tracked, nothing saved, no trade placed.</i>")
 
 def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
     """Maps a scan kind (+ scan_ver for TS1/TS2) to its AICFG_GRID row key
@@ -5659,7 +5534,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/testar","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5772,10 +5647,6 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
         return
-
-    if cmd == "/testar" and is_admin and chat_id > 0:
-        # chat_id > 0 = DM only, never fires in a channel/group
-        threading.Thread(target=_test_agentrouter_scan1, args=(chat_id,), daemon=True).start()
 
     if cmd in ("/forceclose", "/fc") and is_admin:
         if len(parts) < 4:
