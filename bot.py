@@ -1990,12 +1990,19 @@ R:R: [number only]
 Confidence: HIGH / MED / LOW
 Reasoning: [one line]"""
 
-    send_reply(cid, f"🎯 Candidate: <b>{chosen_sym}</b> ({cand['change']:+.2f}%, ${cand['vol_m']}M vol)\n\n⏳ Calling AgentRouter CLI...")
+    send_reply(cid, f"🎯 Candidate: <b>{chosen_sym}</b> ({cand['change']:+.2f}%, ${cand['vol_m']}M vol)\n\n⏳ Calling AgentRouter CLI (control prompt)...")
+    t0 = time.time()
+    control_output = _run_agentrouter_cli("Reply with exactly: TEST OK", timeout=60)
+    control_elapsed = time.time() - t0
+    send_reply(cid,
+        f"🧪 <b>Control Prompt</b> ({control_elapsed:.1f}s, {len('Reply with exactly: TEST OK')} chars)\n\n"
+        f"<pre>{_html.escape(control_output[:1000])}</pre>")
+
     t0 = time.time()
     output = _run_agentrouter_cli(prompt)
     elapsed = time.time() - t0
     send_reply(cid,
-        f"🧪 <b>AgentRouter Result</b> ({elapsed:.1f}s)\n\n<pre>{_html.escape(output[:3500])}</pre>\n\n"
+        f"🧪 <b>AgentRouter Result</b> ({elapsed:.1f}s, {len(prompt)} chars)\n\n<pre>{_html.escape(output[:3500])}</pre>\n\n"
         f"<i>Test only — nothing tracked, nothing saved, no trade placed.</i>")
 
 def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
