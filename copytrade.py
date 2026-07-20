@@ -1332,6 +1332,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
                 user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
                 user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
                 user[f"{p}qty"]    = qty;    user[f"{p}limit_oid"] = limit_oid
+                user[f"{p}lev"]    = lev
                 _set(cid, user)
                 _qty_note = _min_qty_risk_note(user["size_usdt"], entry, lev)
                 results.append(f"✅ @{uname} {symbol} LIMIT {side} {qty:.4f} @ {entry} oid={limit_oid} (attempt {attempt})" + (f"\n{_qty_note}" if _qty_note else ""))
@@ -1377,6 +1378,7 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
             user[f"{p}entry"]   = entry;  user[f"{p}sl"]      = sl
             user[f"{p}tp1"]     = tp1;    user[f"{p}tp2"]     = tp2
             user[f"{p}qty"]     = qty;    user[f"{p}tp1_hit"] = False
+            user[f"{p}lev"]     = lev
             _set(cid, user)
 
             tp_warn = ""

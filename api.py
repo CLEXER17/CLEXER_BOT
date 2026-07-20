@@ -547,7 +547,12 @@ def get_active_trades(request: Request):
                     if sym:
                         my_symbols.add(sym)
                         my_qty[sym] = urec.get(f"{p}qty")
-                        my_lev[sym] = urec.get("leverage")
+                        # Per-slot leverage (the ACTUAL leverage used for this specific
+                        # trade, which can differ from the account's manual-mode default
+                        # e.g. for auto-risk users where leverage is computed per-trade) —
+                        # fall back to the account default only for older positions opened
+                        # before this field existed.
+                        my_lev[sym] = urec.get(f"{p}lev") or urec.get("leverage")
         except Exception:
             pass
 
