@@ -4502,6 +4502,81 @@ def _get_slot(ver: int) -> dict:
     lst = _scan_list(ver)
     return lst[0] if lst else {}
 
+def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
+    """Admin /forceclose — manually closes a Scan1/Scan2 trade the bot lost
+    track of (e.g. a redeploy landed mid-trade) with the REAL result, running
+    the exact same close path the live tick handler uses: channel
+    announcement, daily-recap tracking, win-rate slot tracking, copytrade
+    notification, sig snapshot close. result: tp1/tp2/sl/be."""
+    result = result.lower()
+    if result not in ("tp1", "tp2", "sl", "be"):
+        return "Result must be one of: tp1, tp2, sl, be."
+    lst = _scan_list(ver)
+    t = next((x for x in lst if x.get("symbol", "").upper().startswith(symbol.upper())), None)
+    if not t:
+        return f"No open {'Scan1' if ver == 1 else 'Scan2'} trade found matching '{symbol}'."
+    sym = t["symbol"]; sig = t["signal"]; entry = t["entry"]; tp1 = t["tp1"]; tp2 = t["tp2"]
+    price = get_bingx_price(sym) or entry
+
+    if result == "tp2":
+        trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
+        trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
+        _delete_trail_sl_messages(t)
+        _log_scan_history(t, "TP2", price)
+        send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
+            tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
+        ct.on_scan_tp2(sym)
+        log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+            "tp2_hit_time": _ist_str_now(), "result": "TP2",
+            "entry_price": entry, "sl_price": t.get("sl", 0), "tp2_price": tp2})
+        _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
+            entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
+        _notify_free_late(sym, t, "TP2")
+        _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+        if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
+        _close_sig_snapshot(t.get("sig_id", ""), "TP2")
+        _remove_scan_trade(ver, sym)
+        return f"✅ {sym} force-closed as TP2 @ {price:,.4g} — announced, recorded, removed."
+
+    if result == "tp1":
+        if t["tp1_hit"]:
+            return f"{sym} already shows tp1_hit=True — nothing to do."
+        t["tp1_hit"] = True; t["sl"] = entry
+        _delete_trail_sl_messages(t)
+        trade_stats["scan_tp1"] += 1; trade_stats[f"scan{ver}_tp1"] += 1
+        send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
+            tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
+        ct.on_scan_tp1(sym)
+        log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+            "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
+            "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
+        _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
+        _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
+            tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+            entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
+        _notify_free_late(sym, t, "TP1")
+        save_state()
+        return f"✅ {sym} force-marked TP1 hit @ {price:,.4g} — SL moved to BE, trade stays open for TP2."
+
+    # sl / be
+    close_result = "BE" if t["tp1_hit"] else "SL"
+    trade_stats["scan_sl"] += 1; trade_stats[f"scan{ver}_sl"] += 1
+    _delete_trail_sl_messages(t)
+    _log_scan_history(t, close_result, price)
+    _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
+        tier_routed=(close_result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
+    ct.on_scan_sl(sym)
+    log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
+        "sl_hit_time": _ist_str_now(), "result": close_result,
+        "entry_price": entry, "sl_price": t.get("sl", 0)})
+    if close_result == "SL":
+        _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
+    _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+    if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
+    _close_sig_snapshot(t.get("sig_id", ""), close_result)
+    _remove_scan_trade(ver, sym)
+    return f"✅ {sym} force-closed as {close_result} @ {price:,.4g} — announced, recorded, removed."
+
 def get_bingx_price(symbol: str) -> float:
     try:
         r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
@@ -5441,7 +5516,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -5554,6 +5629,25 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         uname = (message.get("from",{}).get("username","?") if message else "?")
         ct.handle(cmd, parts, chat_id, uname, send_reply, is_admin, scan_trades=scan1_trades+scan2_trades)
         return
+
+    if cmd == "/forceclose" and is_admin:
+        if len(parts) < 4:
+            send_reply(chat_id,
+                "<b>Force Close a Stuck Trade</b>\n\n"
+                "For when a redeploy made the bot lose track of a trade that already "
+                "closed on BingX — runs the exact same close path as if the bot had "
+                "caught it live (channel announcement, recap, win-rate tracking).\n\n"
+                "Usage: <code>/forceclose scan1|scan2|ts1|ts2 SYMBOL tp1|tp2|sl|be</code>\n"
+                "Example: <code>/forceclose scan2 HOME tp2</code>")
+            return
+        _fc_kind = parts[1].lower(); _fc_symbol = parts[2]; _fc_result = parts[3]
+        _fc_map = {"scan1": (1, "scan"), "scan2": (2, "scan"), "ts1": (1, "demo"), "ts2": (2, "demo")}
+        if _fc_kind not in _fc_map:
+            send_reply(chat_id, "First arg must be scan1, scan2, ts1, or ts2."); return
+        _fc_ver, _fc_type = _fc_map[_fc_kind]
+        _fc_result_text = (_force_close_scan_trade(_fc_ver, _fc_symbol, _fc_result) if _fc_type == "scan"
+            else _force_close_demo_trade(_fc_ver, _fc_symbol, _fc_result))
+        send_reply(chat_id, _fc_result_text)
 
     if cmd == "/synccheck" and is_admin:
         send_reply(chat_id, "🔍 Checking BingX vs bot state...")
@@ -8339,6 +8433,7 @@ _COPYADMIN_SUBCATS = {
         ("/ctretry",   "🔄", "Retry Failed Copy", "Re-attempts a copy trade that previously failed for a user."),
         ("/ctclose",   "❌", "Close Positions",   "Force-closes a user's copy-traded positions."),
         ("/synccheck", "🔄", "BingX vs Bot Sync", "Compares live BingX positions against what the bot thinks is open."),
+        ("/forceclose", "🛠", "Force Close Stuck Trade", "Manually close a Scan1/Scan2/TS1/TS2 trade the bot lost track of, with the real TP1/TP2/SL/BE result."),
         ("/syncup",    "☁️", "Push to Central Store", "Force-pushes this server's current users, settings, trade state, and CSVs to the shared multi-server store."),
         ("/server",    "🖥️", "Server Status / Switch", "Shows which server is currently active, or switch which one is (/server <name>)."),
     ]),
@@ -10891,6 +10986,101 @@ SL_pct: [SL distance as % of entry, or — if WAIT]
 Reasoning: [one line — name the exact swing candle level used]"""
 
 _demo_monitor_lock = __import__("threading").Lock()
+
+def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
+    """Admin /forceclose ts1|ts2 — same idea as _force_close_scan_trade but
+    for TS1/TS2 demo trades. result: tp1/tp2/sl/be."""
+    result = result.lower()
+    if result not in ("tp1", "tp2", "sl", "be"):
+        return "Result must be one of: tp1, tp2, sl, be."
+    demo_list = demo_scan1_trades if dver == 1 else demo_scan2_trades
+    t = next((x for x in demo_list if x.get("symbol", "").upper().startswith(symbol.upper())), None)
+    if not t:
+        return f"No open TS{dver} trade found matching '{symbol}'."
+    sym = t.get("symbol", ""); sig = t.get("signal", "")
+    entry = float(t.get("entry", 0)); sl = float(t.get("sl", 0))
+    tp1 = float(t.get("tp1", 0)); tp2 = float(t.get("tp2", 0))
+    tp1hit = t.get("tp1_hit", False); be_sl = float(t.get("be_sl", 0))
+    created = float(t.get("created_at", time.time()))
+    tier_routed = t.get("tier_routed", False); share_free = t.get("share_free", False)
+    sig_id = t.get("sig_id", "")
+    coin = sym.replace("-USDT", "")
+    cp = get_bingx_price(sym) or entry
+    _dtype = f"demo{dver}"
+
+    if result == "tp2":
+        _delete_trail_sl_messages(t)
+        log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
+            "tp2_hit_time": _ist_str_now(), "result": "TP2",
+            "entry_price": entry, "sl_price": sl, "tp1_price": tp1, "tp2_price": tp2})
+        _msg = _scan_box(
+            f"#{coin} TP2 Hit", f"🏆 TS{dver} {coin}-USDT",
+            [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
+              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
+              f"🏆 TP2: <code>{tp2:,.6g}</code>",
+              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
+            tag=sig_id)
+        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
+        ct.on_scan_tp2(sym)
+        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
+        _notify_free_late(sym, t, "TP2")
+        _slot_hm = _ist_hm_from_epoch(created)
+        if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, True)
+        _log_demo_history(t, "TP2", cp, dver)
+        _close_sig_snapshot(sig_id, "TP2")
+        demo_list.remove(t); save_state()
+        return f"✅ {sym} force-closed as TP2 @ {cp:,.4g} — announced, recorded, removed."
+
+    if result == "tp1":
+        if tp1hit:
+            return f"{sym} already shows tp1_hit=True — nothing to do."
+        be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
+        t["tp1_hit"] = True; t["be_sl"] = be_sl_price
+        _delete_trail_sl_messages(t)
+        log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
+            "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
+            "entry_price": entry, "sl_price": be_sl_price, "tp1_price": tp1, "tp2_price": tp2})
+        _msg = _scan_box(
+            f"#{coin} TP1 Hit", f"🎯 TS{dver} {coin}-USDT",
+            [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
+              f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
+              f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
+              f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
+            tag=sig_id)
+        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
+        ct.on_scan_tp1(sym)
+        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
+            tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
+            entry_date=_ist_date_str(created), sig_id=sig_id)
+        _notify_free_late(sym, t, "TP1")
+        save_state()
+        return f"✅ {sym} force-marked TP1 hit @ {cp:,.4g} — SL moved to BE, trade stays open for TP2."
+
+    # sl / be
+    lbl = "BE" if tp1hit else "SL"
+    close_result = "BREAKEVEN" if tp1hit else "LOSS"
+    _sl_exit = be_sl if tp1hit and be_sl else sl
+    _delete_trail_sl_messages(t)
+    log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
+        "sl_hit_time": _ist_str_now(), "result": close_result,
+        "entry_price": entry, "sl_price": _sl_exit, "tp1_price": tp1, "tp2_price": tp2})
+    _msg = _scan_box(
+        f"#{coin} {lbl} Hit", f"🚨 TS{dver} {coin}-USDT",
+        [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
+          f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
+          f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
+          f"{'🛡️' if close_result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(close_result)}"]],
+        tag=sig_id)
+    _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
+    ct.on_scan_sl(sym)
+    if lbl == "SL":
+        _track_daily_result(sym, "SL", tier_routed=tier_routed, entry_date=_ist_date_str(created))
+    _slot_hm = _ist_hm_from_epoch(created)
+    if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
+    _log_demo_history(t, lbl, cp, dver)
+    _close_sig_snapshot(sig_id, close_result)
+    demo_list.remove(t); save_state()
+    return f"✅ {sym} force-closed as {lbl} @ {cp:,.4g} — announced, recorded, removed."
 
 def _demo_monitor_loop():
     """Background thread: monitors demo trades every 30s. Sends TG alerts and,
