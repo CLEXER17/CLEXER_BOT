@@ -1919,7 +1919,7 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                 fixes.append(msg); print(f"[CT] {msg}")
                 if notify_fn: notify_fn(f"📊 <b>BTC trade closed @{uname}</b>\n{reason}")
                 if ghost_close_fn and "hit" in reason:
-                    try: ghost_close_fn(BINGX_SYMBOL)
+                    try: ghost_close_fn(BINGX_SYMBOL, reason)
                     except Exception as e: print(f"[CT] ghost_close_fn BTC: {e}")
 
             # ── Ghost state: bot thinks scan open but BingX has nothing (all 4 slots) ──
@@ -1938,7 +1938,7 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                     fixes.append(msg); print(f"[CT] {msg}")
                     if notify_fn: notify_fn(f"📊 <b>{scan_sym} trade closed @{uname}</b>\n{reason}")
                     if ghost_close_fn and "hit" in reason:
-                        try: ghost_close_fn(scan_sym)
+                        try: ghost_close_fn(scan_sym, reason)
                         except Exception as e: print(f"[CT] ghost_close_fn {scan_sym}: {e}")
 
             # ── Check every real BingX position ──

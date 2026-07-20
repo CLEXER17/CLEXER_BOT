@@ -5086,18 +5086,34 @@ def run_scan_tick_check() -> bool:
     for t in list(scan2_trades): any_closed |= _tick_one(2, t)
     return any_closed
 
-def _ghost_confirm_close(symbol: str):
+def _ghost_confirm_close(symbol: str, reason: str = ""):
     """Backup confirmation — copytrade's own monitor_sl_tp() sometimes detects, from a
     copy user's actual BingX order history, that a position for `symbol` already closed
-    (e.g. an SL fill) before our own live price-monitor got to it. When that happens,
-    force an immediate tick check on the matching bot trade right now, using the exact
-    same _tick_one/run_tick_check logic the normal monitor loop already uses — so the
-    channel/tier declaration, is_d48 gating, and logging all stay correct with zero
-    duplicated message-building. A no-op if the trade isn't found (already closed by
-    the primary path, or not one of ours)."""
+    (e.g. an SL fill) before our own live price-monitor got to it. copytrade.py's
+    _detect_close_reason() already knows the REAL result and exit price (e.g.
+    "SL hit @ 0.6338") — use that directly via _force_close_scan_trade/_force_close_demo_trade
+    instead of a live re-check, since a live re-check (re-testing the SL/TP condition
+    against CURRENT price) silently finds nothing and does nothing if price has since
+    moved away from that level — leaving the bot's own state (and the channel/portfolio)
+    stuck showing an already-closed trade as open forever, with no recovery.
+    Falls back to the old live-tick-check behavior if the reason can't be parsed."""
+    import re as _gre
+    _m = _gre.search(r"(SL|TP1/BE|TP2) hit @ ([\d.]+)", reason)
+    result = {"SL": "sl", "TP1/BE": "tp1", "TP2": "tp2"}.get(_m.group(1)) if _m else None
     try:
         if active_trade.get("signal") and SYMBOL == symbol:
             run_tick_check(); return
+        if result:
+            for ver in (1, 2):
+                if any(t.get("symbol") == symbol for t in _scan_list(ver)):
+                    print(f"  [GHOST CONFIRM] {symbol} scan{ver} -> {result} ({reason})")
+                    send_admin(_force_close_scan_trade(ver, symbol, result)); return
+            for dver, lst in ((1, demo_scan1_trades), (2, demo_scan2_trades)):
+                if any(t.get("symbol") == symbol for t in lst):
+                    print(f"  [GHOST CONFIRM] {symbol} demo{dver} -> {result} ({reason})")
+                    send_admin(_force_close_demo_trade(dver, symbol, result)); return
+            return
+        # Reason didn't parse — fall back to a live re-check (old behavior)
         for ver, lst in ((1, scan1_trades), (2, scan2_trades)):
             for t in list(lst):
                 if t.get("symbol") == symbol:
