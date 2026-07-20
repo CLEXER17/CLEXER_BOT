@@ -211,6 +211,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         f"<i>🛡️ Capital protected</i>")
     _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
+    t["trail_sl_msg_ids"] = _trail_ids or {}
     for _k, _v in (_trail_ids or {}).items():
         if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
 
@@ -239,8 +240,28 @@ def _apply_trail_sl_btc(price: float):
         f"<i>🛡️ Capital protected</i>")
     _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
         tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
+    active_trade["trail_sl_msg_ids"] = _trail_ids or {}
     for _k, _v in (_trail_ids or {}).items():
         if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+
+def _delete_trail_sl_messages(t: dict):
+    """TP1 hit makes the earlier 'Trailing SL moved to X' note stale (SL is
+    about to move again, to breakeven) — delete it from every channel it was
+    posted to instead of leaving an outdated message sitting in the feed."""
+    _ids = t.get("trail_sl_msg_ids") or {}
+    if not _ids:
+        return
+    for _k, _mid in _ids.items():
+        if _k == "ch1": _cid = TELEGRAM_CHANNEL_ID
+        elif _k == "ch2": _cid = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
+        else: _cid = _k.split(":", 1)[1]
+        if not _cid: continue
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                json={"chat_id": _cid, "message_id": _mid}, timeout=10)
+        except Exception as e:
+            print(f"  [TRAIL SL] delete msg error: {e}")
+    t["trail_sl_msg_ids"] = {}
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
@@ -4272,6 +4293,7 @@ def run_tick_check():
             if tp1_hit:
                 active_trade["tp1_hit"] = True; active_trade["sl"] = entry
                 trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
+                _delete_trail_sl_messages(active_trade)
                 save_active_trade()
                 ct.on_tp1(entry, tp1)
                 _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
@@ -4870,6 +4892,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 t["tp1_hit"] = True
                 t["sl"] = entry
                 sl = entry
+                _delete_trail_sl_messages(t)
                 trade_stats["scan_tp1"] += 1
                 trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
@@ -5006,6 +5029,7 @@ def run_price_check():
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
             trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
+            _delete_trail_sl_messages(active_trade)
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
@@ -10895,6 +10919,7 @@ def _demo_monitor_loop():
                         be_sl_price = round(entry * 1.001 if sig == "SELL" else entry * 0.999, 6)
                         t["tp1_hit"] = True
                         t["be_sl"]   = be_sl_price
+                        _delete_trail_sl_messages(t)
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
