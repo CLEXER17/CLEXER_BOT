@@ -6,7 +6,7 @@
   "steps": {
     "installClaudeCLI": {
       "commands": ["npm install @anthropic-ai/claude-code"],
-      "deployOutputs": ["node_modules"]
+      "deployOutputs": [{ "include": ["node_modules"] }]
     }
   },
   "deploy": {
