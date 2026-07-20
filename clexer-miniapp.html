@@ -859,9 +859,11 @@
   async function loadPortfolio(p){
     curP=p;
     // load real BingX balance (cached server-side, refreshed ~every 60s)
+    let realBal=0;
     try{
       const b = await api("/copy/balance");
       if(b.available){
+        realBal=b.balance||0;
         document.getElementById("balance").textContent="$"+fmt(b.balance,2);
         document.getElementById("avail").textContent="$"+fmt(b.avail,2);
         document.getElementById("intrade").textContent="$"+fmt(b.in_trade,2);
@@ -970,14 +972,18 @@
       const marginSum=Object.values(TRADES).reduce((a,t)=>a+((t.qty&&t.lev)?(t.qty*t.entry/t.lev):0),0);
       document.getElementById("riskExp").textContent = balNum0>0 ? fmt(marginSum/balNum0*100,1)+"%" : "—";
 
-      // equity curve from cumulative pnl — needs >=1 closed trade (curve always
-      // starts with a synthetic base point, so even 1 trade gives 2 plottable points)
+      // equity curve from cumulative pnl, expressed as % of the REAL account
+      // balance (was dividing by a hardcoded 100 regardless of account size,
+      // so a real $0.44 gain on a $15 account rounded to "0.0%" every time)
       const hist30=[...hist.history||[]].reverse().slice(0,30);
       if(hist30.length>=1){
+        const histSum=hist30.reduce((a,c)=>a+(c.pnl||0),0);
+        let startBal=realBal-histSum;
+        if(!(startBal>0)) startBal=realBal>0?realBal:100;
         let cum=100; const curve=[100];
-        hist30.forEach(c=>{ cum+=(c.pnl||0)/100; curve.push(Math.max(0,cum)); });
+        hist30.forEach(c=>{ cum+=((c.pnl||0)/startBal)*100; curve.push(Math.max(0,cum)); });
         drawCurve(curve);
-        const gainPct=((curve[curve.length-1]-100)).toFixed(1);
+        const gainPct=((curve[curve.length-1]-100)).toFixed(2);
         const g=document.getElementById("gainPct");
         g.textContent=(gainPct>=0?"+":"")+gainPct+"%";
         g.className=gainPct>=0?"up":"down";
