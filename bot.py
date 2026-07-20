@@ -1776,6 +1776,8 @@ def _evaluate_slot(kind: str, hm: tuple):
     total = st["tp"] + st["sl"]
     if total == 0:
         return
+    if kind not in _SLOT_EVAL_THRESHOLD:
+        return  # stale legacy key (e.g. "test" from before the demo1/demo2 split) — nothing to evaluate
     win_pct = st["tp"] / total * 100
     threshold = _SLOT_EVAL_THRESHOLD[kind]
     sched_kind = _SLOT_SCHEDULE_KIND[kind]   # demo1->test1, demo2->test2 — each independent
