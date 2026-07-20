@@ -926,16 +926,25 @@
       streakEl.textContent = h.length ? (streak+" "+(streakWin?("win"+(streak!==1?"s":"")):("loss"+(streak!==1?"es":"")))) : "—";
       streakEl.className = "v "+(streakWin===false?"down":"up");
 
-      // best / worst trade
+      // best / worst trade — "Worst" only ever shows a genuine loss, never
+      // the same winning trade duplicated under a red label when there's no
+      // loss on record yet
       if(h.length){
         const best=h.reduce((a,b)=>(b.pnl||0)>(a.pnl||0)?b:a);
-        const worst=h.reduce((a,b)=>(b.pnl||0)<(a.pnl||0)?b:a);
         document.getElementById("bestSym").textContent=(best.symbol||"—").replace("USDT","")+"/USDT";
         document.getElementById("bestPnl").textContent=((best.pnl||0)>=0?"+":"-")+"$"+fmt(Math.abs(best.pnl||0),2);
         document.getElementById("bestPnl").className="v "+((best.pnl||0)>=0?"up":"down");
-        document.getElementById("worstSym").textContent=(worst.symbol||"—").replace("USDT","")+"/USDT";
-        document.getElementById("worstPnl").textContent=((worst.pnl||0)>=0?"+":"-")+"$"+fmt(Math.abs(worst.pnl||0),2);
-        document.getElementById("worstPnl").className="v "+((worst.pnl||0)>=0?"up":"down");
+        const losses=h.filter(c=>(c.pnl||0)<0);
+        if(losses.length){
+          const worst=losses.reduce((a,b)=>(b.pnl||0)<(a.pnl||0)?b:a);
+          document.getElementById("worstSym").textContent=(worst.symbol||"—").replace("USDT","")+"/USDT";
+          document.getElementById("worstPnl").textContent="-$"+fmt(Math.abs(worst.pnl||0),2);
+          document.getElementById("worstPnl").className="v down";
+        }else{
+          document.getElementById("worstSym").textContent="No losses yet";
+          document.getElementById("worstPnl").textContent="—";
+          document.getElementById("worstPnl").className="v";
+        }
       }
 
       // P/L by coin
@@ -961,9 +970,10 @@
       const marginSum=Object.values(TRADES).reduce((a,t)=>a+((t.qty&&t.lev)?(t.qty*t.entry/t.lev):0),0);
       document.getElementById("riskExp").textContent = balNum0>0 ? fmt(marginSum/balNum0*100,1)+"%" : "—";
 
-      // equity curve from cumulative pnl
+      // equity curve from cumulative pnl — needs >=1 closed trade (curve always
+      // starts with a synthetic base point, so even 1 trade gives 2 plottable points)
       const hist30=[...hist.history||[]].reverse().slice(0,30);
-      if(hist30.length>1){
+      if(hist30.length>=1){
         let cum=100; const curve=[100];
         hist30.forEach(c=>{ cum+=(c.pnl||0)/100; curve.push(Math.max(0,cum)); });
         drawCurve(curve);
@@ -972,10 +982,6 @@
         g.textContent=(gainPct>=0?"+":"")+gainPct+"%";
         g.className=gainPct>=0?"up":"down";
       }
-
-      // balance from intrade
-      const inTrade=Object.values(TRADES).reduce((a,t)=>a+(t.qty*t.entry/t.lev),0);
-      document.getElementById("intrade").textContent="$"+fmt(inTrade,2);
 
     }catch(e){ console.warn("portfolio history:", e); }
   }
