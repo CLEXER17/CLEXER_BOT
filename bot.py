@@ -7884,6 +7884,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         continue
 
                     tried.append(chosen_sym)
+                    # candidate["price"] is a snapshot from the ticker fetch at the very
+                    # START of this scan cycle — fine for coin #1, but #2/#3 only get
+                    # tried after #1's full Claude analysis (real wall-clock minutes),
+                    # by which point that snapshot can be badly stale. Refetch live
+                    # price right as this candidate's own turn starts, so the integrity
+                    # check, the AI prompt, and any SL/TP math all use a current price —
+                    # the entry itself still gets refetched again right before actually
+                    # placing the trade, this just fixes everything upstream of that.
+                    _fresh_cp = get_bingx_price(chosen_sym)
+                    if _fresh_cp:
+                        cp = _fresh_cp
                     conf_note = "" if candidate.get("structure") != "NEUTRAL" else " (no clear structure)"
                     send_reply(cid, f"🎯 Trying #{len(tried)}: <b>{chosen_sym}</b>{conf_note} — fetching candles...")
 
@@ -11685,6 +11696,12 @@ def _run_test_scan(cid, scan_ver: int):
             chosen_base = candidate["base"]
             cp          = candidate["price"]
             tried.append(chosen_sym)
+            # Same staleness fix as the live scan loop — candidate["price"] is a
+            # snapshot from this cycle's initial ticker fetch, stale by the time
+            # coin #2/#3 gets its turn after #1's full Claude analysis. Refetch here.
+            _fresh_cp = get_bingx_price(chosen_sym)
+            if _fresh_cp:
+                cp = _fresh_cp
 
             # Fetch candles
             _cached_4h = candidate.get("df4h")
