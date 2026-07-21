@@ -1818,6 +1818,26 @@ def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):
     _set(cid, user)
 
 
+def reset_ghost_state(cid: str, kind: str, symbol: str = "") -> str:
+    """Admin-triggered fix for a stale ghost state flagged by sync_check —
+    the position no longer exists on BingX (closed manually, liquidated, or
+    missed by a monitor tick around a redeploy), so there's nothing to touch
+    on the exchange side; this only clears the bot's own stale local record.
+    kind: 'btc' or 'scan'."""
+    user = _get(cid)
+    if not user:
+        return f"No copytrade user found for {cid}."
+    if kind == "btc":
+        user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
+        _set(cid, user)
+        return f"✅ BTC ghost state cleared for {cid}."
+    p = _pfx_for_symbol(user, symbol)
+    if not p:
+        return f"No open slot found holding {symbol} for {cid} — may already be cleared."
+    _clear_scan_state(cid, user, symbol)
+    return f"✅ {symbol} ghost state cleared for {cid} (slot {p.rstrip('_')})."
+
+
 def _set_position_sl_sym(api_key: str, api_secret: str, symbol: str, pos_side: str, sl_price: float, qty: float = 0):
     """Place new BE SL order for alt-coin after TP1 hit."""
     close_side = "SELL" if pos_side == "LONG" else "BUY"
@@ -2136,6 +2156,7 @@ def sync_check() -> list[str]:
             for scan_sym in known_scan_syms:
                 if scan_sym not in pos_symbols:
                     lines.append(f"⚠️ @{uname} GHOST SCAN: bot thinks {scan_sym} open but BingX shows NONE")
+                    lines.append(f"__BTN__reset_scan_ghost_{cid}_{scan_sym}:{cid}")
                 else:
                     lines.append(f"✅ @{uname} {scan_sym} scan position confirmed on BingX")
             # Orphan scan positions (BingX open, bot doesn't know)

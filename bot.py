@@ -5691,6 +5691,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         row.append({"text": "❌ Close BTC", "callback_data": f"sync_close_btc:{uid}"})
                     elif cb.startswith("adopt_btc"):
                         row.append({"text": "✅ Adopt BTC", "callback_data": f"sync_adopt_btc:{uid}"})
+                    elif cb.startswith("reset_scan_ghost_"):
+                        parts3 = cb.split("_"); sym = parts3[4] if len(parts3) > 4 else "?"
+                        row.append({"text": f"🔄 Reset {sym.replace('-USDT','')}", "callback_data": f"sync_reset_scan_ghost:{uid}:{sym}"})
                     elif cb.startswith("reset_ghost"):
                         row.append({"text": "🔄 Reset Ghost State", "callback_data": f"sync_reset_ghost:{uid}"})
                     elif cb.startswith("ctretry_"):
@@ -10434,7 +10437,10 @@ def command_listener():
                         handle_command(f"/ctretry {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("sync_reset_ghost:"):
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctsync {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                        send_reply(cb_chat_id, ct.reset_ghost_state(uid, "btc"))
+                    elif cb_data.startswith("sync_reset_scan_ghost:"):
+                        _, uid, sym = cb_data.split(":", 2)
+                        send_reply(cb_chat_id, ct.reset_ghost_state(uid, "scan", sym))
                     elif cb_data.startswith("sync_adopt_scan:"):
                         _, uid, sym = cb_data.split(":")
                         handle_command(f"/ctretry {uid} {sym}", cb_chat_id, {}, sender_id=cb_cid)
@@ -11748,6 +11754,9 @@ def main():
                         row.append({"text": "❌ Close BTC", "callback_data": f"sync_close_btc:{uid}"})
                     elif cb.startswith("adopt_btc"):
                         row.append({"text": "✅ Adopt BTC", "callback_data": f"sync_adopt_btc:{uid}"})
+                    elif cb.startswith("reset_scan_ghost_"):
+                        sym = cb.split("_")[4] if len(cb.split("_")) > 4 else "?"
+                        row.append({"text": f"🔄 Reset {sym.replace('-USDT','')}", "callback_data": f"sync_reset_scan_ghost:{uid}:{sym}"})
                     elif cb.startswith("reset_ghost"):
                         row.append({"text": "🔄 Reset Ghost", "callback_data": f"sync_reset_ghost:{uid}"})
                     elif cb.startswith("ctretry_"):
