@@ -1752,6 +1752,96 @@ _slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
 def _slot_key(kind: str, hm: tuple) -> str:
     return f"{kind}|{hm[0]}.{hm[1]:02d}"
 
+# ─── Auto-blacklist & relocate a time that hits a 1:3 loss ratio ────────────
+# Applies to EVERY slot regardless of trust level (verified/unverified/normal
+# testing) — the moment a time's tp:sl reduces to exactly 1:3 (1/3, 2/6, 3/9...)
+# it's permanently retired at that exact clock time (never tested again, even
+# after a redeploy) and the search hops forward for a fresh nearby minute to
+# test instead, starting completely clean (0/0, no inherited history, no
+# inherited trust). Each kind (scan1/scan2/demo1/demo2) keeps its own
+# independent blacklist and relocation set — never shared across kinds, same
+# as everything else in this system.
+_KIND_GRID_MINUTES = {"scan1": (2, 23), "scan2": (7, 27), "demo1": (9, 27), "demo2": (9, 27)}
+_SLOT_BLACKLIST: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2": set()}
+_SLOT_RELOCATED: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2": set()}
+
+def _slot_hits_1_3(tp: int, sl: int) -> bool:
+    return tp >= 1 and sl == tp * 3
+
+def _kind_active_times(kind: str) -> set:
+    """Every (h,m) currently occupied for this kind — special (verified or
+    not), the fixed regular grid, and anything already relocated here from a
+    previous hop. Used to know what's "taken" when looking for a hop target."""
+    sched_kind = _SLOT_SCHEDULE_KIND[kind]
+    ma, mb = _KIND_GRID_MINUTES[kind]
+    special = _SCAN_SPECIAL.get(sched_kind, set())
+    return special | _regular_grid(ma, mb, special) | _SLOT_RELOCATED.get(kind, set())
+
+def _find_hop_target(kind: str, hm: tuple):
+    """Finds the next free, never-blacklisted minute in the SAME hour for this
+    kind — tries +4 repeatedly first; if that whole hour is exhausted, falls
+    back to ONE +2 step from the original failed minute and resumes +4
+    stepping from there (the +2 step is just a one-time unstick move, not a
+    new permanent step size — a slot that lands via it and later fails again
+    still hops by +4 like normal). Never rolls into the next hour. Returns
+    None if nothing is free anywhere in the hour."""
+    h, m = hm
+    occupied = _kind_active_times(kind)
+    blacklist = _SLOT_BLACKLIST.get(kind, set())
+
+    def _free(cand_m):
+        return 0 <= cand_m <= 59 and (h, cand_m) not in occupied and (h, cand_m) not in blacklist
+
+    cand_m = m
+    while cand_m + 4 <= 59:
+        cand_m += 4
+        if _free(cand_m):
+            return (h, cand_m)
+
+    cand_m = m + 2
+    if cand_m > 59:
+        return None
+    if _free(cand_m):
+        return (h, cand_m)
+    while cand_m + 4 <= 59:
+        cand_m += 4
+        if _free(cand_m):
+            return (h, cand_m)
+    return None
+
+def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
+    """Call right after a slot's stats update, before the normal promote/
+    demote evaluation. If this slot just hit exactly 1:3, retires it
+    permanently (blacklisted, removed from special/unverified if it was
+    there) and relocates to a fresh minute if one's free. Returns True if it
+    fired, so the caller skips the normal promote/demote check for this
+    (now-retired) time this cycle."""
+    key = _slot_key(kind, hm)
+    st = _slot_stats.get(key)
+    if not st or not _slot_hits_1_3(st.get("tp", 0), st.get("sl", 0)):
+        return False
+    if hm in _SLOT_BLACKLIST.get(kind, set()):
+        return False  # already retired earlier — nothing new to do
+    sched_kind = _SLOT_SCHEDULE_KIND[kind]
+    _SLOT_BLACKLIST.setdefault(kind, set()).add(hm)
+    _SCAN_SPECIAL.get(sched_kind, set()).discard(hm)
+    _SCAN_SPECIAL_NO_COPY.get(sched_kind, set()).discard(hm)
+    hm_str = f"{hm[0]}:{hm[1]:02d}"
+    target = _find_hop_target(kind, hm)
+    if target:
+        _SLOT_RELOCATED.setdefault(kind, set()).add(target)
+        t_str = f"{target[0]}:{target[1]:02d}"
+        send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
+                   f"Hit a 1:3 loss ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
+                   f"Now testing fresh at <b>{t_str}</b> instead (0/0, unverified).", pin=True)
+    else:
+        send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
+                   f"Hit a 1:3 loss ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
+                   f"No free minute left in that hour — not replaced.", pin=True)
+    _rebuild_schedules()
+    _save_slot_state()
+    return True
+
 def _load_slot_state():
     """Restores _slot_stats AND any runtime-promoted/demoted _SCAN_SPECIAL /
     _SCAN_SPECIAL_NO_COPY changes — checks the central store first (survives
@@ -1780,6 +1870,10 @@ def _load_slot_state():
             _SCAN_SPECIAL[kind] = set(tuple(hm) for hm in times)
         for kind, times in d.get("no_copy", {}).items():
             _SCAN_SPECIAL_NO_COPY[kind] = set(tuple(hm) for hm in times)
+        for kind, times in d.get("blacklist", {}).items():
+            _SLOT_BLACKLIST[kind] = set(tuple(hm) for hm in times)
+        for kind, times in d.get("relocated", {}).items():
+            _SLOT_RELOCATED[kind] = set(tuple(hm) for hm in times)
         print(f"[SLOT AUTO] Loaded {len(_slot_stats)} tracked slots")
     except Exception as e:
         print(f"[SLOT AUTO] load error: {e}")
@@ -1789,6 +1883,8 @@ def _save_slot_state():
         "stats": _slot_stats,
         "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
         "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
+        "blacklist": {k: sorted(list(v)) for k, v in _SLOT_BLACKLIST.items()},
+        "relocated": {k: sorted(list(v)) for k, v in _SLOT_RELOCATED.items()},
     }
     try:
         with open(_SLOT_STATE_FILE, "w") as f:
@@ -1807,10 +1903,19 @@ def _save_slot_state():
 
 def _rebuild_schedules():
     global SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
-    SCAN1_SCHEDULE = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
-    SCAN2_SCHEDULE = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
-    SCAN1_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test1"] | _regular_grid(9, 27, _SCAN_SPECIAL["test1"]))
-    SCAN2_TEST_SCHEDULE = sorted(_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"]))
+    # Each kind's real schedule = special times + its fixed regular grid +
+    # anything relocated onto a fresh minute after a 1:3 blacklist — minus
+    # whatever's currently blacklisted (a fixed-grid time doesn't stop being
+    # generated by _regular_grid just because it got blacklisted, so it has
+    # to be explicitly subtracted here or it'd keep firing forever).
+    SCAN1_SCHEDULE = sorted((_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"])
+                              | _SLOT_RELOCATED["scan1"]) - _SLOT_BLACKLIST["scan1"])
+    SCAN2_SCHEDULE = sorted((_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"])
+                              | _SLOT_RELOCATED["scan2"]) - _SLOT_BLACKLIST["scan2"])
+    SCAN1_TEST_SCHEDULE = sorted((_SCAN_SPECIAL["test1"] | _regular_grid(9, 27, _SCAN_SPECIAL["test1"])
+                                   | _SLOT_RELOCATED["demo1"]) - _SLOT_BLACKLIST["demo1"])
+    SCAN2_TEST_SCHEDULE = sorted((_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"])
+                                   | _SLOT_RELOCATED["demo2"]) - _SLOT_BLACKLIST["demo2"])
 
 def _evaluate_slot(kind: str, hm: tuple):
     key = _slot_key(kind, hm)
@@ -1865,7 +1970,8 @@ def _slot_track(kind: str, hm: tuple, is_win: bool):
         st["sl"] += 1
         st["streak"] = 0
     _save_slot_state()
-    _evaluate_slot(kind, hm)
+    if not _check_slot_blacklist(kind, hm):
+        _evaluate_slot(kind, hm)
 
 def _ist_hm_from_epoch(epoch):
     if not epoch:
@@ -5619,7 +5725,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -6197,7 +6303,12 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         for _kind in ("scan1", "scan2", "demo1", "demo2"):
             _sched_kind = _SLOT_SCHEDULE_KIND[_kind]
             _ma, _mb = _nt_grid_minutes[_kind]
-            _regular = _regular_grid(_ma, _mb, _SCAN_SPECIAL.get(_sched_kind, set()))
+            # Include times relocated here after a 1:3 blacklist elsewhere (minus
+            # any that have since been promoted to special, shown in /st instead),
+            # and exclude anything currently blacklisted (retired for good).
+            _relocated_now = _SLOT_RELOCATED.get(_kind, set()) - _SCAN_SPECIAL.get(_sched_kind, set())
+            _regular = (_regular_grid(_ma, _mb, _SCAN_SPECIAL.get(_sched_kind, set())) | _relocated_now) \
+                - _SLOT_BLACKLIST.get(_kind, set())
             _rows = []
             for _hm in sorted(_regular):
                 _key = _slot_key(_kind, _hm)
@@ -6216,6 +6327,40 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "No non-special times have tracked data yet."); return
         send_reply(chat_id, "📊 <b>Non-Special Times</b>\n\n" + "\n\n".join(_nt_blocks) +
             "\n\n<i>🛡️ Capital protected</i>")
+
+    elif cmd == "/list":
+        _bl_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
+        _bl_blocks = []
+        for _kind in ("scan1", "scan2", "demo1", "demo2"):
+            _bl_times = sorted(_SLOT_BLACKLIST.get(_kind, set()))
+            if not _bl_times:
+                continue
+            _bl_rows = [f"<code>{_bh}:{_bm:02d}</code>" for _bh, _bm in _bl_times]
+            _bl_blocks.append(f"<b>{_bl_labels[_kind]}</b> ({len(_bl_times)})\n" + "\n".join(_bl_rows))
+        if not _bl_blocks:
+            send_reply(chat_id, "No blacklisted times — nothing has hit a 1:3 ratio yet."); return
+        send_reply(chat_id, "🚫 <b>Blacklisted Times</b>\n\n" + "\n\n".join(_bl_blocks) +
+            "\n\n<i>Use /un s1|s2|t1|t2 H.MM to clear one, e.g. /un s1 3.09</i>\n\n<i>🛡️ Capital protected</i>")
+
+    elif cmd == "/un":
+        if len(parts) < 3:
+            send_reply(chat_id, "Usage: /un s1|s2|t1|t2 H.MM\nExample: /un s1 3.09"); return
+        _un_map = {"s1": "scan1", "s2": "scan2", "t1": "demo1", "t2": "demo2"}
+        _un_kind = _un_map.get(parts[1].lower())
+        if not _un_kind:
+            send_reply(chat_id, "First arg must be s1, s2, t1, or t2."); return
+        try:
+            _un_h, _un_m = parts[2].split(".")
+            _un_hm = (int(_un_h), int(_un_m))
+        except Exception:
+            send_reply(chat_id, "Time must be H.MM, e.g. 3.09"); return
+        if _un_hm not in _SLOT_BLACKLIST.get(_un_kind, set()):
+            send_reply(chat_id, f"{_un_kind} {_un_hm[0]}:{_un_hm[1]:02d} isn't blacklisted."); return
+        _SLOT_BLACKLIST[_un_kind].discard(_un_hm)
+        _slot_stats.pop(_slot_key(_un_kind, _un_hm), None)  # reset to fresh 0/0
+        _rebuild_schedules()
+        _save_slot_state()
+        send_reply(chat_id, f"✅ {_un_kind} {_un_hm[0]}:{_un_hm[1]:02d} un-blacklisted — reset to 0/0, scanning resumes there.")
 
     elif cmd == "/trade":
         parts_out = []
@@ -11021,13 +11166,17 @@ def _regular_grid(minute_a: int, minute_b: int, special: set, near_thresh: int =
     return out
 
 # Scan1: special times (Direct+Opus, tier-routed) + hourly :02/:23 regular grid (Aerolink+Opus, Signal-only)
-SCAN1_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan1"] | _regular_grid(2, 23, _SCAN_SPECIAL["scan1"]))
+SCAN1_SCHEDULE: list[tuple[int,int]] = []
 # Scan2: special times (Direct+Opus, tier-routed) + hourly :07/:27 regular grid (Aerolink+Opus, Signal-only)
-SCAN2_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["scan2"] | _regular_grid(7, 27, _SCAN_SPECIAL["scan2"]))
+SCAN2_SCHEDULE: list[tuple[int,int]] = []
 # TS1: special times (Direct+Opus, tier-routed) + hourly :09/:27 regular grid (Aerolink+Opus, Signal-only)
-SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test1"] | _regular_grid(9, 27, _SCAN_SPECIAL["test1"]))
+SCAN1_TEST_SCHEDULE: list[tuple[int,int]] = []
 # TS2: independent schedule, same shape as TS1 but its own special/regular times
-SCAN2_TEST_SCHEDULE: list[tuple[int,int]] = sorted(_SCAN_SPECIAL["test2"] | _regular_grid(9, 27, _SCAN_SPECIAL["test2"]))
+SCAN2_TEST_SCHEDULE: list[tuple[int,int]] = []
+# Built via _rebuild_schedules() (single source of truth, also folds in any
+# relocated/blacklisted times restored by _load_slot_state() above) instead
+# of duplicating the same union/subtract formula here.
+_rebuild_schedules()
 _scan1_triggered_today: set[tuple[int,int]] = set()   # (hour,minute) pairs run today
 _test_triggered_today:  set[tuple[int,int]] = set()
 
@@ -11757,6 +11906,25 @@ def main():
     ct.set_username_resolver(lambda uid: user_usernames.get(str(uid)))
     ct.load()
     load_settings()
+
+    # Retroactive 1:3 sweep — catches any slot ALREADY sitting at a 1:3-
+    # reducible ratio (e.g. from before this feature existed, or restored
+    # from a redeploy) rather than only reacting to new trades going forward.
+    # Runs here (inside main(), after every function including send_admin is
+    # defined) rather than at raw module-load time, since a real hit fires an
+    # admin notification.
+    _blacklist_swept_any = False
+    for _sk in list(_slot_stats.keys()):
+        try:
+            _k, _hm_str = _sk.split("|", 1)
+            _h, _m = _hm_str.split(".")
+            if _check_slot_blacklist(_k, (int(_h), int(_m))):
+                _blacklist_swept_any = True
+        except Exception as _e:
+            print(f"[SLOT AUTO] startup 1:3 sweep error for {_sk}: {_e}")
+    if _blacklist_swept_any:
+        print("[SLOT AUTO] Retroactive 1:3 sweep found and retired at least one slot on startup")
+
     load_active_trade()
     _pull_csv_central("trade_history_csv", TRADE_LOG_CSV)
     _pull_csv_central("api_cost_log_csv", API_COST_LOG)
