@@ -8790,6 +8790,11 @@ def _np_render(chat_id, cid, msg_id):
         _extra = (f"📊 Verified times (all slots): <b>{_verified_n}</b>\n"
                    f"🔧 Current setting: <b>{FREE_SIGNAL_DAILY_LIMIT}%</b>\n"
                    f"📅 Today: {_shared_n}/{_today_n} shared ({_actual_pct}%)\n\n")
+    elif st["target"] == "tp1size":
+        _extra = f"🔧 Current: <b>{ct.TP1_CLOSE_PCT}{cfg['unit']}</b>\n\n"
+    elif st["target"] in ("wrscan1", "wrscan2", "wrts1", "wrts2"):
+        _wr_kind = {"wrscan1": "scan1", "wrscan2": "scan2", "wrts1": "demo1", "wrts2": "demo2"}[st["target"]]
+        _extra = f"🔧 Current: <b>{_SLOT_EVAL_THRESHOLD[_wr_kind]}{cfg['unit']}</b>\n\n"
     text = (
         f"🔢 <b>Set {cfg['label']}</b>\n\n"
         f"{_extra}"
