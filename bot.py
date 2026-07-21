@@ -1752,10 +1752,14 @@ _slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
 def _slot_key(kind: str, hm: tuple) -> str:
     return f"{kind}|{hm[0]}.{hm[1]:02d}"
 
-# ─── Auto-blacklist & relocate a time that hits a 1:3 loss ratio ────────────
+# ─── Auto-blacklist & relocate a time that's proven itself bad ──────────────
 # Applies to EVERY slot regardless of trust level (verified/unverified/normal
-# testing) — the moment a time's tp:sl reduces to exactly 1:3 (1/3, 2/6, 3/9...)
-# it's permanently retired at that exact clock time (never tested again, even
+# testing). Trigger: losses >= 3 AND losses >= 3x wins (i.e. sl >= max(3, 3*tp))
+# — covers 1/3, 1/4, 1/5... (any 1-win slot once it racks up 3+ losses), 0/3,
+# 0/4, 0/5... (zero wins, 3+ losses), and exact 1:3 multiples like 2/6, 3/9.
+# Explicitly excludes 0/2 and similar too-early cases — needs at least 3
+# losses banked before it's allowed to fire at all. Once triggered, the slot
+# is permanently retired at that exact clock time (never tested again, even
 # after a redeploy) and the search hops forward for a fresh nearby minute to
 # test instead, starting completely clean (0/0, no inherited history, no
 # inherited trust). Each kind (scan1/scan2/demo1/demo2) keeps its own
@@ -1766,7 +1770,7 @@ _SLOT_BLACKLIST: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2"
 _SLOT_RELOCATED: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2": set()}
 
 def _slot_hits_1_3(tp: int, sl: int) -> bool:
-    return tp >= 1 and sl == tp * 3
+    return sl >= 3 and sl >= tp * 3
 
 def _kind_active_times(kind: str) -> set:
     """Every (h,m) currently occupied for this kind — special (verified or
@@ -1811,11 +1815,11 @@ def _find_hop_target(kind: str, hm: tuple):
 
 def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     """Call right after a slot's stats update, before the normal promote/
-    demote evaluation. If this slot just hit exactly 1:3, retires it
-    permanently (blacklisted, removed from special/unverified if it was
-    there) and relocates to a fresh minute if one's free. Returns True if it
-    fired, so the caller skips the normal promote/demote check for this
-    (now-retired) time this cycle."""
+    demote evaluation. If this slot just crossed the losing-ratio bar (see
+    _slot_hits_1_3), retires it permanently (blacklisted, removed from
+    special/unverified if it was there) and relocates to a fresh minute if
+    one's free. Returns True if it fired, so the caller skips the normal
+    promote/demote check for this (now-retired) time this cycle."""
     key = _slot_key(kind, hm)
     st = _slot_stats.get(key)
     if not st or not _slot_hits_1_3(st.get("tp", 0), st.get("sl", 0)):
@@ -1832,11 +1836,11 @@ def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
         _SLOT_RELOCATED.setdefault(kind, set()).add(target)
         t_str = f"{target[0]}:{target[1]:02d}"
         send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
-                   f"Hit a 1:3 loss ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
+                   f"Hit a losing ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
                    f"Now testing fresh at <b>{t_str}</b> instead (0/0, unverified).", pin=True)
     else:
         send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
-                   f"Hit a 1:3 loss ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
+                   f"Hit a losing ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
                    f"No free minute left in that hour — not replaced.", pin=True)
     _rebuild_schedules()
     _save_slot_state()
