@@ -4407,7 +4407,7 @@ def run_tick_check():
                 _sl_msg = fmt_update("SL_HIT")
                 _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
@@ -4572,7 +4572,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": t.get("sl", 0)})
     if close_result == "SL":
-        _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
+        _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
         _send_sl_reassurance(sym, f"S{ver}", sig, entry,
             _sl_reassurance_channels(bool(t.get("tier_routed")), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id", ""))
     _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
@@ -5072,7 +5072,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
-                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
+                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
@@ -5186,7 +5186,7 @@ def run_price_check():
                 _sl_msg = fmt_update("SL_HIT")
                 _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True, entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
@@ -11107,7 +11107,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
     ct.on_scan_sl(sym)
     if lbl == "SL":
-        _track_daily_result(sym, "SL", tier_routed=tier_routed, entry_date=_ist_date_str(created))
+        _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
         _send_sl_reassurance(sym, f"TS{dver}", sig, entry,
             _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
     _slot_hm = _ist_hm_from_epoch(created)
@@ -11206,7 +11206,9 @@ def _demo_monitor_loop():
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         if lbl == "SL":
-                            _track_daily_result(sym, "SL", tier_routed=tier_routed, entry_date=_ist_date_str(created))
+                            _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
+                            _send_sl_reassurance(sym, f"TS{_dver}", sig, entry,
+                                _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
                         _log_demo_history(t, lbl, cp, _dver)
