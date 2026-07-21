@@ -34,6 +34,12 @@ AEROLINK_API_KEY    = os.getenv("AEROLINK_API_KEY",    "")   # separate key issu
 AEROLINK_API_KEY_2  = os.getenv("AEROLINK_API_KEY_2",  "")   # backup Aerolink key — used automatically on retry if the primary fails
 AEROLINK_API_KEY_3  = os.getenv("AEROLINK_API_KEY_3",  "")   # 3rd Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_API_KEY_4  = os.getenv("AEROLINK_API_KEY_4",  "")   # 4th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_5  = os.getenv("AEROLINK_API_KEY_5",  "")   # 5th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_6  = os.getenv("AEROLINK_API_KEY_6",  "")   # 6th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_7  = os.getenv("AEROLINK_API_KEY_7",  "")   # 7th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_8  = os.getenv("AEROLINK_API_KEY_8",  "")   # 8th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_9  = os.getenv("AEROLINK_API_KEY_9",  "")   # 9th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_10 = os.getenv("AEROLINK_API_KEY_10", "")   # 10th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
@@ -2110,16 +2116,30 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
-    Up to 4 Aerolink key slots (AEROLINK_API_KEY..._4) are supported — on a retry
+    Up to 10 Aerolink key slots (AEROLINK_API_KEY..._10) are supported — on a retry
     (attempt >= 1), rotates to the next CONFIGURED slot in order, skipping any empty
     ones, so a failure on one key doesn't fail the whole call as long as another slot
-    has a key in it. Slot 1 is required; slots 2-4 are optional and can be left empty
+    has a key in it. Slot 1 is required; slots 2-10 are optional and can be left empty
     until keys are added later."""
     if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
-        _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4) if k]
+        _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+                              AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+                              AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
         key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+def _aerolink_gw_debug_tag(using_aero: bool, attempt: int) -> str:
+    """Debug label for scan logs — 'direct', or 'aerolink-keyN' showing which
+    of the up-to-10 configured Aerolink key slots this attempt will actually
+    rotate to (same slot-skipping logic as _claude_client)."""
+    if not using_aero:
+        return "direct"
+    _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
+    idx = (attempt % len(_keys)) + 1 if _keys else 1
+    return f"aerolink-key{idx}"
 
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
@@ -8060,8 +8080,7 @@ Reasoning: [one line]"""
                         try:
                             _kind = f"scan{scan_ver}"
                             _using_aero = _ai_aerolink(_kind)
-                            _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
-                                       else "aerolink-key1" if _using_aero else "direct")
+                            _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
                             print(f"  [SCAN] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model(_kind)}")
                             r2 = _claude_client(_kind, attempt=_attempt).messages.create(
                                 model=_ai_model(_kind), max_tokens=_max_tokens,
@@ -11746,8 +11765,7 @@ def _run_test_scan(cid, scan_ver: int):
             for _attempt in range(3):
                 try:
                     _using_aero = _ai_aerolink("test", scan_ver)
-                    _gw_dbg = ("aerolink-key2" if (_using_aero and _attempt >= 1 and AEROLINK_API_KEY_2)
-                               else "aerolink-key1" if _using_aero else "direct")
+                    _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
                     print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
                     r2 = _claude_client("test", attempt=_attempt, scan_ver=scan_ver).messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=500,
