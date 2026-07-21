@@ -4957,12 +4957,14 @@ def _tick_one(ver: int, t: dict) -> bool:
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
             _delete_trail_sl_messages(t)
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
-            send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False)
+            send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
+                tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
             ct.on_scan_sl(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             _track_daily_result(sym, "TIMEOUT", tier_routed=bool(t.get("tier_routed")),
+                free_shown=bool(t.get("tier_routed")) and t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")))
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
@@ -11253,7 +11255,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
-                        _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, entry_date=_ist_date_str(created))
+                        _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
                         _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
