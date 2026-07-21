@@ -6320,7 +6320,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 _cnt = f"{_stat['tp']}/{_stat['sl']}"
                 _streak = str(_stat.get("streak", 0))
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
-                _rows.append(f"<code>{_hm_str:<6} {_wr:>4} {_cnt:>4} s{_streak}</code>")
+                if _kind == "demo2":  # TEMP preview — left-aligned columns, TS2 only
+                    _rows.append(f"<code>{_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}</code>")
+                else:
+                    _rows.append(f"<code>{_hm_str:<6} {_wr:>4} {_cnt:>4} s{_streak}</code>")
             if _rows:
                 _nt_blocks.append(f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n" + "\n".join(_rows))
         if not _nt_blocks:
