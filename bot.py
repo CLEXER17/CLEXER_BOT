@@ -3970,7 +3970,7 @@ _STYLE_NONE_LABELS = (
     "My Copy Trade", "Trade Control", "Copy Admin", "TV & Advanced", "Broadcast & Channels",
     "Contact/Channel Settings", "Active BTC + all scan trades", "Current BTC price",
     "London / NY / Sleep session", "Last 5 signals", "Other Actions",
-    "Open Mini App", "Free Channel", "VIP Channel",
+    "Open Dashboard", "Free Channel", "VIP Channel",
 )
 
 _STYLE_ROTATION = ("primary", "success", "danger")  # Bot API 9.4 defines only these 3 — no orange/pink/custom hex exists
@@ -9373,13 +9373,37 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     _u_ct = ct._get(str(cid)) if cid is not None else None
     _is_vip_user = bool(_u_ct and _u_ct.get("tier") == "vip")
     rows = []
+    # CLEXER_API_URL (not MINI_APP_URL — that's a separate, older env var only
+    # used for the chart-screenshot feature and was found pointing at a dead
+    # Railway domain, causing this button to 404) is the confirmed-live host
+    # that actually serves /app.
+    _miniapp_base = CLEXER_API_URL
+    if _miniapp_base:
+        # Cache-busting query param — Telegram's Menu Button web app can get stuck
+        # serving a stale cached copy indefinitely on some clients even with
+        # server no-cache headers. An inline web_app button with a fresh URL
+        # every time it's rendered forces Telegram to treat it as a new resource.
+        # Top of the menu — this is the flagship surface, not one option among many.
+        rows.append([{"text": "📱 Open Dashboard", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
+    if not _is_vip_user:
+        rows.append([{"text": "👑 Upgrade to VIP", "callback_data": "vip_menu"}])
+    # "Status & Info" and "My Copy Trade" are the two rooms every non-admin user
+    # sees — paired into one row instead of stacking every category full-width.
+    _monitor_label = _HELP_CATS["monitor"][0]
+    _copyuser_label = _HELP_CATS["copyuser"][0]
+    rows.append([{"text": _monitor_label, "callback_data": "help_cat:monitor"},
+                 {"text": _copyuser_label, "callback_data": "help_cat:copyuser"}])
     for cat_id, (label, admin_only, _) in _HELP_CATS.items():
+        if cat_id in ("monitor", "copyuser"):
+            continue  # already placed above
         if admin_only and not is_admin:
             if cat_id in ("scan", "tradecontrol") and _sees_scanadmin_cats:
                 pass  # co-admin can see these two rooms
             else:
                 continue
         rows.append([{"text": label, "callback_data": f"help_cat:{cat_id}"}])
+    rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
+                 {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
     _extra_row = []
     if CONTACT_ADMIN_ENABLED and ADMIN_CHAT_ID:
         _extra_row.append({"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"})
@@ -9391,21 +9415,6 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
         _extra_row.append({"text": "📡 Signal Channel", "url": SIGNAL_CHANNEL_LINK})
     if _extra_row:
         rows.append(_extra_row)
-    # CLEXER_API_URL (not MINI_APP_URL — that's a separate, older env var only
-    # used for the chart-screenshot feature and was found pointing at a dead
-    # Railway domain, causing this button to 404) is the confirmed-live host
-    # that actually serves /app.
-    _miniapp_base = CLEXER_API_URL
-    if _miniapp_base:
-        # Cache-busting query param — Telegram's Menu Button web app can get stuck
-        # serving a stale cached copy indefinitely on some clients even with
-        # server no-cache headers. An inline web_app button with a fresh URL
-        # every time it's rendered forces Telegram to treat it as a new resource.
-        rows.append([{"text": "📱 Open Mini App", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
-    rows.append([{"text": "🆓 Free Channel", "callback_data": "chanpick:free"},
-                 {"text": "⭐ VIP Channel",  "callback_data": "chanpick:vip"}])
-    if not _is_vip_user:
-        rows.append([{"text": "👑 Get VIP", "callback_data": "vip_menu"}])
     if is_admin:
         rows.append([{"text": "🔗 Contact/Channel Settings", "callback_data": "adminlinks_open"}])
     markup = {"inline_keyboard": rows}
@@ -9425,9 +9434,9 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
             _tag = ("⭐ VIP" + (f" (until {_u_ct['vip_end']})" if _u_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
             _tier_line = f"🏷 Your Tier: <b>{_tag}</b>\n\n"
     text = (
-        f"✨ <b>CLEXER V17.8.5 — Help Menu</b>  {role}\n\n"
+        f"✨ <b>Welcome to CLEXER</b>  {role}\n\n"
         f"<blockquote>{_greeting}{_tier_line}{_pnl_line}"
-        "Tap a category to see commands 👇</blockquote>"
+        "Tap a button to get started 👇</blockquote>"
     )
     cid_str = str(chat_id)
     if message_id:
