@@ -6281,11 +6281,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 _icon = "🔒" if _unverified else "✅"
                 # Emoji can't go inside <pre>/<code> (Telegram disallows nested
                 # entities there, which would break the premium-emoji wrapping) —
-                # icon stays plain text, only the aligned numeric part is <code>.
+                # icon stays plain text, only the aligned numeric part is wrapped.
+                # <pre> instead of <code>: Telegram's renderer collapses repeated
+                # spaces inside <code>, silently breaking any padding-based column
+                # alignment even though the underlying text is correct — <pre>
+                # actually preserves whitespace exactly, like a terminal.
                 # Kept short (no "streak" word, tight spacing) — a wider row wraps
                 # on phone screens in monospace, dropping the tail onto its own
                 # line and creating a big visual gap between rows.
-                _rows.append(f"{_icon} <code>{_hm_str:<6} {_wr:>4} {_cnt:>4} s{_streak}</code>")
+                _rows.append(f"{_icon} <pre>{_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}</pre>")
             _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n" + "\n".join(_rows))
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
@@ -6320,10 +6324,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 _cnt = f"{_stat['tp']}/{_stat['sl']}"
                 _streak = str(_stat.get("streak", 0))
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
-                if _kind == "demo2":  # TEMP preview — left-aligned columns, TS2 only
-                    _rows.append(f"<code>{_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}</code>")
-                else:
-                    _rows.append(f"<code>{_hm_str:<6} {_wr:>4} {_cnt:>4} s{_streak}</code>")
+                # <pre> not <code> — Telegram collapses repeated spaces inside
+                # <code>, silently breaking column alignment (see /st for detail).
+                _rows.append(f"<pre>{_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}</pre>")
             if _rows:
                 _nt_blocks.append(f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n" + "\n".join(_rows))
         if not _nt_blocks:
