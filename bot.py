@@ -9379,12 +9379,21 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     # that actually serves /app.
     _miniapp_base = CLEXER_API_URL
     if _miniapp_base:
-        # Cache-busting query param — Telegram's Menu Button web app can get stuck
-        # serving a stale cached copy indefinitely on some clients even with
-        # server no-cache headers. An inline web_app button with a fresh URL
-        # every time it's rendered forces Telegram to treat it as a new resource.
-        # Top of the menu — this is the flagship surface, not one option among many.
-        rows.append([{"text": "📱 Open Dashboard", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
+        if int(chat_id) > 0:
+            # Cache-busting query param — Telegram's Menu Button web app can get stuck
+            # serving a stale cached copy indefinitely on some clients even with
+            # server no-cache headers. An inline web_app button with a fresh URL
+            # every time it's rendered forces Telegram to treat it as a new resource.
+            # Top of the menu — this is the flagship surface, not one option among many.
+            rows.append([{"text": "📱 Open Dashboard", "web_app": {"url": f"{_miniapp_base}/app?v={int(time.time())}"}}])
+        else:
+            # web_app inline buttons are only allowed in private chats — Telegram
+            # rejects the WHOLE message if one is sent in a group (this is exactly
+            # what silently broke /help in groups). A plain t.me deep link works
+            # everywhere and still opens the mini app when tapped.
+            _mini_uname = _get_bot_username()
+            if _mini_uname:
+                rows.append([{"text": "📱 Open Dashboard", "url": f"https://t.me/{_mini_uname}?startapp=menu"}])
     if not _is_vip_user:
         rows.append([{"text": "👑 Upgrade to VIP", "callback_data": "vip_menu"}])
     # "Status & Info" and "My Copy Trade" are the two rooms every non-admin user
