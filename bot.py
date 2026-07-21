@@ -342,7 +342,10 @@ def _save_free_tracker():
             json.dump(_free_signal_tracker, f)
     except Exception as e:
         print(f"[FREE TRACKER] local save error: {e}")
-    if CLEXER_API_URL:
+    # Active-server gate — see save_settings()'s comment: a standby/abandoned
+    # server keeps running this same loop with its own local counters, and
+    # would otherwise silently clobber the active server's real numbers.
+    if CLEXER_API_URL and is_active_server():
         try:
             _kv_push("free_signal_tracker", _free_signal_tracker)
         except Exception as e:
@@ -656,7 +659,8 @@ def _save_daily_buckets():
             json.dump(_blob, f)
     except Exception as e:
         print(f"[DAILY BUCKETS] local save error: {e}")
-    if CLEXER_API_URL:
+    # Active-server gate — see save_settings()'s comment.
+    if CLEXER_API_URL and is_active_server():
         try:
             _kv_push("daily_buckets", _blob)
         except Exception as e:
@@ -1791,7 +1795,11 @@ def _save_slot_state():
             json.dump(d, f)
     except Exception as e:
         print(f"[SLOT AUTO] local save error: {e}")
-    if CLEXER_API_URL:
+    # Active-server gate — see save_settings()'s comment. This one matters most:
+    # _SCAN_SPECIAL / _SCAN_SPECIAL_NO_COPY directly control whether a slot
+    # auto-executes real copytrade orders, so a stale push from an abandoned
+    # server could silently re-verify or de-verify a slot behind the admin's back.
+    if CLEXER_API_URL and is_active_server():
         try:
             _kv_push("slot_auto_state", d)
         except Exception as e:
@@ -3825,7 +3833,16 @@ def save_settings():
     # a settings change and the next manual sync could silently revert VIP/Free
     # channel IDs, model toggles, copytrade flags, etc. back to whatever the
     # central store last had (or defaults, if it never had anything).
-    if CLEXER_API_URL:
+    #
+    # Gated to the ACTIVE server only — a standby server (e.g. an old/abandoned
+    # deployment from the multi-server rotation that's still running) keeps
+    # scanning and calling save_settings() with its own stale in-memory values.
+    # _kv_pick_newer() trusts whichever push has the latest timestamp, not
+    # whichever is actually correct — so an abandoned server pushing unchanged
+    # defaults (e.g. demo2's win-rate threshold reverting from an admin-set 35%
+    # back to the hardcoded 50%) can silently clobber a real, newer change made
+    # on the active server. Only the active server's writes are trustworthy.
+    if CLEXER_API_URL and is_active_server():
         try:
             _kv_push("bot_settings", _settings_blob)
         except Exception as e:
