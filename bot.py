@@ -1916,6 +1916,31 @@ for _sk, _st in list(_slot_stats.items()):
     except Exception as _e:
         print(f"[SLOT AUTO] startup re-evaluate error for {_sk}: {_e}")
 
+# Self-heal #2: a slot sitting in _SCAN_SPECIAL (verified) with ZERO recorded
+# trade history has no track record to justify auto-executing real copytrade
+# orders on it — _evaluate_slot's win-rate gate only ever fires after a trade
+# closes, so a slot that was seeded directly into _SCAN_SPECIAL (e.g. the
+# original test1/test2 list) rather than earning its way in via real results
+# can sit there permanently "verified" with 0/0 shown next to it. Demote any
+# such slot to unverified here — it stays that way until it banks a real
+# TP/SL and earns verification the normal way.
+_SLOT_SCHED_TO_KIND = {"scan1": "scan1", "scan2": "scan2", "test1": "demo1", "test2": "demo2"}
+_untested_demoted = False
+for _sched_kind, _hm_set in _SCAN_SPECIAL.items():
+    _stat_kind = _SLOT_SCHED_TO_KIND.get(_sched_kind)
+    if not _stat_kind:
+        continue
+    for _hm in list(_hm_set):
+        if _hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind, set()):
+            continue  # already unverified
+        _st2 = _slot_stats.get(_slot_key(_stat_kind, _hm))
+        if not _st2 or (_st2.get("tp", 0) + _st2.get("sl", 0)) == 0:
+            _SCAN_SPECIAL_NO_COPY.setdefault(_sched_kind, set()).add(_hm)
+            _untested_demoted = True
+            print(f"[SLOT AUTO] {_stat_kind} {_hm[0]}:{_hm[1]:02d} has no trade history — marked unverified until it earns its first result")
+if _untested_demoted:
+    _save_slot_state()
+
 _load_daily_buckets()
 _load_free_tracker()
 
