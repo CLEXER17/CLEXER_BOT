@@ -4573,6 +4573,8 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         "entry_price": entry, "sl_price": t.get("sl", 0)})
     if close_result == "SL":
         _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), entry_date=_ist_date_str(t.get("created_at")))
+        _send_sl_reassurance(sym, f"S{ver}", sig, entry,
+            _sl_reassurance_channels(bool(t.get("tier_routed")), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id", ""))
     _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
     if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
     _close_sig_snapshot(t.get("sig_id", ""), close_result)
@@ -11106,6 +11108,8 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     ct.on_scan_sl(sym)
     if lbl == "SL":
         _track_daily_result(sym, "SL", tier_routed=tier_routed, entry_date=_ist_date_str(created))
+        _send_sl_reassurance(sym, f"TS{dver}", sig, entry,
+            _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
     _slot_hm = _ist_hm_from_epoch(created)
     if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
     _log_demo_history(t, lbl, cp, dver)
