@@ -8512,7 +8512,7 @@ _COPYADMIN_SUBCATS = {
         ("/synccheck", "🔄", "BingX vs Bot Sync", "Compares live BingX positions against what the bot thinks is open."),
         ("/forceclose", "🛠", "Force Close Stuck Trade", "Manually close a Scan1/Scan2/TS1/TS2 trade the bot lost track of, with the real TP1/TP2/SL/BE result."),
         ("/syncup",    "☁️", "Push to Central Store", "Force-pushes this server's current users, settings, trade state, and CSVs to the shared multi-server store."),
-        ("/server",    "🖥️", "Server Status / Switch", "Shows which server is currently active, or switch which one is (/server <name>)."),
+        ("/server",    "🖥️", "Server Status / Switch", "Shows which server is currently active, or switch which one is (/server &lt;name&gt;)."),
     ]),
 }
 
