@@ -2758,7 +2758,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/setvip" and is_admin:
         if len(parts) < 2:
-            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"vip_pick:{uid}"}] for uid, u in list(_db.items())]
+            rows = [[{"text": _display_uname(uid, u), "callback_data": f"vip_pick:{uid}"}] for uid, u in list(_db.items())]
             send_reply_fn(chat_id, "⭐ <b>Promote to VIP</b>\n\n<blockquote>Choose a user:</blockquote>", reply_markup={"inline_keyboard": rows} if rows else None); return
         if len(parts) < 4:
             send_reply_fn(chat_id, "Usage: /setvip <chat_id> <DD.MM.YYYY start> <DD.MM.YYYY end>"); return
@@ -2770,18 +2770,18 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         user["tier"] = "vip"; user["vip_start"] = parts[2]; user["vip_end"] = parts[3]; user["vip_grace_notified_at"] = 0
         _set(target, user)
         send_reply_fn(chat_id,
-            f"<b>⭐ @{user.get('username','?')} promoted to VIP</b>\n\n"
+            f"<b>⭐ {_display_uname(target, user)} promoted to VIP</b>\n\n"
             f"<blockquote>From <b>{parts[2]}</b> to <b>{parts[3]}</b>\n\n<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setfree" and is_admin:
         if len(parts) < 2:
-            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"free_set:{uid}"}] for uid, u in list(_db.items())]
+            rows = [[{"text": _display_uname(uid, u), "callback_data": f"free_set:{uid}"}] for uid, u in list(_db.items())]
             send_reply_fn(chat_id, "🆓 <b>Demote to Free</b>\n\n<blockquote>Choose a user:</blockquote>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1])
         user = _db.get(target) or _default_user(parts[2] if len(parts) > 2 else target)
         user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""; user["vip_grace_notified_at"] = 0
         _set(target, user)
-        send_reply_fn(chat_id, f"<b>🆓 @{user.get('username','?')} set to Free tier</b>\n\n<blockquote><i>🛡️ Capital protected</i></blockquote>")
+        send_reply_fn(chat_id, f"<b>🆓 {_display_uname(target, user)} set to Free tier</b>\n\n<blockquote><i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/ctstatus" and is_admin:
         # Show failed copy users and current active signal
