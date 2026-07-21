@@ -2203,6 +2203,17 @@ def _display_uname(uid: str, user: dict) -> str:
         return f"@{stored}"
     return f"ID {uid}"
 
+def _display_uname_link(uid: str, user: dict) -> str:
+    """Same display name as _display_uname, but as a clickable tg://user
+    mention for use in message BODY text (never in inline button labels —
+    Telegram buttons don't render HTML). Plain '@username' text stops being
+    tappable once the bot's global smallcaps styling (_smallcaps_body in
+    bot.py) rewrites it into unicode smallcaps glyphs, since Telegram's
+    auto-mention-linking only recognizes a literal ASCII @handle — an
+    explicit tg://user link stays clickable no matter how the visible text
+    is styled."""
+    return f'<a href="tg://user?id={uid}">{_display_uname(uid, user)}</a>'
+
 def start_monitor_loop(notify_fn=None, ghost_close_fn=None, interval_hours: int = 1):
     """Start background thread that runs monitor_sl_tp every 30 seconds."""
     import threading as _th
@@ -2634,7 +2645,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, "No copy trade users yet."); return
         lines = [f"<b>Copy Trade Users ({len(_db)})</b>\n"]
         for i, (uid, user) in enumerate(_db.items(), 1):
-            uname    = _display_uname(uid, user)
+            uname    = _display_uname_link(uid, user)
             bingx_ok = "✅" if user.get("connected") else "❌"
             copy_s   = "ON" if user.get("copy_on") else "OFF"
             pos_line = f"\n     Pos: {user.get('pos_side','?')}" if user.get("in_position") else ""
@@ -2699,7 +2710,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             except Exception as e:
                 print(f"[CT] /user bingx pnl fetch: {e}")
         send_reply_fn(chat_id,
-            f"<b>{_display_uname(target, user)}</b> | <code>{target}</code>{paused}\n\n"
+            f"<b>{_display_uname_link(target, user)}</b> | <code>{target}</code>{paused}\n\n"
             f"<blockquote>Tier: {_tier_line}\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
@@ -2732,7 +2743,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 print(f"[CT] /kick central push error: {e}")
         send_reply_fn(chat_id,
             f"<b>User Removed</b>\n\n"
-            f"<blockquote>{_display_uname(target, user)} (ID:{target})\n"
+            f"<blockquote>{_display_uname_link(target, user)} (ID:{target})\n"
             f"Orders cancelled. API keys deleted.\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>")
 
@@ -2753,7 +2764,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         state = "PAUSED ⛔" if user["paused_by_admin"] else "UNPAUSED ✅"
         send_reply_fn(chat_id,
             f"<b>User {state}</b>\n\n"
-            f"<blockquote>{_display_uname(target, user)} (ID:{target})\n\n"
+            f"<blockquote>{_display_uname_link(target, user)} (ID:{target})\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setvip" and is_admin:
@@ -2770,7 +2781,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         user["tier"] = "vip"; user["vip_start"] = parts[2]; user["vip_end"] = parts[3]; user["vip_grace_notified_at"] = 0
         _set(target, user)
         send_reply_fn(chat_id,
-            f"<b>⭐ {_display_uname(target, user)} promoted to VIP</b>\n\n"
+            f"<b>⭐ {_display_uname_link(target, user)} promoted to VIP</b>\n\n"
             f"<blockquote>From <b>{parts[2]}</b> to <b>{parts[3]}</b>\n\n<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setfree" and is_admin:
@@ -2781,7 +2792,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         user = _db.get(target) or _default_user(parts[2] if len(parts) > 2 else target)
         user["tier"] = "free"; user["vip_start"] = ""; user["vip_end"] = ""; user["vip_grace_notified_at"] = 0
         _set(target, user)
-        send_reply_fn(chat_id, f"<b>🆓 {_display_uname(target, user)} set to Free tier</b>\n\n<blockquote><i>🛡️ Capital protected</i></blockquote>")
+        send_reply_fn(chat_id, f"<b>🆓 {_display_uname_link(target, user)} set to Free tier</b>\n\n<blockquote><i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/ctstatus" and is_admin:
         # Show failed copy users and current active signal
