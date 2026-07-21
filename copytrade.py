@@ -2177,6 +2177,32 @@ def sync_check() -> list[str]:
 
 _pause_event = None  # set by bot.py after import
 
+_uname_resolver = None  # set by bot.py after import — looks up a user's REAL current Telegram
+# username (captured on every /start, regardless of BingX connection) via bot.py's own
+# user_usernames dict. ct_users' own "username" field is only captured at connect-time and,
+# for many older/never-connected records, was stored as a fallback (the numeric id itself) —
+# so admin screens that only read user["username"] show raw IDs instead of real @handles.
+
+def set_username_resolver(fn):
+    global _uname_resolver
+    _uname_resolver = fn
+
+def _display_uname(uid: str, user: dict) -> str:
+    """Best available display name for a copy-trade user: bot.py's live-tracked
+    Telegram username first (freshest, works even if never BingX-connected),
+    then ct_users' own stored username (if it isn't just the id), then the id."""
+    if _uname_resolver:
+        try:
+            real = _uname_resolver(uid)
+            if real:
+                return f"@{real}"
+        except Exception:
+            pass
+    stored = user.get("username")
+    if stored and stored != str(uid):
+        return f"@{stored}"
+    return f"ID {uid}"
+
 def start_monitor_loop(notify_fn=None, ghost_close_fn=None, interval_hours: int = 1):
     """Start background thread that runs monitor_sl_tp every 30 seconds."""
     import threading as _th
@@ -2608,7 +2634,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, "No copy trade users yet."); return
         lines = [f"<b>Copy Trade Users ({len(_db)})</b>\n"]
         for i, (uid, user) in enumerate(_db.items(), 1):
-            uname    = f"@{user.get('username','?')}"
+            uname    = _display_uname(uid, user)
             bingx_ok = "✅" if user.get("connected") else "❌"
             copy_s   = "ON" if user.get("copy_on") else "OFF"
             pos_line = f"\n     Pos: {user.get('pos_side','?')}" if user.get("in_position") else ""
@@ -2629,8 +2655,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             rows = []
             row = []
             for uid, u in list(_db.items()):
-                uname = u.get("username") or uid
-                label = f"@{uname}" + (" ⛔" if u.get("paused_by_admin") else ("  🟢" if u.get("copy_on") else ""))
+                label = _display_uname(uid, u) + (" ⛔" if u.get("paused_by_admin") else ("  🟢" if u.get("copy_on") else ""))
                 row.append({"text": label, "callback_data": f"{cb_prefix}:{uid}"})
                 if len(row) == 2:
                     rows.append(row); row = []
@@ -2674,7 +2699,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             except Exception as e:
                 print(f"[CT] /user bingx pnl fetch: {e}")
         send_reply_fn(chat_id,
-            f"<b>@{user.get('username','?')}</b> | <code>{target}</code>{paused}\n\n"
+            f"<b>{_display_uname(target, user)}</b> | <code>{target}</code>{paused}\n\n"
             f"<blockquote>Tier: {_tier_line}\n"
             f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
@@ -2689,7 +2714,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/kick" and is_admin:
         if len(parts) < 2:
-            rows = [[{"text": f"@{u.get('username',uid)}", "callback_data": f"kick:{uid}"}] for uid, u in list(_db.items())]
+            rows = [[{"text": _display_uname(uid, u), "callback_data": f"kick:{uid}"}] for uid, u in list(_db.items())]
             send_reply_fn(chat_id, "🚫 <b>Select user to kick:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
@@ -2707,7 +2732,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 print(f"[CT] /kick central push error: {e}")
         send_reply_fn(chat_id,
             f"<b>User Removed</b>\n\n"
-            f"<blockquote>@{user.get('username','?')} (ID:{target})\n"
+            f"<blockquote>{_display_uname(target, user)} (ID:{target})\n"
             f"Orders cancelled. API keys deleted.\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>")
 
@@ -2716,7 +2741,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             rows = []
             for uid, u in list(_db.items()):
                 state = "⛔ Paused" if u.get("paused_by_admin") else "✅ Active"
-                rows.append([{"text": f"@{u.get('username',uid)}  {state}", "callback_data": f"pauseuser:{uid}"}])
+                rows.append([{"text": f"{_display_uname(uid, u)}  {state}", "callback_data": f"pauseuser:{uid}"}])
             send_reply_fn(chat_id, "⏸ <b>Select user to pause/unpause:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
@@ -2728,7 +2753,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         state = "PAUSED ⛔" if user["paused_by_admin"] else "UNPAUSED ✅"
         send_reply_fn(chat_id,
             f"<b>User {state}</b>\n\n"
-            f"<blockquote>@{user.get('username','?')} (ID:{target})\n\n"
+            f"<blockquote>{_display_uname(target, user)} (ID:{target})\n\n"
             f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setvip" and is_admin:

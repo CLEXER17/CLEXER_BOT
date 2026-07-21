@@ -330,6 +330,42 @@ CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] �
 FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
 _free_signal_tracker = {"date": "", "total": 0, "shared": 0}  # resets automatically when the IST date rolls over
 
+def _save_free_tracker():
+    """Persists _free_signal_tracker to local disk AND the central store — same
+    fix as _save_daily_buckets(): a pure in-memory counter silently resets to
+    0/0 on every Railway redeploy (and, in the multi-server setup, is never
+    shared between the standby and active instances), which is exactly why the
+    Free Channel Share % screen kept showing 0/0 shared even while signals
+    were actively being posted to Free from whichever process fired them."""
+    try:
+        with open(os.path.join(DATA_DIR, "free_signal_tracker.json"), "w") as f:
+            json.dump(_free_signal_tracker, f)
+    except Exception as e:
+        print(f"[FREE TRACKER] local save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("free_signal_tracker", _free_signal_tracker)
+        except Exception as e:
+            print(f"[FREE TRACKER] central push error: {e}")
+
+def _load_free_tracker():
+    global _free_signal_tracker
+    try:
+        d = None
+        path = os.path.join(DATA_DIR, "free_signal_tracker.json")
+        if CLEXER_API_URL:
+            r = _central_get("/kv/free_signal_tracker")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(path, r.json(), "FREE TRACKER")
+        if d is None and os.path.exists(path):
+            with open(path) as f:
+                d = json.load(f)
+        if d is not None:
+            _free_signal_tracker = {"date": d.get("date",""), "total": d.get("total",0), "shared": d.get("shared",0)}
+            print(f"[FREE TRACKER] Restored {_free_signal_tracker}")
+    except Exception as e:
+        print(f"[FREE TRACKER] load error: {e}")
+
 def _channels_by_tier(tier: str) -> list:
     return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id")]
 
@@ -351,12 +387,14 @@ def _free_quota_available() -> bool:
     if _free_signal_tracker.get("date") != today:
         _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
     _free_signal_tracker["total"] += 1
+    _save_free_tracker()
     if not _in_free_window():
         return False
     return _free_signal_tracker["shared"] < math.ceil(_free_signal_tracker["total"] * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
 
 def _consume_free_quota():
     _free_signal_tracker["shared"] = _free_signal_tracker.get("shared", 0) + 1
+    _save_free_tracker()
 
 _BOT_USERNAME = None
 
@@ -1879,6 +1917,7 @@ for _sk, _st in list(_slot_stats.items()):
         print(f"[SLOT AUTO] startup re-evaluate error for {_sk}: {_e}")
 
 _load_daily_buckets()
+_load_free_tracker()
 
 def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
     """Maps a scan kind (+ scan_ver for TS1/TS2) to its AICFG_GRID row key
@@ -9960,7 +9999,8 @@ def command_listener():
                              {"text": f"{'✅' if '4h' in CHART_TFS else '📊'}  4H",         "callback_data": "setimg:4h"}],
                             [{"text": f"{'✅' if '1h' in CHART_TFS else '📈'}  1H",          "callback_data": "setimg:1h"},
                              {"text": f"{'✅' if '15m' in CHART_TFS else '⏱'}  15M",        "callback_data": "setimg:15m"}],
-                            [{"text": f"{'✅' if '5m' in CHART_TFS else '⚡'}  5M",          "callback_data": "setimg:5m"}]]}
+                            [{"text": f"{'✅' if '5m' in CHART_TFS else '⚡'}  5M",          "callback_data": "setimg:5m"}],
+                            [{"text": "◀️  Back", "callback_data": "settings_sub:charts"}]]}
                         _help_edit_or_send(cb_chat_id,
                             f"<b>Chart Timeframes</b>\n\nActive: <b>{', '.join(CHART_TFS).upper() or 'none'}</b>\n\n<i>Tap to toggle ✅ = active</i>",
                             _tf_btns2, message_id=cb_msg_id)
@@ -10892,7 +10932,18 @@ def command_listener():
                     _is_reply_to_bot = bool(_reply_to.get("from", {}).get("is_bot"))
                     if _is_admin_chat or _is_forward or _is_reply_to_bot:
                         _handle_chat_message(cid, text)
-        except Exception as e: print(f"  [CMD] {e}")
+        except Exception as e:
+            print(f"  [CMD] {e}")
+            # Previously silent to the admin — a crash here (e.g. mid-callback,
+            # like a button inside a help submenu) just looked like the bot not
+            # responding at all, with the real reason only visible in server
+            # logs. Surface it in DM instead, best-effort (never let the error
+            # notification itself take the loop down).
+            try:
+                if ADMIN_CHAT_ID:
+                    send_reply(ADMIN_CHAT_ID, f"⚠️ <b>Command listener error</b>\n\n<code>{_html.escape(str(e))[:500]}</code>")
+            except Exception:
+                pass
         time.sleep(2)
 
 # --- MAIN ---------------------------------------------------------------------
@@ -11643,6 +11694,7 @@ def main():
     print(f"  TV Bridge: {TV_BRIDGE_URL or 'NOT SET - Binance-only'}")
     print(f"  Starting PAUSED - send /go to start scanning")
     load_users()
+    ct.set_username_resolver(lambda uid: user_usernames.get(str(uid)))
     ct.load()
     load_settings()
     load_active_trade()
