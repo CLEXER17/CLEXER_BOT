@@ -2112,6 +2112,14 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     mdl = "F" if _ai_model(kind, scan_ver) == "claude-fable-5" else "4.8"
     return f"{gw}{mdl}"
 
+def _aerolink_configured_keys() -> list:
+    """All 10 possible Aerolink key slots, filtered down to whichever are
+    actually non-empty in Railway right now — single source of truth used
+    everywhere key rotation/counting/skipping happens."""
+    return [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+                         AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+                         AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
+
 def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
@@ -2122,23 +2130,43 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     has a key in it. Slot 1 is required; slots 2-10 are optional and can be left empty
     until keys are added later."""
     if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
-        _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
-                              AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                              AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
+        _keys = _aerolink_configured_keys()
         key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-def _aerolink_gw_debug_tag(using_aero: bool, attempt: int) -> str:
+def _pick_aerolink_key(attempt: int, bad_keys: set) -> str:
+    """Same rotation as _claude_client, but skips any key already marked bad
+    earlier in the CURRENT scan cycle (see _claude_client_skip) — a key that
+    just failed on coin #1 gets skipped on coin #2/#3 instead of being
+    retried from scratch every time. Falls back to the full list if every
+    key has somehow already been marked bad, rather than crashing."""
+    _all = _aerolink_configured_keys()
+    _keys = [k for k in _all if k not in bad_keys] or _all
+    return _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
+
+def _claude_client_skip(kind: str, attempt: int, bad_keys: set, scan_ver: int = None):
+    """Like _claude_client, but for callers doing their own multi-coin retry
+    loop with a shared bad_keys set across the whole scan cycle. Returns
+    (client, key_used) — key_used is "" for the Direct gateway (nothing to
+    mark bad), or the actual Aerolink key string so the caller can add it to
+    bad_keys if this attempt fails."""
+    if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
+        key = _pick_aerolink_key(attempt, bad_keys)
+        return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL), key
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY), ""
+
+def _aerolink_gw_debug_tag(using_aero: bool, attempt: int, bad_keys: set = None) -> str:
     """Debug label for scan logs — 'direct', or 'aerolink-keyN' showing which
     of the up-to-10 configured Aerolink key slots this attempt will actually
-    rotate to (same slot-skipping logic as _claude_client)."""
+    rotate to (same slot-skipping logic as _claude_client/_claude_client_skip)."""
     if not using_aero:
         return "direct"
-    _keys = [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
-                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
-    idx = (attempt % len(_keys)) + 1 if _keys else 1
+    _all = _aerolink_configured_keys()
+    _keys = [k for k in _all if k not in (bad_keys or set())] or _all
+    if not _keys:
+        return "aerolink-key1"
+    idx = _all.index(_keys[attempt % len(_keys)]) + 1
     return f"aerolink-key{idx}"
 
 def _claude_retry_budget(using_aero: bool) -> int:
@@ -2151,10 +2179,7 @@ def _claude_retry_budget(using_aero: bool) -> int:
     3 either way, matching prior behavior when only 1-2 keys are set."""
     if not using_aero:
         return 3
-    _n = sum(1 for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
-                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k)
-    return max(3, _n)
+    return max(3, len(_aerolink_configured_keys()))
 
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
@@ -7883,6 +7908,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 tried = []
                 skip_log = []   # tracks why each coin was skipped
                 api_fail_count = 0  # coins skipped because Claude itself failed 3x — not a real "no signal"
+                _aero_bad_keys = set()  # Aerolink keys that failed anywhere THIS scan cycle — once a
+                # key fails on one coin it's skipped on every later coin too, instead of being
+                # retried from scratch each time (a no-credit key isn't going to fix itself
+                # between coin #1 and coin #3). Resets fresh on the next scan cycle.
 
                 for candidate in candidate_order[:MAX_TRIES + 3]:  # a few extras in case of skips
                     if signal_placed: break
@@ -8034,11 +8063,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                             continue   # try next candidate
 
                     # ── Step 5: Claude analysis — IS THIS COIN READY NOW? ──────
-                    if BTC_PROMPT_MODE == "V7":
-                        analysis_prompt = f"""{smc}
-BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
+                    # Wrapped in a function (not built inline once) so it can be
+                    # rebuilt with a FRESH price on every retry attempt below —
+                    # previously the price was baked in once before the retry loop,
+                    # so a coin needing 2-3+ retries (10s sleep each) fed the AI an
+                    # increasingly stale "current price" the whole time.
+                    def _build_analysis_prompt(_price):
+                        if BTC_PROMPT_MODE == "V7":
+                            _prompt = f"""{smc}
+BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {_price:,.6g}
 
-You are CLEXER. Analyze {chosen_sym} for MARKET entry at current price {cp:,.6g}.
+You are CLEXER. Analyze {chosen_sym} for MARKET entry at current price {_price:,.6g}.
 Entry is ALWAYS market price — no pullback, no limit orders.
 Reply ONLY with the output block below. No steps, no working, no extra text.
 
@@ -8052,7 +8087,7 @@ RULES (apply internally, do not output):
 
 OUTPUT (copy exactly, replace bracketed values):
 Signal: BUY / SELL / WAIT
-Entry: {cp:,.6g}
+Entry: {_price:,.6g}
 Entry_Type: MARKET
 SL: [number only]
 TP1: [number only]
@@ -8060,10 +8095,9 @@ TP2: [number only]
 R:R: [number only]
 Confidence: HIGH / MED / LOW
 Reasoning: [one line]"""
-                        _max_tokens = 200
-                    else:
-                        analysis_prompt = f"""{smc}
-BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {cp:,.6g}
+                            return _prompt, 200
+                        _prompt = f"""{smc}
+BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {_price:,.6g}
 
 You are CLEXER. Analyze {chosen_sym}. Decide: is this coin ready for MARKET entry RIGHT NOW?
 If not → WAIT. Do not force. Another coin will be tried. Go directly to output.
@@ -8072,7 +8106,7 @@ RULES:
 1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
 2. 1H: must agree with 4H or be neutral. Opposite=WAIT
 3. 5M NOW: higher lows forming=BUY ready, lower highs forming=SELL ready, choppy/mixed=WAIT
-4. Entry = {cp:,.6g} (MARKET, fills now)
+4. Entry = {_price:,.6g} (MARKET, fills now)
 5. SL = lowest low of last 3-5 x 5M candles (BUY) or highest high (SELL). Min 1.5%, Max 4%. +0.3% buffer.
 6. TP1 = entry ± sl_dist×1.5. TP2 = entry ± sl_dist×3
 7. Confidence: HIGH=all 3 TFs agree clearly. MED=4H+1H agree, 5M forming. LOW=only 4H clear.
@@ -8080,7 +8114,7 @@ RULES:
 
 OUTPUT ONLY (no steps, no working, replace bracketed values):
 Signal: BUY / SELL / WAIT
-Entry: {cp:,.6g}
+Entry: {_price:,.6g}
 Entry_Type: MARKET
 SL: [number only]
 TP1: [number only]
@@ -8088,16 +8122,21 @@ TP2: [number only]
 R:R: [number only]
 Confidence: HIGH / MED / LOW
 Reasoning: [one line]"""
-                        _max_tokens = 200
+                        return _prompt, 200
 
-                    content = []
-                    if scan_screenshots:
-                        for tf in ["4H","1H","5"]:
-                            img_b64 = scan_screenshots.get(tf)
-                            if not img_b64: continue
-                            content.append({"type":"text","text":f"=== {chosen_sym} {tf} CHART ==="})
-                            content.append({"type":"image","source":{"type":"base64","media_type":"image/png","data":img_b64}})
-                    content.append({"type":"text","text":analysis_prompt})
+                    analysis_prompt, _max_tokens = _build_analysis_prompt(cp)
+
+                    def _build_content(_prompt):
+                        _c = []
+                        if scan_screenshots:
+                            for tf in ["4H","1H","5"]:
+                                img_b64 = scan_screenshots.get(tf)
+                                if not img_b64: continue
+                                _c.append({"type":"text","text":f"=== {chosen_sym} {tf} CHART ==="})
+                                _c.append({"type":"image","source":{"type":"base64","media_type":"image/png","data":img_b64}})
+                        _c.append({"type":"text","text":_prompt})
+                        return _c
+                    content = _build_content(analysis_prompt)
 
                     analysis = ""
                     _claude_ok = False
@@ -8107,9 +8146,21 @@ Reasoning: [one line]"""
                     _retry_budget = _claude_retry_budget(_using_aero)
                     for _attempt in range(_retry_budget):
                         try:
-                            _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
+                            if _attempt > 0:
+                                # Refresh price on every retry — a coin needing
+                                # multiple attempts (10s sleep between each) would
+                                # otherwise keep feeding the AI the price from
+                                # whenever the FIRST attempt started, no matter
+                                # how stale that's become by attempt 3, 4, 8...
+                                _fresh_retry_px = get_bingx_price(chosen_sym)
+                                if _fresh_retry_px:
+                                    cp = _fresh_retry_px
+                                    analysis_prompt, _max_tokens = _build_analysis_prompt(cp)
+                                    content = _build_content(analysis_prompt)
+                            _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
                             print(f"  [SCAN] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model(_kind)}")
-                            r2 = _claude_client(_kind, attempt=_attempt).messages.create(
+                            _client, _used_key = _claude_client_skip(_kind, _attempt, _aero_bad_keys)
+                            r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
@@ -8121,6 +8172,8 @@ Reasoning: [one line]"""
                         except Exception as _ce:
                             _last_claude_err = str(_ce)
                             print(f"  [SCAN] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_last_claude_err}")
+                            if _using_aero and _used_key:
+                                _aero_bad_keys.add(_used_key)  # skip this key for the rest of this scan cycle
                             if _attempt < _retry_budget - 1:
                                 time.sleep(10)
                     if not _claude_ok:
@@ -11705,6 +11758,9 @@ def _run_test_scan(cid, scan_ver: int):
         signal_placed = False
         tried = []
         _demo_api_fail_count = 0
+        _aero_bad_keys = set()  # Aerolink keys that failed anywhere THIS scan cycle — see
+        # the live scan loop's identical comment for why (skip instead of re-trying a
+        # known-bad key from scratch on every coin).
         for candidate in candidate_order:
             if signal_placed: break
             if len(tried) >= MAX_TRIES: break
@@ -11799,9 +11855,18 @@ def _run_test_scan(cid, scan_ver: int):
             _retry_budget = _claude_retry_budget(_using_aero)
             for _attempt in range(_retry_budget):
                 try:
-                    _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
+                    if _attempt > 0:
+                        # Refresh price on every retry — see the live scan loop's
+                        # identical comment for why (stale price across retries).
+                        _fresh_retry_px = get_bingx_price(chosen_sym)
+                        if _fresh_retry_px:
+                            cp = _fresh_retry_px
+                            analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"],
+                                candidate["change"], struct=struct, age=age, age_4h=age_4h)
+                    _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
                     print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
-                    r2 = _claude_client("test", attempt=_attempt, scan_ver=scan_ver).messages.create(
+                    _client, _used_key = _claude_client_skip("test", _attempt, _aero_bad_keys, scan_ver=scan_ver)
+                    r2 = _client.messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
@@ -11811,6 +11876,8 @@ def _run_test_scan(cid, scan_ver: int):
                     _claude_ok = True; break
                 except Exception as _ce:
                     print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
+                    if _using_aero and _used_key:
+                        _aero_bad_keys.add(_used_key)
                     if _attempt < _retry_budget - 1: time.sleep(10)
             if not _claude_ok:
                 print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1; continue
