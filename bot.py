@@ -41,6 +41,8 @@ AEROLINK_API_KEY_8  = os.getenv("AEROLINK_API_KEY_8",  "")   # 8th Aerolink key 
 AEROLINK_API_KEY_9  = os.getenv("AEROLINK_API_KEY_9",  "")   # 9th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_API_KEY_10 = os.getenv("AEROLINK_API_KEY_10", "")   # 10th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
+AGENTROUTER_AUTH_TOKEN = os.getenv("AGENTROUTER_AUTH_TOKEN", "")   # TEST ONLY — re-testing whether Railway's AgentRouter failures still reproduce. Not wired into any live scan.
+AGENTROUTER_BASE_URL   = os.getenv("AGENTROUTER_BASE_URL",   "https://agentrouter.org/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
 _CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-4-8"}
@@ -4254,6 +4256,50 @@ def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
             if _mid: _pin_message(ADMIN_CHAT_ID, _mid)
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
+def _run_agentrouter_cli(prompt: str, model: str = "claude-opus-4-8", timeout: int = 90) -> str:
+    """TEST ONLY — re-verifying whether AgentRouter's malformed/inconsistent
+    responses from Railway (confirmed broken in an earlier test) still
+    reproduce. AgentRouter only accepts the real Claude Code CLI as a client,
+    so this shells out to the actual installed binary. Requires Node.js +
+    the CLI npm package (see railpack.json). Returns raw stdout, or an error
+    string starting with '⚠️'."""
+    if not AGENTROUTER_AUTH_TOKEN:
+        return "⚠️ AGENTROUTER_AUTH_TOKEN not set."
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = AGENTROUTER_BASE_URL
+    env["ANTHROPIC_AUTH_TOKEN"] = AGENTROUTER_AUTH_TOKEN
+    env["ANTHROPIC_MODEL"] = model
+    env["CLAUDE_CODE_USE_AUTH_TOKEN"] = "true"
+    try:
+        r = subprocess.run(["claude", "-p", prompt], env=env, capture_output=True,
+                            text=True, timeout=timeout)
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        if not out and not err:
+            return "⚠️ Empty response from CLI."
+        parts = []
+        if out: parts.append(out)
+        if err: parts.append(f"[stderr]\n{err[:1500]}")
+        parts.append(f"[exit_code={r.returncode}]")
+        return "\n\n".join(parts)
+    except FileNotFoundError:
+        return "⚠️ `claude` CLI not found — Node.js/CLI install may not have completed on this deploy."
+    except subprocess.TimeoutExpired:
+        return f"⚠️ Timed out after {timeout}s."
+    except Exception as e:
+        return f"⚠️ {e}"
+
+def _test_agentrouter(cid):
+    """Admin-only /testar — pure connectivity re-test, no scan logic, no
+    tracking, no side effects. Just: does AgentRouter respond correctly to
+    the real Claude Code CLI from THIS Railway deployment right now?"""
+    send_reply(cid, "🧪 <b>AgentRouter Re-Test</b>\n\n⏳ Calling AgentRouter CLI...")
+    t0 = time.time()
+    output = _run_agentrouter_cli("Reply with exactly: TEST OK")
+    elapsed = time.time() - t0
+    send_reply(cid,
+        f"🧪 <b>Result</b> ({elapsed:.1f}s)\n\n<pre>{_html.escape(output[:3500])}</pre>")
+
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
 
 def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None):
@@ -5777,7 +5823,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/testar","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -6284,6 +6330,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             else:
                 CHAT_MODEL = _new; save_settings()
                 send_reply(chat_id, f"<b>/chat engine → {_model_labels[CHAT_MODEL]}</b> ✅")
+
+    elif cmd == "/testar" and is_admin and chat_id > 0:
+        # chat_id > 0 = DM only, never fires in a channel/group
+        threading.Thread(target=_test_agentrouter, args=(chat_id,), daemon=True).start()
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
