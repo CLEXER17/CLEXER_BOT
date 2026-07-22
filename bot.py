@@ -216,12 +216,10 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         save_state()
         _msg = (
             f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.")
         _locked_msg = (
             f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.")
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
@@ -241,12 +239,10 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         save_state()
         _msg = (
             f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.4g}</code> → <code>{midpoint2:,.4g}</code> to lock in more profit.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.4g}</code> → <code>{midpoint2:,.4g}</code> to lock in more profit.")
         _locked_msg = (
             f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP2 — SL moved up to lock in more profit.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP2 — SL moved up to lock in more profit.")
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
@@ -274,12 +270,10 @@ def _apply_trail_sl_btc(price: float):
         save_active_trade()
         _msg = (
             f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.")
         _locked_msg = (
             f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.")
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
@@ -299,12 +293,10 @@ def _apply_trail_sl_btc(price: float):
         save_active_trade()
         _msg = (
             f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
-            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.0f}</code> → <code>{midpoint2:,.0f}</code> to lock in more profit.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.0f}</code> → <code>{midpoint2:,.0f}</code> to lock in more profit.")
         _locked_msg = (
             f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
-            f"Price reached halfway to TP2 — SL moved up to lock in more profit.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Price reached halfway to TP2 — SL moved up to lock in more profit.")
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
@@ -894,7 +886,9 @@ def _build_recap_text(trades: list, date_str: str) -> str:
         lines.append("")
     if to_list:
         lines.append("⏰ <b>Timeout:</b>")
-        lines += [f"➖ {t['symbol']} — {t['time']}" for t in to_list]
+        lines += [f"➖ {t['symbol']} — {t['time']}" +
+                  (f" ({t['pnl']:+.2f}%)" if t.get("pnl") is not None else "")
+                  for t in to_list]
     return "\n".join(lines)
 
 def _send_daily_summary(tracker: dict):
@@ -938,7 +932,7 @@ def _send_daily_summary(tracker: dict):
                 _pin_message(cid, _mid)
 
 def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
-                         tp1_detail: dict = None, entry_date: str = None, sig_id: str = None):
+                         tp1_detail: dict = None, entry_date: str = None, sig_id: str = None, pnl: float = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
     Drives the 3rd-Free-TP1-of-the-day promo and feeds the end-of-day recap.
     entry_date: the IST calendar day this TRADE was opened on (not today) —
@@ -965,6 +959,7 @@ def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, fre
             "symbol": symbol, "result": result,
             "time": now_ist().strftime("%I:%M %p IST"),
             "free_shown": free_shown, "tier_routed": True, "sig_id": sig_id,
+            "pnl": pnl,
         })
     if result == "TP1" and free_shown:
         bucket["free_tp1"] = bucket.get("free_tp1", 0) + 1
@@ -3676,7 +3671,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 f"Source: {src} ({prompt_mode})\n"
                 f"<i>{reason[:250]}</i>\n\n"
                 f"Next scan in {SIGNAL_SCAN_INTERVAL//3600}h. /signal to force.\n\n"
-                f"{ist_str()}\n<i>🛡️ Capital protected</i>")
+                f"{ist_str()}")
             return None
         if sig_type not in ("BUY", "SELL"): return None
 
@@ -3701,7 +3696,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             send_telegram(f"<b>Signal filtered - low confidence</b>\n\n"
                 f"Claude found: <b>{sig_type}</b> @ {entry:,.0f}\n"
                 f"Confidence: <b>{conf}</b> (required: {min_conf})\n\n"
-                f"<i>/resetsl to lower bar. 🛡️ Capital protected</i>")
+                f"<i>/resetsl to lower bar.</i>")
             return None
 
         tp2_dist = abs(entry-float(signal["tp2"]))
@@ -3826,7 +3821,7 @@ def price_only_advice(price):
         f"TP1:      <b>{tp1:,.0f}</b>  {tp1_status}\n"
         f"TP2:      <b>{tp2:,.0f}</b>  ({abs(dist_to_tp2):.0f} pts)\n"
         f"Progress: <b>{max(0,pct):.1f}%</b> to TP2\nAdvice:   <b>{advice}</b>\n"
-        f"Source:   <b>{get_current_source()}</b>\n\n<i>🛡️ Capital protected</i>")
+        f"Source:   <b>{get_current_source()}</b>")
 
 def required_confidence():
     n = trade_stats["consecutive_sl"]
@@ -4442,7 +4437,7 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
         if send_to_user(cid, text, file_id, file_type): ok += 1
         else: fail += 1
         time.sleep(0.05)
-    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed\n\n<i>🛡️ Capital protected</i>")
+    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed")
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
@@ -4580,8 +4575,7 @@ def run_tick_check():
                     f"🛡️ SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
                     f"💰 TP1:   <b>{tp1:,.0f}</b>\n"
                     f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
-                    f"⚠️ <b>Trade is now LIVE — SL and TP active</b>\n\n"
-                    f"✨ <i>🛡️ Capital protected</i>",
+                    f"⚠️ <b>Trade is now LIVE — SL and TP active</b>",
                     active_trade.get("reply_map"), include_ch2=False)
             return False
 
@@ -4596,7 +4590,7 @@ def run_tick_check():
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
-                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>")
+                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>")
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
@@ -4616,7 +4610,7 @@ def run_tick_check():
                 _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
                     f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
-                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...\n\n✨ <i>🛡️ Capital protected</i>")
+                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...")
                 send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
@@ -4643,7 +4637,7 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
+                    f"❄️ Cooling down 2 scans...")
                 _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
@@ -4652,7 +4646,7 @@ def run_tick_check():
                     f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
+                    f"❄️ Cooling down 1 scan...")
                 _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
@@ -5042,7 +5036,6 @@ def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news
         f"📰 News Feed: {'ON' if news_on else 'OFF'}\n\n"
         f"{status_line}\n"
         f"{action_line}\n\n"
-        f"<i>🛡️ Capital protected</i>"
     )
 
 def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
@@ -5060,7 +5053,6 @@ def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
     out.append(_SCAN_DIV)
     if tag:
         out.append(f"┃ 🪪 {tag}")
-    out.append(f"┃ 🛡️ {_smallcaps_title('Capital Protected')}")
     return "\n".join(out)
 
 def fmt_scan_signal(t: dict) -> str:
@@ -5085,7 +5077,6 @@ def fmt_scan_signal(t: dict) -> str:
             f"🔺 Stop-Loss: <b>{sl:,.4g}</b>\n"
             f"💡 After reaching the first target you can put the rest of the position to breakeven.\n\n"
             f"🔎 Signal ID: <i>{sig_id}</i>\n\n"
-            f"✨ <i>🛡️ Capital protected</i>"
         )
 
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
@@ -5138,15 +5129,13 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
                 "BE Exit", _hdr_notime("🛡️", "BE Exit"),
                 [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
                   f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
-                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"],
-                 [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"]],
                 tag=_sid,
             ) if t.get("tp1_hit") else
             _scan_box(
                 "SL Hit", _hdr_notime("🚨", "SL Hit"),
                 [[f"❌ {_smallcaps_title('Loss on')} {sig} @ <code>{entry:,.4g}</code>"],
-                 [f"⛔ {_smallcaps_title('Do not open any trade now')}",
-                  f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+                 [f"⛔ {_smallcaps_title('Do not open any trade now')}"]],
                 tag=_sid,
             )
         ),
@@ -5159,8 +5148,7 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         "TIMEOUT": _scan_box(
             "Timeout", _hdr("⏰", "Timeout"),
             [[f"{'🟩' if sig=='BUY' else '🟥'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
-              f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"],
-             [f"🔍 {_smallcaps_title('Waiting for next scan signal')}..."]],
+              f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"]],
             tag=_sid,
         ),
         "WAITING_ENTRY": _scan_box(
@@ -5216,7 +5204,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             _track_daily_result(sym, "TIMEOUT", tier_routed=bool(t.get("tier_routed")),
                 free_shown=bool(t.get("tier_routed")) and t.get("share_free", True),
-                entry_date=_ist_date_str(t.get("created_at")))
+                entry_date=_ist_date_str(t.get("created_at")), pnl=pnl)
             _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
             _close_sig_snapshot(t.get("sig_id",""), f"TIMEOUT({pnl:+.2f}%)")
@@ -5424,7 +5412,7 @@ def run_price_check():
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...\n\n<i>🛡️ Capital protected</i>")
+                    f"❄️ Cooling down 2 scans...")
                 _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
@@ -5433,7 +5421,7 @@ def run_price_check():
                     f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...\n\n<i>🛡️ Capital protected</i>")
+                    f"❄️ Cooling down 1 scan...")
                 _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
@@ -5505,7 +5493,7 @@ def _handle_liquidation_msg(raw: str):
             f"💥 {closed} position force-closed\n"
             f"💰 Size: <code>{qty:,.4g} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
             f"💵 Price: <code>{price:,.4g}</code>\n\n"
-            f"<i>🛡️ Capital protected · {ist_str()}</i>"
+            f"<i>{ist_str()}</i>"
         )
         send_telegram(msg_text)
         send_to_tier_channels(msg_text, share_free=True)
@@ -5625,10 +5613,10 @@ def _poll_payment_events():
                         u = ct._db.get(str(cid)) or ct._default_user(cid)
                         u["wallet_balance"] = round(u.get("wallet_balance", 0) + amount, 2)
                         ct._set(cid, u)
-                        send_to_user(cid, f"💰 <b>Wallet credited</b>: +${amount:,.2f}\n\nNew balance: <b>${u['wallet_balance']:,.2f}</b>\n\n<i>🛡️ Capital protected</i>")
+                        send_to_user(cid, f"💰 <b>Wallet credited</b>: +${amount:,.2f}\n\nNew balance: <b>${u['wallet_balance']:,.2f}</b>")
                     elif etype == "vip":
                         _grant_vip(cid, days=30)
-                        send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.\n\n<i>🛡️ Capital protected</i>")
+                        send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.")
                     requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
                 except Exception as e:
                     print(f"  [PAYMENT EVENTS] apply error for event {ev.get('id')}: {e}")
@@ -5650,13 +5638,13 @@ def check_news(force=False):
 # --- /tvstatus ----------------------------------------------------------------
 def cmd_tvstatus(chat_id):
     if not TV_BRIDGE_URL:
-        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>.\n\n<i>🛡️ Capital protected</i>"); return
+        send_reply(chat_id, "<b>TV Status</b>\n\nTV_BRIDGE_URL not set.\nRunning on <b>Binance</b>."); return
     send_reply(chat_id, f"Checking...\n<code>{TV_BRIDGE_URL}</code>")
     now = time.time(); health = tv_ping()
     if not health:
         ls = tv_bridge_state.get("last_seen",0)
         since = f"{int((now-ls)//60)}m ago" if ls else "never"
-        send_reply(chat_id, f"<b>TV Status</b>\n\n🔴 Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>\n\n<i>🛡️ Capital protected</i>"); return
+        send_reply(chat_id, f"<b>TV Status</b>\n\n🔴 Bridge OFFLINE\nLast seen: {since}\n\nUsing: <b>Binance</b>"); return
     tv_bridge_state.update({"online":True,"last_seen":now,"cdp_ok":health.get("cdp_connected",False),
         "tv_version":health.get("tv_version",""),"cached_intervals":health.get("cached_intervals",[])})
     cdp_ok = health.get("cdp_connected",False); tv_version = health.get("tv_version","?")
@@ -5673,7 +5661,7 @@ def cmd_tvstatus(chat_id):
         f"{tick(candles_ok)} Candles" + (f" ({len(df)} bars 1H)" if candles_ok else "") + "\n\n"
         f"Cached: {', '.join(cached_ivs) if cached_ivs else 'none'}\n"
         f"TV: <code>{tv_version}</code> | Symbol: <code>{tv_symbol}</code>\n"
-        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}\n<i>🛡️ Capital protected</i>")
+        f"Uptime: <b>{uptime_str}</b>\n\n{ist_str()}")
 
 # --- COMMANDS -----------------------------------------------------------------
 ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
@@ -6000,7 +5988,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 "<code>/demo sl</code> — simulate SL hit\n"
                 "<code>/demo btc sl 67000</code> — move SL\n"
                 "<code>/demo btc close</code> — force close\n\n"
-                "<i>🛡️ Capital protected</i>"); return
+                ""); return
         try:
             def _fmt(results):
                 if results is None: return "Done."
@@ -6078,7 +6066,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     "<code>/demo sl</code>  — SL hit → close all\n"
                     "<code>/demo btc sl 67000</code> — move SL\n"
                     "<code>/demo btc close</code> — force close\n\n"
-                    "<i>🛡️ Capital protected</i>")
+                    "")
         except Exception as e:
             send_reply(chat_id, f"❌ Demo error: {e}")
 
@@ -6091,8 +6079,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         send_reply(chat_id,
             f"⏸ <b>Bot PAUSED</b>\n\n"
             f"Everything frozen — scans, monitoring, alerts.\n"
-            f"Use ▶️ Resume to restart.\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_ctrl_btns)
+            f"Use ▶️ Resume to restart.", reply_markup=_ctrl_btns)
 
     elif cmd == "/stop":
         bot_stopped.set(); bot_paused.clear()
@@ -6107,8 +6094,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             f"❌ New scans blocked\n"
             f"❌ BTC analysis blocked\n"
             f"❌ Demo blocked\n"
-            f"❌ News blocked\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_ctrl_btns)
+            f"❌ News blocked", reply_markup=_ctrl_btns)
 
     elif cmd == "/btcanalysis":
         arg = parts[1].lower() if len(parts) > 1 else ""
@@ -6122,9 +6108,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
         ]]}
         if btc_analysis_enabled:
-            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n<i>🛡️ Capital protected</i></blockquote>"
+            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n</blockquote>"
         else:
-            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n<i>🛡️ Capital protected</i></blockquote>"
+            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n</blockquote>"
         send_reply(chat_id, _btca_text, reply_markup=_btca_mkp)
 
     elif cmd == "/tvstatus":
@@ -6361,7 +6347,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
         send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
-            "\n\n<i>🛡️ Capital protected</i>", emoji_overrides={"✅": None, "🔒": None})
+            "", emoji_overrides={"✅": None, "🔒": None})
 
     elif cmd == "/nt":
         # Non-special (regular grid) times — same table shape as /st, but for
@@ -6400,7 +6386,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if not _nt_blocks:
             send_reply(chat_id, "No non-special times have tracked data yet."); return
         send_reply(chat_id, "📊 <b>Non-Special Times</b>\n\n" + "\n\n".join(_nt_blocks) +
-            "\n\n<i>🛡️ Capital protected</i>")
+            "")
 
     elif cmd == "/list":
         _bl_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
@@ -6414,7 +6400,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if not _bl_blocks:
             send_reply(chat_id, "No blacklisted times — nothing has hit a 1:3 ratio yet."); return
         send_reply(chat_id, "🚫 <b>Blacklisted Times</b>\n\n" + "\n\n".join(_bl_blocks) +
-            "\n\n<i>Use /un s1|s2|t1|t2 H.MM to clear one, e.g. /un s1 3.09</i>\n\n<i>🛡️ Capital protected</i>")
+            "\n\n<i>Use /un s1|s2|t1|t2 H.MM to clear one, e.g. /un s1 3.09</i>")
 
     elif cmd == "/un":
         if len(parts) < 3:
@@ -6625,7 +6611,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         sub = parts[1].lower() if len(parts) > 1 else ""
         if not sub:
             send_reply(chat_id,
-                "<b>Mini App Control</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_mini_btns)
+                "<b>Mini App Control</b>", reply_markup=_mini_btns)
             return
         msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
         if "/" in msg:
@@ -6644,7 +6630,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 if not on:
                     # Resuming — force a fresh state push so the mini app can't show a stale/ghost trade
                     save_state()
-                send_reply(chat_id, f"🔧 Mini App {'⏸ PAUSED' if on else '▶️ RESUMED (state synced)'}\n\n<i>🛡️ Capital protected</i>", reply_markup=_mini_btns)
+                send_reply(chat_id, f"🔧 Mini App {'⏸ PAUSED' if on else '▶️ RESUMED (state synced)'}", reply_markup=_mini_btns)
             except Exception as e:
                 send_reply(chat_id, f"Error: {e}", reply_markup=_mini_btns)
         else:
@@ -6657,7 +6643,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             info = f"{t['signal']} @ {t['entry']:,.0f}"
             log_trade_outcome("MANUAL_CLOSE", f"closed by admin")
             ct.on_close_all()
-            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}\n\n<i>🛡️ Capital protected</i>")
+            reset_trade(); send_telegram(f"<b>Trade Closed</b>\n{info}")
             send_reply(chat_id, f"Closed: {info}"); force_scan.set()
 
     elif cmd == "/sltobe":
@@ -6665,7 +6651,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         else:
             old = active_trade["sl"]; active_trade["sl"] = active_trade["entry"]
             ct.on_sl_to_be(active_trade["entry"])
-            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>\n\n<i>🛡️ Capital protected</i>")
+            send_telegram(f"<b>SL -> BE</b>  {old:,.0f} -> <b>{active_trade['entry']:,.0f}</b>")
             send_reply(chat_id, f"SL -> {active_trade['entry']:,.0f}")
 
     elif cmd == "/setsl":
@@ -6676,7 +6662,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 v = float(parts[1].replace(",","")); old = active_trade["sl"]
                 active_trade["sl"] = v
                 ct.on_update_sl(v)
-                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(f"<b>SL</b>  {old:,.0f} -> <b>{v:,.0f}</b>")
                 send_reply(chat_id, f"SL = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /setsl 61500")
 
@@ -6686,7 +6672,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp1"] = v
-                send_telegram(f"<b>TP1 -> {v:,.0f}</b>\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(f"<b>TP1 -> {v:,.0f}</b>")
                 send_reply(chat_id, f"TP1 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp1 63000")
 
@@ -6696,7 +6682,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         else:
             try:
                 v = float(parts[1].replace(",","")); active_trade["tp2"] = v
-                send_telegram(f"<b>TP2 -> {v:,.0f}</b>\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(f"<b>TP2 -> {v:,.0f}</b>")
                 send_reply(chat_id, f"TP2 = {v:,.0f}")
             except: send_reply(chat_id, "Usage: /settp2 65000")
 
@@ -6851,20 +6837,17 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id,
                 f"<b>BTC Prompt Mode</b>\n\nCurrent: <b>{mode_label}</b>\n\n"
                 f"<b>V7 Classic</b> — TV/BingX split, narrated scan, no Rule 8\n"
-                f"<b>V9 Current</b> — CRITICAL header, silent scan, Rule 8 hard block\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_bmode_btns)
+                f"<b>V9 Current</b> — CRITICAL header, silent scan, Rule 8 hard block", reply_markup=_bmode_btns)
         elif parts[1].lower() == "on":
             BTC_PROMPT_MODE = "V7"; save_settings()
             send_reply(chat_id,
                 f"<b>BTC Mode → 🔵 V7 CLASSIC</b> ✅\n\n"
-                f"Narrated scan | min 2 pause candles | no Rule 8\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_bmode_btns)
+                f"Narrated scan | min 2 pause candles | no Rule 8", reply_markup=_bmode_btns)
         elif parts[1].lower() == "off":
             BTC_PROMPT_MODE = "V9"; save_settings()
             send_reply(chat_id,
                 f"<b>BTC Mode → 🟠 V9 CURRENT</b> ✅\n\n"
-                f"CRITICAL header | silent scan | Rule 8 hard block\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_bmode_btns)
+                f"CRITICAL header | silent scan | Rule 8 hard block", reply_markup=_bmode_btns)
         else:
             send_reply(chat_id, "Usage: /btcmode on|off", reply_markup=_bmode_btns)
 
@@ -6885,14 +6868,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts)<2:
             send_reply(chat_id,
                 f"<b>Chart Images</b>\n\nStatus: <b>{'✅ ON' if SEND_CHARTS else '❌ OFF'}</b>\n"
-                f"TFs: <b>{', '.join(CHART_TFS).upper()}</b>\n\n<i>🛡️ Capital protected</i>",
+                f"TFs: <b>{', '.join(CHART_TFS).upper()}</b>",
                 reply_markup=_img_btns)
         elif parts[1].lower()=="on":
             SEND_CHARTS = True; save_settings()
-            send_reply(chat_id, f"✅ <b>Charts ON</b>\nTFs: {', '.join(CHART_TFS).upper()}\n\n<i>🛡️ Capital protected</i>", reply_markup=_img_btns)
+            send_reply(chat_id, f"✅ <b>Charts ON</b>\nTFs: {', '.join(CHART_TFS).upper()}", reply_markup=_img_btns)
         elif parts[1].lower()=="off":
             SEND_CHARTS = False; save_settings()
-            send_reply(chat_id, "❌ <b>Charts OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_img_btns)
+            send_reply(chat_id, "❌ <b>Charts OFF</b>", reply_markup=_img_btns)
         else: send_reply(chat_id, "Usage: /images on|off", reply_markup=_img_btns)
 
     elif cmd == "/setimages":
@@ -6919,15 +6902,15 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             {"text": "🔴  OFF", "callback_data": "news_off"}]]}
         if len(parts)<2:
             send_reply(chat_id,
-                f"<b>Crypto News</b>\n\nStatus: <b>{'✅ ON' if SEND_NEWS else '❌ OFF'}</b>\n\n<i>🛡️ Capital protected</i>",
+                f"<b>Crypto News</b>\n\nStatus: <b>{'✅ ON' if SEND_NEWS else '❌ OFF'}</b>",
                 reply_markup=_news_btns)
         elif parts[1].lower()=="on":
             SEND_NEWS = True; save_settings()
             _ws_note = "" if HAS_WEBSOCKET else "\n\n⚠️ websocket-client not installed on this server — feed can't run."
-            send_reply(chat_id, f"✅ <b>News ON</b> — Liquidation feed (Trending Insights){_ws_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
+            send_reply(chat_id, f"✅ <b>News ON</b> — Liquidation feed (Trending Insights){_ws_note}", reply_markup=_news_btns)
         elif parts[1].lower()=="off":
             SEND_NEWS = False; save_settings()
-            send_reply(chat_id, "❌ <b>News OFF</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_news_btns)
+            send_reply(chat_id, "❌ <b>News OFF</b>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
 
     elif cmd == "/ws":
@@ -6937,14 +6920,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             {"text": "🔴  OFF", "callback_data": "weekendsleep_off"}]]}
         if len(parts) < 2:
             send_reply(chat_id,
-                f"<b>Weekend Sleep</b>\n\nStatus: <b>{'✅ ON (bot pauses Fri 10PM → Sun 11PM IST)' if WEEKEND_SLEEP_ENABLED else '❌ OFF (bot runs straight through the weekend)'}</b>\n\n<i>🛡️ Capital protected</i>",
+                f"<b>Weekend Sleep</b>\n\nStatus: <b>{'✅ ON (bot pauses Fri 10PM → Sun 11PM IST)' if WEEKEND_SLEEP_ENABLED else '❌ OFF (bot runs straight through the weekend)'}</b>",
                 reply_markup=_ws_btns)
         elif parts[1].lower() == "on":
             WEEKEND_SLEEP_ENABLED = True; save_settings()
-            send_reply(chat_id, "✅ <b>Weekend Sleep ON</b> — bot will pause Fri 10PM → Sun 11PM IST as usual.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
+            send_reply(chat_id, "✅ <b>Weekend Sleep ON</b> — bot will pause Fri 10PM → Sun 11PM IST as usual.", reply_markup=_ws_btns)
         elif parts[1].lower() == "off":
             WEEKEND_SLEEP_ENABLED = False; save_settings()
-            send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.\n\n<i>🛡️ Capital protected</i>", reply_markup=_ws_btns)
+            send_reply(chat_id, "❌ <b>Weekend Sleep OFF</b> — bot will now run straight through the weekend, no Fri-Sun pause.", reply_markup=_ws_btns)
         else: send_reply(chat_id, "Usage: /ws on|off", reply_markup=_ws_btns)
 
     elif cmd == "/statsaccess" and is_admin:
@@ -6954,14 +6937,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id,
                 f"<b>Win Rate & Trade Stats — User Access</b>\n\nStatus: <b>{'✅ ON (users can see /stats)' if STATS_VISIBLE_TO_USERS else '❌ OFF (hidden from users)'}</b>\n\n"
-                f"Admin and co-admin always keep access regardless of this setting.\n\n<i>🛡️ Capital protected</i>",
+                f"Admin and co-admin always keep access regardless of this setting.",
                 reply_markup=_sa_btns)
         elif parts[1].lower() == "on":
             STATS_VISIBLE_TO_USERS = True; save_settings()
-            send_reply(chat_id, "✅ <b>Win Rate & Trade Stats → ON</b> — users can now see /stats again.\n\n<i>🛡️ Capital protected</i>", reply_markup=_sa_btns)
+            send_reply(chat_id, "✅ <b>Win Rate & Trade Stats → ON</b> — users can now see /stats again.", reply_markup=_sa_btns)
         elif parts[1].lower() == "off":
             STATS_VISIBLE_TO_USERS = False; save_settings()
-            send_reply(chat_id, "❌ <b>Win Rate & Trade Stats → OFF</b> — hidden from regular users (admin/co-admin unaffected).\n\n<i>🛡️ Capital protected</i>", reply_markup=_sa_btns)
+            send_reply(chat_id, "❌ <b>Win Rate & Trade Stats → OFF</b> — hidden from regular users (admin/co-admin unaffected).", reply_markup=_sa_btns)
         else: send_reply(chat_id, "Usage: /statsaccess on|off", reply_markup=_sa_btns)
 
     elif cmd == "/vip":
@@ -6996,7 +6979,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "⚠️ Enter a valid number greater than 0, e.g. <code>/setvipprice 20</code>"); return
         VIP_MONTHLY_PRICE = _new_price
         save_settings()
-        send_reply(chat_id, f"✅ <b>VIP price set to ${VIP_MONTHLY_PRICE:.2f}/month</b>\n\n<i>🛡️ Capital protected</i>")
+        send_reply(chat_id, f"✅ <b>VIP price set to ${VIP_MONTHLY_PRICE:.2f}/month</b>")
 
     elif cmd == "/latestnews":
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
@@ -7142,7 +7125,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 "<code>/closetrade ETH</code> — close ETH-USDT for all copy users\n"
                 "<code>/closetrade SOL</code> — close SOL-USDT for all copy users\n"
                 "<code>/closetrade all</code> — close ALL positions (every coin)\n\n"
-                "<i>🛡️ Capital protected</i>"); return
+                ""); return
         coin = parts[1].upper()
         if coin == "ALL":
             # Close every position on every symbol
@@ -7160,7 +7143,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"🔴 <b>ALL TRADES CLOSED</b>  {ist_str()}\n\n"
                 f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                 f"⛔ <b>This is NOT a new signal</b>\n\n"
-                f"Admin closed all positions.\n\n<i>🛡️ Capital protected</i>")
+                f"Admin closed all positions.")
             send_reply(chat_id, f"✅ All positions closed.\nBTC trade reset + Scan1 ({scan1_count}) + Scan2 ({scan2_count}) trades cleared.")
         else:
             results = ct.close_coin_all(coin)
@@ -7169,7 +7152,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 log_trade_outcome("MANUAL_CLOSE", f"admin /closetrade {coin}")
                 reset_trade()
             reply = f"<b>Close {coin.upper()}-USDT</b>\n\n" + "\n".join(results)
-            send_reply(chat_id, reply + "\n\n<i>🛡️ Capital protected</i>")
+            send_reply(chat_id, reply + "")
 
     elif cmd == "/closescan" and is_scanadmin:
         s1 = len(scan1_trades); s2 = len(scan2_trades)
@@ -7179,7 +7162,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         scan1_trades.clear(); scan2_trades.clear(); save_state()
         send_reply(chat_id,
             f"✅ <b>Scan trades cleared</b>\n\n"
-            f"Scan1: {s1} removed\nScan2: {s2} removed\nClosed on BingX: {', '.join(_syms) if _syms else 'none'}\n\n<i>🛡️ Capital protected</i>")
+            f"Scan1: {s1} removed\nScan2: {s2} removed\nClosed on BingX: {', '.join(_syms) if _syms else 'none'}")
 
     elif cmd == "/alt" and is_scanadmin:
         _alt_btns = {"inline_keyboard": [[
@@ -7192,15 +7175,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id,
                 f"⏰ <b>Scan1 Schedule</b>\n\n"
-                f"Current times:\n<code>{_sched_str}</code>\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
+                f"Current times:\n<code>{_sched_str}</code>", reply_markup=_alt_btns); return
         # /alt loop 2  → every hour at :02
         if parts[1].lower() == "loop" and len(parts) > 2:
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
             except: send_reply(chat_id, "❌ Usage: /alt loop 02"); return
             SCAN1_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
             _clear_own_triggers(_scan1_triggered_today, 1)
-            send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
+            send_reply(chat_id, f"✅ <b>Scan1 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>", reply_markup=_alt_btns); return
         # /alt manual 2.02 2.23 14.25  → specific times (supports both . and : separator)
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []; rejected = []
@@ -7219,7 +7201,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _clear_own_triggers(_scan1_triggered_today, 1)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
-            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt_btns); return
+            send_reply(chat_id, f"✅ <b>Scan1 → Manual Times</b>\n\n{_times}{_rej_note}", reply_markup=_alt_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt_btns); return
 
     elif cmd == "/alt2" and is_scanadmin:
@@ -7233,14 +7215,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id,
                 f"⏰ <b>Scan2 Schedule</b>\n\n"
-                f"Current times:\n<code>{_sched2_str}</code>\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
+                f"Current times:\n<code>{_sched2_str}</code>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "loop" and len(parts) > 2:
             try: new_min = int(parts[2]); assert 0 <= new_min <= 59
             except: send_reply(chat_id, "❌ Usage: /alt2 loop 24"); return
             SCAN2_SCHEDULE = sorted(set((h, new_min) for h in range(24)))
             _clear_own_triggers(_scan1_triggered_today, 2)
-            send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
+            send_reply(chat_id, f"✅ <b>Scan2 → Loop Mode</b>\n\nRuns every hour at <b>:{new_min:02d}</b>", reply_markup=_alt2_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []; rejected = []
             for t in parts[2:]:
@@ -7258,7 +7239,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _clear_own_triggers(_scan1_triggered_today, 2)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
-            send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_alt2_btns); return
+            send_reply(chat_id, f"✅ <b>Scan2 → Manual Times</b>\n\n{_times}{_rej_note}", reply_markup=_alt2_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_alt2_btns); return
 
     elif cmd == "/altdemo" and is_scanadmin:
@@ -7271,8 +7252,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id,
                 f"⏰ <b>TS1 Schedule</b>\n\n"
-                f"Current times:\n<code>{_sched_str}</code>\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
+                f"Current times:\n<code>{_sched_str}</code>", reply_markup=_altd_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []; rejected = []
             for t in parts[2:]:
@@ -7290,7 +7270,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _clear_own_triggers(_test_triggered_today, 1)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN1_TEST_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
-            send_reply(chat_id, f"✅ <b>TS1 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd_btns); return
+            send_reply(chat_id, f"✅ <b>TS1 → Manual Times</b>\n\n{_times}{_rej_note}", reply_markup=_altd_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd_btns); return
 
     elif cmd == "/altdemo2" and is_scanadmin:
@@ -7303,8 +7283,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id,
                 f"⏰ <b>TS2 Schedule</b>\n\n"
-                f"Current times:\n<code>{_sched2_str}</code>\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_altd2_btns); return
+                f"Current times:\n<code>{_sched2_str}</code>", reply_markup=_altd2_btns); return
         if parts[1].lower() == "manual" and len(parts) > 2:
             new_slots = []; rejected = []
             for t in parts[2:]:
@@ -7322,7 +7301,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             _clear_own_triggers(_test_triggered_today, 2)
             _times = "\n".join(f"• {h}:{m:02d} IST" for h,m in SCAN2_TEST_SCHEDULE)
             _rej_note = f"\n\n⚠️ Ignored invalid: <code>{' '.join(rejected)}</code>" if rejected else ""
-            send_reply(chat_id, f"✅ <b>TS2 → Manual Times</b>\n\n{_times}{_rej_note}\n\n<i>🛡️ Capital protected</i>", reply_markup=_altd2_btns); return
+            send_reply(chat_id, f"✅ <b>TS2 → Manual Times</b>\n\n{_times}{_rej_note}", reply_markup=_altd2_btns); return
         send_reply(chat_id, "❌ Tap a button below 👇", reply_markup=_altd2_btns); return
 
     elif cmd == "/tradelog" and (is_admin or is_co_admin(chat_id)):
@@ -7729,8 +7708,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 f"<b>Scan Toggle</b>\n\n"
                 f"🔍 Scan1 Auto  —  <b>{_s1}</b>\n"
                 f"🔍 Scan2 Auto  —  <b>{_s2}</b>\n"
-                f"🧪 Demo Trade  —  <b>{_ts}</b>\n\n"
-                f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
+                f"🧪 Demo Trade  —  <b>{_ts}</b>", reply_markup=_mkp)
             return
 
         if cmd == "/scan":
@@ -7870,7 +7848,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 if SCAN_USE_TV and not is_tv_online():
                     send_reply(cid,
                         f"📴 <b>TradingView Offline — Scan{scan_ver} blocked</b>\n\n"
-                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.\n\n<i>🛡️ Capital protected</i>")
+                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.")
                     return
 
                 # ── Check slot availability (scan1=6 slots, scan2=6 slots) ──────
@@ -7886,7 +7864,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                     send_reply(cid,
                         f"🚫 <b>Scan{scan_ver} slots full ({_max_slots}/{_max_slots})</b>\n\n" +
                         "\n".join(f"  {'🟢' if x['signal']=='BUY' else '🔴'} {x['symbol']}" for x in my_list) +
-                        f"\n\nWaiting for a trade to close before scanning again.\n\n<i>🛡️ Capital protected</i>")
+                        f"\n\nWaiting for a trade to close before scanning again.")
                     return
 
                 # ── Remind about running trades ───────────────────────────────
@@ -8195,8 +8173,7 @@ Reasoning: [one line]"""
                     send_reply(cid,
                         f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
                         f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
-                        f"<pre>{_html.escape(analysis[:900])}</pre>\n\n"
-                        f"🛡️ <i>Capital protected</i>")
+                        f"<pre>{_html.escape(analysis[:900])}</pre>")
 
                     if scan_signal_val == "WAIT":
                         # Extract reasoning from Claude's analysis for the skip log
@@ -8335,15 +8312,13 @@ Reasoning: [one line]"""
                             + "\n".join(skip_log[-len(tried):]) +
                             f"\n\n⚠️ Check your AI Model / Gateway settings (Aerolink may be blocked) — "
                             f"switch to Direct if this keeps happening.\n"
-                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.\n\n"
-                            f"<i>🛡️ Capital protected</i>")
+                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
                     else:
                         send_reply(cid,
                             f"⏸ <b>No signal found</b>  {ist_str()}\n\n"
                             f"Tried {len(tried)} coin(s): <b>{tried_str}</b>\n\n"
                             f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
-                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.\n\n"
-                            f"<i>🛡️ Capital protected</i>")
+                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
                     # Special-time slots matter for tracking — let VIP know this specific
                     # slot didn't fire, and clearly say why (gateway/API error vs Claude
                     # genuinely finding no clean setup) instead of silently skipping it.
@@ -8435,8 +8410,7 @@ Reasoning: [one line]"""
             _results.append(f"❌ API cost log CSV: {e}")
         send_reply(chat_id,
             f"<b>Sync-up complete</b>\n\n<blockquote>" + "\n".join(_results) + "</blockquote>\n\n"
-            f"Any co-server pointed at the same CLEXER_API_URL will now see this data on its next load.\n\n"
-            f"<i>🛡️ Capital protected</i>")
+            f"Any co-server pointed at the same CLEXER_API_URL will now see this data on its next load.")
         return
 
     elif cmd == "/server" and is_admin:
@@ -8448,8 +8422,7 @@ Reasoning: [one line]"""
             send_reply(chat_id,
                 f"🖥️ <b>Active Server Switched</b>\n\n"
                 f"<blockquote>Now active: <b>{_active_now}</b>\n"
-                f"This server (<b>{SERVER_NAME}</b>) is {'🟢 ACTIVE — placing real orders' if _active_now==SERVER_NAME else '⏸️ STANDBY — no copytrade orders will be placed'}.</blockquote>\n\n"
-                f"<i>🛡️ Capital protected</i>")
+                f"This server (<b>{SERVER_NAME}</b>) is {'🟢 ACTIVE — placing real orders' if _active_now==SERVER_NAME else '⏸️ STANDBY — no copytrade orders will be placed'}.</blockquote>")
             return
         _status = "🟢 ACTIVE — placing real orders" if is_active_server() else "⏸️ STANDBY — no copytrade orders will be placed"
         _mkp = {"inline_keyboard": [
@@ -8461,8 +8434,7 @@ Reasoning: [one line]"""
             f"Currently active server: <b>{_active_now}</b>\n"
             f"Status here: {_status}</blockquote>\n\n"
             f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
-            f"run it from whichever server you're switching TO.\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
+            f"run it from whichever server you're switching TO.", reply_markup=_mkp)
         return
 
     elif cmd == "/model" and is_admin:
@@ -8483,8 +8455,7 @@ Reasoning: [one line]"""
             f"Active: <b>{SCAN_MODEL}</b>\n\n"
             f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
             f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
-            f"Used for all scan/BTC/coin analysis calls.\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
+            f"Used for all scan/BTC/coin analysis calls.", reply_markup=_mkp)
 
     elif cmd == "/gateway" and is_admin:
         _arg = parts[1].lower() if len(parts) > 1 else ""
@@ -8506,8 +8477,7 @@ Reasoning: [one line]"""
             f"Active: <b>{'Aerolink Gateway' if USE_AEROLINK else 'Direct (Anthropic)'}</b>\n\n"
             f"Direct — uses your own ANTHROPIC_API_KEY straight to Anthropic.\n"
             f"Aerolink — uses a separate AEROLINK_API_KEY through capi.aerolink.lat.\n"
-            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.\n\n"
-            f"<i>🛡️ Capital protected</i>", reply_markup=_mkp)
+            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.", reply_markup=_mkp)
 
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
@@ -8517,7 +8487,7 @@ Reasoning: [one line]"""
                 "and the bot finds it on BingX and analyzes it for you.\n\n"
                 "🔎 If more than one coin shares that name (e.g. two different Broccoli tokens), "
                 "the bot shows you all the matches so you can tell it exactly which one you want.\n\n"
-                "<i>🛡️ Capital protected</i>"); return
+                ""); return
         query = parts[1].upper().strip()
         send_reply(chat_id, f"🔍 Searching for <b>{query}</b> on BingX...")
         def _do_coin(cid=chat_id, q=query):
@@ -8542,8 +8512,7 @@ Reasoning: [one line]"""
                 if not matches:
                     send_reply(cid,
                         f"❌ <b>{q}</b> not found on BingX perpetuals.\n\n"
-                        f"Try: /coin ETH  /coin SOL  /coin BNB\n\n"
-                        f"<i>🛡️ Capital protected</i>"); return
+                        f"Try: /coin ETH  /coin SOL  /coin BNB"); return
 
                 if len(matches) > 1:
                     # Multiple matches — fetch prices and show list
@@ -8556,7 +8525,7 @@ Reasoning: [one line]"""
                             lines.append(f"• <code>/coin {sym.replace('-','')}</code>  ${p:,.4f}")
                         except:
                             lines.append(f"• <code>/coin {sym.replace('-','')}</code>")
-                    send_reply(cid, "\n".join(lines) + "\n\n<i>🛡️ Capital protected</i>"); return
+                    send_reply(cid, "\n".join(lines) + ""); return
 
                 # Exact match — fetch ticker then analyze
                 sym = matches[0]   # e.g. "ETH-USDT"
@@ -8631,8 +8600,7 @@ Reasoning: [one line]"""
                     f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
                     f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(str(a.get('practical_note','Size small — low-conviction setup.')))}</blockquote>\n\n"
                     + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
-                    + f"{_DIV}\n\n"
-                    f"🛡️ {_smallcaps_title('Capital Protected')}"
+                    + f"{_DIV}"
                 )
                 send_reply(cid, text_out)
             except Exception as e:
@@ -8985,7 +8953,7 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
     if u.get("tier") == "vip":
         _until = f" until <b>{u['vip_end']}</b>" if u.get("vip_end") else ""
         _help_edit_or_send(chat_id,
-            f"👑 <b>{_smallcaps_title('You Are Already VIP')}</b>\n\n<blockquote>Your VIP is active{_until} — no need to buy another one.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+            f"👑 <b>{_smallcaps_title('You Are Already VIP')}</b>\n\n<blockquote>Your VIP is active{_until} — no need to buy another one.</blockquote>",
             {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_main"}]]},
             message_id, rotate=False)
         return
@@ -9020,7 +8988,7 @@ def send_vip_offer_screen(chat_id, cid, message_id=None):
                   f"🎰 <b>⭐ draw:</b> random Stars price between <b>⭐{star_min:,}</b> and <b>⭐{star_base:,}</b> — up to 10% off.")
     text = (f"👑 <b>{_smallcaps_title('Get VIP')}</b>\n\n<blockquote>"
             f"Two lucky draws, one spin each per month — spin for a discounted $ price, a discounted ⭐ Stars price, or skip straight to the flat ${VIP_MONTHLY_PRICE:.0f}/month. Whatever you land on stays locked in until paid or the month resets.\n\n"
-            f"{_dollar_line}\n\n{_star_line}</blockquote>\n\n<i>🛡️ Capital protected</i>")
+            f"{_dollar_line}\n\n{_star_line}</blockquote>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
@@ -9062,10 +9030,10 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
         # doesn't get advertised as such to someone who never paid to see it.
         if snap["result"].startswith("TP"):
             send_reply(chat_id, f"🏆 <b>This signal already closed — {snap['result']} Hit!</b>\n\n"
-                                 f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
+                                 f"Try unlocking a different signal instead.")
         else:
             send_reply(chat_id, f"⏰ <b>This signal already closed.</b>\n\n"
-                                 f"Try unlocking a different signal instead.\n\n<i>🛡️ Capital protected</i>")
+                                 f"Try unlocking a different signal instead.")
         return
     spins = u.get("sig_spins", {})
     rows = []
@@ -9081,7 +9049,7 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     rows.append([{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}])
     rows.append([{"text": "🏠 Main Menu", "callback_data": "help_main"}])
     text = (f"🔒 <b>{_smallcaps_title('Signal Locked')}</b>\n\n<blockquote>{_wallet_line}\n\n"
-            f"Or skip the spin entirely — unlock instantly for a flat <b>⭐ 1 Star</b>, no spinning needed.</blockquote>\n\n<i>🛡️ Capital protected</i>")
+            f"Or skip the spin entirely — unlock instantly for a flat <b>⭐ 1 Star</b>, no spinning needed.</blockquote>")
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
@@ -9089,7 +9057,7 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
 def send_addfunds_screen(chat_id, message_id=None):
     rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
             [{"text": "◀️  Back", "callback_data": "help_main"}]]
-    text = f"💰 <b>{_smallcaps_title('Add Funds')}</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals. Pay with crypto or Telegram Stars.</blockquote>\n\n<i>🛡️ Capital protected</i>"
+    text = f"💰 <b>{_smallcaps_title('Add Funds')}</b>\n\n<blockquote>Top up your wallet — used to unlock Free-channel signals. Pay with crypto or Telegram Stars.</blockquote>"
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
@@ -9234,7 +9202,7 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
             if active_trade.get("signal"):
                 active_trade["sl"] = active_trade["entry"]
                 ct.on_sl_to_be(active_trade["entry"]); save_state()
-                send_telegram(f"<b>SL -&gt; BE</b>  {symbol} -&gt; <b>{active_trade['entry']:,.4f}</b>\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(f"<b>SL -&gt; BE</b>  {symbol} -&gt; <b>{active_trade['entry']:,.4f}</b>")
                 result_text = f"✅ <b>{symbol} SL moved to breakeven</b> ({active_trade['entry']:,.4f})"
             else:
                 result_text = f"⚠️ {symbol} trade no longer open."
@@ -9243,7 +9211,7 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
             if 0 <= idx < len(lst) and lst[idx].get("symbol") == symbol:
                 lst[idx]["sl"] = lst[idx]["entry"]
                 ct.scan_sl_to_be(symbol, lst[idx]["entry"]); save_state()
-                send_telegram(f"<b>SL -&gt; BE</b>  {symbol} -&gt; <b>{lst[idx]['entry']:,.4f}</b>\n\n<i>🛡️ Capital protected</i>")
+                send_telegram(f"<b>SL -&gt; BE</b>  {symbol} -&gt; <b>{lst[idx]['entry']:,.4f}</b>")
                 result_text = f"✅ <b>{symbol} SL moved to breakeven</b> ({lst[idx]['entry']:,.4f})"
             else:
                 result_text = f"⚠️ {symbol} trade no longer open."
@@ -9661,8 +9629,8 @@ def send_go_screen(chat_id, message_id=None):
         f"🔌 BTC Gateway: <b>{_go_gateway_lbl}</b>\n\n"
         f"{_go_btc_line}"
         f"{_go_s1_line}"
-        f"{_go_s2_line}\n"
-        f"<i>🛡️ Capital protected</i></blockquote>")
+        f"{_go_s2_line}"
+        f"</blockquote>")
     if message_id:
         _help_edit_or_send(chat_id, text, _ctrl_btns, message_id=message_id)
     else:
@@ -10196,7 +10164,7 @@ def command_listener():
                             _back_cb = st["back_cb"]
                             del _pp_state[str(cb_cid)]
                             if _ok:
-                                send_telegram(f"<b>{st['symbol']} {st['action'].upper()} -&gt; {price:,.6f}</b>\n\n<i>🛡️ Capital protected</i>")
+                                send_telegram(f"<b>{st['symbol']} {st['action'].upper()} -&gt; {price:,.6f}</b>")
                             _msg = f"✅ <b>{st['symbol']} updated to {price:,.6f}</b>" if _ok else f"⚠️ {_reason or st['symbol'] + ' trade no longer open.'}"
                             _help_edit_or_send(cb_chat_id, _msg,
                                 {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _back_cb}]]}, message_id=cb_msg_id)
@@ -10354,7 +10322,7 @@ def command_listener():
                     elif cb_data.startswith("vip_pay:"):
                         _amount = float(cb_data.split(":", 1)[1])
                         _help_edit_or_send(cb_chat_id,
-                            f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                            f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>",
                             {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"vip_paycrypto:{_amount:.2f}"},
                                                   _star_button("⭐ Stars", callback_data=f"vip_paystars:{_amount:.2f}")],
                                                  [{"text": "◀️  Back", "callback_data": "vip_menu"}]]},
@@ -10364,7 +10332,7 @@ def command_listener():
                         _pay_url = _cryptopay_create_invoice(_amount, {"type": "vip", "cid": str(cb_cid)}, description="CLEXER VIP — 30 days")
                         if _pay_url:
                             _help_edit_or_send(cb_chat_id,
-                                f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Tap below to pay. VIP activates automatically within ~30s of payment confirming — no need to message anyone.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                f"👑 <b>VIP — ${_amount:.2f}</b>\n\n<blockquote>Tap below to pay. VIP activates automatically within ~30s of payment confirming — no need to message anyone.</blockquote>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amount:.2f}", "url": _pay_url, "style": "primary"}],
                                                       [{"text": "◀️  Back", "callback_data": f"vip_pay:{_amount:.2f}"}]]},
                                 message_id=cb_msg_id)
@@ -10445,7 +10413,7 @@ def command_listener():
                             _short = round(_amt - _bal, 2)
                             _help_edit_or_send(cb_chat_id,
                                 f"🔒 <b>Signal Locked</b>\n\n<blockquote>Your unlock price: <b>${_amt:.2f}</b> (locked in for this signal)\n\n"
-                                f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up, or unlock instantly for a flat ⭐ 1 Star instead.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                f"Wallet balance: <b>${_bal:.2f}</b> — short by <b>${_short:.2f}</b>. Tap Add Funds to top up, or unlock instantly for a flat ⭐ 1 Star instead.</blockquote>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f} from wallet", "callback_data": f"sig_pay:{_sig_id}"}],
                                                       [_star_button("⭐ Unlock for 1 Star", callback_data=f"sig_unlockstar:{_sig_id}")],
                                                       [{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}],
@@ -10501,7 +10469,7 @@ def command_listener():
                     elif cb_data.startswith("addfunds:"):
                         _amt = float(cb_data.split(":", 1)[1])
                         _help_edit_or_send(cb_chat_id,
-                            f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                            f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Choose how you'd like to pay.</blockquote>",
                             {"inline_keyboard": [[{"text": "💳 Crypto", "callback_data": f"addfundscrypto:{_amt:.2f}"},
                                                   _star_button("⭐ Stars", callback_data=f"addfundsstars:{_amt:.2f}")],
                                                  [{"text": "◀️  Back", "callback_data": "addfunds_menu"}]]},
@@ -10511,7 +10479,7 @@ def command_listener():
                         _pay_url = _cryptopay_create_invoice(_amt, {"type": "topup", "cid": str(cb_cid)}, description="CLEXER Wallet Top-Up")
                         if _pay_url:
                             _help_edit_or_send(cb_chat_id,
-                                f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Tap below to pay. Your wallet credits automatically within ~30s of payment confirming.</blockquote>\n\n<i>🛡️ Capital protected</i>",
+                                f"💰 <b>Add ${_amt:.2f}</b>\n\n<blockquote>Tap below to pay. Your wallet credits automatically within ~30s of payment confirming.</blockquote>",
                                 {"inline_keyboard": [[{"text": f"💳 Pay ${_amt:.2f}", "url": _pay_url, "style": "primary"}],
                                                       [{"text": "◀️  Back", "callback_data": f"addfunds:{_amt:.2f}"}]]},
                                 message_id=cb_msg_id)
@@ -10567,9 +10535,9 @@ def command_listener():
                             {"text": "◀️  Back", "callback_data": "settings_sub:btcsettings"},
                         ]]}
                         if btc_analysis_enabled:
-                            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n<i>🛡️ Capital protected</i></blockquote>"
+                            _btca_text = "📡 <b>BTC Analysis</b>  ✅ ON\n\n<blockquote>Scheduled scans active.\n\n</blockquote>"
                         else:
-                            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n<i>🛡️ Capital protected</i></blockquote>"
+                            _btca_text = "📡 <b>BTC Analysis</b>  ⏸ OFF\n\n<blockquote>Scheduled scans paused.\n\n</blockquote>"
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_btca_text), "parse_mode": "HTML",
@@ -10833,8 +10801,7 @@ def command_listener():
                             f"Active: <b>{SCAN_MODEL}</b>\n\n"
                             f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
                             f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
-                            f"Used for all scan/BTC/coin analysis calls.\n\n"
-                            f"<i>🛡️ Capital protected</i>")
+                            f"Used for all scan/BTC/coin analysis calls.")
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_model_text), "parse_mode": "HTML",
@@ -10863,8 +10830,7 @@ def command_listener():
                             f"Active: <b>{'Aerolink Gateway' if USE_AEROLINK else 'Direct (Anthropic)'}</b>\n\n"
                             f"Direct — uses your own ANTHROPIC_API_KEY straight to Anthropic.\n"
                             f"Aerolink — uses a separate AEROLINK_API_KEY through capi.aerolink.lat.\n"
-                            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.\n\n"
-                            f"<i>🛡️ Capital protected</i>")
+                            f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.")
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_gw_text), "parse_mode": "HTML",
@@ -11075,13 +11041,13 @@ def command_listener():
                     _sp_cid   = _sp_payload.get("cid") or str(cid)
                     if _sp_type == "vip":
                         _grant_vip(_sp_cid, days=30)
-                        send_to_user(_sp_cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ⭐{_sp_stars:,} Stars · 30 days\n\nTap ⭐ VIP Channel in /help to get access.\n\n<i>🛡️ Capital protected</i>")
+                        send_to_user(_sp_cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ⭐{_sp_stars:,} Stars · 30 days\n\nTap ⭐ VIP Channel in /help to get access.")
                     elif _sp_type == "topup":
                         _u = ct._db.get(str(_sp_cid)) or ct._default_user(_sp_cid)
                         _sp_usd = float(_sp_payload.get("usd", _sp_stars / STARS_PER_USD))
                         _u["wallet_balance"] = round(_u.get("wallet_balance", 0) + _sp_usd, 2)
                         ct._set(_sp_cid, _u)
-                        send_to_user(_sp_cid, f"💰 <b>Wallet credited</b>: +${_sp_usd:,.2f} (⭐{_sp_stars:,} Stars)\n\nNew balance: <b>${_u['wallet_balance']:,.2f}</b>\n\n<i>🛡️ Capital protected</i>")
+                        send_to_user(_sp_cid, f"💰 <b>Wallet credited</b>: +${_sp_usd:,.2f} (⭐{_sp_stars:,} Stars)\n\nNew balance: <b>${_u['wallet_balance']:,.2f}</b>")
                     elif _sp_type == "sig_unlock":
                         _sp_sig_id = _sp_payload.get("sig_id")
                         _u = ct._db.get(str(_sp_cid)) or ct._default_user(_sp_cid)
@@ -11091,7 +11057,7 @@ def command_listener():
                         if _sp_snap:
                             send_to_user(_sp_cid, _reveal_signal_text(_sp_snap, _sp_sig_id))
                         else:
-                            send_to_user(_sp_cid, f"✅ <b>Unlocked</b> (⭐{_sp_stars:,} Stars paid) — but this signal's snapshot expired, contact admin if it doesn't show up.\n\n<i>🛡️ Capital protected</i>")
+                            send_to_user(_sp_cid, f"✅ <b>Unlocked</b> (⭐{_sp_stars:,} Stars paid) — but this signal's snapshot expired, contact admin if it doesn't show up.")
                     # Delete the invoice card itself now that it's paid — Telegram
                     # leaves it sitting in the chat forever otherwise, since the
                     # successful_payment update is a separate new message, not an
@@ -11202,7 +11168,7 @@ def command_listener():
                                 send_reply(cid, f"⚠️ {_reason}", reply_markup=_back_mkp)
                             else:
                                 if _ok:
-                                    send_telegram(f"<b>{ppst['symbol']} {ppst['action'].upper()} -&gt; {price:,.6f}</b>\n\n<i>🛡️ Capital protected</i>")
+                                    send_telegram(f"<b>{ppst['symbol']} {ppst['action'].upper()} -&gt; {price:,.6f}</b>")
                                 _msg = f"✅ <b>{ppst['symbol']} updated to {price:,.6f}</b>" if _ok else f"⚠️ {_reason or ppst['symbol'] + ' trade no longer open.'}"
                                 if _pi_msg_id:
                                     _help_edit_or_send(cid, _msg, _back_mkp, message_id=_pi_msg_id)
@@ -11316,7 +11282,7 @@ def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
     global _scan_cycle_placed
     lbl = "V1" if scan_ver == 1 else "V2"
-    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...\n\n<i>🛡️ Capital protected</i>")
+    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...")
     # Clear cycle dedup set when scan1 starts (scan1 always starts first)
     if scan_ver == 1:
         with _scan_cycle_lock:
@@ -11639,7 +11605,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
-                        _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
+                        _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _ist_hm_from_epoch(created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
                         _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
@@ -12208,7 +12174,7 @@ def main():
             if is_weekend_sleep():
                 if not _weekend_sleep_notified:
                     _weekend_sleep_notified = True
-                    send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — BingX orders still active.\n\n<i>🛡️ Capital protected</i>")
+                    send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — BingX orders still active.")
                     # Flush Friday's daily recap right now instead of waiting for the
                     # post-midnight window — if the process restarts/goes down anytime
                     # during the weekend (Railway restart, credit limit, etc.), the
@@ -12226,7 +12192,7 @@ def main():
                 time.sleep(60); continue
             elif _weekend_sleep_notified:
                 _weekend_sleep_notified = False
-                send_admin("✅ <b>Weekend Sleep Ended</b>\n\nBot resuming all activity.\n\n<i>🛡️ Capital protected</i>")
+                send_admin("✅ <b>Weekend Sleep Ended</b>\n\nBot resuming all activity.")
 
             now = time.time(); forced = force_scan.is_set()
             if forced: force_scan.clear()
@@ -12241,10 +12207,10 @@ def main():
                 if was_online and not is_online:
                     print("  TV OFFLINE - Binance fallback")
                     # Admin DM only - not channel
-                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).\n\n<i>🛡️ Capital protected</i>")
+                    send_admin(f"<b>TradingView Offline</b>\n\nSwitched to Binance (OLD prompt).")
                 elif not was_online and is_online:
                     print("  TV back ONLINE")
-                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).\n\n<i>🛡️ Capital protected</i>")
+                    send_admin(f"<b>TradingView Back Online</b>\n\nSwitched back to TradingView (NEW prompt).")
 
             # News: the liquidation feed runs continuously in its own background
             # thread (_liquidation_ws_loop), started once at boot — nothing to
@@ -12340,7 +12306,7 @@ def main():
             if trade_stats["cooldown_scans"] > 0 and not forced:
                 trade_stats["cooldown_scans"] -= 1
                 if trade_stats["cooldown_scans"] == 0:
-                    send_telegram("✅ <b>Cooldown over - scanning now!</b> 🔍\n\n✨ <i>🛡️ Capital protected</i>")
+                    send_telegram("✅ <b>Cooldown over - scanning now!</b> 🔍")
                 last_signal_scan_time = now; time.sleep(MAIN_TICK); continue
 
             # -- FULL CLAUDE SCAN ----------------------------------------------
@@ -12357,7 +12323,7 @@ def main():
                     f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n"
                     f"Current: {price:,.2f}\n"
                     f"Entry: {'YES' if t['entry_hit'] else 'pending'} | TP1: {'YES' if t['tp1_hit'] else 'no'}\n\n"
-                    f"Analyzing...\n<i>🛡️ Capital protected</i>")
+                    f"Analyzing...")
 
             data = fetch_all_data()
 
@@ -12377,8 +12343,7 @@ def main():
                             f"🎯 Entry: <b>{signal['entry']:,.0f}</b>  ✅ MARKET FILLED\n"
                             f"🛑 SL:    <b>{signal['sl']:,.0f}</b>\n"
                             f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
-                            f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>\n\n"
-                            f"✨ <i>🛡️ Capital protected</i>",
+                            f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>",
                             include_ch2=False                        )
                     active = ct.active_count()
                     if active == 0:
@@ -12400,24 +12365,24 @@ def main():
                     if forced:
                         send_telegram(f"<b>Trade Status: HOLD</b>  {ist_str()}\n\n"
                             f"{t['signal']} @ {t['entry']:,.0f}\nStructure intact.\n"
-                            f"TP2: <b>{t['tp2']:,.0f}</b>\n\n<i>🛡️ Capital protected</i>")
+                            f"TP2: <b>{t['tp2']:,.0f}</b>")
                 elif signal.get("_hold"):
                     send_admin(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
                         f"SL:{t['sl']:,.0f} | TP1:{t['tp1']:,.0f} | TP2:{t['tp2']:,.0f}\n\n"
-                        f"<i>{_html.escape(signal.get('reasoning','Structure intact')[:250])}</i>\n\n<i>🛡️ Capital protected</i>")
+                        f"<i>{_html.escape(signal.get('reasoning','Structure intact')[:250])}</i>")
                 elif signal["signal"] != t["signal"]:
                     # Only flip if entry has already been hit — never flip a pending trade
                     if not t["entry_hit"]:
                         print(f"  [FLIP BLOCKED] Entry not hit yet — holding {t['signal']} @ {t['entry']:,.0f}")
-                        send_admin(f"<b>Flip Blocked</b>\n\nClaude wanted to flip {t['signal']} -> {signal['signal']} but entry not hit yet.\nHolding original trade.\n\n<i>🛡️ Capital protected</i>")
+                        send_admin(f"<b>Flip Blocked</b>\n\nClaude wanted to flip {t['signal']} -> {signal['signal']} but entry not hit yet.\nHolding original trade.")
                     else:
                         flip_reason = signal.get("reasoning","Structure flipped")
                         log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
                         send_lifecycle_reply(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
                             f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
-                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>\n\n✨ <i>🛡️ Capital protected</i>",
+                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>",
                             t.get("reply_map"), include_ch2=False)
                         ct.on_close_all()
                         _close_sig_snapshot(t.get("sig_id",""), "STRUCTURE_FLIP")
@@ -12432,7 +12397,7 @@ def main():
                         send_telegram(f"<b>Trade Update</b>  {ist_str()}\n\n"
                             f"Old: {t['signal']} @ {t['entry']:,.0f}\n"
                             f"New: {signal['signal']} @ {signal['entry']:,.0f}\n"
-                            f"Bias confirmed.\n\n<i>🛡️ Capital protected</i>")
+                            f"Bias confirmed.")
                     log_trade_outcome("REPLACED","same direction, updated levels")
                     ct.on_close_all()
                     _close_sig_snapshot(t.get("sig_id",""), "REPLACED")
