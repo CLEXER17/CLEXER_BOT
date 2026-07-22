@@ -2141,6 +2141,21 @@ def _aerolink_gw_debug_tag(using_aero: bool, attempt: int) -> str:
     idx = (attempt % len(_keys)) + 1 if _keys else 1
     return f"aerolink-key{idx}"
 
+def _claude_retry_budget(using_aero: bool) -> int:
+    """How many attempts a single coin's Claude call gets. On Aerolink, this
+    scales to the number of CONFIGURED key slots (up to 10) so a coin only
+    gets abandoned once every real key has actually been tried, not just the
+    first 3 — previously a coin failed after 3 tries even with a healthy
+    key4-10 sitting completely untried. Direct gateway has no key rotation
+    to matter for, so it keeps the original 3-attempt floor. Never fewer than
+    3 either way, matching prior behavior when only 1-2 keys are set."""
+    if not using_aero:
+        return 3
+    _n = sum(1 for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k)
+    return max(3, _n)
+
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
 
@@ -8087,12 +8102,13 @@ Reasoning: [one line]"""
                     analysis = ""
                     _claude_ok = False
                     _last_claude_err = ""
-                    for _attempt in range(3):
+                    _kind = f"scan{scan_ver}"
+                    _using_aero = _ai_aerolink(_kind)
+                    _retry_budget = _claude_retry_budget(_using_aero)
+                    for _attempt in range(_retry_budget):
                         try:
-                            _kind = f"scan{scan_ver}"
-                            _using_aero = _ai_aerolink(_kind)
                             _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
-                            print(f"  [SCAN] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model(_kind)}")
+                            print(f"  [SCAN] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model(_kind)}")
                             r2 = _claude_client(_kind, attempt=_attempt).messages.create(
                                 model=_ai_model(_kind), max_tokens=_max_tokens,
                                 messages=[{"role":"user","content":content}])
@@ -8105,12 +8121,12 @@ Reasoning: [one line]"""
                         except Exception as _ce:
                             _last_claude_err = str(_ce)
                             print(f"  [SCAN] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_last_claude_err}")
-                            if _attempt < 2:
+                            if _attempt < _retry_budget - 1:
                                 time.sleep(10)
                     if not _claude_ok:
-                        print(f"  [SCAN] {chosen_sym}: Claude failed 3 times — skipping coin")
+                        print(f"  [SCAN] {chosen_sym}: Claude failed {_retry_budget} times — skipping coin")
                         api_fail_count += 1
-                        skip_log.append(f"🔴 {chosen_sym}: Claude API call failed 3x — NOT analyzed (last error: {_last_claude_err[:120]})")
+                        skip_log.append(f"🔴 {chosen_sym}: Claude API call failed {_retry_budget}x — NOT analyzed (last error: {_last_claude_err[:120]})")
                         continue
 
                     import re as _re
@@ -11779,11 +11795,12 @@ def _run_test_scan(cid, scan_ver: int):
 
             # Claude analysis
             analysis = ""; _claude_ok = False
-            for _attempt in range(3):
+            _using_aero = _ai_aerolink("test", scan_ver)
+            _retry_budget = _claude_retry_budget(_using_aero)
+            for _attempt in range(_retry_budget):
                 try:
-                    _using_aero = _ai_aerolink("test", scan_ver)
                     _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt)
-                    print(f"  [TEST] attempt {_attempt+1} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
+                    print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
                     r2 = _claude_client("test", attempt=_attempt, scan_ver=scan_ver).messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=500,
                         messages=[{"role":"user","content":analysis_prompt}])
@@ -11794,9 +11811,9 @@ def _run_test_scan(cid, scan_ver: int):
                     _claude_ok = True; break
                 except Exception as _ce:
                     print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
-                    if _attempt < 2: time.sleep(10)
+                    if _attempt < _retry_budget - 1: time.sleep(10)
             if not _claude_ok:
-                print(f"  [TEST] {chosen_sym}: Claude failed 3 times — skipping"); _demo_api_fail_count += 1; continue
+                print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1; continue
 
             _ac = analysis.replace(",","")
             def _p(label):
