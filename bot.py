@@ -4289,16 +4289,41 @@ def _run_agentrouter_cli(prompt: str, model: str = "claude-opus-4-8", timeout: i
     except Exception as e:
         return f"⚠️ {e}"
 
+def _run_agentrouter_sdk(prompt: str, model: str = "claude-opus-4-8") -> str:
+    """TEST ONLY — direct call via the real anthropic Python SDK (same
+    library Aerolink already uses, NOT a raw curl/requests call and NOT the
+    CLI subprocess). Checking whether AgentRouter's earlier 401 'unauthorized
+    client detected' was actually about missing standard SDK headers (which
+    curl doesn't send by default) rather than a hard CLI-binary-only block —
+    Roo Code's own docs show it authenticates this same plain-SDK way."""
+    if not AGENTROUTER_AUTH_TOKEN:
+        return "⚠️ AGENTROUTER_AUTH_TOKEN not set."
+    try:
+        client = anthropic.Anthropic(api_key=AGENTROUTER_AUTH_TOKEN, base_url=AGENTROUTER_BASE_URL)
+        r = client.messages.create(model=model, max_tokens=50,
+            messages=[{"role": "user", "content": prompt}])
+        return _claude_text(r) or "⚠️ Empty response from SDK call."
+    except Exception as e:
+        return f"⚠️ {e}"
+
 def _test_agentrouter(cid):
     """Admin-only /testar — pure connectivity re-test, no scan logic, no
-    tracking, no side effects. Just: does AgentRouter respond correctly to
-    the real Claude Code CLI from THIS Railway deployment right now?"""
-    send_reply(cid, "🧪 <b>AgentRouter Re-Test</b>\n\n⏳ Calling AgentRouter CLI...")
+    tracking, no side effects. Runs BOTH the real Claude Code CLI and a
+    direct anthropic-SDK call against AgentRouter, so we can tell whether
+    the earlier failures were CLI-specific, SDK-header-specific, or both."""
+    send_reply(cid, "🧪 <b>AgentRouter Re-Test</b>\n\n⏳ Calling via direct SDK...")
     t0 = time.time()
-    output = _run_agentrouter_cli("Reply with exactly: TEST OK")
-    elapsed = time.time() - t0
+    sdk_output = _run_agentrouter_sdk("Reply with exactly: TEST OK")
+    sdk_elapsed = time.time() - t0
     send_reply(cid,
-        f"🧪 <b>Result</b> ({elapsed:.1f}s)\n\n<pre>{_html.escape(output[:3500])}</pre>")
+        f"🧪 <b>Direct SDK Result</b> ({sdk_elapsed:.1f}s)\n\n<pre>{_html.escape(sdk_output[:2000])}</pre>")
+
+    send_reply(cid, "⏳ Now calling via the Claude Code CLI...")
+    t0 = time.time()
+    cli_output = _run_agentrouter_cli("Reply with exactly: TEST OK")
+    cli_elapsed = time.time() - t0
+    send_reply(cid,
+        f"🧪 <b>CLI Result</b> ({cli_elapsed:.1f}s)\n\n<pre>{_html.escape(cli_output[:2000])}</pre>")
 
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
 
