@@ -163,6 +163,7 @@ bot_stopped           = threading.Event()  # STOP: blocks new scans only, monito
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
+_AEROLINK_OPUS5_UNSUPPORTED = True  # TEMP — see _ai_model()'s docstring. Flip to False once Aerolink confirms Opus 5 support.
 
 # /aiconfig — full grid: each of Scan1/Scan2/TS1/TS2 picks its OWN model+gateway
 # independently PER classification (verified/unverified/nonspecial), 12 slots
@@ -2102,11 +2103,20 @@ def _ai_category(kind: str = "btc", scan_ver: int = None) -> str:
 
 def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
     """Which Claude model to use — driven by (scan type x classification),
-    the full AICFG_GRID set via /aiconfig. BTC always uses SCAN_MODEL."""
+    the full AICFG_GRID set via /aiconfig. BTC always uses SCAN_MODEL.
+
+    TEMPORARY: Aerolink appears to not yet support the brand-new Opus 5
+    model ID (every request failed with "Your request was blocked" across
+    all 7 keys uniformly right after switching, which stopped as soon as
+    this override went in) — force Opus 4.8 specifically for Aerolink-
+    routed calls until Aerolink confirms Opus 5 support. Direct-gateway
+    calls still use Opus 5 as normal. Remove _AEROLINK_OPUS5_UNSUPPORTED
+    once Aerolink adds support."""
     sched_kind = _ai_sched_kind(kind, scan_ver)
-    if sched_kind is None:
-        return SCAN_MODEL
-    return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["model"]
+    model = SCAN_MODEL if sched_kind is None else AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["model"]
+    if _AEROLINK_OPUS5_UNSUPPORTED and model == "claude-opus-5" and _ai_aerolink(kind, scan_ver):
+        return "claude-opus-4-8"
+    return model
 
 def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     """Which gateway to use — same (scan type x classification) grid as _ai_model()."""
@@ -2116,10 +2126,12 @@ def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
-    """Gateway+model tag for signal headers: A5/D5 (Aerolink/Direct + Opus 5)
-    or AF/DF (Aerolink/Direct + Fable 5)."""
+    """Gateway+model tag for signal headers: A5/D5 (Aerolink/Direct + Opus 5),
+    A4.8 (temporary Aerolink Opus 5->4.8 downgrade, see _ai_model()), or
+    AF/DF (Aerolink/Direct + Fable 5)."""
     gw = "A" if _ai_aerolink(kind, scan_ver) else "D"
-    mdl = "F" if _ai_model(kind, scan_ver) == "claude-fable-5" else "5"
+    _m = _ai_model(kind, scan_ver)
+    mdl = "F" if _m == "claude-fable-5" else ("4.8" if _m == "claude-opus-4-8" else "5")
     return f"{gw}{mdl}"
 
 def _aerolink_configured_keys() -> list:
