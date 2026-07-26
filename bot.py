@@ -164,6 +164,10 @@ btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
 _AEROLINK_OPUS5_UNSUPPORTED = True  # TEMP — see _ai_model()'s docstring. Flip to False once Aerolink confirms Opus 5 support.
+FORCE_DIRECT48_NORMAL_UNVERIFIED = False  # /directnu on|off — forces Scan1+Scan2's "nonspecial" (regular hourly grid)
+                                           # and "unverified" tiers onto Direct gateway + claude-opus-4-8, overriding
+                                           # whatever /aiconfig has those two cells set to. Verified/special-time
+                                           # slots are untouched. Does NOT mutate AICFG_GRID (see _ai_model/_ai_aerolink).
 
 # /aiconfig — full grid: each of Scan1/Scan2/TS1/TS2 picks its OWN model+gateway
 # independently PER classification (verified/unverified/nonspecial), 12 slots
@@ -2113,14 +2117,25 @@ def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
     calls still use Opus 5 as normal. Remove _AEROLINK_OPUS5_UNSUPPORTED
     once Aerolink adds support."""
     sched_kind = _ai_sched_kind(kind, scan_ver)
+    if _force_direct48(sched_kind, kind, scan_ver):
+        return "claude-opus-4-8"
     model = SCAN_MODEL if sched_kind is None else AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["model"]
     if _AEROLINK_OPUS5_UNSUPPORTED and model == "claude-opus-5" and _ai_aerolink(kind, scan_ver):
         return "claude-opus-4-8"
     return model
 
+def _force_direct48(sched_kind, kind: str = "btc", scan_ver: int = None) -> bool:
+    """True when /directnu is ON and this call is Scan1/Scan2's nonspecial
+    (regular hourly grid) or unverified tier — see FORCE_DIRECT48_NORMAL_UNVERIFIED."""
+    if not FORCE_DIRECT48_NORMAL_UNVERIFIED or sched_kind not in ("scan1", "scan2"):
+        return False
+    return _ai_category(kind, scan_ver) in ("nonspecial", "unverified")
+
 def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     """Which gateway to use — same (scan type x classification) grid as _ai_model()."""
     sched_kind = _ai_sched_kind(kind, scan_ver)
+    if _force_direct48(sched_kind, kind, scan_ver):
+        return False
     if sched_kind is None:
         return USE_AEROLINK
     return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
@@ -3956,7 +3971,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -3979,6 +3994,7 @@ def load_settings():
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
             SCAN_MODEL            = _migrate_opus_model_id(d.get("scan_model", SCAN_MODEL))
             USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
+            FORCE_DIRECT48_NORMAL_UNVERIFIED = d.get("force_direct48_normal_unverified", False)
             _apply_aicfg_grid(d.get("aicfg_grid"))
             _SLOT_EVAL_THRESHOLD.update(d.get("slot_eval_threshold", {}))
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
@@ -4028,6 +4044,7 @@ def save_settings():
             "test_scan":        TEST_SCAN_ENABLED,
             "scan_model":       SCAN_MODEL,
             "use_aerolink":     USE_AEROLINK,
+            "force_direct48_normal_unverified": FORCE_DIRECT48_NORMAL_UNVERIFIED,
             "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
             "slot_eval_threshold": dict(_SLOT_EVAL_THRESHOLD),
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
@@ -5843,7 +5860,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
-    "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
+    "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
     "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
@@ -8553,6 +8570,25 @@ Reasoning: [one line]"""
             f"Aerolink — uses a separate AEROLINK_API_KEY through capi.aerolink.lat.\n"
             f"Your real Anthropic key is never sent to Aerolink — the two keys stay fully separate.", reply_markup=_mkp)
 
+    elif cmd == "/directnu" and is_admin:
+        global FORCE_DIRECT48_NORMAL_UNVERIFIED
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in ("on", "off"):
+            FORCE_DIRECT48_NORMAL_UNVERIFIED = (_arg == "on")
+            save_settings()
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if FORCE_DIRECT48_NORMAL_UNVERIFIED else "") + "ON",  "callback_data": "directnu:on"},
+            {"text": ("✅ " if not FORCE_DIRECT48_NORMAL_UNVERIFIED else "") + "OFF", "callback_data": "directnu:off"},
+        ]]}
+        send_reply(chat_id,
+            f"<b>🔌 Direct 4.8 — Normal + Unverified</b>\n\n"
+            f"Active: <b>{'ON' if FORCE_DIRECT48_NORMAL_UNVERIFIED else 'OFF'}</b>\n\n"
+            f"When ON, Scan1 &amp; Scan2's <b>nonspecial</b> (regular hourly grid) and "
+            f"<b>unverified</b> tiers always run on the Direct (Anthropic) gateway with "
+            f"<b>claude-opus-4-8</b>, regardless of what /aiconfig has those two cells set to.\n"
+            f"Verified/special-time slots are untouched.\n\n"
+            f"When OFF, both tiers go back to whatever /aiconfig has configured.", reply_markup=_mkp)
+
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
@@ -8787,6 +8823,7 @@ _SCAN_SUBCATS = {
     ]),
     "system": ("🧠 AI & Gateway", [
         ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
+        ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
@@ -10880,6 +10917,9 @@ def command_listener():
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_model_text), "parse_mode": "HTML",
                                   "reply_markup": _style_keyboard(_model_mkp)}, timeout=10)
+
+                    elif cb_data.startswith("directnu:") and cb_is_admin:
+                        handle_command(f"/directnu {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
 
                     elif cb_data.startswith("gateway:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
