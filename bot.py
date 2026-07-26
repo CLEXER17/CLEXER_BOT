@@ -1024,6 +1024,20 @@ def _apply_aicfg_grid(saved: dict):
             if cell:
                 AICFG_GRID[kind][tier]["model"] = cell.get("model", AICFG_GRID[kind][tier]["model"])
                 AICFG_GRID[kind][tier]["aerolink"] = cell.get("aerolink", AICFG_GRID[kind][tier]["aerolink"])
+    _migrate_aicfg_grid_model_ids()
+
+def _migrate_opus_model_id(model: str) -> str:
+    """One-time migration: a persisted settings blob (central store or local
+    disk) saved before the Opus 4.8 -> Opus 5 switch still has the literal
+    old model string in it — the new code default alone can't overwrite an
+    already-saved value, so any leftover "claude-opus-4-8" gets bumped to the
+    current model wherever a saved value is actually applied."""
+    return "claude-opus-5" if model == "claude-opus-4-8" else model
+
+def _migrate_aicfg_grid_model_ids():
+    for kind in AICFG_GRID:
+        for tier in AICFG_GRID[kind]:
+            AICFG_GRID[kind][tier]["model"] = _migrate_opus_model_id(AICFG_GRID[kind][tier]["model"])
 
 def _apply_scan_settings(d: dict):
     global SCAN_MODEL, USE_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
@@ -1032,6 +1046,7 @@ def _apply_scan_settings(d: dict):
         return  # nothing snapshotted yet for this profile — leave current values as-is
     SCAN_MODEL = d.get("scan_model", SCAN_MODEL); USE_AEROLINK = d.get("use_aerolink", USE_AEROLINK)
     _apply_aicfg_grid(d.get("aicfg_grid"))
+    SCAN_MODEL = _migrate_opus_model_id(SCAN_MODEL)
     ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", ZONE_ENTRY_ENABLED)
     ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
     SCAN1_AUTO_ENABLED = d.get("scan1_auto", SCAN1_AUTO_ENABLED); SCAN2_AUTO_ENABLED = d.get("scan2_auto", SCAN2_AUTO_ENABLED)
@@ -3910,7 +3925,7 @@ def load_settings():
             SCAN1_AUTO_ENABLED    = d.get("scan1_auto",          True)
             SCAN2_AUTO_ENABLED    = d.get("scan2_auto",          False)
             TEST_SCAN_ENABLED     = d.get("test_scan",           False)
-            SCAN_MODEL            = d.get("scan_model",          SCAN_MODEL)
+            SCAN_MODEL            = _migrate_opus_model_id(d.get("scan_model", SCAN_MODEL))
             USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
             _apply_aicfg_grid(d.get("aicfg_grid"))
             _SLOT_EVAL_THRESHOLD.update(d.get("slot_eval_threshold", {}))
