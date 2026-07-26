@@ -43,7 +43,7 @@ AEROLINK_API_KEY_10 = os.getenv("AEROLINK_API_KEY_10", "")   # 10th Aerolink key
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
-_CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-4-8"}
+_CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-5"}
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
@@ -161,13 +161,13 @@ force_scan            = threading.Event()
 bot_paused            = threading.Event()  # PAUSE: freezes everything
 bot_stopped           = threading.Event()  # STOP: blocks new scans only, monitoring continues
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
-SCAN_MODEL             = "claude-opus-4-8"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
+SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
 
 # /aiconfig — full grid: each of Scan1/Scan2/TS1/TS2 picks its OWN model+gateway
 # independently PER classification (verified/unverified/nonspecial), 12 slots
 # total. BTC is not part of this grid (see SCAN_MODEL/USE_AEROLINK above).
-def _aicfg_default_tier(): return {"model": "claude-opus-4-8", "aerolink": False}
+def _aicfg_default_tier(): return {"model": "claude-opus-5", "aerolink": False}
 AICFG_GRID = {
     kind: {tier: _aicfg_default_tier() for tier in ("verified", "unverified", "nonspecial")}
     for kind in ("scan1", "scan2", "test1", "test2")
@@ -1638,9 +1638,9 @@ STATE_FILE       = os.path.join(DATA_DIR, "clexer_state.json")
 TRADE_LOG_CSV    = os.path.join(DATA_DIR, "trade_history.csv")
 API_COST_LOG     = os.path.join(DATA_DIR, "api_cost_log.csv")
 
-# Opus 4-8 pricing per token
-_OPUS_IN_COST  = 15.0 / 1_000_000   # $15 per 1M input tokens
-_OPUS_OUT_COST = 75.0 / 1_000_000   # $75 per 1M output tokens
+# Opus 5 pricing per token
+_OPUS_IN_COST  = 5.0 / 1_000_000    # $5 per 1M input tokens
+_OPUS_OUT_COST = 25.0 / 1_000_000   # $25 per 1M output tokens
 # Fable 5 pricing per token
 _FABLE_IN_COST  = 10.0 / 1_000_000  # $10 per 1M input tokens
 _FABLE_OUT_COST = 50.0 / 1_000_000  # $50 per 1M output tokens
@@ -1698,9 +1698,9 @@ def _claude_text(msg):
             return block.text.strip()
     return ""
 
-# Specific scheduled slots that always run on Direct + Opus 4.8 and post to
+# Specific scheduled slots that always run on Direct + Opus 5 and post to
 # VIP/Free ("special"); every other auto-scheduled slot ("regular") still forces
-# Opus 4.8 but routes through Aerolink instead, and stays Signal-channel only.
+# Opus 5 but routes through Aerolink instead, and stays Signal-channel only.
 # Manual (non-scheduled) triggers like typing /scan1 keep using the admin's
 # normal /aiconfig setting untouched. Set right before the auto-trigger fires
 # and cleared right after that scan cycle finishes (see _scan_run_mode below).
@@ -2101,10 +2101,10 @@ def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
-    """Gateway+model tag for signal headers: A4.8/D4.8 (Aerolink/Direct + Opus 4.8)
+    """Gateway+model tag for signal headers: A5/D5 (Aerolink/Direct + Opus 5)
     or AF/DF (Aerolink/Direct + Fable 5)."""
     gw = "A" if _ai_aerolink(kind, scan_ver) else "D"
-    mdl = "F" if _ai_model(kind, scan_ver) == "claude-fable-5" else "4.8"
+    mdl = "F" if _ai_model(kind, scan_ver) == "claude-fable-5" else "5"
     return f"{gw}{mdl}"
 
 def _aerolink_configured_keys() -> list:
@@ -2385,7 +2385,7 @@ def set_trade(s: dict, share_free: bool = True):
             "entry_time": time.time(),   # used to clip price range checks to post-entry only
             "sl_wicked": False, "scan_count": 0,
             "share_free": share_free, "entry_time_str": (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M"),
-            "is_d48": _gw_model_tag("btc") == "D4.8",  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+            "is_d48": _gw_model_tag("btc") == "D5",  # channel-2 only gets D5 (Direct+Opus5) signals
             "sig_id": s.get("sig_id") or _gen_signal_id(),
             "reply_map": s.get("reply_map") or {},
         }
@@ -6193,7 +6193,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _ctbtc_flag   = "✅ ON" if ct.BTC_CT_ENABLED   else "❌ OFF"
         _ctscan1_flag = "✅ ON" if ct.SCAN1_CT_ENABLED else "❌ OFF"
         _ctscan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
-        _model_lbl   = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
+        _model_lbl   = "Opus 5" if SCAN_MODEL == "claude-opus-5" else "Fable 5"
         _gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
         # Copy trade: per-user for non-admin, global active users count for admin
         # (_user_ct / _tier_val already computed above for the trade-visibility filter)
@@ -6265,14 +6265,14 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             send_reply(chat_id, "⚠️ You don't have an active chat session. Type /chat to start one.")
 
     elif cmd == "/chatmodel" and is_admin:
-        _model_labels = {"google": "🟢 Google (Gemini)", "sonnet": "🔵 Sonnet 5", "opus": "🟠 Opus 4.8"}
+        _model_labels = {"google": "🟢 Google (Gemini)", "sonnet": "🔵 Sonnet 5", "opus": "🟠 Opus 5"}
         if len(parts) < 2:
             send_reply(chat_id,
                 f"<b>/chat AI Engine</b>\n\nCurrent: <b>{_model_labels[CHAT_MODEL]}</b>\n\n"
                 f"Usage: /chatmodel g|s|o\n"
                 f"g = Google (Gemini, free) — default\n"
                 f"s = Sonnet 5 (Claude, highest Sonnet)\n"
-                f"o = Opus 4.8 (Claude, highest Opus)\n\n"
+                f"o = Opus 5 (Claude, highest Opus)\n\n"
                 f"This is a global switch — every user's /chat uses whichever engine you pick here; "
                 f"users can't change it themselves.\n\n"
                 f"<i>Note: /model is already taken (scan-analysis model picker), so this lives at /chatmodel instead.</i>")
@@ -8255,7 +8255,7 @@ Reasoning: [one line]"""
                         _effective_share_free = _share_free
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
-                        slot_data["is_d48"] = _gw_model_tag(_kind) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+                        slot_data["is_d48"] = _gw_model_tag(_kind) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
                         _save_sig_snapshot(slot_data["sig_id"], chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, _kind)
@@ -8444,20 +8444,20 @@ Reasoning: [one line]"""
     elif cmd == "/model" and is_admin:
         _arg = parts[1].lower() if len(parts) > 1 else ""
         if _arg in ("opus", "4.8", "4-8"):
-            SCAN_MODEL = "claude-opus-4-8"
+            SCAN_MODEL = "claude-opus-5"
         elif _arg in ("fable", "fable5", "5"):
             SCAN_MODEL = "claude-fable-5"
         if _arg: save_settings()
-        _is_opus  = SCAN_MODEL == "claude-opus-4-8"
+        _is_opus  = SCAN_MODEL == "claude-opus-5"
         _is_fable = SCAN_MODEL == "claude-fable-5"
         _mkp = {"inline_keyboard": [[
-            {"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
+            {"text": ("✅ " if _is_opus else "") + "Opus 5 ($5/$25)",  "callback_data": "model:opus"},
             {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
         ]]}
         send_reply(chat_id,
             f"<b>🧠 AI Model</b>\n\n"
             f"Active: <b>{SCAN_MODEL}</b>\n\n"
-            f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
+            f"Opus 5  — $5 in / $25 out per 1M tokens\n"
             f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
             f"Used for all scan/BTC/coin analysis calls.", reply_markup=_mkp)
 
@@ -9327,7 +9327,7 @@ def send_aiconfig_screen(chat_id, message_id=None):
     too, but skips the tier level (always verified, no unverified/nonspecial
     split) — tapping it jumps straight to the model+gateway combo screen."""
     _btc_gw  = "Aerolink" if USE_AEROLINK else "Direct"
-    _btc_mdl = "Opus 4.8" if SCAN_MODEL == "claude-opus-4-8" else "Fable 5"
+    _btc_mdl = "Opus 5" if SCAN_MODEL == "claude-opus-5" else "Fable 5"
     rows = [[{"text": f"₿ BTC: {_btc_gw} · {_btc_mdl}", "callback_data": "aicfg_open2:btc:verified"}]]
     rows += [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
     rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
@@ -9346,7 +9346,7 @@ def send_aiconfig_kind_screen(chat_id, kind, message_id=None):
     for tier, tlabel in _AICFG_TIER_LABELS.items():
         cfg = AICFG_GRID[kind][tier]
         gw  = "Aerolink" if cfg["aerolink"] else "Direct"
-        mdl = "Opus 4.8" if cfg["model"] == "claude-opus-4-8" else "Fable 5"
+        mdl = "Opus 5" if cfg["model"] == "claude-opus-5" else "Fable 5"
         rows.append([{"text": f"{tlabel}: {gw} · {mdl}", "callback_data": f"aicfg_open2:{kind}:{tier}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "aicfg_open"}])
     _help_edit_or_send(chat_id, f"<b>{klabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Tap a trade type to change its combo:</blockquote>",
@@ -9366,9 +9366,9 @@ def send_aiconfig_type_screen(chat_id, kind, tier, message_id=None):
         _back_cb = f"aicfg_open:{kind}"
     def mark(m, a): return "✅ " if (cur_model == m and cur_aero == a) else ""
     rows = [
-        [{"text": f"{mark('claude-opus-4-8', False)}Direct · Opus 4.8",    "callback_data": f"aicfg_set:{kind}:{tier}:direct:opus"}],
+        [{"text": f"{mark('claude-opus-5', False)}Direct · Opus 5",    "callback_data": f"aicfg_set:{kind}:{tier}:direct:opus"}],
         [{"text": f"{mark('claude-fable-5', False)}Direct · Fable 5",     "callback_data": f"aicfg_set:{kind}:{tier}:direct:fable"}],
-        [{"text": f"{mark('claude-opus-4-8', True)}Aerolink · Opus 4.8",   "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:opus"}],
+        [{"text": f"{mark('claude-opus-5', True)}Aerolink · Opus 5",   "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:opus"}],
         [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:fable"}],
         [{"text": "◀️  Back", "callback_data": _back_cb}],
     ]
@@ -9606,9 +9606,9 @@ def send_ctpause_screen(chat_id, message_id=None):
 def send_go_screen(chat_id, message_id=None):
     """Renders the /go 'Bot RUNNING' screen. Its model/gateway buttons toggle
     in-place (go_model:/go_gateway:) instead of opening the separate detail screens."""
-    _go_is_opus  = SCAN_MODEL == "claude-opus-4-8"
+    _go_is_opus  = SCAN_MODEL == "claude-opus-5"
     _go_is_fable = SCAN_MODEL == "claude-fable-5"
-    _go_model_lbl   = "Opus 4.8" if _go_is_opus else "Fable 5"
+    _go_model_lbl   = "Opus 5" if _go_is_opus else "Fable 5"
     _go_gateway_lbl = "Aerolink" if USE_AEROLINK else "Direct"
     _go_next_btc, _go_next_s1, _go_next_s2 = _next_schedule_times()
     _go_btc_line = f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan: <b>OFF</b>\n"
@@ -9618,7 +9618,7 @@ def send_go_screen(chat_id, message_id=None):
         {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
         {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
     ], [
-        {"text": ("✅ " if _go_is_opus else "") + "🧠 Opus 4.8",  "callback_data": "go_model:opus"},
+        {"text": ("✅ " if _go_is_opus else "") + "🧠 Opus 5",  "callback_data": "go_model:opus"},
         {"text": ("✅ " if _go_is_fable else "") + "🧠 Fable 5",  "callback_data": "go_model:fable"},
     ], [
         {"text": ("✅ " if not USE_AEROLINK else "") + "🔌 Direct",   "callback_data": "go_gateway:direct"},
@@ -10590,7 +10590,7 @@ def command_listener():
                         send_aiconfig_kind_screen(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
                     elif cb_data.startswith("aicfg_set:") and cb_is_scanadmin:
                         _, _kind, _tier, _gw, _mdl = cb_data.split(":", 4)
-                        _model_val = "claude-opus-4-8" if _mdl == "opus" else "claude-fable-5"
+                        _model_val = "claude-opus-5" if _mdl == "opus" else "claude-fable-5"
                         _aero_val = (_gw == "aerolink")
                         if _kind == "btc":
                             global SCAN_MODEL, USE_AEROLINK
@@ -10790,20 +10790,20 @@ def command_listener():
                         handle_command(f"/server {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("model:") and cb_is_admin:
                         _marg = cb_data.split(":")[1]
-                        if _marg == "opus":  SCAN_MODEL = "claude-opus-4-8"
+                        if _marg == "opus":  SCAN_MODEL = "claude-opus-5"
                         elif _marg == "fable": SCAN_MODEL = "claude-fable-5"
                         save_settings()
-                        _is_opus  = SCAN_MODEL == "claude-opus-4-8"
+                        _is_opus  = SCAN_MODEL == "claude-opus-5"
                         _is_fable = SCAN_MODEL == "claude-fable-5"
                         _model_mkp = {"inline_keyboard": [
-                            [{"text": ("✅ " if _is_opus else "") + "Opus 4.8 ($15/$75)",  "callback_data": "model:opus"},
+                            [{"text": ("✅ " if _is_opus else "") + "Opus 5 ($5/$25)",  "callback_data": "model:opus"},
                              {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"}],
                             [{"text": "◀️  Back", "callback_data": "help_cat:scan"}],
                         ]}
                         _model_text = (
                             f"<b>🧠 AI Model</b>\n\n"
                             f"Active: <b>{SCAN_MODEL}</b>\n\n"
-                            f"Opus 4.8  — $15 in / $75 out per 1M tokens\n"
+                            f"Opus 5  — $5 in / $25 out per 1M tokens\n"
                             f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
                             f"Used for all scan/BTC/coin analysis calls.")
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
@@ -10842,7 +10842,7 @@ def command_listener():
 
                     elif cb_data.startswith("go_model:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
-                        if _garg == "opus":  SCAN_MODEL = "claude-opus-4-8"
+                        if _garg == "opus":  SCAN_MODEL = "claude-opus-5"
                         elif _garg == "fable": SCAN_MODEL = "claude-fable-5"
                         save_settings()
                         send_go_screen(cb_chat_id, message_id=cb_msg_id)
@@ -11918,7 +11918,7 @@ def _run_test_scan(cid, scan_ver: int):
                   f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
                 tag=_demo_sig_id,
             )
-            _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D4.8"  # channel-2 only gets D4.8 (Direct+Opus4.8) signals
+            _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
             # TS1 and TS2 each reach Free/VIP channels at their OWN independent
             # whitelisted special slot times (test1/test2) — everything else
             # (regular grid) stays on the legacy channel only.
