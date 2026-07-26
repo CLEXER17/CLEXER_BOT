@@ -2142,6 +2142,46 @@ def _aerolink_configured_keys() -> list:
                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
 
+def _test_aerolink_key(key: str, model: str = "claude-opus-4-8", timeout: int = 20):
+    """One-off validity/health check for a single Aerolink key — a tiny
+    message just big enough to confirm the key authenticates and Aerolink
+    actually responds correctly. Uses claude-opus-4-8 (not 5) by default —
+    see _ai_model()'s docstring on the current Aerolink+Opus5 issue; testing
+    with the model that's actually configured to run avoids conflating a
+    bad key with an unsupported model. Returns (ok: bool, detail: str)."""
+    try:
+        client = anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL, timeout=timeout)
+        r = client.messages.create(model=model, max_tokens=10,
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}])
+        text = _claude_text(r)
+        return (True, text[:60]) if text else (False, "Empty response")
+    except Exception as e:
+        return False, str(e)[:150]
+
+def _test_all_aerolink_keys(cid):
+    """Admin-only /aerolinktest — pings every CONFIGURED Aerolink key slot
+    one at a time with a tiny message, so you can see at a glance which
+    slots are actually valid/responding right now vs blocked/expired/out of
+    credit. Zero side effects — no scan logic, nothing tracked or saved."""
+    _keys_all = (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+                 AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+                 AEROLINK_API_KEY_9, AEROLINK_API_KEY_10)
+    _configured = [(i + 1, k) for i, k in enumerate(_keys_all) if k]
+    if not _configured:
+        send_reply(cid, "⚠️ No Aerolink keys configured."); return
+    send_reply(cid, f"🔍 <b>Testing {len(_configured)} Aerolink key(s)...</b>\n\nA few seconds per key.")
+    lines = []
+    ok_count = 0
+    for idx, key in _configured:
+        t0 = time.time()
+        ok, detail = _test_aerolink_key(key)
+        elapsed = time.time() - t0
+        if ok: ok_count += 1
+        icon = "✅" if ok else "❌"
+        lines.append(f"{icon} <b>Key {idx}</b> ({elapsed:.1f}s): <code>{_html.escape(detail)}</code>")
+    send_reply(cid,
+        f"🧪 <b>Aerolink Key Status</b>  ({ok_count}/{len(_configured)} responding)\n\n" + "\n".join(lines))
+
 def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
@@ -5804,7 +5844,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -6311,6 +6351,9 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             else:
                 CHAT_MODEL = _new; save_settings()
                 send_reply(chat_id, f"<b>/chat engine → {_model_labels[CHAT_MODEL]}</b> ✅")
+
+    elif cmd == "/aerolinktest" and is_admin:
+        threading.Thread(target=_test_all_aerolink_keys, args=(chat_id,), daemon=True).start()
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
