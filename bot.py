@@ -11904,6 +11904,20 @@ def _run_test_scan(cid, scan_ver: int):
             scan_tp1 = round(scan_entry + sl_dist * 2.0 if scan_signal_val == "BUY" else scan_entry - sl_dist * 2.0, 6)
             scan_tp2 = round(scan_entry + sl_dist * 3.75 if scan_signal_val == "BUY" else scan_entry - sl_dist * 3.75, 6)
 
+            # Last-moment collision guard: the candidate-selection filter (top of
+            # this scan) already excludes coins in an existing trade, but TS1 and
+            # TS2 can both pass THAT check nearly simultaneously if their multi-
+            # minute Claude analyses overlap, then both try to fire on the same
+            # coin. Re-check right here, immediately before actually committing,
+            # so only whichever scan reaches this line first fires and gets
+            # monitored — the other treats it as no-signal instead of opening a
+            # duplicate position and sending its own separate set of updates.
+            _other_demo_list = demo_scan2_trades if scan_ver == 1 else demo_scan1_trades
+            with _demo_monitor_lock:
+                if any(t2.get("symbol") == chosen_sym for t2 in _other_demo_list):
+                    print(f"  [TEST] {chosen_sym}: TS{2 if scan_ver==1 else 1} already opened this coin — skipping to avoid a duplicate")
+                    continue
+
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
             _demo_sig_id = _gen_signal_id()
