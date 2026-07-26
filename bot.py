@@ -8339,7 +8339,11 @@ Reasoning: [one line]"""
                                 [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
                                   f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
                             )
-                        send_to_tier_channels(_no_sig_msg, False)  # VIP only
+                        # Signal channel only — no-signal/error status isn't a trade,
+                        # so it never belongs in VIP/Free (those are for verified
+                        # signals only, per admin's instruction).
+                        if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
+                            _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -11985,7 +11989,9 @@ def _run_test_scan(cid, scan_ver: int):
                         [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
                           f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
                     )
-                send_to_tier_channels(_no_sig_msg, False)  # VIP only
+                # Signal channel only — same reasoning as the live scan path.
+                if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
+                    _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
             send_admin(
                 f"⏸ <b>[TEST] No demo signal</b>  {ist_str()}\n\n"
                 f"Tried: <b>{tried_str}</b>\n\n"
