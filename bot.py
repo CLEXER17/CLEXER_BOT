@@ -5711,17 +5711,23 @@ def _handle_liquidation_msg(raw: str):
                 impact, emoji, closed = "BEARISH", "🔴", "LONG"
             else:
                 impact, emoji, closed = "BULLISH", "🟢", "SHORT"
-            title = f"{usd/1e6:,.2f}M {sym} {closed} liquidated"
+            # $-scale label that doesn't collapse small liquidations to "0.00M"
+            usd_label = f"{usd/1e6:,.2f}M" if usd >= 1_000_000 else \
+                        f"{usd/1e3:,.1f}K" if usd >= 1_000 else f"{usd:,.0f}"
+            # Coin-qty formatter — :,.4g silently switches to scientific
+            # notation (e.g. "1.83e+04") once a number needs 5+ digits, which
+            # is exactly the range most liquidation sizes fall in.
+            qty_label = f"{qty:,.2f}" if qty >= 1 else f"{qty:.6f}".rstrip("0").rstrip(".")
+            title = f"{usd_label} {sym} {closed} liquidated"
             msg_text = (
                 f"<b>TRENDING INSIGHT</b>\n\n{emoji} <b>{impact}</b>\n"
                 f"<b>{title}</b>\n\n"
                 f"💥 {closed} position force-closed\n"
-                f"💰 Size: <code>{qty:,.4g} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
+                f"💰 Size: <code>{qty_label} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
                 f"💵 Price: <code>{price:,.4g}</code>\n\n"
                 f"<i>{ist_str()}</i>"
             )
-            send_telegram(msg_text)
-            send_to_tier_channels(msg_text, share_free=True)
+            send_to_tier_channels(msg_text, share_free=False)
             _last_liq_post_time = now
             latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
     except Exception as e:
