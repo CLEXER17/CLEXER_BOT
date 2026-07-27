@@ -63,7 +63,7 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-LIQUIDATION_MIN_USD    = 50000    # only post liquidations at/above this size
+LIQUIDATION_MIN_USD    = 1000    # TEMP TEST — dropped from 50000 to confirm the feed posts at all after the timeout fix. Revert to 50000 once confirmed.
 LIQUIDATION_POST_COOLDOWN = 20    # seconds — min gap between posts, so a liquidation cascade doesn't spam the channel
 
 tv_bridge_state = {
