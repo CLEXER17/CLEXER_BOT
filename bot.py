@@ -5724,8 +5724,7 @@ def _handle_liquidation_msg(raw: str):
                 f"<b>{title}</b>\n\n"
                 f"💥 {closed} position force-closed\n"
                 f"💰 Size: <code>{qty_label} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
-                f"💵 Price: <code>{price:,.4g}</code>\n\n"
-                f"<i>{ist_str()}</i>"
+                f"💵 Price: <code>{price:,.4g}</code>"
             )
             send_to_tier_channels(msg_text, share_free=False)
             _last_liq_post_time = now
