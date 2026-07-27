@@ -9771,6 +9771,17 @@ def send_go_screen(chat_id, message_id=None):
     _go_btc_line = f"⏰ Next BTC scan: <b>{_go_next_btc} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan: <b>OFF</b>\n"
     _go_s1_line  = f"⏰ Next Scan1: <b>{_go_next_s1}</b>\n" if SCAN1_AUTO_ENABLED else "⏰ Next Scan1: <b>OFF</b>\n"
     _go_s2_line  = f"⏰ Next Scan2: <b>{_go_next_s2}</b>\n" if SCAN2_AUTO_ENABLED else "⏰ Next Scan2: <b>OFF</b>\n"
+    def _go_next_test_slot(schedule, kind):
+        _now_hm = (now_ist().hour, now_ist().minute)
+        _fut = [(h, m) for h, m in schedule if (h, m) > _now_hm]
+        _hm = _fut[0] if _fut else schedule[0]
+        _h, _m = _hm
+        _suffix = "" if _fut else " (tomorrow)"
+        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm)}"
+    _go_ts1_line = (f"⏰ Next TS1: <b>{_go_next_test_slot(SCAN1_TEST_SCHEDULE, 'test1')}</b>\n"
+                    if TEST_SCAN_ENABLED else "⏰ Next TS1: <b>OFF</b>\n")
+    _go_ts2_line = (f"⏰ Next TS2: <b>{_go_next_test_slot(SCAN2_TEST_SCHEDULE, 'test2')}</b>\n"
+                    if TEST_SCAN_ENABLED else "⏰ Next TS2: <b>OFF</b>\n")
     _ctrl_btns = {"inline_keyboard": [[
         {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
         {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
@@ -9791,6 +9802,8 @@ def send_go_screen(chat_id, message_id=None):
         f"{_go_btc_line}"
         f"{_go_s1_line}"
         f"{_go_s2_line}"
+        f"{_go_ts1_line}"
+        f"{_go_ts2_line}"
         f"</blockquote>")
     if message_id:
         _help_edit_or_send(chat_id, text, _ctrl_btns, message_id=message_id)
