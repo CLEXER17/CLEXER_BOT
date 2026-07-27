@@ -5776,15 +5776,53 @@ def _liquidation_ws_loop():
 # OKX liquidation feed — added alongside Bybit for wider coverage. UNLIKE
 # Bybit/Binance, OKX's payload reports size in CONTRACTS (the "sz" field),
 # not raw coin quantity — converting that to a real dollar figure needs each
-# instrument's contract face-value multiplier (ctVal), which comes from
-# OKX's REST instrument list. Every OKX REST domain (www.okx.com, aws.okx.com)
-# was unreachable (DNS failure) from every tool available while building
-# this, so that multiplier could NOT be verified. Rather than guess and risk
-# posting wrong dollar amounts, this posts the raw contract count instead,
-# explicitly labeled as such — NOT comparable to the $ figures Bybit posts,
-# and not comparable across different OKX symbols either.
-OKX_LIQ_MIN_CONTRACTS = 50    # NOT a $ equivalent to LIQUIDATION_MIN_USD (can't compute one — see
-                              # docstring above) — just a noise-reduction floor for contract count.
+# instrument's contract face-value multiplier (ctVal x ctMult), which comes
+# from OKX's REST instrument list. Every OKX REST domain (www.okx.com,
+# aws.okx.com) was unreachable from this coding sandbox (even a direct-IP
+# connection via --resolve times out at the TCP level, not just DNS) — but
+# that's a restriction on THIS sandbox's outbound network, not necessarily on
+# Railway, which already proved it CAN reach OKX's WebSocket fine. So this
+# tries the same REST fetch live from the server itself, caches it, and uses
+# real dollar figures (same LIQUIDATION_MIN_USD threshold as Bybit, same
+# message format) whenever it succeeds — falling back to raw contract count
+# (clearly labeled, floor of OKX_LIQ_MIN_CONTRACTS) only for instruments
+# where the fetch failed or a symbol's multiplier wasn't found.
+OKX_LIQ_MIN_CONTRACTS = 200   # fallback floor when $ conversion isn't available for a symbol —
+                              # NOT a $ equivalent to LIQUIDATION_MIN_USD, just noise reduction.
+_okx_ct_val_cache = {}       # instId -> (ctVal, ctMult, ctValCcy)
+_okx_ct_val_fetched_at = 0
+
+def _okx_fetch_ct_values() -> dict:
+    """instId -> (ctVal, ctMult, ctValCcy) for every OKX SWAP instrument, via
+    OKX's own public instruments endpoint. True face value per contract =
+    ctVal x ctMult, denominated in ctValCcy (the base coin for USDT-margined
+    linear swaps, e.g. "BTC" for BTC-USDT-SWAP). Cached for an hour since
+    these rarely change. Returns the last known-good cache (possibly empty)
+    on any fetch failure instead of raising — callers must handle a miss."""
+    global _okx_ct_val_cache, _okx_ct_val_fetched_at
+    if _okx_ct_val_cache and time.time() - _okx_ct_val_fetched_at < 3600:
+        return _okx_ct_val_cache
+    try:
+        _headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        r = requests.get("https://www.okx.com/api/v5/public/instruments",
+                          params={"instType": "SWAP"}, headers=_headers, timeout=15).json()
+        m = {}
+        for it in r.get("data", []):
+            inst_id = it.get("instId")
+            ct_val  = float(it.get("ctVal", 0) or 0)
+            ct_mult = float(it.get("ctMult", 1) or 1)
+            ct_ccy  = it.get("ctValCcy", "")
+            if inst_id and ct_val > 0:
+                m[inst_id] = (ct_val, ct_mult, ct_ccy)
+        if m:
+            _okx_ct_val_cache = m
+            _okx_ct_val_fetched_at = time.time()
+            print(f"  [LIQUIDATION-OKX] loaded {len(m)} contract-value multipliers — $ conversion active")
+        return _okx_ct_val_cache
+    except Exception as e:
+        print(f"  [LIQUIDATION-OKX] ctVal fetch failed ({e}) — posting contract counts instead")
+        return _okx_ct_val_cache
 
 def _handle_okx_liquidation_msg(raw: str):
     global _last_liq_post_time, latest_news_context
@@ -5795,6 +5833,7 @@ def _handle_okx_liquidation_msg(raw: str):
         arg = d.get("arg", {})
         if arg.get("channel") != "liquidation-orders":
             return  # subscribe ack / error event, not liquidation data
+        ct_values = _okx_fetch_ct_values()
         for entry in d.get("data", []):
             inst_id = entry.get("instId", "?")             # e.g. "DYDX-USDT-SWAP"
             sym = inst_id.replace("-USDT-SWAP", "USDT").replace("-", "")
@@ -5802,8 +5841,24 @@ def _handle_okx_liquidation_msg(raw: str):
                 pos_side  = det.get("posSide", "?")         # long/short — the position that got liquidated
                 bk_px     = float(det.get("bkPx", 0) or 0)  # bankruptcy price
                 contracts = float(det.get("sz", 0) or 0)
-                if contracts < OKX_LIQ_MIN_CONTRACTS:
-                    continue
+
+                ct_info = ct_values.get(inst_id)
+                usd = None
+                if ct_info and bk_px > 0:
+                    ct_val, ct_mult, ct_ccy = ct_info
+                    face = contracts * ct_val * ct_mult
+                    # ctValCcy is either the quote asset already in $ terms
+                    # (rare for USDT-margined swaps, but check anyway) or the
+                    # base coin — the common case for *-USDT-SWAP contracts.
+                    usd = face if ct_ccy in ("USD", "USDT") else face * bk_px
+
+                if usd is not None:
+                    if usd < LIQUIDATION_MIN_USD:
+                        continue
+                else:
+                    if contracts < OKX_LIQ_MIN_CONTRACTS:
+                        continue
+
                 now = time.time()
                 if now - _last_liq_post_time < LIQUIDATION_POST_COOLDOWN:
                     continue
@@ -5811,19 +5866,27 @@ def _handle_okx_liquidation_msg(raw: str):
                     impact, emoji, closed = "BEARISH", "🔴", "LONG"
                 else:
                     impact, emoji, closed = "BULLISH", "🟢", "SHORT"
-                contracts_label = f"{contracts:,.0f}"
-                title = f"{contracts_label} contracts {sym} {closed} liquidated"
+
+                if usd is not None:
+                    usd_label = f"{usd/1e6:,.2f}M" if usd >= 1_000_000 else \
+                                f"{usd/1e3:,.1f}K" if usd >= 1_000 else f"{usd:,.0f}"
+                    title = f"{usd_label} {sym} {closed} liquidated"
+                    size_line = f"💰 Size: <code>{contracts:,.0f} contracts</code> (${usd:,.0f})\n"
+                else:
+                    contracts_label = f"{contracts:,.0f}"
+                    title = f"{contracts_label} contracts {sym} {closed} liquidated"
+                    size_line = (f"💰 Size: <code>{contracts_label} contracts</code> "
+                                 f"⚠️ <i>not $ — multiplier unavailable for this symbol</i>\n")
                 msg_text = (
                     f"<b>TRENDING INSIGHT (OKX)</b>\n\n{emoji} <b>{impact}</b>\n"
                     f"<b>{title}</b>\n\n"
                     f"💥 {closed} position force-closed\n"
-                    f"💰 Size: <code>{contracts_label} contracts</code> "
-                    f"⚠️ <i>not $ — OKX contract value unverified, not comparable across symbols</i>\n"
+                    f"{size_line}"
                     f"💵 Bankruptcy Price: <code>{bk_px:,.4g}</code>"
                 )
                 send_to_tier_channels(msg_text, share_free=False)
                 _last_liq_post_time = now
-                latest_news_context = ([f"• {impact}: {title} ({contracts_label} contracts)"] + latest_news_context)[:3]
+                latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
     except Exception as e:
         print(f"  [LIQUIDATION-OKX] parse/post error: {e}")
 
