@@ -5639,7 +5639,18 @@ def _liquidation_ws_loop():
             ws = _ws_client.create_connection(url, timeout=30)
             print("  [LIQUIDATION] connected")
             while True:
-                msg = ws.recv()
+                try:
+                    msg = ws.recv()
+                except Exception as _recv_e:
+                    # A plain 30s read timeout just means no liquidation came
+                    # in during a quiet stretch — keep this same connection
+                    # alive instead of tearing it down and reconnecting, which
+                    # was silently dropping whatever arrived during the gap.
+                    # Only a real socket/connection error should fall through
+                    # to the outer except and trigger an actual reconnect.
+                    if "timed out" in str(_recv_e).lower():
+                        continue
+                    raise
                 if msg:
                     _handle_liquidation_msg(msg)
         except Exception as e:
