@@ -5607,7 +5607,13 @@ def _bybit_all_usdt_perp_symbols() -> list:
     """Every currently-trading USDT-margined linear perpetual on Bybit, via
     their public instrument-list REST endpoint (paginated, ~500+ symbols).
     Falls back to the static shortlist above if the fetch fails for any
-    reason (network hiccup, rate limit, schema change)."""
+    reason (network hiccup, rate limit, schema change).
+
+    Uses api.bytick.com, not api.bybit.com — the latter's CloudFront
+    distribution returned "configured to block access from your country"
+    for this server, even though stream.bybit.com (the WebSocket itself)
+    is NOT blocked. bytick.com is Bybit's own documented mirror domain for
+    exactly this situation."""
     _headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     _resp_snippet = ""
@@ -5618,7 +5624,7 @@ def _bybit_all_usdt_perp_symbols() -> list:
             params = {"category": "linear", "limit": 1000}
             if cursor:
                 params["cursor"] = cursor
-            _http_r = requests.get("https://api.bybit.com/v5/market/instruments-info",
+            _http_r = requests.get("https://api.bytick.com/v5/market/instruments-info",
                                     params=params, headers=_headers, timeout=15)
             _resp_snippet = _http_r.text[:300]  # kept in case .json() below fails
             r = _http_r.json()
