@@ -63,7 +63,7 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-LIQUIDATION_MIN_USD    = 50    # TEMP TEST — dropped further (was 1000, originally 50000) since even $1k produced nothing. Revert to 50000 once confirmed.
+LIQUIDATION_MIN_USD    = 50000    # only post liquidations at/above this size
 LIQUIDATION_POST_COOLDOWN = 20    # seconds — min gap between posts, so a liquidation cascade doesn't spam the channel
 
 tv_bridge_state = {
@@ -5588,11 +5588,9 @@ def run_price_check():
 # no API key, no rate limit, no signup. A big LONG liquidation = forced selling
 # (bearish pressure); a big SHORT liquidation = forced buying (bullish pressure).
 _last_liq_post_time = 0
-_liq_debug_count = 0     # TEMP DEBUG — total raw messages seen since boot
-_liq_debug_last_log = 0  # TEMP DEBUG — last time we printed the heartbeat line
 
 def _handle_liquidation_msg(raw: str):
-    global _last_liq_post_time, latest_news_context, _liq_debug_count, _liq_debug_last_log
+    global _last_liq_post_time, latest_news_context
     if not SEND_NEWS:
         return
     try:
@@ -5602,13 +5600,6 @@ def _handle_liquidation_msg(raw: str):
         price = float(d.get("ap", 0) or d.get("p", 0) or 0)
         qty   = float(d.get("q", 0) or 0)
         usd   = price * qty
-        # TEMP DEBUG — prove whether raw messages are even arriving at all,
-        # separately from the $ threshold filter below. Remove once confirmed.
-        _liq_debug_count += 1
-        _now_dbg = time.time()
-        if _now_dbg - _liq_debug_last_log >= 15:
-            print(f"  [LIQUIDATION-DEBUG] {_liq_debug_count} raw msgs seen so far — last: {sym} {side} ${usd:,.0f}")
-            _liq_debug_last_log = _now_dbg
         if usd < LIQUIDATION_MIN_USD:
             return
         now = time.time()
@@ -5642,11 +5633,7 @@ def _liquidation_ws_loop():
     liquidation across the whole futures market, not just one symbol."""
     if not HAS_WEBSOCKET:
         print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
-    # TEMP DEBUG — swapped to BTC's raw tick stream (many msgs/sec, guaranteed
-    # non-empty) to prove whether ANY Binance data reaches this server at all,
-    # or whether it's specifically the forceOrder stream that's silent.
-    # Revert to !forceOrder@arr once this is resolved.
-    url = "wss://fstream.binance.com/ws/btcusdt@aggTrade"
+    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
     while True:
         try:
             ws = _ws_client.create_connection(url, timeout=30)
