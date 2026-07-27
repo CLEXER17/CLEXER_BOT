@@ -63,7 +63,7 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-LIQUIDATION_MIN_USD    = 1000    # only post liquidations at/above this size
+LIQUIDATION_MIN_USD    = 50000    # only post liquidations at/above this size
 LIQUIDATION_POST_COOLDOWN = 5    # seconds — min gap between posts, so a liquidation cascade doesn't spam the channel
 
 tv_bridge_state = {
@@ -5783,7 +5783,8 @@ def _liquidation_ws_loop():
 # posting wrong dollar amounts, this posts the raw contract count instead,
 # explicitly labeled as such — NOT comparable to the $ figures Bybit posts,
 # and not comparable across different OKX symbols either.
-OKX_LIQ_MIN_CONTRACTS = 1    # floor is intentionally low — cooldown does the noise control
+OKX_LIQ_MIN_CONTRACTS = 50    # NOT a $ equivalent to LIQUIDATION_MIN_USD (can't compute one — see
+                              # docstring above) — just a noise-reduction floor for contract count.
 
 def _handle_okx_liquidation_msg(raw: str):
     global _last_liq_post_time, latest_news_context
