@@ -5773,6 +5773,94 @@ def _liquidation_ws_loop():
             print(f"  [LIQUIDATION] connection error: {e} — reconnecting in 10s")
         time.sleep(10)
 
+# OKX liquidation feed — added alongside Bybit for wider coverage. UNLIKE
+# Bybit/Binance, OKX's payload reports size in CONTRACTS (the "sz" field),
+# not raw coin quantity — converting that to a real dollar figure needs each
+# instrument's contract face-value multiplier (ctVal), which comes from
+# OKX's REST instrument list. Every OKX REST domain (www.okx.com, aws.okx.com)
+# was unreachable (DNS failure) from every tool available while building
+# this, so that multiplier could NOT be verified. Rather than guess and risk
+# posting wrong dollar amounts, this posts the raw contract count instead,
+# explicitly labeled as such — NOT comparable to the $ figures Bybit posts,
+# and not comparable across different OKX symbols either.
+OKX_LIQ_MIN_CONTRACTS = 1    # floor is intentionally low — cooldown does the noise control
+
+def _handle_okx_liquidation_msg(raw: str):
+    global _last_liq_post_time, latest_news_context
+    if not SEND_NEWS or raw == "pong":
+        return
+    try:
+        d = json.loads(raw)
+        arg = d.get("arg", {})
+        if arg.get("channel") != "liquidation-orders":
+            return  # subscribe ack / error event, not liquidation data
+        for entry in d.get("data", []):
+            inst_id = entry.get("instId", "?")             # e.g. "DYDX-USDT-SWAP"
+            sym = inst_id.replace("-USDT-SWAP", "USDT").replace("-", "")
+            for det in entry.get("details", []):
+                pos_side  = det.get("posSide", "?")         # long/short — the position that got liquidated
+                bk_px     = float(det.get("bkPx", 0) or 0)  # bankruptcy price
+                contracts = float(det.get("sz", 0) or 0)
+                if contracts < OKX_LIQ_MIN_CONTRACTS:
+                    continue
+                now = time.time()
+                if now - _last_liq_post_time < LIQUIDATION_POST_COOLDOWN:
+                    continue
+                if pos_side == "long":
+                    impact, emoji, closed = "BEARISH", "🔴", "LONG"
+                else:
+                    impact, emoji, closed = "BULLISH", "🟢", "SHORT"
+                contracts_label = f"{contracts:,.0f}"
+                title = f"{contracts_label} contracts {sym} {closed} liquidated"
+                msg_text = (
+                    f"<b>TRENDING INSIGHT (OKX)</b>\n\n{emoji} <b>{impact}</b>\n"
+                    f"<b>{title}</b>\n\n"
+                    f"💥 {closed} position force-closed\n"
+                    f"💰 Size: <code>{contracts_label} contracts</code> "
+                    f"⚠️ <i>not $ — OKX contract value unverified, not comparable across symbols</i>\n"
+                    f"💵 Bankruptcy Price: <code>{bk_px:,.4g}</code>"
+                )
+                send_to_tier_channels(msg_text, share_free=False)
+                _last_liq_post_time = now
+                latest_news_context = ([f"• {impact}: {title} ({contracts_label} contracts)"] + latest_news_context)[:3]
+    except Exception as e:
+        print(f"  [LIQUIDATION-OKX] parse/post error: {e}")
+
+def _okx_liquidation_ws_loop():
+    """Runs forever in a background thread — reconnects automatically on drop.
+    OKX's keepalive is different from Bybit's: it's a plain-text "ping" (NOT
+    JSON) sent by the CLIENT after a quiet period, with the server replying
+    plain-text "pong" — OKX drops the connection if it goes >30s with no
+    traffic either way, so the client must proactively ping before that."""
+    if not HAS_WEBSOCKET:
+        print("  [LIQUIDATION-OKX] websocket-client not installed — feed disabled"); return
+    url = "wss://ws.okx.com:8443/ws/v5/public"
+    while True:
+        try:
+            ws = _ws_client.create_connection(url, timeout=20)
+            # One subscription with instType=SWAP covers every OKX perpetual —
+            # no per-symbol list needed, unlike Bybit.
+            ws.send(json.dumps({"op": "subscribe", "args": [{"channel": "liquidation-orders", "instType": "SWAP"}]}))
+            print("  [LIQUIDATION-OKX] connected")
+            _last_activity = time.time()
+            while True:
+                try:
+                    msg = ws.recv()
+                    _last_activity = time.time()
+                except Exception as _recv_e:
+                    if "timed out" in str(_recv_e).lower():
+                        msg = None
+                    else:
+                        raise
+                if time.time() - _last_activity >= 20:
+                    ws.send("ping")  # plain text, not JSON — see docstring
+                    _last_activity = time.time()
+                if msg:
+                    _handle_okx_liquidation_msg(msg)
+        except Exception as e:
+            print(f"  [LIQUIDATION-OKX] connection error: {e} — reconnecting in 10s")
+        time.sleep(10)
+
 # --- CRYPTO PAY (@CryptoBot) — invoices + payment event poll loop -------------
 CRYPTO_PAY_BASE_URL = "https://pay.crypt.bot/api"
 
@@ -12442,6 +12530,7 @@ def main():
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
     threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
+    threading.Thread(target=_okx_liquidation_ws_loop, daemon=True).start()
     threading.Thread(target=_poll_payment_events, daemon=True).start()
 
     def _active_server_loop():
