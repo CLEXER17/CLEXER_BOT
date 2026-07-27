@@ -12036,7 +12036,7 @@ def _run_test_scan(cid, scan_ver: int):
                     print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
                     _client, _used_key = _claude_client_skip("test", _attempt, _aero_bad_keys, scan_ver=scan_ver)
                     r2 = _client.messages.create(
-                        model=_ai_model("test", scan_ver), max_tokens=500,
+                        model=_ai_model("test", scan_ver), max_tokens=2500,
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
