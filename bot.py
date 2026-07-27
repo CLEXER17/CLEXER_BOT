@@ -63,7 +63,7 @@ SEND_CHARTS       = False   # OFF by default - /images on to enable
 CHART_SNAP_ENABLED = True   # /chartson /chartsoff toggle
 CHART_TFS         = ["weekly", "4h", "1h", "5m"]
 SEND_NEWS         = False
-LIQUIDATION_MIN_USD    = 50000    # only post liquidations at/above this size
+LIQUIDATION_MIN_USD    = 50    # TEMP TEST for Bybit switch — revert to 50000 once confirmed working
 LIQUIDATION_POST_COOLDOWN = 20    # seconds — min gap between posts, so a liquidation cascade doesn't spam the channel
 
 tv_bridge_state = {
@@ -5582,75 +5582,108 @@ def run_price_check():
     except Exception as e: print(f"  [1H ERROR] {e}")
     return False
 
-# --- NEWS (free Binance liquidation feed — "Trending Insights" style cards) ---
-# Whale Alert has no permanent free tier (7-day trial only, confirmed), so this
-# uses Binance Futures' PUBLIC liquidation WebSocket instead — genuinely free,
-# no API key, no rate limit, no signup. A big LONG liquidation = forced selling
-# (bearish pressure); a big SHORT liquidation = forced buying (bullish pressure).
+# --- NEWS (free liquidation feed — "Trending Insights" style cards) ---
+# Whale Alert has no permanent free tier (7-day trial only, confirmed). Binance
+# Futures' public !forceOrder@arr stream was tried first but confirmed fully
+# blocked at the network level from this server (zero bytes ever received,
+# even on a high-volume BTC trade stream used as a control test) — so this
+# uses Bybit's public "All Liquidation" WebSocket instead, genuinely free, no
+# API key, no signup. Bybit has no single all-market topic like Binance did,
+# so this subscribes per-symbol across a fixed list of major USDT perps.
+# A big LONG liquidation = forced selling (bearish); a big SHORT liquidation =
+# forced buying (bullish).
 _last_liq_post_time = 0
+_BYBIT_LIQ_SYMBOLS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT","ADAUSDT",
+    "AVAXUSDT","LINKUSDT","TONUSDT","SUIUSDT","LTCUSDT","DOTUSDT","TRXUSDT",
+    "NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","INJUSDT","FILUSDT","ATOMUSDT",
+    "ETCUSDT","XLMUSDT","HBARUSDT","ICPUSDT","RENDERUSDT","SEIUSDT","TIAUSDT",
+    "WIFUSDT","PEPEUSDT",
+]
+
+_liq_debug_count = 0     # TEMP DEBUG — total raw control+data frames seen since boot
+_liq_debug_last_log = 0  # TEMP DEBUG — last time we printed the heartbeat line
 
 def _handle_liquidation_msg(raw: str):
-    global _last_liq_post_time, latest_news_context
+    global _last_liq_post_time, latest_news_context, _liq_debug_count, _liq_debug_last_log
     if not SEND_NEWS:
         return
     try:
-        d = json.loads(raw).get("o", {})
-        sym   = d.get("s", "?")
-        side  = d.get("S", "?")          # side of the liquidation order itself
-        price = float(d.get("ap", 0) or d.get("p", 0) or 0)
-        qty   = float(d.get("q", 0) or 0)
-        usd   = price * qty
-        if usd < LIQUIDATION_MIN_USD:
-            return
-        now = time.time()
-        if now - _last_liq_post_time < LIQUIDATION_POST_COOLDOWN:
-            return
-        # SELL-side liquidation order = a LONG position got force-closed (bearish);
-        # BUY-side liquidation order = a SHORT position got force-closed (bullish).
-        if side == "SELL":
-            impact, emoji, closed = "BEARISH", "🔴", "LONG"
-        else:
-            impact, emoji, closed = "BULLISH", "🟢", "SHORT"
-        title = f"{usd/1e6:,.2f}M {sym} {closed} liquidated"
-        msg_text = (
-            f"<b>TRENDING INSIGHT</b>\n\n{emoji} <b>{impact}</b>\n"
-            f"<b>{title}</b>\n\n"
-            f"💥 {closed} position force-closed\n"
-            f"💰 Size: <code>{qty:,.4g} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
-            f"💵 Price: <code>{price:,.4g}</code>\n\n"
-            f"<i>{ist_str()}</i>"
-        )
-        send_telegram(msg_text)
-        send_to_tier_channels(msg_text, share_free=True)
-        _last_liq_post_time = now
-        latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
+        d = json.loads(raw)
+        # TEMP DEBUG — prove raw frames are arriving at all (subscribe acks,
+        # pongs, AND liquidation data all count here), separately from the
+        # allLiquidation-topic filter below. Remove once Bybit is confirmed
+        # working end-to-end.
+        _liq_debug_count += 1
+        _now_dbg = time.time()
+        if _now_dbg - _liq_debug_last_log >= 15:
+            print(f"  [LIQUIDATION-DEBUG] {_liq_debug_count} raw frames seen so far — last: {str(d)[:200]}")
+            _liq_debug_last_log = _now_dbg
+        if not str(d.get("topic", "")).startswith("allLiquidation."):
+            return  # subscribe ack / pong / other control frame, not a liquidation
+        for item in d.get("data", []):
+            sym   = item.get("s", "?")
+            side  = item.get("S", "?")          # side of the liquidation order itself: Buy/Sell
+            price = float(item.get("p", 0) or 0)
+            qty   = float(item.get("v", 0) or 0)
+            usd   = price * qty
+            if usd < LIQUIDATION_MIN_USD:
+                continue
+            now = time.time()
+            if now - _last_liq_post_time < LIQUIDATION_POST_COOLDOWN:
+                continue
+            # Sell-side liquidation order = a LONG position got force-closed (bearish);
+            # Buy-side liquidation order = a SHORT position got force-closed (bullish).
+            if side.upper() == "SELL":
+                impact, emoji, closed = "BEARISH", "🔴", "LONG"
+            else:
+                impact, emoji, closed = "BULLISH", "🟢", "SHORT"
+            title = f"{usd/1e6:,.2f}M {sym} {closed} liquidated"
+            msg_text = (
+                f"<b>TRENDING INSIGHT</b>\n\n{emoji} <b>{impact}</b>\n"
+                f"<b>{title}</b>\n\n"
+                f"💥 {closed} position force-closed\n"
+                f"💰 Size: <code>{qty:,.4g} {sym.replace('USDT','')}</code> (${usd:,.0f})\n"
+                f"💵 Price: <code>{price:,.4g}</code>\n\n"
+                f"<i>{ist_str()}</i>"
+            )
+            send_telegram(msg_text)
+            send_to_tier_channels(msg_text, share_free=True)
+            _last_liq_post_time = now
+            latest_news_context = ([f"• {impact}: {title}"] + latest_news_context)[:3]
     except Exception as e:
         print(f"  [LIQUIDATION] parse/post error: {e}")
 
 def _liquidation_ws_loop():
     """Runs forever in a background thread — reconnects automatically on drop.
-    Binance's !forceOrder@arr stream is public/unauthenticated and covers every
-    liquidation across the whole futures market, not just one symbol."""
+    Bybit's public linear-perp stream requires an app-level ping every ~20s to
+    stay alive (unlike Binance, which needed none), so the read timeout below
+    doubles as the ping clock instead of just being a dead-connection guard."""
     if not HAS_WEBSOCKET:
         print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
-    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    url = "wss://stream.bybit.com/v5/public/linear"
+    _liq_topics = [f"allLiquidation.{s}" for s in _BYBIT_LIQ_SYMBOLS]
     while True:
         try:
-            ws = _ws_client.create_connection(url, timeout=30)
-            print("  [LIQUIDATION] connected")
+            ws = _ws_client.create_connection(url, timeout=15)
+            ws.send(json.dumps({"op": "subscribe", "args": _liq_topics}))
+            print(f"  [LIQUIDATION] connected ({len(_liq_topics)} symbols)")
+            _last_ping = time.time()
             while True:
                 try:
                     msg = ws.recv()
                 except Exception as _recv_e:
-                    # A plain 30s read timeout just means no liquidation came
-                    # in during a quiet stretch — keep this same connection
-                    # alive instead of tearing it down and reconnecting, which
-                    # was silently dropping whatever arrived during the gap.
-                    # Only a real socket/connection error should fall through
-                    # to the outer except and trigger an actual reconnect.
+                    # A plain 15s read timeout just means no message arrived
+                    # during a quiet stretch — keep this same connection alive
+                    # instead of tearing it down. Only a real socket/connection
+                    # error should fall through to the outer except.
                     if "timed out" in str(_recv_e).lower():
-                        continue
-                    raise
+                        msg = None
+                    else:
+                        raise
+                if time.time() - _last_ping >= 20:
+                    ws.send(json.dumps({"op": "ping"}))
+                    _last_ping = time.time()
                 if msg:
                     _handle_liquidation_msg(msg)
         except Exception as e:
