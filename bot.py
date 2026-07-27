@@ -5642,7 +5642,11 @@ def _liquidation_ws_loop():
     liquidation across the whole futures market, not just one symbol."""
     if not HAS_WEBSOCKET:
         print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
-    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    # TEMP DEBUG — swapped to BTC's raw tick stream (many msgs/sec, guaranteed
+    # non-empty) to prove whether ANY Binance data reaches this server at all,
+    # or whether it's specifically the forceOrder stream that's silent.
+    # Revert to !forceOrder@arr once this is resolved.
+    url = "wss://fstream.binance.com/ws/btcusdt@aggTrade"
     while True:
         try:
             ws = _ws_client.create_connection(url, timeout=30)
