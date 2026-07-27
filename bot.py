@@ -1743,6 +1743,16 @@ _SCAN_SPECIAL_NO_COPY = {
     "test2": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 _scan_run_mode = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # None | "special" | "regular"
+_scan_tried_now = {1: [], 2: []}  # live-mirrored `tried` list from each scan's current cycle — lets Scan1
+                                   # and Scan2 (running concurrently, minutes-long Claude analyses per coin)
+                                   # see what the OTHER one is mid-analysis on RIGHT NOW, so they don't both
+                                   # spend a Claude call structure-analyzing the same coin in the same cycle.
+                                   # Same object as the local `tried` list, mutated in place.
+_scan_tried_lock = __import__("threading").Lock()  # makes "check other's list, then claim mine" one atomic
+                                                     # step — without this, two threads hitting the exact
+                                                     # same instant (both pick ESPORTS as candidate #1) could
+                                                     # both see the other's list as still empty and both slip
+                                                     # through before either had appended anything.
 _scan_trigger_hm = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
 # ─── Auto promote/demote special times by live win rate ────────────────────
@@ -7971,6 +7981,8 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 MAX_TRIES = 3
                 signal_placed = False
                 tried = []
+                _scan_tried_now[scan_ver] = tried  # same list object — see _scan_tried_now docstring
+                _other_scan_ver = 2 if scan_ver == 1 else 1
                 skip_log = []   # tracks why each coin was skipped
                 api_fail_count = 0  # coins skipped because Claude itself failed 3x — not a real "no signal"
                 _aero_bad_keys = set()  # Aerolink keys that failed anywhere THIS scan cycle — once a
@@ -7992,7 +8004,19 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                         print(f"  [SCAN] Skip {chosen_sym} — already active")
                         continue
 
-                    tried.append(chosen_sym)
+                    # Skip if Scan{other} is ALREADY mid-analysis on this same coin THIS
+                    # cycle — both scans can independently pick the same top-mover/structured
+                    # coin, and without this check both burn a full Claude analysis on it
+                    # before either has placed a trade (the active-trade check above only
+                    # catches it after the fact). See _scan_tried_now / _scan_tried_lock docstrings.
+                    # Check-and-claim happens under one lock so two threads landing on the
+                    # exact same coin at the exact same instant can't both slip through.
+                    with _scan_tried_lock:
+                        if chosen_sym in _scan_tried_now.get(_other_scan_ver, []):
+                            skip_log.append(f"⏭ {chosen_sym}: Scan{_other_scan_ver} already analyzing this coin")
+                            print(f"  [SCAN] Skip {chosen_sym} — Scan{_other_scan_ver} already on it this cycle")
+                            continue
+                        tried.append(chosen_sym)
                     # candidate["price"] is a snapshot from the ticker fetch at the very
                     # START of this scan cycle — fine for coin #1, but #2/#3 only get
                     # tried after #1's full Claude analysis (real wall-clock minutes),
@@ -8330,7 +8354,10 @@ Reasoning: [one line]"""
                         trade_stats[f"scan{scan_ver}_signals"] += 1
                         save_state()
                         _kind = "scan1" if scan_ver == 1 else "scan2"
-                        _tier_routed = _scan_run_mode.get(_kind) == "special"
+                        # VIP/Free only get VERIFIED special-time signals (admin request
+                        # 2026-07-27) — unverified special-time slots and the regular
+                        # hourly grid both stay Channel-1-only now, same as before.
+                        _tier_routed = _scan_run_mode.get(_kind) == "special" and _ai_category(_kind) == "verified"
                         # Only verified/special-time (tier_routed) signals ever compete
                         # for the Free-channel share — a regular-grid (Signal-only, never
                         # posted to VIP/Free) trade must never consume quota or be marked
@@ -8393,7 +8420,7 @@ Reasoning: [one line]"""
                         # Every single candidate failed at the API call — this is NOT
                         # "no clean setup", it's Claude/the gateway not responding at all.
                         send_reply(cid,
-                            f"🔴 <b>Claude API failed — no analysis ran</b>  {ist_str()}\n\n"
+                            f"🔴 <b>[Scan{scan_ver}] Claude API failed — no analysis ran</b>  {ist_str()}\n\n"
                             f"Tried {len(tried)} coin(s): <b>{tried_str}</b> — every one failed 3 retry "
                             f"attempts at the Claude API call itself. <b>No chart was actually analyzed.</b>\n\n"
                             + "\n".join(skip_log[-len(tried):]) +
@@ -8402,7 +8429,7 @@ Reasoning: [one line]"""
                             f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
                     else:
                         send_reply(cid,
-                            f"⏸ <b>No signal found</b>  {ist_str()}\n\n"
+                            f"⏸ <b>[Scan{scan_ver}] No signal found</b>  {ist_str()}\n\n"
                             f"Tried {len(tried)} coin(s): <b>{tried_str}</b>\n\n"
                             f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
                             f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
@@ -11837,6 +11864,8 @@ def _run_test_scan(cid, scan_ver: int):
         MAX_TRIES = 3
         signal_placed = False
         tried = []
+        skip_log = []   # tracks WHY each coin was skipped — shown in the final no-signal
+                         # message instead of a generic "all WAIT or failed gates" catch-all
         _demo_api_fail_count = 0
         _aero_bad_keys = set()  # Aerolink keys that failed anywhere THIS scan cycle — see
         # the live scan loop's identical comment for why (skip instead of re-trying a
@@ -11862,6 +11891,7 @@ def _run_test_scan(cid, scan_ver: int):
             df_15m = bingx_klines(chosen_sym, "15m", 30)
             df_5m = bingx_klines(chosen_sym, "5m", 30)
             if df_4h is None or df_1h is None or df_5m is None:
+                skip_log.append(f"⚠️ {chosen_sym}: candle data fetch failed (4H/1H/5M)")
                 continue
 
             # move_age_1h gate — determine direction first from 4H structure
@@ -11871,6 +11901,7 @@ def _run_test_scan(cid, scan_ver: int):
             elif struct == "BEARISH":
                 direction = "short"
             else:
+                skip_log.append(f"⬜ {chosen_sym}: 4H structure NEUTRAL — no clean entry")
                 continue  # NEUTRAL → skip
 
             # Build 1H candle dicts for move_age calculation
@@ -11879,6 +11910,7 @@ def _run_test_scan(cid, scan_ver: int):
             age = _move_age_1h(h1_candles, direction)
             if age > 5:
                 print(f"  [TEST] {chosen_sym}: move_age_1h={age} > 5 — too old, skipping")
+                skip_log.append(f"⏳ {chosen_sym}: move_age_1h {age} > 5 — move too old (failed gate)")
                 continue
 
             # HTF exhaustion guard — 4H move_age must be ≤ 8 candles (32h)
@@ -11888,6 +11920,7 @@ def _run_test_scan(cid, scan_ver: int):
             age_4h = _move_age_1h(h4_candles, direction)  # same fractal logic on 4H
             if age_4h > 8:
                 print(f"  [TEST] {chosen_sym}: move_age_4h={age_4h} > 8 — HTF exhausted, skipping")
+                skip_log.append(f"⏳ {chosen_sym}: move_age_4h {age_4h} > 8 — HTF exhausted (failed gate)")
                 continue
 
             # Build data summary (same as main scan)
@@ -11960,7 +11993,9 @@ def _run_test_scan(cid, scan_ver: int):
                         _aero_bad_keys.add(_used_key)
                     if _attempt < _retry_budget - 1: time.sleep(10)
             if not _claude_ok:
-                print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1; continue
+                print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1
+                skip_log.append(f"🔴 {chosen_sym}: Claude/gateway API failed {_retry_budget}x — not analyzed")
+                continue
 
             _ac = analysis.replace(",","")
             def _p(label):
@@ -11986,6 +12021,7 @@ def _run_test_scan(cid, scan_ver: int):
 
             if scan_signal_val == "WAIT":
                 print(f"  [TEST] {chosen_sym} → WAIT")
+                skip_log.append(f"⏸ {chosen_sym}: Claude → WAIT — no clean entry right now")
                 continue
 
             scan_sl_raw = _p("SL")
@@ -11995,7 +12031,9 @@ def _run_test_scan(cid, scan_ver: int):
 
             # If Claude reported no swing or couldn't parse SL → skip
             if swing_level_str == "NONE" or scan_sl_raw <= 0:
-                print(f"  [TEST] {chosen_sym}: no swing level found — WAIT"); continue
+                print(f"  [TEST] {chosen_sym}: no swing level found — WAIT")
+                skip_log.append(f"⚠️ {chosen_sym}: no swing level / SL parsed from Claude output")
+                continue
 
             # Same staleness issue as the real Scan1/Scan2 path — `cp` was captured
             # before the chart-fetch + Claude analysis, refetch so entry/SL/TP match
@@ -12006,9 +12044,13 @@ def _run_test_scan(cid, scan_ver: int):
 
             # Structure SL must be 1.0%–3.0% — reject both sides, never stretch
             if sl_pct < 1.0:
-                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% < 1.0% — too tight, skipping"); continue
+                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% < 1.0% — too tight, skipping")
+                skip_log.append(f"⚠️ {chosen_sym}: SL {sl_pct:.2f}% < 1.0% — too tight (failed gate)")
+                continue
             if sl_pct > 3.0:
-                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% > 3.0% — too loose, skipping"); continue
+                print(f"  [TEST] {chosen_sym}: structure SL {sl_pct:.2f}% > 3.0% — too loose, skipping")
+                skip_log.append(f"⚠️ {chosen_sym}: SL {sl_pct:.2f}% > 3.0% — too loose (failed gate)")
+                continue
 
             scan_sl  = round(scan_entry - sl_dist if scan_signal_val == "BUY" else scan_entry + sl_dist, 6)
             scan_tp1 = round(scan_entry + sl_dist * 2.0 if scan_signal_val == "BUY" else scan_entry - sl_dist * 2.0, 6)
@@ -12026,6 +12068,7 @@ def _run_test_scan(cid, scan_ver: int):
             with _demo_monitor_lock:
                 if any(t2.get("symbol") == chosen_sym for t2 in _other_demo_list):
                     print(f"  [TEST] {chosen_sym}: TS{2 if scan_ver==1 else 1} already opened this coin — skipping to avoid a duplicate")
+                    skip_log.append(f"⏭ {chosen_sym}: TS{2 if scan_ver==1 else 1} already opened this coin")
                     continue
 
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
@@ -12045,8 +12088,10 @@ def _run_test_scan(cid, scan_ver: int):
             _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
             # TS1 and TS2 each reach Free/VIP channels at their OWN independent
             # whitelisted special slot times (test1/test2) — everything else
-            # (regular grid) stays on the legacy channel only.
-            _demo1_tier_routed = _scan_run_mode.get(_kind) == "special"
+            # (regular grid) stays on the legacy channel only. VIP/Free only get
+            # VERIFIED special-time signals (admin request 2026-07-27) — unverified
+            # special-time slots stay Channel-1-only too, same as Scan1/Scan2.
+            _demo1_tier_routed = _scan_run_mode.get(_kind) == "special" and _ai_category(_kind) == "verified"
             # Used to hardcode share_free=True (bypassing the daily quota entirely
             # for every TS1 special-time signal) — now respects the same quota as
             # everything else: within quota -> real signal to Free; exhausted ->
@@ -12116,10 +12161,11 @@ def _run_test_scan(cid, scan_ver: int):
                 # Signal channel only — same reasoning as the live scan path.
                 if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
                     _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
+            _reason_lines = "\n".join(skip_log) if skip_log else "No candidates had usable structure/candle data this cycle."
             send_admin(
-                f"⏸ <b>[TEST] No demo signal</b>  {ist_str()}\n\n"
+                f"⏸ <b>[TEST TS{scan_ver}] No demo signal</b>  {ist_str()}\n\n"
                 f"Tried: <b>{tried_str}</b>\n\n"
-                f"All WAIT or failed gates (age/SL/RR).\n\n<i>- CLEXER SCALP V1 TEST -</i>")
+                f"{_reason_lines}\n\n<i>- CLEXER SCALP V1 TEST -</i>")
 
     except Exception as e:
         send_admin(f"❌ [TEST] Scan error: {e}")
