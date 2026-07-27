@@ -5588,9 +5588,11 @@ def run_price_check():
 # no API key, no rate limit, no signup. A big LONG liquidation = forced selling
 # (bearish pressure); a big SHORT liquidation = forced buying (bullish pressure).
 _last_liq_post_time = 0
+_liq_debug_count = 0     # TEMP DEBUG — total raw messages seen since boot
+_liq_debug_last_log = 0  # TEMP DEBUG — last time we printed the heartbeat line
 
 def _handle_liquidation_msg(raw: str):
-    global _last_liq_post_time, latest_news_context
+    global _last_liq_post_time, latest_news_context, _liq_debug_count, _liq_debug_last_log
     if not SEND_NEWS:
         return
     try:
@@ -5600,6 +5602,13 @@ def _handle_liquidation_msg(raw: str):
         price = float(d.get("ap", 0) or d.get("p", 0) or 0)
         qty   = float(d.get("q", 0) or 0)
         usd   = price * qty
+        # TEMP DEBUG — prove whether raw messages are even arriving at all,
+        # separately from the $ threshold filter below. Remove once confirmed.
+        _liq_debug_count += 1
+        _now_dbg = time.time()
+        if _now_dbg - _liq_debug_last_log >= 15:
+            print(f"  [LIQUIDATION-DEBUG] {_liq_debug_count} raw msgs seen so far — last: {sym} {side} ${usd:,.0f}")
+            _liq_debug_last_log = _now_dbg
         if usd < LIQUIDATION_MIN_USD:
             return
         now = time.time()
