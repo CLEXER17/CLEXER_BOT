@@ -5589,58 +5589,102 @@ def run_price_check():
 # even on a high-volume BTC trade stream used as a control test) — so this
 # uses Bybit's public "All Liquidation" WebSocket instead, genuinely free, no
 # API key, no signup. Bybit has no single all-market topic like Binance did,
-# so this fetches every currently-trading USDT perpetual from Bybit's own
-# instrument list and subscribes to all of them (chunked — a single subscribe
-# request has a ~21,000-char args limit), instead of hardcoding a shortlist.
-# A big LONG liquidation = forced selling (bearish); a big SHORT liquidation =
-# forced buying (bullish).
+# so every symbol below gets its own subscription (chunked — a single
+# subscribe request has a ~21,000-char args limit).
+#
+# This list is a static snapshot (753 total instruments -> 653 matching
+# quoteCoin=USDT + status=Trading + contractType=LinearPerpetual, taken
+# 2026-07-27) instead of being fetched live at runtime — api.bybit.com AND
+# its documented api.bytick.com mirror both returned the exact same
+# CloudFront "configured to block access from your country" error for this
+# server, even though stream.bybit.com (the WebSocket itself) is NOT
+# blocked. New Bybit listings after this snapshot won't auto-appear here;
+# refresh manually by re-fetching /v5/market/instruments-info from a
+# non-blocked network. A big LONG liquidation = forced selling (bearish);
+# a big SHORT liquidation = forced buying (bullish).
 _last_liq_post_time = 0
-_BYBIT_LIQ_FALLBACK_SYMBOLS = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT","ADAUSDT",
-    "AVAXUSDT","LINKUSDT","TONUSDT","SUIUSDT","LTCUSDT","DOTUSDT","TRXUSDT",
-    "NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","INJUSDT","FILUSDT","ATOMUSDT",
-    "ETCUSDT","XLMUSDT","HBARUSDT","ICPUSDT","RENDERUSDT","SEIUSDT","TIAUSDT",
-    "WIFUSDT","1000PEPEUSDT",
-]  # used only if the live instrument-list fetch below fails
-
-def _bybit_all_usdt_perp_symbols() -> list:
-    """Every currently-trading USDT-margined linear perpetual on Bybit, via
-    their public instrument-list REST endpoint (paginated, ~500+ symbols).
-    Falls back to the static shortlist above if the fetch fails for any
-    reason (network hiccup, rate limit, schema change).
-
-    Uses api.bytick.com, not api.bybit.com — the latter's CloudFront
-    distribution returned "configured to block access from your country"
-    for this server, even though stream.bybit.com (the WebSocket itself)
-    is NOT blocked. bytick.com is Bybit's own documented mirror domain for
-    exactly this situation."""
-    _headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    _resp_snippet = ""
-    try:
-        syms = []
-        cursor = ""
-        for _ in range(20):  # hard cap — pages are large, this is way more than needed
-            params = {"category": "linear", "limit": 1000}
-            if cursor:
-                params["cursor"] = cursor
-            _http_r = requests.get("https://api.bytick.com/v5/market/instruments-info",
-                                    params=params, headers=_headers, timeout=15)
-            _resp_snippet = _http_r.text[:300]  # kept in case .json() below fails
-            r = _http_r.json()
-            result = r.get("result", {})
-            for it in result.get("list", []):
-                if (it.get("quoteCoin") == "USDT" and it.get("status") == "Trading"
-                        and it.get("contractType") == "LinearPerpetual"):
-                    syms.append(it["symbol"])
-            cursor = result.get("nextPageCursor", "")
-            if not cursor:
-                break
-        return syms or _BYBIT_LIQ_FALLBACK_SYMBOLS
-    except Exception as e:
-        print(f"  [LIQUIDATION] instrument list fetch failed ({e}) — using fallback shortlist. "
-              f"Raw response start: {_resp_snippet!r}")
-        return _BYBIT_LIQ_FALLBACK_SYMBOLS
+_BYBIT_LIQ_SYMBOLS = [
+    "0GUSDT","1000000BABYDOGEUSDT","1000000MOGUSDT","10000NEXUSDT","10000SATSUSDT","1000BONKUSDT",
+    "1000BTTUSDT","1000CATUSDT","1000FLOKIUSDT","1000LUNCUSDT","1000NEIROCTOUSDT","1000PEPEUSDT",
+    "1000RATSUSDT","1000TAGUSDT","1000TOSHIUSDT","1000TURBOUSDT","1000XECUSDT","1INCHUSDT",
+    "2ZUSDT","4USDT","AALUSDT","AAOIUSDT","AAPLUSDT","AAVEUSDT","ACEUSDT","ACHUSDT","ACTUSDT",
+    "ACUUSDT","ACXUSDT","ADAUSDT","ADBEUSDT","AEHRUSDT","AEROUSDT","AEVOUSDT","AGIUSDT","AGLDUSDT",
+    "AIGENSYNUSDT","AIOUSDT","AIOZUSDT","AIXBTUSDT","AKEUSDT","AKTUSDT","ALABUSDT","ALCHUSDT",
+    "ALGOUSDT","ALICEUSDT","ALLOUSDT","ALPINEUSDT","ALTUSDT","AMATUSDT","AMDSTOCKUSDT","AMZNUSDT",
+    "ANIMEUSDT","ANKRUSDT","APEUSDT","APEXUSDT","API3USDT","APLDUSDT","APPSTOCKUSDT","APRUSDT",
+    "APTUSDT","ARBUSDT","ARCUSDT","ARIAUSDT","ARKKUSDT","ARKMUSDT","ARKUSDT","ARMUSDT","ARPAUSDT",
+    "ARUSDT","ARXUSDT","ASMLUSDT","ASPUSDT","ASRUSDT","ASTERUSDT","ASTRUSDT","ASTSUSDT","ATHUSDT",
+    "ATOMUSDT","ATUSDT","AUCTIONUSDT","AUSDT","AVAAIUSDT","AVAUSDT","AVAXUSDT","AVGOUSDT",
+    "AVNTUSDT","AWEUSDT","AXLUSDT","AXSUSDT","AXTIUSDT","AZTECUSDT","B2USDT","B3USDT","BABAUSDT",
+    "BABYUSDT","BANANAS31USDT","BANANAUSDT","BANDUSDT","BANKUSDT","BANUSDT","BARDUSDT","BASEDUSDT",
+    "BATUSDT","BBUSDT","BBXUSDT","BCHUSDT","BEAMUSDT","BEATUSDT","BELUSDT","BERAUSDT","BEUSDT",
+    "BICOUSDT","BIGTIMEUSDT","BILLUSDT","BIOUSDT","BIRBUSDT","BLASTUSDT","BLENDUSDT","BLESSUSDT",
+    "BLUAIUSDT","BLURUSDT","BMNRUSDT","BMTUSDT","BNBUSDT","BNCUSDT","BNTUSDT","BOBAUSDT",
+    "BOBBOBUSDT","BOMEUSDT","BOTUSDT","BRETTUSDT","BREVUSDT","BROCCOLIUSDT","BRUSDT","BSBUSDT",
+    "BSPUSDT","BSVUSDT","BTCUSDT","BTRUSDT","BTWUSDT","BUSDT","BXUSDT","BZUSDT","C98USDT",
+    "CAKEUSDT","CAPUSDT","CARVUSDT","CATIUSDT","CATSTOCKUSDT","CBRSUSDT","CCUSDT","CELOUSDT",
+    "CETUSUSDT","CFGUSDT","CFXUSDT","CGPTUSDT","CHILLGUYUSDT","CHIPUSDT","CHRUSDT","CHZUSDT",
+    "CIENUSDT","CKBUSDT","CLANKERUSDT","CLOUSDT","CLUSDT","COAIUSDT","COHRUSDT","COINUSDT",
+    "COMPUSDT","COOKIEUSDT","COREUSDT","COSTUSDT","COTIUSDT","COWUSDT","CRCLUSDT","CRDOUSDT",
+    "CRMUSDT","CROSSUSDT","CROUSDT","CRVUSDT","CRWDUSDT","CRWVUSDT","CSCOUSDT","CTCUSDT","CTRUSDT",
+    "CUSDT","CVCUSDT","CVXUSDT","CYBERUSDT","CYSUSDT","DASHUSDT","DATAUSDT","DBRUSDT","DEEPUSDT",
+    "DELLUSDT","DEXEUSDT","DIAUSDT","DKNGUSDT","DOGEUSDT","DOLOUSDT","DOODUSDT","DOTUSDT",
+    "DRAMUSDT","DRIFTUSDT","DUSKUSDT","DYDXUSDT","DYMUSDT","EDENUSDT","EDGEUSDT","EDUUSDT",
+    "EGLDUSDT","EIGENUSDT","ELSAUSDT","ENAUSDT","ENJUSDT","ENSOUSDT","ENSUSDT","EPICUSDT",
+    "ERAUSDT","ESPORTSUSDT","ESPUSDT","ETCUSDT","ETHBTCUSDT","ETHFIUSDT","ETHUSDT","EULUSDT",
+    "EVAAUSDT","EWJUSDT","EWTUSDT","EWYUSDT","FARTCOINUSDT","FFUSDT","FHEUSDT","FIDAUSDT",
+    "FIGHTUSDT","FILUSDT","FLEXUSDT","FLNCUSDT","FLOCKUSDT","FLOWUSDT","FLRUSDT","FLUIDUSDT",
+    "FLUXUSDT","FLYUSDT","FOGOUSDT","FOLKSUSDT","FORMUSDT","FUSDT","FWDIUSDT","GALAUSDT","GASUSDT",
+    "GENIUSUSDT","GEVUSDT","GIGAUSDT","GIGGLEUSDT","GLMUSDT","GLWUSDT","GMTUSDT","GMXUSDT",
+    "GOATUSDT","GOOGLUSDT","GPSUSDT","GRAMUSDT","GRASSUSDT","GRIFFAINUSDT","GRTUSDT","GSUSDT",
+    "GUNUSDT","GWEIUSDT","HAEDALUSDT","HANAUSDT","HBARUSDT","HEIUSDT","HEMIUSDT","HFTUSDT",
+    "HIMSUSDT","HIVEUSDT","HMSTRUSDT","HNTUSDT","HOLOUSDT","HOMEUSDT","HOODUSDT","HPEUSDT",
+    "HUMAUSDT","HUSDT","HYPERUSDT","HYPEUSDT","HYUNDAIUSDT","IBMUSDT","ICNTUSDT","ICPUSDT",
+    "ICXUSDT","IDUSDT","ILVUSDT","IMXUSDT","INITUSDT","INJUSDT","INTCUSDT","INTWUSDT","INUSDT",
+    "INXUSDT","IONQUSDT","IOSTUSDT","IOTAUSDT","IOTXUSDT","IOUSDT","IRENUSDT","IRYSUSDT","IWMUSDT",
+    "JASMYUSDT","JCTUSDT","JELLYJELLYUSDT","JSTUSDT","JTOUSDT","JUPUSDT","KAIAUSDT","KAITOUSDT",
+    "KASUSDT","KATUSDT","KAVAUSDT","KERNELUSDT","KGENUSDT","KITEUSDT","KLACUSDT","KMNOUSDT",
+    "KNCUSDT","KORUUSDT","KSMUSDT","KSTRUSDT","LABUSDT","LAUSDT","LDOUSDT","LIGHTUSDT","LINEAUSDT",
+    "LINKUSDT","LITEUSDT","LITUSDT","LLYUSDT","LPTUSDT","LQTYUSDT","LRCUSDT","LRCXUSDT","LSKUSDT",
+    "LTCUSDT","LUMIAUSDT","LUNA2USDT","LYNUSDT","MAGICUSDT","MAGMAUSDT","MANAUSDT","MANTAUSDT",
+    "MARAUSDT","MASKUSDT","MAVIAUSDT","MAVUSDT","MEGAUSDT","MELANIAUSDT","MEMEUSDT","MERLUSDT",
+    "METAUSDT","METISUSDT","METUSDT","MEUSDT","MEWUSDT","MINAUSDT","MIRAUSDT","MITOUSDT","MMTUSDT",
+    "MNTUSDT","MOCAUSDT","MONUSDT","MOODENGUSDT","MORPHOUSDT","MOVEUSDT","MOVRUSDT","MRVLUSDT",
+    "MSFTUSDT","MSTRUSDT","MTLUSDT","MUBARAKUSDT","MUSDT","MUUSDT","MUUUSDT","MVLLUSDT","MYXUSDT",
+    "NAORISUSDT","NBISUSDT","NEARUSDT","NEOUSDT","NEWTUSDT","NFLXUSDT","NIGHTUSDT","NILUSDT",
+    "NMRUSDT","NOKIAUSDT","NOMUSDT","NOTUSDT","NOWUSDT","NVDAUSDT","NVDLUSDT","NXPCUSDT","OGNUSDT",
+    "OGUSDT","OKBUSDT","ONDOUSDT","ONDSUSDT","ONGUSDT","ONTUSDT","ONUSDT","OPENUSDT","OPGUSDT",
+    "OPNUSDT","OPUSDT","ORCAUSDT","ORCLUSDT","ORDERUSDT","ORDIUSDT","OUSDT","PANWUSDT","PARTIUSDT",
+    "PAXGUSDT","PEAQUSDT","PENDLEUSDT","PENGSTOCKUSDT","PENGUUSDT","PEOPLEUSDT","PHAROSUSDT",
+    "PHAUSDT","PIEVERSEUSDT","PIPPINUSDT","PIXELUSDT","PLAYSOUTUSDT","PLTRUSDT","PLUMEUSDT",
+    "PNUTUSDT","POETUSDT","POLUSDT","POLYXUSDT","POPCATUSDT","PORTALUSDT","POWERUSDT","POWRUSDT",
+    "PRLUSDT","PROMPTUSDT","PROVEUSDT","PTBUSDT","PUFFERUSDT","PUMPFUNUSDT","PUNDIXUSDT",
+    "PURRUSDT","PYTHUSDT","QCOMUSDT","QNTUSDT","QNTXUSDT","QQQUSDT","QTUMUSDT","QUSDT","RAREUSDT",
+    "RAVEUSDT","RAYDIUMUSDT","RDWUSDT","RECALLUSDT","REDUSDT","RENDERUSDT","RESOLVUSDT","REUSDT",
+    "REZUSDT","RIVERUSDT","RIVNUSDT","RKLBUSDT","RLCUSDT","RLUSDUSDT","ROAMUSDT","ROBOUSDT",
+    "RONINUSDT","ROSEUSDT","RPLUSDT","RSRUSDT","RUNEUSDT","RVNUSDT","SAFEUSDT","SAGAUSDT",
+    "SAHARAUSDT","SAMSUNGUSDT","SANDUSDT","SAPIENUSDT","SCRTUSDT","SEIUSDT","SENTUSDT","SHAZUSDT",
+    "SHELLUSDT","SHIB1000USDT","SIGNUSDT","SIRENUSDT","SKHYNIXUSDT","SKHYUSDT","SKLUSDT","SKRUSDT",
+    "SKYAI1USDT","SKYUSDT","SLPUSDT","SLXUSDT","SMCIUSDT","SMHUSDT","SNDKUSDT","SNOWUSDT",
+    "SNTUSDT","SNXUSDT","SNXXUSDT","SOFIUSDT","SOLAYERUSDT","SOLUSDT","SOMIUSDT","SONICUSDT",
+    "SONYUSDT","SOONUSDT","SOPHUSDT","SOSOUSDT","SOXLUSDT","SOXSUSDT","SOXXUSDT","SPACEUSDT",
+    "SPCXUSDT","SPKUSDT","SPORTFUNUSDT","SPXUSDT","SPYUSDT","SQDUSDT","SQQQUSDT","SSVUSDT",
+    "STABLEUSDT","STBLUSDT","STEEMUSDT","STGUSDT","STORJUSDT","STOUSDT","STRKUSDT","STXUSDT",
+    "STXXUSDT","SUIUSDT","SUNUSDT","SUPERUSDT","SUSDT","SUSHIUSDT","SXTUSDT","SYRUPUSDT","TACUSDT",
+    "TAIKOUSDT","TAOUSDT","TAUSDT","TERUSDT","THETAUSDT","THEUSDT","TIAUSDT","TLMUSDT","TNSRUSDT",
+    "TOWNSUSDT","TQQQUSDT","TRBUSDT","TREEUSDT","TRIAUSDT","TRUMPUSDT","TRUSTUSDT","TRUTHUSDT",
+    "TRXUSDT","TSEMUSDT","TSLAUSDT","TSLLUSDT","TSMUSDT","TSTBSCUSDT","TTWOUSDT","TURTLEUSDT",
+    "TUSDT","TUTUSDT","TWTUSDT","TXNUSDT","TZAUSDT","UAIUSDT","UBUSDT","UMAUSDT","UNIUSDT",
+    "USARUSDT","USD1USDT","USDCUSDT","USDEUSDT","USELESSUSDT","USTCUSDT","USUALUSDT","USUSDT",
+    "UVXYUSDT","VANAUSDT","VANRYUSDT","VELODROMEUSDT","VELOUSDT","VELVETUSDT","VETUSDT","VINEUSDT",
+    "VIRTUALUSDT","VRTUSDT","VVVUSDT","WALUSDT","WAVESUSDT","WAXPUSDT","WCTUSDT","WDCUSDT",
+    "WENSTOCKUSDT","WETUSDT","WIFUSDT","WLDUSDT","WLFIUSDT","WOOUSDT","WUSDT","XAGUSDT","XAIUSDT",
+    "XANUSDT","XAUTUSDT","XAUUSDT","XBIUSDT","XCNUSDT","XDCUSDT","XLEUSDT","XLFUSDT","XLKUSDT",
+    "XLMUSDT","XLVUSDT","XMRUSDT","XNYUSDT","XPINUSDT","XPLUSDT","XRPUSDT","XTZUSDT","XVGUSDT",
+    "XVSUSDT","YBUSDT","YFIUSDT","YGGUSDT","ZAMAUSDT","ZBCNUSDT","ZBTUSDT","ZECUSDT","ZENUSDT",
+    "ZEREBROUSDT","ZESTUSDT","ZETAUSDT","ZILUSDT","ZKCUSDT","ZKPUSDT","ZKUSDT","ZMUSDT","ZORAUSDT",
+    "ZROUSDT","ZRXUSDT",
+]
 
 def _handle_liquidation_msg(raw: str):
     global _last_liq_post_time, latest_news_context
@@ -5691,10 +5735,9 @@ def _liquidation_ws_loop():
     if not HAS_WEBSOCKET:
         print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
     url = "wss://stream.bybit.com/v5/public/linear"
+    _liq_topics = [f"allLiquidation.{s}" for s in _BYBIT_LIQ_SYMBOLS]
     while True:
         try:
-            _liq_symbols = _bybit_all_usdt_perp_symbols()
-            _liq_topics = [f"allLiquidation.{s}" for s in _liq_symbols]
             ws = _ws_client.create_connection(url, timeout=15)
             # One subscribe request has a ~21,000-char args limit — chunk into
             # batches of 300 (well under that even for the longest symbols)
