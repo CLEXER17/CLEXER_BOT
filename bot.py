@@ -104,23 +104,33 @@ def _next_special_tag(kind: str) -> str:
     hm = fut[0] if fut else times[0]
     return " [NV]" if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()) else " [V]"
 
+def _slot_tag(kind: str, hm: tuple) -> str:
+    """[V]/[NV]/[N] for ANY schedule slot (special or regular grid) — [N] means
+    this slot isn't in the special set at all (regular hourly grid, always
+    Channel-1-only); [V]/[NV] are the same verified/unverified split as
+    _next_special_tag(), for when the slot IS a special one."""
+    if hm not in _SCAN_SPECIAL.get(kind, set()):
+        return " [N]"
+    return " [NV]" if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()) else " [V]"
+
 def _next_schedule_times():
-    """Returns (next_btc_scan, next_scan1, next_scan2) as display strings.
-    next_btc_scan has no 'IST' suffix (caller appends it); the other two already include it."""
+    """Returns (next_btc_scan, next_scan1, next_scan2) as display strings —
+    each of the scan1/scan2 strings includes a trailing [V]/[NV]/[N] tag
+    (see _slot_tag) showing whether that slot will actually reach VIP/Free.
+    next_btc_scan has no 'IST' suffix (caller appends it)."""
     _ist_now = now_ist()
     _now_hm  = (_ist_now.hour, _ist_now.minute)
     _scan_hrs = {7, 11, 15, 19, 23}
     _next_btc_scan = next((f"{h}:21" for h in sorted(_scan_hrs)
                             if h > _ist_now.hour or (h == _ist_now.hour and _ist_now.minute < 21)),
                            "07:21 tomorrow")
-    def _next_slot(schedule):
+    def _next_slot(schedule, kind):
         _fut = [(h, m) for h, m in schedule if (h, m) > _now_hm]
-        if _fut:
-            _h, _m = _fut[0]
-            return f"{_h}:{_m:02d} IST"
-        _h, _m = schedule[0]
-        return f"{_h}:{_m:02d} IST (tomorrow)"
-    return _next_btc_scan, _next_slot(SCAN1_SCHEDULE), _next_slot(SCAN2_SCHEDULE)
+        _hm = _fut[0] if _fut else schedule[0]
+        _h, _m = _hm
+        _suffix = " (tomorrow)" if not _fut else ""
+        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm)}"
+    return _next_btc_scan, _next_slot(SCAN1_SCHEDULE, "scan1"), _next_slot(SCAN2_SCHEDULE, "scan2")
 def get_session():
     mins = now_ist().hour * 60 + now_ist().minute
     if 450 <= mins < 990:         return "LONDON"
