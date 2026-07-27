@@ -6031,6 +6031,25 @@ def _bingx_ws_recv(ws):
 _last_whale_post_time = 0
 _whale_debug_count = 0
 _whale_debug_last_log = 0
+_recent_trades: dict = {}  # sym -> [(timestamp, price), ...] — ALL trades, not just whale-sized,
+                            # so a book wall filled via several smaller trades still gets matched.
+
+def _record_recent_trade(sym: str, price: float, ts: float):
+    lst = _recent_trades.setdefault(sym, [])
+    lst.append((ts, price))
+    cutoff = ts - 20  # 20s rolling window is plenty — walls disappear and get checked within seconds
+    while lst and lst[0][0] < cutoff:
+        lst.pop(0)
+
+def _wall_likely_filled(sym: str, wall_price: float, now: float) -> bool:
+    """True if a real trade happened at/near wall_price within the last 15s —
+    strong signal the wall was consumed by an actual trade (filled) rather
+    than pulled by the trader (canceled). Not perfect (a trade could
+    coincidentally happen nearby right as an unrelated cancel occurs), but
+    far better than the previous unconditional 'canceled or filled'."""
+    lst = _recent_trades.get(sym, [])
+    tol = max(wall_price * 0.001, 1e-8)  # 0.1% price tolerance
+    return any((now - ts) <= 15 and abs(p - wall_price) <= tol for ts, p in lst)
 
 def _handle_whale_trade_msg(raw: str):
     global _last_whale_post_time, _whale_debug_count, _whale_debug_last_log
@@ -6053,6 +6072,8 @@ def _handle_whale_trade_msg(raw: str):
             price = float(item.get("p", 0) or 0)
             qty = float(item.get("q", 0) or 0)
             usd = price * qty
+            if price > 0:
+                _record_recent_trade(sym, price, time.time())  # every trade, for the fill-check below
             if usd < WHALE_TRADE_MIN_USD or price <= 0:
                 continue
             now = time.time()
@@ -6150,8 +6171,8 @@ def _handle_bingx_depth_msg(raw: str):
         now = time.time()
         if now - _last_book_wall_post_time >= BOOK_WALL_POST_COOLDOWN:
             # Compare against the previous snapshot for this symbol —
-            # new key = PLACED, missing key = REMOVED (canceled or filled,
-            # can't tell which from public book data alone), size changed
+            # new key = PLACED, missing key = REMOVED (checked against the
+            # recent-trade log to guess filled vs canceled), size changed
             # meaningfully = INCREASED/DECREASED.
             for key, usd in cur.items():
                 if key not in prev:
@@ -6171,7 +6192,12 @@ def _handle_bingx_depth_msg(raw: str):
             else:
                 for key, prev_usd in prev.items():
                     if key not in cur:
-                        _post_book_wall(sym, key, 0, "REMOVED ❌ (canceled or filled)", prev_usd)
+                        _, wall_px = key
+                        if _wall_likely_filled(sym, wall_px, time.time()):
+                            action = "REMOVED ❌ — likely FILLED ✅"
+                        else:
+                            action = "REMOVED ❌ — likely CANCELED 🚫"
+                        _post_book_wall(sym, key, 0, action, prev_usd)
                         break
 
         _book_wall_state[sym] = cur
@@ -6186,10 +6212,15 @@ def _post_book_wall(sym: str, key: tuple, usd: float, action: str, prev_usd: flo
     if prev_usd:
         prev_label = f"{prev_usd/1e6:,.2f}M" if prev_usd >= 1_000_000 else f"{prev_usd/1e3:,.0f}K"
         detail += f"↩️ Was: <code>{prev_label}</code>\n"
+    if "FILLED" in action:
+        caveat = "✅ <i>A matching trade happened at/near this price and time — likely genuinely filled, not spoofed.</i>"
+    elif "CANCELED" in action:
+        caveat = "🚫 <i>No matching trade seen nearby — likely just pulled by the trader (classic spoofing pattern).</i>"
+    else:
+        caveat = "⚠️ <i>Resting order, not an executed trade — can be canceled anytime (spoofing is common).</i>"
     msg_text = (
         f"<b>📖 ORDER BOOK — {action}</b>\n\n{emoji} <b>{side_name} wall on {sym}</b>\n\n"
-        f"💵 Price: <code>{px:,.6g}</code>\n{detail}\n"
-        f"⚠️ <i>Resting order, not an executed trade — can be canceled anytime (spoofing is common).</i>"
+        f"💵 Price: <code>{px:,.6g}</code>\n{detail}\n{caveat}"
     )
     send_to_tier_channels(msg_text, share_free=False)
 
