@@ -5589,17 +5589,46 @@ def run_price_check():
 # even on a high-volume BTC trade stream used as a control test) — so this
 # uses Bybit's public "All Liquidation" WebSocket instead, genuinely free, no
 # API key, no signup. Bybit has no single all-market topic like Binance did,
-# so this subscribes per-symbol across a fixed list of major USDT perps.
+# so this fetches every currently-trading USDT perpetual from Bybit's own
+# instrument list and subscribes to all of them (chunked — a single subscribe
+# request has a ~21,000-char args limit), instead of hardcoding a shortlist.
 # A big LONG liquidation = forced selling (bearish); a big SHORT liquidation =
 # forced buying (bullish).
 _last_liq_post_time = 0
-_BYBIT_LIQ_SYMBOLS = [
+_BYBIT_LIQ_FALLBACK_SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT","ADAUSDT",
     "AVAXUSDT","LINKUSDT","TONUSDT","SUIUSDT","LTCUSDT","DOTUSDT","TRXUSDT",
     "NEARUSDT","APTUSDT","ARBUSDT","OPUSDT","INJUSDT","FILUSDT","ATOMUSDT",
     "ETCUSDT","XLMUSDT","HBARUSDT","ICPUSDT","RENDERUSDT","SEIUSDT","TIAUSDT",
     "WIFUSDT","1000PEPEUSDT",
-]
+]  # used only if the live instrument-list fetch below fails
+
+def _bybit_all_usdt_perp_symbols() -> list:
+    """Every currently-trading USDT-margined linear perpetual on Bybit, via
+    their public instrument-list REST endpoint (paginated, ~500+ symbols).
+    Falls back to the static shortlist above if the fetch fails for any
+    reason (network hiccup, rate limit, schema change)."""
+    try:
+        syms = []
+        cursor = ""
+        for _ in range(20):  # hard cap — pages are large, this is way more than needed
+            params = {"category": "linear", "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            r = requests.get("https://api.bybit.com/v5/market/instruments-info",
+                              params=params, timeout=15).json()
+            result = r.get("result", {})
+            for it in result.get("list", []):
+                if (it.get("quoteCoin") == "USDT" and it.get("status") == "Trading"
+                        and it.get("contractType") == "LinearPerpetual"):
+                    syms.append(it["symbol"])
+            cursor = result.get("nextPageCursor", "")
+            if not cursor:
+                break
+        return syms or _BYBIT_LIQ_FALLBACK_SYMBOLS
+    except Exception as e:
+        print(f"  [LIQUIDATION] instrument list fetch failed ({e}) — using fallback shortlist")
+        return _BYBIT_LIQ_FALLBACK_SYMBOLS
 
 def _handle_liquidation_msg(raw: str):
     global _last_liq_post_time, latest_news_context
@@ -5650,11 +5679,17 @@ def _liquidation_ws_loop():
     if not HAS_WEBSOCKET:
         print("  [LIQUIDATION] websocket-client not installed — feed disabled"); return
     url = "wss://stream.bybit.com/v5/public/linear"
-    _liq_topics = [f"allLiquidation.{s}" for s in _BYBIT_LIQ_SYMBOLS]
     while True:
         try:
+            _liq_symbols = _bybit_all_usdt_perp_symbols()
+            _liq_topics = [f"allLiquidation.{s}" for s in _liq_symbols]
             ws = _ws_client.create_connection(url, timeout=15)
-            ws.send(json.dumps({"op": "subscribe", "args": _liq_topics}))
+            # One subscribe request has a ~21,000-char args limit — chunk into
+            # batches of 300 (well under that even for the longest symbols)
+            # instead of risking one oversized request for the full list.
+            _CHUNK = 300
+            for i in range(0, len(_liq_topics), _CHUNK):
+                ws.send(json.dumps({"op": "subscribe", "args": _liq_topics[i:i+_CHUNK]}))
             print(f"  [LIQUIDATION] connected ({len(_liq_topics)} symbols)")
             _last_ping = time.time()
             while True:
