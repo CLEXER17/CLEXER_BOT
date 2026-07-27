@@ -592,7 +592,11 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
         if mid: ids[f"ch{key}"] = mid
     if tier_routed:
         for cid in _channels_by_tier("vip"):
-            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=reply_markup)
+            # No Open Bot / Get VIP buttons in VIP itself — these members are
+            # already VIP and already using the bot, so both buttons are
+            # dead weight here. Free/legacy channels below keep them since
+            # that's where the upsell/bot-discovery actually matters.
+            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=None)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
