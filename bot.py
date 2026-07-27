@@ -1778,6 +1778,14 @@ _scan_tried_lock = __import__("threading").Lock()  # makes "check other's list, 
                                                      # through before either had appended anything.
 _scan_trigger_hm = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
+_demo_tried_now = {1: [], 2: []}  # same idea as _scan_tried_now but for TS1/TS2 — lets each
+                                   # demo scan see what the other is mid-analysis on RIGHT NOW,
+                                   # so they don't both burn a full Claude analysis on the same
+                                   # coin in the same cycle. Same object as the local `tried`
+                                   # list in _run_test_scan, mutated in place.
+_demo_tried_lock = __import__("threading").Lock()  # check-and-claim atomic step, same reasoning
+                                                     # as _scan_tried_lock.
+
 # ─── Auto promote/demote special times by live win rate ────────────────────
 # Per-slot (kind, hour:minute) outcome tracker that automatically:
 #   1. Promotes a REGULAR (non-special) time to special+verified once it has
@@ -11900,6 +11908,8 @@ def _run_test_scan(cid, scan_ver: int):
         MAX_TRIES = 3
         signal_placed = False
         tried = []
+        _demo_tried_now[scan_ver] = tried  # same list object — see _demo_tried_now docstring
+        _other_demo_ver = 2 if scan_ver == 1 else 1
         skip_log = []   # tracks WHY each coin was skipped — shown in the final no-signal
                          # message instead of a generic "all WAIT or failed gates" catch-all
         _demo_api_fail_count = 0
@@ -11912,7 +11922,17 @@ def _run_test_scan(cid, scan_ver: int):
             chosen_sym  = candidate["sym"]
             chosen_base = candidate["base"]
             cp          = candidate["price"]
-            tried.append(chosen_sym)
+            # Skip if TS{other} is ALREADY mid-analysis on this same coin THIS cycle —
+            # same reasoning/lock pattern as the live Scan1/Scan2 loop (see
+            # _scan_tried_now docstring): without this, both demo scans can
+            # independently pick the same top-mover and both burn a full Claude
+            # analysis on it before either has placed a trade.
+            with _demo_tried_lock:
+                if chosen_sym in _demo_tried_now.get(_other_demo_ver, []):
+                    skip_log.append(f"⏭ {chosen_sym}: TS{_other_demo_ver} already analyzing this coin")
+                    print(f"  [TEST] Skip {chosen_sym} — TS{_other_demo_ver} already on it this cycle")
+                    continue
+                tried.append(chosen_sym)
             # Same staleness fix as the live scan loop — candidate["price"] is a
             # snapshot from this cycle's initial ticker fetch, stale by the time
             # coin #2/#3 gets its turn after #1's full Claude analysis. Refetch here.
