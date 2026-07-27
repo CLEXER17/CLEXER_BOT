@@ -2,7 +2,7 @@
 CLEXER Signal Bot V17.8.5
 """
 
-import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string, math
+import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string, math, gzip
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
@@ -5937,6 +5937,312 @@ def _okx_liquidation_ws_loop():
             print(f"  [LIQUIDATION-OKX] connection error: {e} — reconnecting in 10s")
         time.sleep(10)
 
+# --- BINGX WHALE TRADES + ORDER-BOOK TRACKING + LIQUIDATION-HEATMAP ---------
+# Added 2026-07-27, per request: (1) whale-sized trade alerts with an
+# ESTIMATED liquidation price, (2) live tracking of large resting orders on
+# the book (placed/increased/decreased/canceled), (3) an on-demand
+# liquidation-heatmap command. All built on BingX (not Binance/Bybit/OKX)
+# because it's the one exchange this server has PROVEN reachable — the bot's
+# own real trading already runs on BingX's REST API continuously, and this
+# reuses that same domain family. Bybit's REST got CloudFront-blocked from
+# this server, Binance's WebSocket was fully network-blocked — BingX sidesteps
+# repeating either problem, but its WS specifics below (esp. the "m" maker-
+# flag meaning and depth-snapshot semantics) come from reading ccxt's BingX
+# implementation, not a live test I could run myself — the debug heartbeat in
+# each loop exists so the first deploy immediately shows what's working
+# instead of guessing blind, same lesson learned from Bybit/OKX earlier today.
+#
+# IMPORTANT CAVEAT that must stay in every message these produce: none of
+# this is a REAL liquidation price or a confirmed "opened a new position" —
+# actual leverage/margin per trader is private, no exchange publishes it.
+# Liquidation prices shown are ESTIMATES at common leverage tiers, same
+# method CoinGlass-style heatmaps use (liq_price = entry * (1 -+ 1/leverage)).
+
+WHALE_TRADE_MIN_USD = 200000     # single-trade notional floor for a "whale trade" alert
+WHALE_POST_COOLDOWN = 20         # seconds between whale-trade posts
+BOOK_WALL_MIN_USD = 200000       # resting order size floor for order-book tracking
+BOOK_WALL_POST_COOLDOWN = 15     # seconds between order-book wall posts
+_LIQ_LEVERAGE_TIERS = [10, 25, 50, 75, 100]
+
+_bingx_symbols_cache: list = []
+_bingx_symbols_fetched_at = 0
+
+def _bingx_top_symbols(n: int = 40) -> list:
+    """Top N BingX USDT-margined perpetuals by 24h quote volume — same
+    ticker endpoint (open-api.bingx.com) the scan logic already calls
+    successfully, so no new REST reachability risk. Cached for an hour."""
+    global _bingx_symbols_cache, _bingx_symbols_fetched_at
+    if _bingx_symbols_cache and time.time() - _bingx_symbols_fetched_at < 3600:
+        return _bingx_symbols_cache
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker", timeout=15).json()
+        rows = []
+        for t in r.get("data", []):
+            sym = t.get("symbol", "")
+            if not sym.endswith("-USDT"):
+                continue
+            vol = float(t.get("quoteVolume", 0) or 0)
+            rows.append((vol, sym))
+        rows.sort(reverse=True)
+        syms = [s for _, s in rows[:n]]
+        if syms:
+            _bingx_symbols_cache = syms
+            _bingx_symbols_fetched_at = time.time()
+        return _bingx_symbols_cache or ["BTC-USDT", "ETH-USDT"]
+    except Exception as e:
+        print(f"  [WHALE] BingX symbol list fetch failed ({e})")
+        return _bingx_symbols_cache or ["BTC-USDT", "ETH-USDT"]
+
+def _estimate_liq_prices(entry_price: float, is_long: bool) -> list:
+    """ESTIMATED liquidation price at common leverage tiers — see module
+    docstring above. Never real data, always an approximation."""
+    out = []
+    for lev in _LIQ_LEVERAGE_TIERS:
+        px = entry_price * (1 - 1/lev) if is_long else entry_price * (1 + 1/lev)
+        out.append((lev, px))
+    return out
+
+def _bingx_ws_recv(ws):
+    """Receives one message from a BingX WS connection. Handles the two
+    BingX-specific quirks that are NOT the same as Bybit or OKX: (1) frames
+    are GZIP-compressed bytes, need decompressing before use, (2) the server
+    proactively sends the literal text "Ping" (after decompression) and
+    expects a plain-text "Pong" back — unlike Bybit (JSON, client-initiated)
+    or OKX (plain text, but client-initiated). Returns None for a plain
+    read timeout, a ping, or anything undecodable — callers only ever see
+    real data strings."""
+    try:
+        raw = ws.recv()
+    except Exception as e:
+        if "timed out" in str(e).lower():
+            return None
+        raise
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = gzip.decompress(raw).decode("utf-8")
+        except Exception:
+            return None
+    if raw == "Ping":
+        ws.send("Pong")
+        return None
+    return raw
+
+# --- Whale trade detector ----------------------------------------------------
+_last_whale_post_time = 0
+_whale_debug_count = 0
+_whale_debug_last_log = 0
+
+def _handle_whale_trade_msg(raw: str):
+    global _last_whale_post_time, _whale_debug_count, _whale_debug_last_log
+    if not SEND_NEWS:
+        return
+    try:
+        d = json.loads(raw)
+        # TEMP DEBUG — confirm raw trade frames are actually arriving, same
+        # pattern used to diagnose Bybit/OKX earlier today. Remove once this
+        # is confirmed working end-to-end on the real server.
+        _whale_debug_count += 1
+        _now_dbg = time.time()
+        if _now_dbg - _whale_debug_last_log >= 15:
+            print(f"  [WHALE-DEBUG] {_whale_debug_count} raw trade frames seen so far — last: {str(d)[:200]}")
+            _whale_debug_last_log = _now_dbg
+        if not str(d.get("dataType", "")).endswith("@trade"):
+            return
+        for item in d.get("data", []):
+            sym = item.get("s", "?")
+            price = float(item.get("p", 0) or 0)
+            qty = float(item.get("q", 0) or 0)
+            usd = price * qty
+            if usd < WHALE_TRADE_MIN_USD or price <= 0:
+                continue
+            now = time.time()
+            if now - _last_whale_post_time < WHALE_POST_COOLDOWN:
+                continue
+            # "m" = isBuyerMaker, same field/convention as Binance's trade
+            # stream (BingX copies this schema) — m=True means the taker
+            # side was a SELL (hit a resting buy order); m=False means the
+            # taker side was a BUY. Inferred from the standard convention,
+            # not independently confirmed against BingX specifically.
+            is_buyer_maker = bool(item.get("m", False))
+            is_long = not is_buyer_maker
+            usd_label = f"{usd/1e6:,.2f}M" if usd >= 1_000_000 else f"{usd/1e3:,.0f}K"
+            liq_lines = "\n".join(
+                f"  {lev}x → <code>{px:,.6g}</code>" for lev, px in _estimate_liq_prices(price, is_long)
+            )
+            emoji = "🟢" if is_long else "🔴"
+            side_label = "BUY (likely long)" if is_long else "SELL (likely short)"
+            msg_text = (
+                f"<b>🐋 WHALE TRADE</b>\n\n{emoji} <b>{usd_label} {sym} {side_label}</b>\n\n"
+                f"💵 Price: <code>{price:,.6g}</code>\n"
+                f"📦 Size: <code>{qty:,.4f}</code> ({sym.replace('USDT','').replace('-','')})\n\n"
+                f"⚠️ <i>Single large trade — not confirmed to be a new position (could be closing one), "
+                f"and leverage is unknown. Liquidation prices below are ESTIMATES only, assuming isolated "
+                f"margin at each tier:</i>\n{liq_lines}"
+            )
+            send_to_tier_channels(msg_text, share_free=False)
+            _last_whale_post_time = now
+    except Exception as e:
+        print(f"  [WHALE] parse/post error: {e}")
+
+def _bingx_whale_ws_loop():
+    """Runs forever in a background thread — reconnects automatically on drop."""
+    if not HAS_WEBSOCKET:
+        print("  [WHALE] websocket-client not installed — feed disabled"); return
+    url = "wss://open-api-swap.bingx.com/swap-market"
+    while True:
+        try:
+            symbols = _bingx_top_symbols()
+            ws = _ws_client.create_connection(url, timeout=20)
+            for sym in symbols:
+                ws.send(json.dumps({"id": _gen_signal_id(), "dataType": f"{sym}@trade", "reqType": "sub"}))
+            print(f"  [WHALE] connected ({len(symbols)} symbols)")
+            while True:
+                msg = _bingx_ws_recv(ws)
+                if msg:
+                    _handle_whale_trade_msg(msg)
+        except Exception as e:
+            print(f"  [WHALE] connection error: {e} — reconnecting in 10s")
+        time.sleep(10)
+
+# --- Order-book large-order (wall) tracker -----------------------------------
+# Tracks each symbol's top price levels across successive depth snapshots and
+# reports on a large order's full lifecycle (placed / increased / decreased /
+# removed) instead of a one-off "big order spotted" alert — a resting order
+# that gets pulled seconds later (classic spoofing) is visible as a REMOVED
+# post, which is actually useful signal, not just noise.
+_book_wall_state: dict = {}       # sym -> {price: usd_size}
+_last_book_wall_post_time = 0
+_book_wall_debug_count = 0
+_book_wall_debug_last_log = 0
+
+def _handle_bingx_depth_msg(raw: str):
+    global _last_book_wall_post_time, _book_wall_debug_count, _book_wall_debug_last_log
+    if not SEND_NEWS:
+        return
+    try:
+        d = json.loads(raw)
+        _book_wall_debug_count += 1
+        _now_dbg = time.time()
+        if _now_dbg - _book_wall_debug_last_log >= 15:
+            print(f"  [BOOKWALL-DEBUG] {_book_wall_debug_count} raw depth frames seen so far — last: {str(d)[:200]}")
+            _book_wall_debug_last_log = _now_dbg
+        data_type = str(d.get("dataType", ""))
+        if "@depth" not in data_type:
+            return
+        sym = data_type.split("@")[0]
+        book = d.get("data", {})
+        bids = book.get("bids", []) or []
+        asks = book.get("asks", []) or []
+
+        prev = _book_wall_state.get(sym, {})
+        cur = {}
+        for side_name, levels in (("BUY", bids), ("SELL", asks)):
+            for lvl in levels:
+                try:
+                    px, qty = float(lvl[0]), float(lvl[1])
+                except (ValueError, IndexError):
+                    continue
+                usd = px * qty
+                if usd < BOOK_WALL_MIN_USD:
+                    continue
+                cur[(side_name, px)] = usd
+
+        now = time.time()
+        if now - _last_book_wall_post_time >= BOOK_WALL_POST_COOLDOWN:
+            # Compare against the previous snapshot for this symbol —
+            # new key = PLACED, missing key = REMOVED (canceled or filled,
+            # can't tell which from public book data alone), size changed
+            # meaningfully = INCREASED/DECREASED.
+            for key, usd in cur.items():
+                if key not in prev:
+                    _post_book_wall(sym, key, usd, "PLACED 🆕")
+                    now = _last_book_wall_post_time = time.time()
+                    break
+                elif usd >= prev[key] * 1.5:
+                    _post_book_wall(sym, key, usd, "INCREASED 📈", prev[key])
+                    now = _last_book_wall_post_time = time.time()
+                    break
+                elif usd <= prev[key] * 0.5:
+                    _post_book_wall(sym, key, usd, "DECREASED 📉", prev[key])
+                    now = _last_book_wall_post_time = time.time()
+                    break
+            if now == _last_book_wall_post_time:
+                pass
+            else:
+                for key, prev_usd in prev.items():
+                    if key not in cur:
+                        _post_book_wall(sym, key, 0, "REMOVED ❌ (canceled or filled)", prev_usd)
+                        break
+
+        _book_wall_state[sym] = cur
+    except Exception as e:
+        print(f"  [BOOKWALL] parse/post error: {e}")
+
+def _post_book_wall(sym: str, key: tuple, usd: float, action: str, prev_usd: float = None):
+    side_name, px = key
+    usd_label = f"{usd/1e6:,.2f}M" if usd >= 1_000_000 else f"{usd/1e3:,.0f}K"
+    emoji = "🟢" if side_name == "BUY" else "🔴"
+    detail = f"💰 Size: <code>{usd_label}</code>\n" if usd > 0 else ""
+    if prev_usd:
+        prev_label = f"{prev_usd/1e6:,.2f}M" if prev_usd >= 1_000_000 else f"{prev_usd/1e3:,.0f}K"
+        detail += f"↩️ Was: <code>{prev_label}</code>\n"
+    msg_text = (
+        f"<b>📖 ORDER BOOK — {action}</b>\n\n{emoji} <b>{side_name} wall on {sym}</b>\n\n"
+        f"💵 Price: <code>{px:,.6g}</code>\n{detail}\n"
+        f"⚠️ <i>Resting order, not an executed trade — can be canceled anytime (spoofing is common).</i>"
+    )
+    send_to_tier_channels(msg_text, share_free=False)
+
+def _bingx_bookwall_ws_loop():
+    """Runs forever in a background thread — reconnects automatically on drop."""
+    if not HAS_WEBSOCKET:
+        print("  [BOOKWALL] websocket-client not installed — feed disabled"); return
+    url = "wss://open-api-swap.bingx.com/swap-market"
+    while True:
+        try:
+            symbols = _bingx_top_symbols()
+            ws = _ws_client.create_connection(url, timeout=20)
+            for sym in symbols:
+                ws.send(json.dumps({"id": _gen_signal_id(), "dataType": f"{sym}@depth20", "reqType": "sub"}))
+            print(f"  [BOOKWALL] connected ({len(symbols)} symbols)")
+            while True:
+                msg = _bingx_ws_recv(ws)
+                if msg:
+                    _handle_bingx_depth_msg(msg)
+        except Exception as e:
+            print(f"  [BOOKWALL] connection error: {e} — reconnecting in 10s")
+        time.sleep(10)
+
+# --- Liquidation heatmap (on-demand estimate, not a push feed) --------------
+# Unlike whale trades/liquidations/book walls, open interest doesn't change
+# meaningfully minute-to-minute, so this is a COMMAND (/liqmap SYMBOL), not
+# a background alert loop — pushing it on a timer would just be noise.
+def _build_liq_heatmap_text(symbol: str) -> str:
+    sym = symbol.upper().replace("USDT", "").replace("-", "") + "-USDT"
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/openInterest",
+                          params={"symbol": sym}, timeout=15).json()
+        oi_usd = float(r.get("data", {}).get("openInterest", 0) or 0)
+        price = get_bingx_price(sym)
+        if not price or oi_usd <= 0:
+            return f"⚠️ No open interest data for {sym} right now."
+    except Exception as e:
+        return f"⚠️ Fetch failed for {sym}: {e}"
+
+    lines = [f"<b>🗺 Liquidation Heatmap (estimate) — {sym}</b>",
+             f"💵 Price: <code>{price:,.6g}</code>  |  Open Interest: <code>${oi_usd/1e6:,.1f}M</code>", ""]
+    lines.append("<i>ESTIMATED pressure zones if this OI were evenly split long/short at each leverage "
+                 "tier — NOT real per-position data (no exchange publishes that).</i>")
+    lines.append("")
+    lines.append("🟢 LONG liquidations cluster near (if price falls to):")
+    for lev, px in _estimate_liq_prices(price, is_long=True):
+        lines.append(f"  {lev}x → <code>{px:,.6g}</code>")
+    lines.append("")
+    lines.append("🔴 SHORT liquidations cluster near (if price rises to):")
+    for lev, px in _estimate_liq_prices(price, is_long=False):
+        lines.append(f"  {lev}x → <code>{px:,.6g}</code>")
+    return "\n".join(lines)
+
 # --- CRYPTO PAY (@CryptoBot) — invoices + payment event poll loop -------------
 CRYPTO_PAY_BASE_URL = "https://pay.crypt.bot/api"
 
@@ -6703,6 +7009,11 @@ def handle_command(text, chat_id, message=None, sender_id=None):
 
     elif cmd == "/aerolinktest" and is_admin:
         threading.Thread(target=_test_all_aerolink_keys, args=(chat_id,), daemon=True).start()
+
+    elif cmd == "/liqmap":
+        if len(parts) < 2:
+            send_reply(chat_id, "❌ Usage: <code>/liqmap BTC</code>"); return
+        send_reply(chat_id, _build_liq_heatmap_text(parts[1]))
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
@@ -12629,6 +12940,8 @@ def main():
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
     threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
     threading.Thread(target=_okx_liquidation_ws_loop, daemon=True).start()
+    threading.Thread(target=_bingx_whale_ws_loop, daemon=True).start()
+    threading.Thread(target=_bingx_bookwall_ws_loop, daemon=True).start()
     threading.Thread(target=_poll_payment_events, daemon=True).start()
 
     def _active_server_loop():
