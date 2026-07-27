@@ -5608,6 +5608,9 @@ def _bybit_all_usdt_perp_symbols() -> list:
     their public instrument-list REST endpoint (paginated, ~500+ symbols).
     Falls back to the static shortlist above if the fetch fails for any
     reason (network hiccup, rate limit, schema change)."""
+    _headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    _resp_snippet = ""
     try:
         syms = []
         cursor = ""
@@ -5615,8 +5618,10 @@ def _bybit_all_usdt_perp_symbols() -> list:
             params = {"category": "linear", "limit": 1000}
             if cursor:
                 params["cursor"] = cursor
-            r = requests.get("https://api.bybit.com/v5/market/instruments-info",
-                              params=params, timeout=15).json()
+            _http_r = requests.get("https://api.bybit.com/v5/market/instruments-info",
+                                    params=params, headers=_headers, timeout=15)
+            _resp_snippet = _http_r.text[:300]  # kept in case .json() below fails
+            r = _http_r.json()
             result = r.get("result", {})
             for it in result.get("list", []):
                 if (it.get("quoteCoin") == "USDT" and it.get("status") == "Trading"
@@ -5627,7 +5632,8 @@ def _bybit_all_usdt_perp_symbols() -> list:
                 break
         return syms or _BYBIT_LIQ_FALLBACK_SYMBOLS
     except Exception as e:
-        print(f"  [LIQUIDATION] instrument list fetch failed ({e}) — using fallback shortlist")
+        print(f"  [LIQUIDATION] instrument list fetch failed ({e}) — using fallback shortlist. "
+              f"Raw response start: {_resp_snippet!r}")
         return _BYBIT_LIQ_FALLBACK_SYMBOLS
 
 def _handle_liquidation_msg(raw: str):
