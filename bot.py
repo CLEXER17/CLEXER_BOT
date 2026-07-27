@@ -8291,8 +8291,17 @@ Reasoning: [one line]"""
                             _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
                             print(f"  [SCAN] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model(_kind)}")
                             _client, _used_key = _claude_client_skip(_kind, _attempt, _aero_bad_keys)
+                            # Direct/real Claude reliably follows "no steps, no working" and
+                            # fits the clean output block in 200 tokens. Whatever's actually
+                            # behind the current Aerolink gateway does NOT respect that
+                            # instruction — it narrates full step-by-step reasoning first,
+                            # which blows past 200 tokens and gets cut off before ever
+                            # reaching Signal/Entry/SL (same failure TS1/TS2 hit, fixed by
+                            # the same kind of bump). Only widen the budget for Aerolink
+                            # calls — Direct stays at the normal 200 for speed/cost.
+                            _call_max_tokens = max(_max_tokens, 2500) if _using_aero else _max_tokens
                             r2 = _client.messages.create(
-                                model=_ai_model(_kind), max_tokens=_max_tokens,
+                                model=_ai_model(_kind), max_tokens=_call_max_tokens,
                                 messages=[{"role":"user","content":content}])
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
                                            r2.usage.input_tokens, r2.usage.output_tokens,
