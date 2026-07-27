@@ -91,6 +91,19 @@ def _next_special_time(kind: str) -> str:
     h, m = times[0]
     return f"{h}:{m:02d} IST (tomorrow)"
 
+def _next_special_tag(kind: str) -> str:
+    """[V]/[NV] tag for whichever slot _next_special_time(kind) just picked —
+    tells admin at a glance whether that upcoming signal will actually reach
+    VIP/Free ([V] verified) or stay Channel-1-only ([NV] unverified), per the
+    verified-only VIP/Free routing rule (see _ai_category/_force_direct48)."""
+    times = sorted(_SCAN_SPECIAL.get(kind, set()))
+    if not times:
+        return ""
+    _now_hm = (now_ist().hour, now_ist().minute)
+    fut = [(h, m) for h, m in times if (h, m) > _now_hm]
+    hm = fut[0] if fut else times[0]
+    return " [NV]" if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()) else " [V]"
+
 def _next_schedule_times():
     """Returns (next_btc_scan, next_scan1, next_scan2) as display strings.
     next_btc_scan has no 'IST' suffix (caller appends it); the other two already include it."""
@@ -6272,10 +6285,10 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         _next_test1 = _next_special_time("test1")
         _next_test2 = _next_special_time("test2")
         _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
-        _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
-        _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
-        _next_ts1_line = f"⏰ Next TS1:        <b>{_next_test1}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS1:        <b>OFF</b>\n"
-        _next_ts2_line = f"⏰ Next TS2:        <b>{_next_test2}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS2:        <b>OFF</b>\n"
+        _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}{_next_special_tag('scan1')}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
+        _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}{_next_special_tag('scan2')}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
+        _next_ts1_line = f"⏰ Next TS1:        <b>{_next_test1}{_next_special_tag('test1')}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS1:        <b>OFF</b>\n"
+        _next_ts2_line = f"⏰ Next TS2:        <b>{_next_test2}{_next_special_tag('test2')}</b>\n" if (not bot_paused.is_set() and TEST_SCAN_ENABLED) else "⏰ Next TS2:        <b>OFF</b>\n"
         # Flags
         _btc_flag    = "✅ ON"  if btc_analysis_enabled              else "❌ OFF"
         _scan1_flag  = "✅ ON"  if not bot_paused.is_set()           else "❌ OFF"
