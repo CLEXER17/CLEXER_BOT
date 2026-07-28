@@ -4968,8 +4968,13 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     trade_stats["scan_sl"] += 1; trade_stats[f"scan{ver}_sl"] += 1
     _delete_trail_sl_messages(t)
     _log_scan_history(t, close_result, price)
+    # Follows the entry's own tier_routed flag now (2026-07-28) — a verified
+    # slot's real SL loss goes to VIP same as its wins would, matching how
+    # TP1_HIT/TP2_HIT already work. Previously hid real losses from VIP
+    # even when the entry itself was shown there, which read as VIP only
+    # getting told about wins on a trade it was already following.
     _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
-        tier_routed=(close_result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
+        tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
     ct.on_scan_sl(sym)
     log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
         "sl_hit_time": _ist_str_now(), "result": close_result,
