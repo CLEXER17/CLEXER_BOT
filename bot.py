@@ -186,7 +186,7 @@ bot_stopped           = threading.Event()  # STOP: blocks new scans only, monito
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
-_AEROLINK_OPUS5_UNSUPPORTED = True  # TEMP — see _ai_model()'s docstring. Flip to False once Aerolink confirms Opus 5 support.
+_AEROLINK_OPUS5_UNSUPPORTED = False  # Confirmed 2026-07-28: Lumosel (now behind the Aerolink gateway) supports Opus 5 — tag now follows whatever /aiconfig actually has set, no more silent downgrade to 4.8.
 FORCE_DIRECT48_NORMAL_UNVERIFIED = False  # /directnu on|off — forces Scan1+Scan2's "nonspecial" (regular hourly grid)
                                            # and "unverified" tiers onto Direct gateway + claude-opus-4-8, overriding
                                            # whatever /aiconfig has those two cells set to. Verified/special-time
