@@ -192,6 +192,22 @@ FORCE_DIRECT48_NORMAL_UNVERIFIED = False  # /directnu on|off — forces Scan1+Sc
                                            # whatever /aiconfig has those two cells set to. Verified/special-time
                                            # slots are untouched. Does NOT mutate AICFG_GRID (see _ai_model/_ai_aerolink).
 
+# Model registry — every model ID selectable anywhere in /aiconfig, admin-
+# editable via /addmodel, /removemodel, /models (2026-07-28). Not restricted
+# to Claude — Lumosel (the current Aerolink backend) proxies many providers
+# through the same Anthropic-shaped request, so any model ID it accepts can
+# be added here and used immediately, no code change needed. Direct still
+# only works for real Claude model IDs (it hits Anthropic's actual API), but
+# nothing here blocks picking a non-Claude model + Direct — it'll just fail
+# at the API call with a normal error, same as any other bad combination.
+# key = exact model ID string sent to the API. value = short tag shown in
+# signal headers (e.g. "A5", "D4.8", "AGLM4").
+MODEL_REGISTRY: dict = {
+    "claude-opus-5":   "5",
+    "claude-fable-5":  "F",
+    "claude-opus-4-8": "4.8",
+}
+
 # /aiconfig — full grid: each of Scan1/Scan2/TS1/TS2 picks its OWN model+gateway
 # independently PER classification (verified/unverified/nonspecial), 12 slots
 # total. BTC is not part of this grid (see SCAN_MODEL/USE_AEROLINK above).
@@ -2194,12 +2210,14 @@ def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
-    """Gateway+model tag for signal headers: A5/D5 (Aerolink/Direct + Opus 5),
-    A4.8 (temporary Aerolink Opus 5->4.8 downgrade, see _ai_model()), or
-    AF/DF (Aerolink/Direct + Fable 5)."""
+    """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
+    Opus 5), AGLM4 (Aerolink + a registered GLM model). Tag comes from
+    MODEL_REGISTRY — falls back to the raw model ID (truncated) if it was
+    never registered (e.g. picked before being added, or registry entry
+    later removed)."""
     gw = "A" if _ai_aerolink(kind, scan_ver) else "D"
     _m = _ai_model(kind, scan_ver)
-    mdl = "F" if _m == "claude-fable-5" else ("4.8" if _m == "claude-opus-4-8" else "5")
+    mdl = MODEL_REGISTRY.get(_m, _m[:6])
     return f"{gw}{mdl}"
 
 def _aerolink_configured_keys() -> list:
@@ -4049,6 +4067,8 @@ def load_settings():
             USE_AEROLINK          = d.get("use_aerolink",        USE_AEROLINK)
             FORCE_DIRECT48_NORMAL_UNVERIFIED = d.get("force_direct48_normal_unverified", False)
             _apply_aicfg_grid(d.get("aicfg_grid"))
+            if d.get("model_registry"):
+                MODEL_REGISTRY.update(d["model_registry"])
             _SLOT_EVAL_THRESHOLD.update(d.get("slot_eval_threshold", {}))
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
@@ -4099,6 +4119,7 @@ def save_settings():
             "use_aerolink":     USE_AEROLINK,
             "force_direct48_normal_unverified": FORCE_DIRECT48_NORMAL_UNVERIFIED,
             "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
+            "model_registry": dict(MODEL_REGISTRY),
             "slot_eval_threshold": dict(_SLOT_EVAL_THRESHOLD),
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
@@ -7045,6 +7066,35 @@ def handle_command(text, chat_id, message=None, sender_id=None):
         if len(parts) < 2:
             send_reply(chat_id, "❌ Usage: <code>/liqmap BTC</code>"); return
         send_reply(chat_id, _build_liq_heatmap_text(parts[1]))
+
+    elif cmd == "/models":
+        _lines = "\n".join(f"<code>{tag}</code> = <code>{mid}</code>" for mid, tag in MODEL_REGISTRY.items())
+        send_reply(chat_id,
+            f"<b>🧠 Model Registry</b> ({len(MODEL_REGISTRY)})\n\n{_lines}\n\n"
+            f"Add: <code>/addmodel model-id TAG</code>\nRemove: <code>/removemodel model-id</code>\n\n"
+            f"Any model ID Lumosel (Aerolink) accepts works here — GPT, GLM, Kimi, "
+            f"whatever it proxies. Direct only works for real Claude model IDs.")
+
+    elif cmd == "/addmodel" and is_scanadmin:
+        if len(parts) < 3:
+            send_reply(chat_id, "❌ Usage: <code>/addmodel model-id TAG</code>\ne.g. <code>/addmodel gpt-4-turbo GPT4</code>"); return
+        _new_id, _new_tag = parts[1], parts[2]
+        MODEL_REGISTRY[_new_id] = _new_tag
+        save_settings()
+        send_reply(chat_id, f"✅ Added <code>{_new_id}</code> as <code>{_new_tag}</code> — now selectable in /aiconfig for any type/tier.")
+
+    elif cmd == "/removemodel" and is_scanadmin:
+        if len(parts) < 2:
+            send_reply(chat_id, "❌ Usage: <code>/removemodel model-id</code>"); return
+        _rm_id = parts[1]
+        if _rm_id not in MODEL_REGISTRY:
+            send_reply(chat_id, f"⚠️ <code>{_rm_id}</code> isn't in the registry. Check /models for exact IDs."); return
+        # Doesn't touch any /aiconfig cell already set to this model — it'll
+        # just show as an unregistered fallback tag until changed to something
+        # still in the registry, same as any stale saved value.
+        del MODEL_REGISTRY[_rm_id]
+        save_settings()
+        send_reply(chat_id, f"✅ Removed <code>{_rm_id}</code> from the registry.")
 
     elif cmd == "/testreply" and is_admin:
         _test_entry = _scan_box(
@@ -10160,7 +10210,7 @@ def send_aiconfig_kind_screen(chat_id, kind, message_id=None):
     for tier, tlabel in _AICFG_TIER_LABELS.items():
         cfg = AICFG_GRID[kind][tier]
         gw  = "Aerolink" if cfg["aerolink"] else "Direct"
-        mdl = "Opus 5" if cfg["model"] == "claude-opus-5" else "Fable 5"
+        mdl = MODEL_REGISTRY.get(cfg["model"], cfg["model"])
         rows.append([{"text": f"{tlabel}: {gw} · {mdl}", "callback_data": f"aicfg_open2:{kind}:{tier}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "aicfg_open"}])
     _help_edit_or_send(chat_id, f"<b>{klabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Tap a trade type to change its combo:</blockquote>",
@@ -10179,14 +10229,20 @@ def send_aiconfig_type_screen(chat_id, kind, tier, message_id=None):
         cur_model, cur_aero = cfg["model"], cfg["aerolink"]
         _back_cb = f"aicfg_open:{kind}"
     def mark(m, a): return "✅ " if (cur_model == m and cur_aero == a) else ""
-    rows = [
-        [{"text": f"{mark('claude-opus-5', False)}Direct · Opus 5",    "callback_data": f"aicfg_set:{kind}:{tier}:direct:opus"}],
-        [{"text": f"{mark('claude-fable-5', False)}Direct · Fable 5",     "callback_data": f"aicfg_set:{kind}:{tier}:direct:fable"}],
-        [{"text": f"{mark('claude-opus-5', True)}Aerolink · Opus 5",   "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:opus"}],
-        [{"text": f"{mark('claude-fable-5', True)}Aerolink · Fable 5",    "callback_data": f"aicfg_set:{kind}:{tier}:aerolink:fable"}],
-        [{"text": "◀️  Back", "callback_data": _back_cb}],
-    ]
-    _help_edit_or_send(chat_id, f"<b>{klabel}{tlabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo:</blockquote>",
+    rows = []
+    for gw_key, gw_label in (("direct", "Direct"), ("aerolink", "Aerolink")):
+        for model_id in MODEL_REGISTRY:
+            tag = MODEL_REGISTRY[model_id]
+            rows.append([{
+                "text": f"{mark(model_id, gw_key == 'aerolink')}{gw_label} · {tag}",
+                "callback_data": f"aicfg_set:{kind}:{tier}:{gw_key}:{model_id}",
+            }])
+    rows.append([{"text": "◀️  Back", "callback_data": _back_cb}])
+    _legend = "\n".join(f"<code>{t}</code> = {m}" for m, t in MODEL_REGISTRY.items())
+    _help_edit_or_send(chat_id,
+        f"<b>{klabel}{tlabel} — AI Model &amp; Gateway</b>\n\n<blockquote>Choose a combo. Direct only "
+        f"works for real Claude model IDs — non-Claude models need Aerolink (Lumosel).\n\n{_legend}\n\n"
+        f"Add/remove models with /addmodel and /removemodel.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_entrystyle_screen(chat_id, message_id=None):
@@ -11417,7 +11473,7 @@ def command_listener():
                         send_aiconfig_kind_screen(cb_chat_id, cb_data.split(":", 1)[1], message_id=cb_msg_id)
                     elif cb_data.startswith("aicfg_set:") and cb_is_scanadmin:
                         _, _kind, _tier, _gw, _mdl = cb_data.split(":", 4)
-                        _model_val = "claude-opus-5" if _mdl == "opus" else "claude-fable-5"
+                        _model_val = _mdl  # the exact model ID from MODEL_REGISTRY, not hardcoded opus/fable
                         _aero_val = (_gw == "aerolink")
                         if _kind == "btc":
                             global SCAN_MODEL, USE_AEROLINK
