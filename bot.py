@@ -4413,8 +4413,18 @@ def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
+_scan_quiet = threading.local()  # per-thread flag — True only inside an auto-triggered
+                                  # scan's own dedicated thread (see _do_scan), so it can
+                                  # never suppress the admin's own separate interactions
+                                  # running in a different thread at the same time.
 
-def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None):
+def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important=False):
+    # Auto-scan progress noise suppression (2026-07-28, rate-limit fix) — only
+    # applies to messages headed for the admin's own DM from inside a quiet
+    # (auto-triggered) scan thread, and only when not explicitly marked
+    # important (genuine API/gateway failures still get through).
+    if getattr(_scan_quiet, "on", False) and str(chat_id) == str(ADMIN_CHAT_ID) and not important:
+        return
     cid_str = str(chat_id)
     if cid_str in _reply_capture:
         # Captured (not actually sent yet) — store raw text. The eventual
@@ -6644,7 +6654,10 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         data={"chat_id": chat_id, "caption": f"{period_label} — {len(filtered)} rows"},
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
-def handle_command(text, chat_id, message=None, sender_id=None):
+def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
+    # auto=True marks a command as scheduler-triggered (not a human typing it)
+    # — currently only used by /scan1 and /scan2 to suppress routine progress
+    # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
@@ -8555,8 +8568,13 @@ def handle_command(text, chat_id, message=None, sender_id=None):
             return
         ver = 1 if cmd == "/scan1" else 2
         lbl = "V1 (big movers)" if ver == 1 else "V2 (fresh momentum)"
-        send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
-        def _do_scan(cid=chat_id, scan_ver=ver):
+        if not auto:
+            send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
+        def _do_scan(cid=chat_id, scan_ver=ver, _auto=auto):
+            if _auto:
+                # Runs entirely in this thread — safe to set here, can't leak
+                # into the admin's own separate interactions (different thread).
+                _scan_quiet.on = True
             try:
                 import traceback as _tb, pandas as _pd
 
@@ -8643,7 +8661,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 top10 = movers[:10]
 
                 if not top10:
-                    send_reply(cid, "❌ No coins found from BingX ticker (API issue?)"); return
+                    send_reply(cid, "❌ No coins found from BingX ticker (API issue?)", important=True); return
 
                 # Show top 10 so user can verify real data was fetched
                 top_lines = "\n".join(
@@ -8684,7 +8702,7 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 if SCAN_USE_TV and not is_tv_online():
                     send_reply(cid,
                         f"📴 <b>TradingView Offline — Scan{scan_ver} blocked</b>\n\n"
-                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.")
+                        f"TV mode is ON. Start TV bridge or run /scantv off to use BingX mode.", important=True)
                     return
 
                 # Slot cap removed 2026-07-27 — unlimited concurrent slots per
@@ -9144,7 +9162,10 @@ Reasoning: [one line]"""
                         _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
                         if _tier_routed and not _is_unverified:
                             ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
-                            send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]))
+                            # Real order confirmation — kept even during quiet
+                            # auto-mode, unlike the two routine "no copy trade"
+                            # notices below (those are expected/non-actionable).
+                            send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]), important=True)
                         elif _is_unverified:
                             send_reply(cid, f"📋 <b>{chosen_sym}:</b> Unverified special time ({_trigger_hm[0]}:{_trigger_hm[1]:02d}) — posted to VIP/Free, but no copy trade orders placed until this slot is verified.")
                         else:
@@ -9173,7 +9194,7 @@ Reasoning: [one line]"""
                             + "\n".join(skip_log[-len(tried):]) +
                             f"\n\n⚠️ Check your AI Model / Gateway settings (Aerolink may be blocked) — "
                             f"switch to Direct if this keeps happening.\n"
-                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
+                            f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.", important=True)
                     else:
                         send_reply(cid,
                             f"⏸ <b>[Scan{scan_ver}] No signal found</b>  {ist_str()}\n\n"
@@ -12209,8 +12230,9 @@ _scan_cycle_lock   = __import__("threading").Lock()
 def _run_auto_scan(cid, scan_ver=2):
     """Auto-scan entry point — called from main loop at IST :02."""
     global _scan_cycle_placed
-    lbl = "V1" if scan_ver == 1 else "V2"
-    send_admin(f"🔄 <b>Auto-Scan {lbl}</b>  {ist_str()}\n\nScheduled scan starting (~60s)...")
+    # "Auto-Scan starting" DM removed 2026-07-28 — routine noise, not an
+    # error. auto=True below also suppresses the rest of this run's progress
+    # chatter in the admin DM; genuine errors still get through.
     # Clear cycle dedup set when scan1 starts (scan1 always starts first)
     if scan_ver == 1:
         with _scan_cycle_lock:
@@ -12220,7 +12242,7 @@ def _run_auto_scan(cid, scan_ver=2):
     # handle_command() merely kicks off — it returns almost instantly. The special-
     # time flag is cleared by _do_scan itself once that thread finishes, NOT here,
     # otherwise it gets cleared before the real Claude call ever happens.
-    handle_command(cmd, cid)
+    handle_command(cmd, cid, auto=True)
 
 # ══════════════════════════════════════════════════════════
 # TEST MODE — CLEXER SCALP v1 (demo only, no copytrade)
@@ -12565,7 +12587,9 @@ def _run_test_scan(cid, scan_ver: int):
     import re as _re, math as _math
     lbl = "S1" if scan_ver == 1 else "S2"
     _kind = f"test{scan_ver}"
-    send_admin(f"🧪 <b>[TEST] Scalp V1 Scan{lbl}</b>  {ist_str()}\n\nDemo scan starting...\n\n<i>- CLEXER TEST -</i>")
+    # "Demo scan starting" DM removed 2026-07-28 — routine noise, not an
+    # error. Admin DMs now reserved for genuine API/gateway failures only
+    # (see the end of this function).
 
     demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
     # Slot cap removed 2026-07-27 — unlimited concurrent slots per kind now,
@@ -12810,17 +12834,11 @@ def _run_test_scan(cid, scan_ver: int):
             else:
                 scan_signal_val = _all_sigs[-1]  # take last non-WAIT signal
 
-            # Send analysis preview — show only the final Signal block to avoid confusion
-            # Find last occurrence of "Signal:" and show from there
-            _last_sig_idx = analysis.rfind("Signal:")
-            _preview = analysis[_last_sig_idx:].strip() if _last_sig_idx >= 0 else analysis.strip()
-            emoji = "🟢" if candidate["change"] >= 0 else "🔴"
-            send_admin(
-                f"{emoji} <b>[TEST] {chosen_sym}</b>  {ist_str()}\n\n"
-                f"Price: <b>{cp:,.6g}</b> ({candidate['change']:+.2f}%)\n"
-                f"move_age: {age} candles\n\n"
-                f"<pre>{_html.escape(_preview[:600])}</pre>\n\n"
-                f"<i>- CLEXER SCALP V1 TEST -</i>")
+            # Per-candidate raw analysis preview DM removed 2026-07-28 — pure
+            # progress noise (not an error), one of the biggest contributors
+            # to the DM volume that tripped Telegram's rate limit given the
+            # dense grid runs this many times an hour. Final result still
+            # reaches the right channel via the signal/VIP posts below.
 
             if scan_signal_val == "WAIT":
                 print(f"  [TEST] {chosen_sym} → WAIT")
@@ -12969,11 +12987,18 @@ def _run_test_scan(cid, scan_ver: int):
                     _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
                 if _ai_category("test", scan_ver) == "verified":
                     send_to_tier_channels(_no_sig_msg, share_free=False)
-            _reason_lines = "\n".join(skip_log) if skip_log else "No candidates had usable structure/candle data this cycle."
-            send_admin(
-                f"⏸ <b>[TEST TS{scan_ver}] No demo signal</b>  {ist_str()}\n\n"
-                f"Tried: <b>{tried_str}</b>\n\n"
-                f"{_reason_lines}\n\n<i>- CLEXER SCALP V1 TEST -</i>")
+            # Admin DM removed for the routine "no clean setup" case (2026-07-28)
+            # — that's not an error, and the special-slot version above already
+            # goes to the Signal channel. Only a genuine API/gateway failure
+            # (every candidate failed at the Claude call itself, not just found
+            # no clean setup) still DMs the admin — that's worth knowing about
+            # immediately regardless of whether this particular slot was special.
+            if _demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried):
+                _reason_lines = "\n".join(skip_log) if skip_log else "No candidates had usable structure/candle data this cycle."
+                send_admin(
+                    f"🔴 <b>[TEST TS{scan_ver}] API/gateway failure — no analysis ran</b>  {ist_str()}\n\n"
+                    f"Tried: <b>{tried_str}</b>\n\n"
+                    f"{_reason_lines}\n\n<i>- CLEXER SCALP V1 TEST -</i>")
 
     except Exception as e:
         send_admin(f"❌ [TEST] Scan error: {e}")
