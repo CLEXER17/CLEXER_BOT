@@ -13039,10 +13039,16 @@ def main():
             time.sleep(3600)  # hourly is plenty for a date-based expiry
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
-    threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
-    threading.Thread(target=_okx_liquidation_ws_loop, daemon=True).start()
+    # Liquidation feeds (Bybit + OKX) and the order-book wall tracker are
+    # stopped 2026-07-28 — combined with the dense scan grid, message volume
+    # tripped Telegram's bot-wide rate limit (retry-after in the HOURS,
+    # blocking admin DMs and real trade signals too, not just these feeds).
+    # Code left in place, not deleted — re-enable once paced/throttled
+    # properly. Whale trades stays on (lower volume, wasn't named).
+    # threading.Thread(target=_liquidation_ws_loop, daemon=True).start()
+    # threading.Thread(target=_okx_liquidation_ws_loop, daemon=True).start()
     threading.Thread(target=_bingx_whale_ws_loop, daemon=True).start()
-    threading.Thread(target=_bingx_bookwall_ws_loop, daemon=True).start()
+    # threading.Thread(target=_bingx_bookwall_ws_loop, daemon=True).start()
     threading.Thread(target=_poll_payment_events, daemon=True).start()
 
     def _active_server_loop():
