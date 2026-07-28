@@ -9127,11 +9127,17 @@ Reasoning: [one line]"""
                                 [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
                                   f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
                             )
-                        # Signal channel only — no-signal/error status isn't a trade,
-                        # so it never belongs in VIP/Free (those are for verified
-                        # signals only, per admin's instruction).
+                        # Signal channel always gets it. VERIFIED slots ALSO post to
+                        # VIP (2026-07-28 request) — VIP users are specifically primed
+                        # for a verified slot's outcome, so silence there when nothing
+                        # fires reads as the bot having missed it, not "no clean setup."
+                        # Unverified-special and nonspecial slots stay Signal-only, as
+                        # before — only a proven, verified slot's no-trade result is
+                        # worth VIP's attention.
                         if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
                             _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
+                        if _ai_category(_kind) == "verified":
+                            send_to_tier_channels(_no_sig_msg, share_free=False)
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -12878,9 +12884,12 @@ def _run_test_scan(cid, scan_ver: int):
                         [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
                           f"{_smallcaps_title('Claude analyzed but no clean setup at this slot')}."]],
                     )
-                # Signal channel only — same reasoning as the live scan path.
+                # Signal channel always gets it; VERIFIED slots also post to VIP —
+                # same reasoning as the live scan path.
                 if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
                     _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
+                if _ai_category("test", scan_ver) == "verified":
+                    send_to_tier_channels(_no_sig_msg, share_free=False)
             _reason_lines = "\n".join(skip_log) if skip_log else "No candidates had usable structure/candle data this cycle."
             send_admin(
                 f"⏸ <b>[TEST TS{scan_ver}] No demo signal</b>  {ist_str()}\n\n"
