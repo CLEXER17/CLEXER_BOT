@@ -7200,11 +7200,29 @@ def handle_command(text, chat_id, message=None, sender_id=None):
                 # One shared <pre> per KIND block, not one per row — a separate
                 # <pre> on every line makes Telegram render each row as its own
                 # standalone copyable code card instead of a compact table.
-                _nt_blocks.append(f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_rows) + "</pre>")
+                # Chunked to stay under Telegram's 4096-char limit (2026-07-28
+                # — the dense grid means far more tracked slots now, and a
+                # single kind alone can grow past it over time, same failure
+                # as the whole-command message used to hit).
+                _hdr = f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)"
+                _chunk, _chunk_len = [], len(_hdr) + 20
+                for _row in _rows:
+                    if _chunk_len + len(_row) + 1 > 3500 and _chunk:
+                        _nt_blocks.append(f"{_hdr}\n<pre>" + "\n".join(_chunk) + "</pre>")
+                        _chunk, _chunk_len = [], len(_hdr) + 20
+                    _chunk.append(_row)
+                    _chunk_len += len(_row) + 1
+                if _chunk:
+                    _nt_blocks.append(f"{_hdr}\n<pre>" + "\n".join(_chunk) + "</pre>")
         if not _nt_blocks:
             send_reply(chat_id, "No non-special times have tracked data yet."); return
-        send_reply(chat_id, "📊 <b>Non-Special Times</b>\n\n" + "\n\n".join(_nt_blocks) +
-            "")
+        # Sent as ONE message per (kind, chunk) — the dense grid (2026-07-28)
+        # means far more tracked slots now, and one combined message
+        # routinely blew past Telegram's 4096-char limit, silently failing
+        # with "message is too long".
+        send_reply(chat_id, "📊 <b>Non-Special Times</b>")
+        for _block in _nt_blocks:
+            send_reply(chat_id, _block)
 
     elif cmd == "/list":
         _bl_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
