@@ -2066,8 +2066,29 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                     user[f"{_sp}tp1_hit"] = True; _set(cid, user)
                     if notify_fn:
                         notify_fn(f"🎯 [Monitor] @{uname} {sym}: TP1 detected → placing BE SL")
-                    on_scan_tp1(sym)
-                    continue  # on_scan_tp1 handles SL/TP2 — skip normal check
+                    # Bridge to the bot's own signal tracking (2026-07-29) —
+                    # without this, the bot only finds out about TP1 from its
+                    # own independent price-tick (runs once a minute, and if
+                    # price has since moved back below the TP1 level by the
+                    # time it checks, it silently finds nothing and never
+                    # announces at all). ghost_close_fn already does exactly
+                    # this reconciliation for full closes (SL/TP2) — reusing
+                    # it here instead of calling on_scan_tp1() directly, since
+                    # ghost_close_fn's target (_force_close_scan_trade /
+                    # _force_close_demo_trade) already calls on_scan_tp1()
+                    # itself internally. Calling both would fire it twice.
+                    if ghost_close_fn:
+                        try:
+                            # .10f, not the default float format — a very small
+                            # crypto price (e.g. 0.0000012) renders in scientific
+                            # notation by default ("1.2e-06"), which would fail
+                            # _ghost_confirm_close's [\d.]+ regex match silently.
+                            ghost_close_fn(sym, f"TP1/BE hit @ {avg_price:.10f}")
+                        except Exception as e:
+                            print(f"[CT] tp1 ghost_close_fn bridge {sym}: {e}")
+                    else:
+                        on_scan_tp1(sym)
+                    continue  # on_scan_tp1 (direct or via ghost_close_fn) handles SL/TP2 — skip normal check
 
                 # Emergency SL if no stored price (2% from avg entry)
                 if not sl_price:
