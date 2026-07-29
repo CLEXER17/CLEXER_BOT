@@ -518,13 +518,12 @@ def _react_to_ids(ids: dict, emoji: str = "🔥"):
 # keyboard buttons just send their label as plain text (unlike inline
 # buttons, they can't carry a URL or callback_data) — the main message loop
 # intercepts these exact strings and dispatches the matching command.
-# "Trade Control" and "Contact Admin" aren't in here — they need special
-# handling (open a menu / show a URL button) instead of a plain command.
+# "Trade Control", "Copy Trade" and "Contact Admin" aren't in here — they need
+# special handling (open a menu / show a URL button) instead of a plain command.
 _REPLY_KB_CMD_MAP = {
     "📊 Status": "/status",
     "📈 My Trades": "/trade",
     "👑 Get VIP": "/vip",
-    "🔄 Copy Trade": "/ctstatus",
     "📋 Trade Log": "/tradelog",
     "🧠 AI Gateway": "/aiconfig",
     "👥 Users": "/users",
@@ -12223,6 +12222,8 @@ def command_listener():
                     handle_command("/resume" if bot_paused.is_set() else "/pause", cid, msg, sender_id=sender_uid)
                 elif text == "🛠 Trade Control":
                     send_help_category(cid, "tradecontrol", str(cid) == str(ADMIN_CHAT_ID))
+                elif text == "🔄 Copy Trade":
+                    send_help_category(cid, "copyuser", str(cid) == str(ADMIN_CHAT_ID))
                 elif text == "💬 Contact Admin":
                     if ADMIN_CHAT_ID:
                         send_reply(cid, "💬 Tap below to message the admin directly:",
