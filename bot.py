@@ -1786,6 +1786,12 @@ _SCAN_SPECIAL_NO_COPY = {
     "test2": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
 _scan_run_mode = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # None | "special" | "regular"
+_scan_running = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # 2026-07-29 — prevents a new
+# auto-trigger for a kind from starting while a previous cycle for that SAME kind is still running. Without
+# this, the dense grid can fire a new trigger before a slow prior cycle (multiple sequential Claude calls,
+# each with retries) finishes — and since _scan_run_mode/_scan_trigger_hm are shared globals (not per-
+# execution state), the new trigger overwrites them mid-flight, corrupting the still-running cycle's
+# model/gateway classification for its remaining API calls (not just its displayed tag).
 _scan_tried_now = {1: [], 2: []}  # live-mirrored `tried` list from each scan's current cycle — lets Scan1
                                    # and Scan2 (running concurrently, minutes-long Claude analyses per coin)
                                    # see what the OTHER one is mid-analysis on RIGHT NOW, so they don't both
@@ -9242,6 +9248,11 @@ Reasoning: [one line]"""
                 # only be safely cleared once this thread is actually done, not
                 # right after handle_command() returns (that only kicks off this thread).
                 _scan_run_mode["scan1" if scan_ver == 1 else "scan2"] = None
+                if _auto:
+                    # Only auto-triggered runs touch _scan_running — a manual
+                    # /scan1 finishing shouldn't clear the flag out from under
+                    # a still-running auto cycle (see _scan_running docstring).
+                    _scan_running["scan1" if scan_ver == 1 else "scan2"] = False
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
     elif cmd == "/syncup" and is_admin:
@@ -12580,6 +12591,9 @@ def _run_test_scan_and_clear_flag(cid, scan_ver: int):
         _run_test_scan(cid, scan_ver)
     finally:
         _scan_run_mode[_kind] = None
+        _scan_running[_kind] = False  # only ever auto-triggered (see this
+        # wrapper's callers) — safe to clear unconditionally, unlike Scan1/Scan2
+        # where manual /scan1 runs share the same code path.
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
@@ -13248,39 +13262,45 @@ def main():
             _cur_hm = (_ist_now.hour, _ist_now.minute)
 
             # Scan1: special times (Direct) + hourly :02/:23 regular grid (Aerolink)
-            if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
+            # not _scan_running["scan1"] — skip starting a new cycle while a previous
+            # one is still in-flight (see _scan_running docstring for why).
+            if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today and not _scan_running["scan1"]:
                 _scan1_triggered_today.add(_cur_hm)
                 print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
                     _scan_trigger_hm["scan1"] = _cur_hm
+                    _scan_running["scan1"] = True
                     threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
             # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
-            if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set():
+            if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and not _scan_running["scan2"]:
                 if _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
                     _scan1_triggered_today.add((_cur_hm, 2))
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
                         _scan_run_mode["scan2"] = "special" if _cur_hm in _SCAN_SPECIAL["scan2"] else "regular"
                         _scan_trigger_hm["scan2"] = _cur_hm
+                        _scan_running["scan2"] = True
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # TS1: own independent special times (Direct) + hourly :09/:27 regular grid (Aerolink)
-            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today and not _scan_running["test1"]:
                 _test_triggered_today.add(_cur_hm)
                 print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["test1"] = "special" if _cur_hm in _SCAN_SPECIAL["test1"] else "regular"
                     _scan_trigger_hm["test1"] = _cur_hm
+                    _scan_running["test1"] = True
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # TS2: own independent special times + schedule — fully separate from TS1
-            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today and not _scan_running["test2"]:
                 _test_triggered_today.add((_cur_hm, 2))
                 print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
                 if ADMIN_CHAT_ID:
                     _scan_run_mode["test2"] = "special" if _cur_hm in _SCAN_SPECIAL["test2"] else "regular"
+                    _scan_running["test2"] = True
                     _scan_trigger_hm["test2"] = _cur_hm
                     threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
 
