@@ -456,19 +456,22 @@ def _get_bot_username():
         print(f"  [GETME ERROR] {e}")
     return _BOT_USERNAME
 
-def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: bool = False) -> bool:
+def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: bool = False, protect: bool = False) -> bool:
     """Sends via plain sendMessage. NOTE: this used to stage-then-forwardMessage
     to "preserve" premium/custom emoji — that assumption was wrong. /testreply
     proved the opposite empirically: forwardMessage strips premium emoji, while
     plain sendMessage (with the <tg-emoji> entities _apply_premium_emojis already
     wrapped the text in, by the time it reaches here) renders them correctly.
     Kept the same name/signature so every existing caller needed no changes.
-    If with_bot_button, sends a small follow-up message with an 'Open Bot' link."""
+    If with_bot_button, sends a small follow-up message with an 'Open Bot' link.
+    protect=True sets protect_content, blocking forward/save — for VIP-only sends."""
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    _payload = {"chat_id": dest_chat_id, "text": text, "parse_mode": "HTML",
+                "disable_web_page_preview": True}
+    if protect:
+        _payload["protect_content"] = True
     try:
-        r = requests.post(f"{base}/sendMessage",
-            json={"chat_id": dest_chat_id, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True}, timeout=10)
+        r = requests.post(f"{base}/sendMessage", json=_payload, timeout=10)
         rj = r.json()
         if not rj.get("ok"):
             print(f"  [SEND] {tag} {dest_chat_id} rejected: {rj.get('description')}")
@@ -489,6 +492,28 @@ def _send_via_true_forward(text: str, dest_chat_id, tag: str, with_bot_button: b
         return False
 
 
+def _react_to_message(chat_id, message_id, emoji: str = "🔥"):
+    """Bot reacts to its own message with an emoji — used to auto-react to
+    TP2 (full win) posts. Silent no-op on failure, same as _pin_message."""
+    if not message_id:
+        return
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMessageReaction",
+            json={"chat_id": chat_id, "message_id": message_id,
+                  "reaction": [{"type": "emoji", "emoji": emoji}]}, timeout=10)
+        if not r.json().get("ok"):
+            print(f"  [REACT] {chat_id} msg {message_id} failed: {r.json().get('description')}")
+    except Exception as e:
+        print(f"  [REACT] {chat_id} msg {message_id}: {e}")
+
+def _react_to_ids(ids: dict, emoji: str = "🔥"):
+    """Reacts to every destination message_id in a send_lifecycle_reply-style
+    ids dict (e.g. {"ch1": mid, "vip:123": mid, "free:456": mid})."""
+    for key, mid in (ids or {}).items():
+        cid = key.split(":", 1)[1] if ":" in key else (TELEGRAM_CHANNEL_ID if key == "ch1" else os.getenv("TELEGRAM_CHANNEL_ID_2", ""))
+        if cid and mid:
+            _react_to_message(cid, mid, emoji)
+
 def _pin_message(chat_id, message_id, disable_notification: bool = True):
     """Pins a message in a channel/group — requires the bot to be an admin
     there with 'pin messages' rights. Silent no-op on failure (e.g. bot isn't
@@ -504,16 +529,20 @@ def _pin_message(chat_id, message_id, disable_notification: bool = True):
     except Exception as e:
         print(f"  [PIN] {chat_id} msg {message_id}: {e}")
 
-def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None):
+def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None, protect: bool = False):
     """Direct sendMessage (no forward trick) — premium emoji fall back to plain
     glyphs, but this lets the message reply to an earlier one (reply_to = that
-    message's message_id). Returns the new message_id, or None on failure."""
+    message's message_id). Returns the new message_id, or None on failure.
+    protect=True sets protect_content, blocking forward/save on that message —
+    used for VIP-exclusive content so it can't be easily forwarded to non-payers."""
     text = _apply_premium_emojis(text)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if protect:
+        payload["protect_content"] = True
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
         rj = r.json()
@@ -551,7 +580,7 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
         if mid: ids[f"ch{key}"] = mid
     if tier_routed:
         for cid in _channels_by_tier("vip"):
-            mid = _send_plain_reply(cid, text)
+            mid = _send_plain_reply(cid, text, protect=True)  # VIP-exclusive — block forward/save
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
@@ -612,7 +641,7 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
             # already VIP and already using the bot, so both buttons are
             # dead weight here. Free/legacy channels below keep them since
             # that's where the upsell/bot-discovery actually matters.
-            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=None)
+            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=None, protect=True)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
@@ -643,11 +672,12 @@ def send_to_tier_channels(text: str, share_free: bool):
     to a direct send only if the forward relay itself fails."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
-        if _send_via_true_forward(text, cid, "vip"):
+        if _send_via_true_forward(text, cid, "vip", protect=True):
             continue
         try:
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+                json={"chat_id": cid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True,
+                      "protect_content": True}, timeout=10)
             rj = r.json()
             if not rj.get("ok"):
                 print(f"  [TIER CHANNEL] vip {cid} rejected: {rj.get('description')}")
@@ -956,11 +986,11 @@ def _send_daily_summary(tracker: dict):
         return
     vip_text = _apply_premium_emojis(_build_recap_text(all_trades, date_str))
     for cid in _channels_by_tier("vip"):
-        _mid = _send_via_true_forward(vip_text, cid, "daily-summary-vip")
+        _mid = _send_via_true_forward(vip_text, cid, "daily-summary-vip", protect=True)
         if not _mid:
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": cid, "text": vip_text, "parse_mode": "HTML"}, timeout=10)
+                    json={"chat_id": cid, "text": vip_text, "parse_mode": "HTML", "protect_content": True}, timeout=10)
                 _mid = r.json().get("result", {}).get("message_id")
             except Exception as e: print(f"  [DAILY SUMMARY] vip {cid}: {e}")
         if isinstance(_mid, int):
@@ -4944,8 +4974,9 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
         _delete_trail_sl_messages(t)
         _log_scan_history(t, "TP2", price)
-        send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
+        _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
+        _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
         ct.on_scan_tp2(sym)
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -5437,8 +5468,9 @@ def _tick_one(ver: int, t: dict) -> bool:
             _delete_trail_sl_messages(t)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
-            send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
+            _tp2_ids = send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
+            _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
             ct.on_scan_tp2(sym)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -5575,7 +5607,8 @@ def run_price_check():
             log_trade_outcome("TP2_HIT", "hit during 1H check")
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             _tp2_msg = fmt_update("TP2_HIT")
-            send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
+            _tp2_ids = send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
+            _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             reset_trade(); return True
@@ -7090,6 +7123,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
         if len(parts) < 2:
             send_reply(chat_id, "❌ Usage: <code>/liqmap BTC</code>"); return
         send_reply(chat_id, _build_liq_heatmap_text(parts[1]))
+
+    elif cmd == "/replydemo" and is_admin:
+        # DEMO ONLY — a persistent reply keyboard (different from the inline
+        # buttons used everywhere else) sits below the message box until
+        # dismissed with /replydemo_off. Not wired into any real feature yet.
+        send_reply(chat_id,
+            "🎹 <b>Reply Keyboard Demo</b>\n\nThis is a persistent keyboard, not an inline button — "
+            "it stays below the message box until dismissed. Tap a button or send /replydemo_off.",
+            reply_markup={
+                "keyboard": [["📊 Status", "📈 Trades"], ["⏸ Pause", "▶️ Resume"], ["❌ Close Demo"]],
+                "resize_keyboard": True,
+                "one_time_keyboard": False,
+            })
+
+    elif cmd == "/replydemo_off" and is_admin:
+        send_reply(chat_id, "🎹 Reply keyboard demo closed.", reply_markup={"remove_keyboard": True})
 
     elif cmd == "/models":
         _lines = "\n".join(f"<code>{tag}</code> = <code>{mid}</code>" for mid, tag in MODEL_REGISTRY.items())
