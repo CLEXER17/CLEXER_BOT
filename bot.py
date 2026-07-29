@@ -514,6 +514,38 @@ def _react_to_ids(ids: dict, emoji: str = "🔥"):
         if cid and mid:
             _react_to_message(cid, mid, emoji)
 
+# Reply keyboard button label -> command it triggers when tapped. Reply-
+# keyboard buttons just send their label as plain text (unlike inline
+# buttons, they can't carry a URL or callback_data) — the main message loop
+# intercepts these exact strings and dispatches the matching command.
+# "Trade Control" and "Contact Admin" aren't in here — they need special
+# handling (open a menu / show a URL button) instead of a plain command.
+_REPLY_KB_CMD_MAP = {
+    "📊 Status": "/status",
+    "📈 My Trades": "/trade",
+    "👑 Get VIP": "/vip",
+    "🔄 Copy Trade": "/ctstatus",
+    "📋 Trade Log": "/tradelog",
+    "🧠 AI Gateway": "/aiconfig",
+    "👥 Users": "/users",
+}
+
+def _reply_keyboard_for_chat(chat_id) -> dict:
+    """Persistent reply keyboard, tailored to who's talking to the bot —
+    admin, co-admin, VIP user, or free user. Sent on /start."""
+    cid_str = str(chat_id)
+    if ADMIN_CHAT_ID and cid_str == str(ADMIN_CHAT_ID):
+        rows = [["📊 Status", "⏸ Pause/Resume"], ["🧠 AI Gateway", "📋 Trade Log"], ["👥 Users"]]
+    elif is_co_admin(chat_id):
+        rows = [["🧠 AI Gateway", "🛠 Trade Control"], ["📋 Trade Log", "📊 Status"]]
+    else:
+        _u = ct._get(cid_str) or {}
+        if _u.get("tier") == "vip":
+            rows = [["📊 Status", "📈 My Trades"], ["🔄 Copy Trade", "💬 Contact Admin"]]
+        else:
+            rows = [["📊 Status", "📈 My Trades"], ["💬 Contact Admin", "👑 Get VIP"]]
+    return {"keyboard": rows, "resize_keyboard": True, "one_time_keyboard": False}
+
 def _pin_message(chat_id, message_id, disable_notification: bool = True):
     """Pins a message in a channel/group — requires the bot to be an admin
     there with 'pin messages' rights. Silent no-op on failure (e.g. bot isn't
@@ -6794,6 +6826,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
             send_vip_offer_screen(chat_id, str(_hm_uid))
             return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
+        # Persistent reply keyboard, role-tailored — sent as its own small
+        # message since a message can only carry one reply_markup, and the
+        # help menu above already has its own inline keyboard.
+        send_reply(chat_id, "👇 Quick actions", reply_markup=_reply_keyboard_for_chat(chat_id))
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
@@ -7124,21 +7160,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
             send_reply(chat_id, "❌ Usage: <code>/liqmap BTC</code>"); return
         send_reply(chat_id, _build_liq_heatmap_text(parts[1]))
 
-    elif cmd == "/replydemo" and is_admin:
-        # DEMO ONLY — a persistent reply keyboard (different from the inline
-        # buttons used everywhere else) sits below the message box until
-        # dismissed with /replydemo_off. Not wired into any real feature yet.
-        send_reply(chat_id,
-            "🎹 <b>Reply Keyboard Demo</b>\n\nThis is a persistent keyboard, not an inline button — "
-            "it stays below the message box until dismissed. Tap a button or send /replydemo_off.",
-            reply_markup={
-                "keyboard": [["📊 Status", "📈 Trades"], ["⏸ Pause", "▶️ Resume"], ["❌ Close Demo"]],
-                "resize_keyboard": True,
-                "one_time_keyboard": False,
-            })
-
-    elif cmd == "/replydemo_off" and is_admin:
-        send_reply(chat_id, "🎹 Reply keyboard demo closed.", reply_markup={"remove_keyboard": True})
+    elif cmd == "/hidekeyboard":
+        # Removes the persistent quick-actions keyboard sent on /start —
+        # role-tailored version now live, replaced the earlier generic demo.
+        send_reply(chat_id, "👇 Quick-actions keyboard hidden. Send /start to bring it back.",
+            reply_markup={"remove_keyboard": True})
 
     elif cmd == "/models":
         _lines = "\n".join(f"<code>{tag}</code> = <code>{mid}</code>" for mid, tag in MODEL_REGISTRY.items())
@@ -12191,7 +12217,19 @@ def command_listener():
                         else:
                             send_reply(cid, result_text, reply_markup=final_mkp)
                     continue
-                if text.startswith("/"):
+                if text in _REPLY_KB_CMD_MAP:
+                    handle_command(_REPLY_KB_CMD_MAP[text], cid, msg, sender_id=sender_uid)
+                elif text == "⏸ Pause/Resume":
+                    handle_command("/resume" if bot_paused.is_set() else "/pause", cid, msg, sender_id=sender_uid)
+                elif text == "🛠 Trade Control":
+                    send_help_category(cid, "tradecontrol", str(cid) == str(ADMIN_CHAT_ID))
+                elif text == "💬 Contact Admin":
+                    if ADMIN_CHAT_ID:
+                        send_reply(cid, "💬 Tap below to message the admin directly:",
+                            reply_markup={"inline_keyboard": [[{"text": "💬 Contact Admin", "url": f"tg://user?id={ADMIN_CHAT_ID}"}]]})
+                    else:
+                        send_reply(cid, "⚠️ Admin contact isn't set up right now.")
+                elif text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
                 elif str(cid) in _chat_sessions:
                     # Regular users must actually forward a message (in a private
