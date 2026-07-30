@@ -1859,6 +1859,13 @@ _scan_pending_special = {"scan1": None, "scan2": None, "test1": None, "test2": N
 # can't just run in parallel with the in-flight cycle — that's the exact corruption _scan_running guards
 # against. So instead of skipping, the tick is queued here and _run_queued_special fires it the instant
 # the running cycle clears its flag — see _queue_special_slot / _run_queued_special near main().
+_scan_abort_requested = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # 2026-07-30 —
+# set alongside _scan_pending_special: tells the in-flight cycle for this kind to stop trying MORE
+# candidates and exit now, so the queued verified slot can start right away instead of waiting out the
+# whole 3-candidate cycle. Checked once per candidate (top of the tried-coins loop in _do_scan /
+# _run_test_scan) — can't interrupt mid-Claude-call safely, so the current candidate still finishes,
+# but no NEW candidate starts once this is set. Cleared in the same finally block that clears
+# _scan_running, right before _run_queued_special fires the next one.
 _scan_tried_now = {1: [], 2: []}  # live-mirrored `tried` list from each scan's current cycle — lets Scan1
                                    # and Scan2 (running concurrently, minutes-long Claude analyses per coin)
                                    # see what the OTHER one is mid-analysis on RIGHT NOW, so they don't both
@@ -8828,6 +8835,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
                 for candidate in candidate_order[:MAX_TRIES + 3]:  # a few extras in case of skips
                     if signal_placed: break
                     if len(tried) >= MAX_TRIES: break
+                    if _scan_abort_requested.get(_kind):
+                        # A verified slot for this same kind is waiting to run right now
+                        # (see _queue_special_slot) — stop trying more candidates so it
+                        # can start as soon as this thread's finally block runs.
+                        print(f"  [SCAN] Scan{scan_ver} aborting early — verified slot waiting")
+                        break
 
                     chosen_base = candidate["base"]
                     chosen_sym  = candidate["sym"]
@@ -9334,6 +9347,7 @@ Reasoning: [one line]"""
                     # a still-running auto cycle (see _scan_running docstring).
                     _kind_ = "scan1" if scan_ver == 1 else "scan2"
                     _scan_running[_kind_] = False
+                    _scan_abort_requested[_kind_] = False
                     _run_queued_special(_kind_)
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
@@ -12690,6 +12704,7 @@ def _run_test_scan_and_clear_flag(cid, scan_ver: int):
         _scan_running[_kind] = False  # only ever auto-triggered (see this
         # wrapper's callers) — safe to clear unconditionally, unlike Scan1/Scan2
         # where manual /scan1 runs share the same code path.
+        _scan_abort_requested[_kind] = False
         _run_queued_special(_kind)
 
 def _run_test_scan(cid, scan_ver: int):
@@ -12800,6 +12815,12 @@ def _run_test_scan(cid, scan_ver: int):
         for candidate in candidate_order:
             if signal_placed: break
             if len(tried) >= MAX_TRIES: break
+            if _scan_abort_requested.get(_kind):
+                # A verified slot for this same kind is waiting to run right now
+                # (see _queue_special_slot) — stop trying more candidates so it
+                # can start as soon as this thread's finally block runs.
+                print(f"  [TEST-SCAN] TS{scan_ver} aborting early — verified slot waiting")
+                break
             chosen_sym  = candidate["sym"]
             chosen_base = candidate["base"]
             cp          = candidate["price"]
@@ -13123,20 +13144,24 @@ def _queue_special_slot(kind: str, hm: tuple):
     tick) hadn't finished yet. Running it in parallel isn't safe (that's the
     exact overlapping-scan corruption _scan_running exists to prevent), but
     per admin instruction (2026-07-30) a VIP-facing special/verified slot
-    must NEVER be silently dropped either. So instead of skipping, queue it
-    here — _run_queued_special fires it the instant the running cycle
-    clears its flag, ahead of whatever the next natural tick would be.
-    Regular (non-special) slots still just skip quietly, as before — they're
-    Signal-only and nothing VIP is watching for."""
+    must run with priority — never silently dropped, never just queued
+    behind the rest of the running cycle either. So this queues it AND
+    tells the running cycle to stop trying further candidates right now
+    (_scan_abort_requested) — the current candidate's Claude call still
+    finishes (can't safely interrupt mid-call), but no new one starts,
+    so the verified slot fires after that one step instead of the whole
+    remaining cycle. Regular (non-special) slots still just skip quietly,
+    as before — they're Signal-only and nothing VIP is watching for."""
     if hm not in _SCAN_SPECIAL.get(kind, set()):
         return
     _scan_pending_special[kind] = hm
+    _scan_abort_requested[kind] = True
     if ADMIN_CHAT_ID:
         _label = _TRIGGER_LABEL[kind]
         _trig_str = f"{hm[0]}:{hm[1]:02d}"
         send_reply(ADMIN_CHAT_ID,
             f"⏳ <b>[{_label}]</b> {_trig_str} IST verified slot — previous cycle still running, "
-            f"queued to fire the instant it's free.", important=True)
+            f"telling it to stop trying new coins now so this fires as soon as possible.", important=True)
 
 def _run_queued_special(kind: str):
     """Call right after a cycle for `kind` finishes and clears _scan_running.
