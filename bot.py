@@ -13106,6 +13106,34 @@ def _run_test_scan(cid, scan_ver: int):
         send_admin(f"❌ [TEST] Scan error: {e}")
         import traceback as _tb3; print(_tb3.format_exc())
 
+_TRIGGER_LABEL = {"scan1": "S1", "scan2": "S2", "test1": "TS1", "test2": "TS2"}
+
+def _notify_special_slot_skipped(kind: str, hm: tuple):
+    """A special-time trigger tick arrived for `kind`, but _scan_running[kind]
+    was still True — a previous cycle for this SAME kind (e.g. an earlier
+    dense-grid tick) hadn't finished yet, so the guard added in the
+    overlapping-scan fix (2026-07-29) silently skipped starting a new one.
+    That's correct for a regular slot, but a special/verified slot going
+    fully silent (no signal AND no "no signal" message) reads to VIP as the
+    bot having missed it — so this posts an explicit "slot skipped" notice
+    in its place, same channels the real "no signal" message would use."""
+    if hm not in _SCAN_SPECIAL.get(kind, set()):
+        return  # only special slots are worth a notice — regular ones are Signal-only anyway
+    _label = _TRIGGER_LABEL[kind]
+    _trig_str = f"{hm[0]}:{hm[1]:02d}"
+    _is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(kind, set())
+    _msg = _scan_box(
+        f"{_label} No Signal", f"⏸ {_label}  |  {_trig_str} IST",
+        [[f"⏭ {_smallcaps_title('Slot Skipped')}",
+          f"{_smallcaps_title('Previous scan cycle was still running — this slot did not fire')}."]],
+    )
+    if ADMIN_CHAT_ID:
+        send_reply(ADMIN_CHAT_ID, f"⏭ <b>[{_label}]</b> {_trig_str} IST — skipped, previous cycle still running.", important=True)
+    if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
+        _send_plain_reply(TELEGRAM_CHANNEL_ID, _msg)
+    if not _is_unverified:
+        send_to_tier_channels(_msg, share_free=False)
+
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_scan_tick_time
 
@@ -13352,19 +13380,24 @@ def main():
             # Scan1: special times (Direct) + hourly :02/:23 regular grid (Aerolink)
             # not _scan_running["scan1"] — skip starting a new cycle while a previous
             # one is still in-flight (see _scan_running docstring for why).
-            if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today and not _scan_running["scan1"]:
+            if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
-                print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
-                if ADMIN_CHAT_ID:
-                    _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
-                    _scan_trigger_hm["scan1"] = _cur_hm
-                    _scan_running["scan1"] = True
-                    threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
+                if _scan_running["scan1"]:
+                    _notify_special_slot_skipped("scan1", _cur_hm)
+                else:
+                    print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
+                    if ADMIN_CHAT_ID:
+                        _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
+                        _scan_trigger_hm["scan1"] = _cur_hm
+                        _scan_running["scan1"] = True
+                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
 
             # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
-            if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and not _scan_running["scan2"]:
-                if _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
-                    _scan1_triggered_today.add((_cur_hm, 2))
+            if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
+                _scan1_triggered_today.add((_cur_hm, 2))
+                if _scan_running["scan2"]:
+                    _notify_special_slot_skipped("scan2", _cur_hm)
+                else:
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
                         _scan_run_mode["scan2"] = "special" if _cur_hm in _SCAN_SPECIAL["scan2"] else "regular"
@@ -13373,24 +13406,30 @@ def main():
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
 
             # TS1: own independent special times (Direct) + hourly :09/:27 regular grid (Aerolink)
-            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today and not _scan_running["test1"]:
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
-                print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
-                if ADMIN_CHAT_ID:
-                    _scan_run_mode["test1"] = "special" if _cur_hm in _SCAN_SPECIAL["test1"] else "regular"
-                    _scan_trigger_hm["test1"] = _cur_hm
-                    _scan_running["test1"] = True
-                    threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
+                if _scan_running["test1"]:
+                    _notify_special_slot_skipped("test1", _cur_hm)
+                else:
+                    print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
+                    if ADMIN_CHAT_ID:
+                        _scan_run_mode["test1"] = "special" if _cur_hm in _SCAN_SPECIAL["test1"] else "regular"
+                        _scan_trigger_hm["test1"] = _cur_hm
+                        _scan_running["test1"] = True
+                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
 
             # TS2: own independent special times + schedule — fully separate from TS1
-            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today and not _scan_running["test2"]:
+            if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
                 _test_triggered_today.add((_cur_hm, 2))
-                print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
-                if ADMIN_CHAT_ID:
-                    _scan_run_mode["test2"] = "special" if _cur_hm in _SCAN_SPECIAL["test2"] else "regular"
-                    _scan_running["test2"] = True
-                    _scan_trigger_hm["test2"] = _cur_hm
-                    threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
+                if _scan_running["test2"]:
+                    _notify_special_slot_skipped("test2", _cur_hm)
+                else:
+                    print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
+                    if ADMIN_CHAT_ID:
+                        _scan_run_mode["test2"] = "special" if _cur_hm in _SCAN_SPECIAL["test2"] else "regular"
+                        _scan_running["test2"] = True
+                        _scan_trigger_hm["test2"] = _cur_hm
+                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
