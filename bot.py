@@ -1827,7 +1827,7 @@ def _claude_text(msg):
 # Opus 5 but routes through Aerolink instead, and stays Signal-channel only.
 # Manual (non-scheduled) triggers like typing /scan1 keep using the admin's
 # normal /aiconfig setting untouched. Set right before the auto-trigger fires
-# and cleared right after that scan cycle finishes (see _scan_run_mode below).
+# and cleared right after that scan cycle finishes (see _scan_ctx below).
 _SCAN_SPECIAL = {
     "scan1": {(3,2), (5,23), (9,2), (16,15), (12,2), (23,23), (7,23)},
     "scan2": {(2,23), (11,27), (12,3), (13,7), (5,23), (5,28), (6,23), (9,27), (10,7), (7,7)},
@@ -1846,26 +1846,35 @@ _SCAN_SPECIAL_NO_COPY = {
     "test1": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
     "test2": {(0,0), (0,9), (1,9), (2,24), (4,3), (8,9), (12,24), (16,8), (18,27), (21,27), (22,27)},
 }
-_scan_run_mode = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # None | "special" | "regular"
-_scan_running = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # 2026-07-29 — prevents a new
-# auto-trigger for a kind from starting while a previous cycle for that SAME kind is still running. Without
-# this, the dense grid can fire a new trigger before a slow prior cycle (multiple sequential Claude calls,
-# each with retries) finishes — and since _scan_run_mode/_scan_trigger_hm are shared globals (not per-
-# execution state), the new trigger overwrites them mid-flight, corrupting the still-running cycle's
-# model/gateway classification for its remaining API calls (not just its displayed tag).
-_scan_pending_special = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # 2026-07-30 — a
-# verified/special-time hm tuple queued because it arrived while _scan_running[kind] was still True.
-# Special slots are VIP-facing and must NEVER be silently dropped (admin instruction), but they also
-# can't just run in parallel with the in-flight cycle — that's the exact corruption _scan_running guards
-# against. So instead of skipping, the tick is queued here and _run_queued_special fires it the instant
-# the running cycle clears its flag — see _queue_special_slot / _run_queued_special near main().
-_scan_abort_requested = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # 2026-07-30 —
-# set alongside _scan_pending_special: tells the in-flight cycle for this kind to stop trying MORE
-# candidates and exit now, so the queued verified slot can start right away instead of waiting out the
-# whole 3-candidate cycle. Checked once per candidate (top of the tried-coins loop in _do_scan /
-# _run_test_scan) — can't interrupt mid-Claude-call safely, so the current candidate still finishes,
-# but no NEW candidate starts once this is set. Cleared in the same finally block that clears
-# _scan_running, right before _run_queued_special fires the next one.
+
+# ─── Per-kind concurrency locks (2026-07-29, redesigned 2026-07-30) ────────
+# Scan1/Scan2/TS1/TS2 each now have TWO independent tracks — "regular" (the
+# hourly/dense grid) and "special" (verified/unverified time slots). A kind's
+# two tracks are allowed to run at the same time (a verified 07:07 Scan2 can
+# fire while a regular 07:03 Scan2 cycle is still analyzing coins) — VIP-
+# facing special slots must never wait on or get dropped by a regular cycle
+# (admin instruction, 2026-07-30). What's still NOT allowed is two cycles on
+# the SAME track for the SAME kind overlapping each other (e.g. two regular
+# Scan2 cycles, or two special Scan2 cycles) — that's the original shared-
+# state corruption bug (mismatched tags / missing VIP routing on IDOL-USDT,
+# 2026-07-29) these locks exist to prevent.
+_scan_running         = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # regular track
+_scan_running_special = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # special track
+
+# Per-THREAD scan classification (2026-07-30, replaces the old shared
+# _scan_run_mode/_scan_trigger_hm dicts). Two cycles of the same kind can now
+# run in different threads at the same time, so "am I a special/verified run,
+# and what time triggered me" can no longer live in one shared dict keyed
+# only by kind — two concurrent threads for "scan2" would stomp on each
+# other's entry mid-flight, exactly like _scan_running used to. threading.
+# local() gives each worker thread (_do_scan / _run_test_scan) its own
+# private copy that only IT can see or write, so no cross-thread clobbering
+# is possible even while both tracks are running simultaneously. Set at the
+# very top of each cycle (via the is_special/trigger_hm args threaded down
+# from the trigger loop); read everywhere _ai_category/_ai_model/_ai_aerolink
+# need to know the current cycle's classification.
+_scan_ctx = threading.local()
+
 _scan_tried_now = {1: [], 2: []}  # live-mirrored `tried` list from each scan's current cycle — lets Scan1
                                    # and Scan2 (running concurrently, minutes-long Claude analyses per coin)
                                    # see what the OTHER one is mid-analysis on RIGHT NOW, so they don't both
@@ -1876,7 +1885,6 @@ _scan_tried_lock = __import__("threading").Lock()  # makes "check other's list, 
                                                      # same instant (both pick ESPORTS as candidate #1) could
                                                      # both see the other's list as still empty and both slip
                                                      # through before either had appended anything.
-_scan_trigger_hm = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # exact (hour,min) that triggered this run — used to check _SCAN_SPECIAL_NO_COPY
 
 _demo_tried_now = {1: [], 2: []}  # same idea as _scan_tried_now but for TS1/TS2 — lets each
                                    # demo scan see what the other is mid-analysis on RIGHT NOW,
@@ -2247,9 +2255,9 @@ def _ai_category(kind: str = "btc", scan_ver: int = None) -> str:
     sched_kind = _ai_sched_kind(kind, scan_ver)
     if sched_kind is None:
         return "verified"
-    if _scan_run_mode.get(sched_kind) != "special":
+    if not getattr(_scan_ctx, "special", False):
         return "nonspecial"
-    _hm = _scan_trigger_hm.get(sched_kind)
+    _hm = getattr(_scan_ctx, "trigger_hm", None)
     if _hm and _hm in _SCAN_SPECIAL_NO_COPY.get(sched_kind, set()):
         return "unverified"
     return "verified"
@@ -6737,7 +6745,7 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         data={"chat_id": chat_id, "caption": f"{period_label} — {len(filtered)} rows"},
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
-def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
+def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_special=False, _trigger_hm=None):
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
@@ -8664,6 +8672,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
         if not auto:
             send_reply(chat_id, f"📡 Scanning BingX — {lbl} (~60s)...")
         def _do_scan(cid=chat_id, scan_ver=ver, _auto=auto):
+            # Own private classification for THIS thread only (2026-07-30) —
+            # a regular and a special cycle for the same scan_ver can now run
+            # in different threads at the same time, so this can't be a
+            # shared dict keyed by kind anymore (see _scan_ctx docstring).
+            _scan_ctx.special = _is_special
+            _scan_ctx.trigger_hm = _trigger_hm
             if _auto:
                 # Runs entirely in this thread — safe to set here, can't leak
                 # into the admin's own separate interactions (different thread).
@@ -8804,7 +8818,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
                 # which is the actual thing gating real-money risk, not this).
                 my_list = _scan_list(scan_ver)
                 _kind = "scan1" if scan_ver == 1 else "scan2"
-                _is_special_now = _scan_run_mode.get(_kind) == "special"
+                _is_special_now = _is_special
 
                 # ── Remind about running trades ───────────────────────────────
                 if my_list:
@@ -8835,12 +8849,6 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False):
                 for candidate in candidate_order[:MAX_TRIES + 3]:  # a few extras in case of skips
                     if signal_placed: break
                     if len(tried) >= MAX_TRIES: break
-                    if _scan_abort_requested.get(_kind):
-                        # A verified slot for this same kind is waiting to run right now
-                        # (see _queue_special_slot) — stop trying more candidates so it
-                        # can start as soon as this thread's finally block runs.
-                        print(f"  [SCAN] Scan{scan_ver} aborting early — verified slot waiting")
-                        break
 
                     chosen_base = candidate["base"]
                     chosen_sym  = candidate["sym"]
@@ -9221,7 +9229,7 @@ Reasoning: [one line]"""
                         # VIP/Free only get VERIFIED special-time signals (admin request
                         # 2026-07-27) — unverified special-time slots and the regular
                         # hourly grid both stay Channel-1-only now, same as before.
-                        _tier_routed = _scan_run_mode.get(_kind) == "special" and _ai_category(_kind) == "verified"
+                        _tier_routed = _is_special and _ai_category(_kind) == "verified"
                         # Only verified/special-time (tier_routed) signals ever compete
                         # for the Free-channel share — a regular-grid (Signal-only, never
                         # posted to VIP/Free) trade must never consume quota or be marked
@@ -9257,7 +9265,6 @@ Reasoning: [one line]"""
                         # not yet proven) — those still post to VIP/Free but copytrade
                         # must never auto-execute real orders on them until admin moves
                         # them out of _SCAN_SPECIAL_NO_COPY.
-                        _trigger_hm = _scan_trigger_hm.get(_kind)
                         _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
                         if _tier_routed and not _is_unverified:
                             ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
@@ -9304,7 +9311,7 @@ Reasoning: [one line]"""
                     # slot didn't fire, and clearly say why (gateway/API error vs Claude
                     # genuinely finding no clean setup) instead of silently skipping it.
                     if _is_special_now:
-                        _trig_hm = _scan_trigger_hm.get(_kind)
+                        _trig_hm = _trigger_hm
                         _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                         _label = f"S{scan_ver}"
                         _gw = _gw_model_tag(_kind)
@@ -9336,19 +9343,14 @@ Reasoning: [one line]"""
                 send_reply(cid, f"❌ Scan error: {e}")
                 import traceback as _tb2; print(_tb2.format_exc())
             finally:
-                # /scan1 and /scan2 both run here in their own background thread —
-                # the run-mode override must stay set for this whole run, so it can
-                # only be safely cleared once this thread is actually done, not
-                # right after handle_command() returns (that only kicks off this thread).
-                _scan_run_mode["scan1" if scan_ver == 1 else "scan2"] = None
                 if _auto:
-                    # Only auto-triggered runs touch _scan_running — a manual
-                    # /scan1 finishing shouldn't clear the flag out from under
-                    # a still-running auto cycle (see _scan_running docstring).
+                    # Only auto-triggered runs touch the running-locks — a manual
+                    # /scan1 finishing shouldn't clear the flag out from under a
+                    # still-running auto cycle (see _scan_running docstring).
+                    # Regular and special cycles of the same kind run on separate
+                    # locks (2026-07-30) so each only ever clears its OWN track.
                     _kind_ = "scan1" if scan_ver == 1 else "scan2"
-                    _scan_running[_kind_] = False
-                    _scan_abort_requested[_kind_] = False
-                    _run_queued_special(_kind_)
+                    (_scan_running_special if _is_special else _scan_running)[_kind_] = False
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
     elif cmd == "/syncup" and is_admin:
@@ -12348,7 +12350,7 @@ _auto_scan_last_hour  = -1  # legacy
 _scan_cycle_placed = set()  # coins signaled this cycle — prevents scan1+scan2 picking same coin
 _scan_cycle_lock   = __import__("threading").Lock()
 
-def _run_auto_scan(cid, scan_ver=2):
+def _run_auto_scan(cid, scan_ver=2, is_special=False, trigger_hm=None):
     """Auto-scan entry point — called from main loop at IST :02."""
     global _scan_cycle_placed
     # "Auto-Scan starting" DM removed 2026-07-28 — routine noise, not an
@@ -12363,7 +12365,7 @@ def _run_auto_scan(cid, scan_ver=2):
     # handle_command() merely kicks off — it returns almost instantly. The special-
     # time flag is cleared by _do_scan itself once that thread finishes, NOT here,
     # otherwise it gets cleared before the real Claude call ever happens.
-    handle_command(cmd, cid, auto=True)
+    handle_command(cmd, cid, auto=True, _is_special=is_special, _trigger_hm=trigger_hm)
 
 # ══════════════════════════════════════════════════════════
 # TEST MODE — CLEXER SCALP v1 (demo only, no copytrade)
@@ -12692,25 +12694,30 @@ def _demo_monitor_loop():
         except Exception as _e:
             print(f"  [DEMO MONITOR] Error: {_e}")
 
-def _run_test_scan_and_clear_flag(cid, scan_ver: int):
+def _run_test_scan_and_clear_flag(cid, scan_ver: int, is_special: bool = False, trigger_hm: tuple = None):
     """Wrapper for the auto-scheduled TS1/TS2 triggers — TS1 and TS2 now run
     fully independent schedules/verified-time tracking (test1/test2), so each
-    just clears its own run-mode flag once its run finishes."""
+    just clears its own running-lock once its run finishes. Regular and
+    special cycles for the same kind run on separate locks (2026-07-30) so
+    a verified slot can fire while a regular cycle is still going."""
     _kind = f"test{scan_ver}"
     try:
-        _run_test_scan(cid, scan_ver)
+        _run_test_scan(cid, scan_ver, is_special=is_special, trigger_hm=trigger_hm)
     finally:
-        _scan_run_mode[_kind] = None
-        _scan_running[_kind] = False  # only ever auto-triggered (see this
-        # wrapper's callers) — safe to clear unconditionally, unlike Scan1/Scan2
-        # where manual /scan1 runs share the same code path.
-        _scan_abort_requested[_kind] = False
-        _run_queued_special(_kind)
+        # Only ever auto-triggered (see this wrapper's callers) — safe to
+        # clear unconditionally, unlike Scan1/Scan2 where manual /scan1 runs
+        # share the same code path.
+        (_scan_running_special if is_special else _scan_running)[_kind] = False
 
-def _run_test_scan(cid, scan_ver: int):
+def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tuple = None):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
     trade orders too, if Demo1/Demo2 copy trade is turned ON."""
     import re as _re, math as _math
+    # Own private classification for THIS thread only (2026-07-30) — see
+    # _scan_ctx docstring; lets a regular and a special TS1/TS2 cycle run
+    # concurrently without reading each other's classification.
+    _scan_ctx.special = is_special
+    _scan_ctx.trigger_hm = trigger_hm
     lbl = "S1" if scan_ver == 1 else "S2"
     _kind = f"test{scan_ver}"
     # "Demo scan starting" DM removed 2026-07-28 — routine noise, not an
@@ -12720,7 +12727,7 @@ def _run_test_scan(cid, scan_ver: int):
     demo_list = demo_scan1_trades if scan_ver == 1 else demo_scan2_trades
     # Slot cap removed 2026-07-27 — unlimited concurrent slots per kind now,
     # needed for the dense-grid same-coin stacking test.
-    _demo_is_special_now = _scan_run_mode.get(_kind) == "special"
+    _demo_is_special_now = is_special
 
     try:
         # Fetch BingX ticker
@@ -12815,12 +12822,6 @@ def _run_test_scan(cid, scan_ver: int):
         for candidate in candidate_order:
             if signal_placed: break
             if len(tried) >= MAX_TRIES: break
-            if _scan_abort_requested.get(_kind):
-                # A verified slot for this same kind is waiting to run right now
-                # (see _queue_special_slot) — stop trying more candidates so it
-                # can start as soon as this thread's finally block runs.
-                print(f"  [TEST-SCAN] TS{scan_ver} aborting early — verified slot waiting")
-                break
             chosen_sym  = candidate["sym"]
             chosen_base = candidate["base"]
             cp          = candidate["price"]
@@ -12936,7 +12937,7 @@ def _run_test_scan(cid, scan_ver: int):
                             analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"],
                                 candidate["change"], struct=struct, age=age, age_4h=age_4h)
                     _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
-                    print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} run_mode={_scan_run_mode.get(f'test{scan_ver}')}")
+                    print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} special={getattr(_scan_ctx, 'special', False)}")
                     _client, _used_key = _claude_client_skip("test", _attempt, _aero_bad_keys, scan_ver=scan_ver)
                     r2 = _client.messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=2500,
@@ -13046,7 +13047,7 @@ def _run_test_scan(cid, scan_ver: int):
             # (regular grid) stays on the legacy channel only. VIP/Free only get
             # VERIFIED special-time signals (admin request 2026-07-27) — unverified
             # special-time slots stay Channel-1-only too, same as Scan1/Scan2.
-            _demo1_tier_routed = _scan_run_mode.get(_kind) == "special" and _ai_category(_kind) == "verified"
+            _demo1_tier_routed = is_special and _ai_category(_kind) == "verified"
             # Used to hardcode share_free=True (bypassing the daily quota entirely
             # for every TS1 special-time signal) — now respects the same quota as
             # everything else: within quota -> real signal to Free; exhausted ->
@@ -13083,8 +13084,7 @@ def _run_test_scan(cid, scan_ver: int):
             # even when Demo1/Demo2 copy trade is turned ON.
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
-            _demo_trigger_hm = _scan_trigger_hm.get(_kind)
-            _demo_is_unverified = _demo1_tier_routed and _demo_trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+            _demo_is_unverified = _demo1_tier_routed and trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
             if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified:
                 _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}
@@ -13095,9 +13095,9 @@ def _run_test_scan(cid, scan_ver: int):
 
         if not signal_placed:
             tried_str = ", ".join(tried) if tried else "none"
-            _test_is_special_now = _scan_run_mode.get(_kind) == "special"
+            _test_is_special_now = is_special
             if _test_is_special_now:
-                _trig_hm = _scan_trigger_hm.get(_kind)
+                _trig_hm = trigger_hm
                 _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                 _label = f"TS{scan_ver}"
                 _gw = _gw_model_tag("test", scan_ver)
@@ -13138,54 +13138,21 @@ def _run_test_scan(cid, scan_ver: int):
 
 _TRIGGER_LABEL = {"scan1": "S1", "scan2": "S2", "test1": "TS1", "test2": "TS2"}
 
-def _queue_special_slot(kind: str, hm: tuple):
-    """A trigger tick arrived for `kind` while _scan_running[kind] was still
-    True — a previous cycle for this SAME kind (e.g. an earlier dense-grid
-    tick) hadn't finished yet. Running it in parallel isn't safe (that's the
-    exact overlapping-scan corruption _scan_running exists to prevent), but
-    per admin instruction (2026-07-30) a VIP-facing special/verified slot
-    must run with priority — never silently dropped, never just queued
-    behind the rest of the running cycle either. So this queues it AND
-    tells the running cycle to stop trying further candidates right now
-    (_scan_abort_requested) — the current candidate's Claude call still
-    finishes (can't safely interrupt mid-call), but no new one starts,
-    so the verified slot fires after that one step instead of the whole
-    remaining cycle. Regular (non-special) slots still just skip quietly,
-    as before — they're Signal-only and nothing VIP is watching for."""
-    if hm not in _SCAN_SPECIAL.get(kind, set()):
-        return
-    _scan_pending_special[kind] = hm
-    _scan_abort_requested[kind] = True
+def _notify_same_track_collision(kind: str, hm: tuple, is_special: bool):
+    """Both the regular and special tracks now run independently (2026-07-30),
+    so a special slot no longer has to wait on a regular cycle at all. The
+    only thing still guarded against is two cycles on the SAME track for the
+    SAME kind overlapping (e.g. two special Scan2 slots landing back to
+    back) — that's still the original shared-state corruption risk. Given
+    how far apart _SCAN_SPECIAL times are for any one kind, this should be
+    very rare; when it happens, tell the admin instead of silently skipping."""
+    _label = _TRIGGER_LABEL[kind]
+    _trig_str = f"{hm[0]}:{hm[1]:02d}"
+    _track = "verified/special" if is_special else "regular"
     if ADMIN_CHAT_ID:
-        _label = _TRIGGER_LABEL[kind]
-        _trig_str = f"{hm[0]}:{hm[1]:02d}"
         send_reply(ADMIN_CHAT_ID,
-            f"⏳ <b>[{_label}]</b> {_trig_str} IST verified slot — previous cycle still running, "
-            f"telling it to stop trying new coins now so this fires as soon as possible.", important=True)
-
-def _run_queued_special(kind: str):
-    """Call right after a cycle for `kind` finishes and clears _scan_running.
-    If a special slot got queued mid-cycle by _queue_special_slot, fire it
-    now. This is what "never skip VIP verified times" means in practice:
-    true preemption (interrupting the in-flight cycle) isn't safe, so the
-    queued slot instead runs the moment it's safe to, not at its next tick."""
-    hm = _scan_pending_special.get(kind)
-    if hm is None:
-        return
-    _scan_pending_special[kind] = None
-    if not ADMIN_CHAT_ID:
-        return
-    _scan_run_mode[kind] = "special"
-    _scan_trigger_hm[kind] = hm
-    _scan_running[kind] = True
-    if kind == "scan1":
-        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
-    elif kind == "scan2":
-        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
-    elif kind == "test1":
-        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
-    elif kind == "test2":
-        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
+            f"⏭ <b>[{_label}]</b> {_trig_str} IST — skipped, another {_track} {_label} cycle is "
+            f"already running on the same track.", important=True)
 
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_scan_tick_time
@@ -13431,58 +13398,61 @@ def main():
             _cur_hm = (_ist_now.hour, _ist_now.minute)
 
             # Scan1: special times (Direct) + hourly :02/:23 regular grid (Aerolink)
-            # not _scan_running["scan1"] — skip starting a new cycle while a previous
-            # one is still in-flight (see _scan_running docstring for why).
+            # Regular and special ticks for the same kind run on independent locks
+            # (2026-07-30) — a verified slot fires immediately even if a regular
+            # cycle for the same kind is still going, and vice versa. Only two
+            # ticks on the SAME track (both regular, or both special) for the
+            # same kind still can't overlap — see _notify_same_track_collision.
             if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
-                if _scan_running["scan1"]:
-                    _queue_special_slot("scan1", _cur_hm)
+                _is_spec = _cur_hm in _SCAN_SPECIAL["scan1"]
+                _lock = _scan_running_special if _is_spec else _scan_running
+                if _lock["scan1"]:
+                    _notify_same_track_collision("scan1", _cur_hm, _is_spec)
                 else:
-                    print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
+                    print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
-                        _scan_run_mode["scan1"] = "special" if _cur_hm in _SCAN_SPECIAL["scan1"] else "regular"
-                        _scan_trigger_hm["scan1"] = _cur_hm
-                        _scan_running["scan1"] = True
-                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
+                        _lock["scan1"] = True
+                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
             if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
                 _scan1_triggered_today.add((_cur_hm, 2))
-                if _scan_running["scan2"]:
-                    _queue_special_slot("scan2", _cur_hm)
+                _is_spec = _cur_hm in _SCAN_SPECIAL["scan2"]
+                _lock = _scan_running_special if _is_spec else _scan_running
+                if _lock["scan2"]:
+                    _notify_same_track_collision("scan2", _cur_hm, _is_spec)
                 else:
-                    print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
+                    print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
-                        _scan_run_mode["scan2"] = "special" if _cur_hm in _SCAN_SPECIAL["scan2"] else "regular"
-                        _scan_trigger_hm["scan2"] = _cur_hm
-                        _scan_running["scan2"] = True
-                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
+                        _lock["scan2"] = True
+                        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # TS1: own independent special times (Direct) + hourly :09/:27 regular grid (Aerolink)
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
-                if _scan_running["test1"]:
-                    _queue_special_slot("test1", _cur_hm)
+                _is_spec = _cur_hm in _SCAN_SPECIAL["test1"]
+                _lock = _scan_running_special if _is_spec else _scan_running
+                if _lock["test1"]:
+                    _notify_same_track_collision("test1", _cur_hm, _is_spec)
                 else:
-                    print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
+                    print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
-                        _scan_run_mode["test1"] = "special" if _cur_hm in _SCAN_SPECIAL["test1"] else "regular"
-                        _scan_trigger_hm["test1"] = _cur_hm
-                        _scan_running["test1"] = True
-                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
+                        _lock["test1"] = True
+                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # TS2: own independent special times + schedule — fully separate from TS1
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
                 _test_triggered_today.add((_cur_hm, 2))
-                if _scan_running["test2"]:
-                    _queue_special_slot("test2", _cur_hm)
+                _is_spec = _cur_hm in _SCAN_SPECIAL["test2"]
+                _lock = _scan_running_special if _is_spec else _scan_running
+                if _lock["test2"]:
+                    _notify_same_track_collision("test2", _cur_hm, _is_spec)
                 else:
-                    print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
+                    print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
-                        _scan_run_mode["test2"] = "special" if _cur_hm in _SCAN_SPECIAL["test2"] else "regular"
-                        _scan_running["test2"] = True
-                        _scan_trigger_hm["test2"] = _cur_hm
-                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
+                        _lock["test2"] = True
+                        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # Sleep hours
             if not forced and is_ist_sleep():
