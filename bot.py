@@ -2174,6 +2174,21 @@ def _ist_hm_from_epoch(epoch):
     except Exception:
         return None
 
+def _slot_hm_for_trade(t: dict, epoch=None):
+    """Which schedule slot a trade's win/loss should be credited to for
+    promote/demote/blacklist tracking (_slot_track). Prefers the trigger_hm
+    stored on the trade at signal-placement time — the ACTUAL scheduled
+    slot that fired this cycle — over deriving it from when the trade was
+    created. With slow Aerolink/API responses a cycle can take 3-6+ min
+    (2026-07-30), so created_at can land well past the real slot, silently
+    crediting the wrong (or a nonexistent) slot's stats otherwise. Falls
+    back to the old epoch-based derivation for trades placed before this
+    field existed."""
+    _hm = t.get("trigger_hm")
+    if _hm:
+        return tuple(_hm)
+    return _ist_hm_from_epoch(epoch if epoch is not None else t.get("created_at"))
+
 def _status_trade_cat(kind: str, created_at) -> str:
     """Classifies a scan/demo trade as 'verified' (special + copy-enabled),
     'unverified' (special but auto-demoted), or 'nonspecial' — shared by
@@ -5049,7 +5064,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
             entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
         _notify_free_late(sym, t, "TP2")
-        _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+        _slot_hm = _slot_hm_for_trade(t)
         if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
         _close_sig_snapshot(t.get("sig_id", ""), "TP2")
         _remove_scan_trade(ver, sym)
@@ -5095,7 +5110,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
         _send_sl_reassurance(sym, f"S{ver}", sig, entry,
             _sl_reassurance_channels(bool(t.get("tier_routed")), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id", ""))
-    _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+    _slot_hm = _slot_hm_for_trade(t)
     if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
     _close_sig_snapshot(t.get("sig_id", ""), close_result)
     _remove_scan_trade(ver, sym)
@@ -5480,7 +5495,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _track_daily_result(sym, "TIMEOUT", tier_routed=bool(t.get("tier_routed")),
                 free_shown=bool(t.get("tier_routed")) and t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")), pnl=pnl)
-            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            _slot_hm = _slot_hm_for_trade(t)
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
             _close_sig_snapshot(t.get("sig_id",""), f"TIMEOUT({pnl:+.2f}%)")
             _remove_scan_trade(ver, sym); return True
@@ -5543,7 +5558,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
             _notify_free_late(sym, t, "TP2")
-            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            _slot_hm = _slot_hm_for_trade(t)
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
             _close_sig_snapshot(t.get("sig_id",""), "TP2")
             _remove_scan_trade(ver, sym); return True
@@ -5592,7 +5607,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
                 _send_sl_reassurance(sym, f"S{ver}", sig, entry,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
-            _slot_hm = _ist_hm_from_epoch(t.get("created_at"))
+            _slot_hm = _slot_hm_for_trade(t)
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
             _close_sig_snapshot(t.get("sig_id",""), result)
             _remove_scan_trade(ver, sym); return True
@@ -9233,6 +9248,13 @@ Reasoning: [one line]"""
                             "entry":scan_entry,"sl":scan_sl,"tp1":scan_tp1,"tp2":scan_tp2,
                             "entry_type":_etype,"zone_lo":_zone_lo,"zone_hi":_zone_hi,"tp1_hit":False,
                             "entry_hit":True,"created_at":time.time(),"ver":scan_ver,
+                            # The schedule slot that TRIGGERED this cycle (e.g. 2:03), not when
+                            # the trade actually got placed (2026-07-30 — with slow Aerolink/API
+                            # responses a cycle can take 3-6+ min, so "created_at" can drift well
+                            # past its real slot). _slot_track uses this for win/loss stats so a
+                            # slow cycle's result still credits the CORRECT scheduled slot instead
+                            # of whatever slot the clock happened to land on by the time it finished.
+                            "trigger_hm": list(_trigger_hm) if _trigger_hm else None,
                         }
                         _scan_list(scan_ver).append(slot_data)
                         trade_stats["scan_signals"] += 1
@@ -12495,7 +12517,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         ct.on_scan_tp2(sym)
         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
-        _slot_hm = _ist_hm_from_epoch(created)
+        _slot_hm = _slot_hm_for_trade(t, created)
         if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, True)
         _log_demo_history(t, "TP2", cp, dver)
         _close_sig_snapshot(sig_id, "TP2")
@@ -12548,7 +12570,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
         _send_sl_reassurance(sym, f"TS{dver}", sig, entry,
             _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
-    _slot_hm = _ist_hm_from_epoch(created)
+    _slot_hm = _slot_hm_for_trade(t, created)
     if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
     _log_demo_history(t, lbl, cp, dver)
     _close_sig_snapshot(sig_id, close_result)
@@ -12620,7 +12642,7 @@ def _demo_monitor_loop():
                         ct.on_scan_tp2(sym)
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
-                        _slot_hm = _ist_hm_from_epoch(created)
+                        _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
                         _log_demo_history(t, "TP2", cp, _dver)
                         _close_sig_snapshot(sig_id, "TP2")
@@ -12647,7 +12669,7 @@ def _demo_monitor_loop():
                             _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
                             _send_sl_reassurance(sym, f"TS{_dver}", sig, entry,
                                 _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
-                        _slot_hm = _ist_hm_from_epoch(created)
+                        _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
                         _log_demo_history(t, lbl, cp, _dver)
                         _close_sig_snapshot(sig_id, result)
@@ -12692,7 +12714,7 @@ def _demo_monitor_loop():
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
-                        _slot_hm = _ist_hm_from_epoch(created)
+                        _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
                         _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
                         _close_sig_snapshot(sig_id, f"TIMEOUT({pnl:+.2f}%)")
@@ -13083,6 +13105,9 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 "is_d48": _demo_is_d48,
                 "sig_id": _demo_sig_id,
                 "reply_map": _demo_reply_map,
+                # See the matching field in Scan1/Scan2's slot_data — the schedule
+                # slot that TRIGGERED this cycle, not when it actually finished.
+                "trigger_hm": list(trigger_hm) if trigger_hm else None,
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
