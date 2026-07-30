@@ -2326,13 +2326,16 @@ def _aerolink_configured_keys() -> list:
                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
                          AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
 
-def _test_aerolink_key(key: str, model: str = "claude-opus-4-8", timeout: int = 20):
+def _test_aerolink_key(key: str, model: str = "claude-opus-5", timeout: int = 20):
     """One-off validity/health check for a single Aerolink key — a tiny
     message just big enough to confirm the key authenticates and Aerolink
-    actually responds correctly. Uses claude-opus-4-8 (not 5) by default —
-    see _ai_model()'s docstring on the current Aerolink+Opus5 issue; testing
-    with the model that's actually configured to run avoids conflating a
-    bad key with an unsupported model. Returns (ok: bool, detail: str)."""
+    actually responds correctly. Default model updated to claude-opus-5
+    (2026-07-30) — Aerolink/Lumosel confirmed Opus 5 support back on
+    2026-07-28 and every scan kind now actually runs on it, so testing
+    with the STALE claude-opus-4-8 default (nothing uses it anymore) was
+    giving false "0/7 responding" alarms whenever Aerolink had 4.8 specifically
+    disabled, even though the keys and the model actually in use were fine.
+    Returns (ok: bool, detail: str)."""
     try:
         client = anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL, timeout=timeout)
         r = client.messages.create(model=model, max_tokens=10,
