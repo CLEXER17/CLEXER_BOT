@@ -40,6 +40,8 @@ AEROLINK_API_KEY_7  = os.getenv("AEROLINK_API_KEY_7",  "")   # 7th Aerolink key 
 AEROLINK_API_KEY_8  = os.getenv("AEROLINK_API_KEY_8",  "")   # 8th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_API_KEY_9  = os.getenv("AEROLINK_API_KEY_9",  "")   # 9th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_API_KEY_10 = os.getenv("AEROLINK_API_KEY_10", "")   # 10th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_11 = os.getenv("AEROLINK_API_KEY_11", "")   # 11th Aerolink key slot — rotated in on further retries, empty until set
+AEROLINK_API_KEY_12 = os.getenv("AEROLINK_API_KEY_12", "")   # 12th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
@@ -2332,12 +2334,12 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     return f"{gw}{mdl}"
 
 def _aerolink_configured_keys() -> list:
-    """All 10 possible Aerolink key slots, filtered down to whichever are
+    """All 12 possible Aerolink key slots, filtered down to whichever are
     actually non-empty in Railway right now — single source of truth used
     everywhere key rotation/counting/skipping happens."""
     return [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
                          AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                         AEROLINK_API_KEY_9, AEROLINK_API_KEY_10) if k]
+                         AEROLINK_API_KEY_9, AEROLINK_API_KEY_10, AEROLINK_API_KEY_11, AEROLINK_API_KEY_12) if k]
 
 def _test_aerolink_key(key: str, model: str = "claude-opus-5", timeout: int = 20):
     """One-off validity/health check for a single Aerolink key — a tiny
@@ -2365,7 +2367,7 @@ def _test_all_aerolink_keys(cid):
     credit. Zero side effects — no scan logic, nothing tracked or saved."""
     _keys_all = (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
                  AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                 AEROLINK_API_KEY_9, AEROLINK_API_KEY_10)
+                 AEROLINK_API_KEY_9, AEROLINK_API_KEY_10, AEROLINK_API_KEY_11, AEROLINK_API_KEY_12)
     _configured = [(i + 1, k) for i, k in enumerate(_keys_all) if k]
     if not _configured:
         send_reply(cid, "⚠️ No Aerolink keys configured."); return
@@ -2386,7 +2388,7 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
-    Up to 10 Aerolink key slots (AEROLINK_API_KEY..._10) are supported — on a retry
+    Up to 12 Aerolink key slots (AEROLINK_API_KEY..._12) are supported — on a retry
     (attempt >= 1), rotates to the next CONFIGURED slot in order, skipping any empty
     ones, so a failure on one key doesn't fail the whole call as long as another slot
     has a key in it. Slot 1 is required; slots 2-10 are optional and can be left empty
