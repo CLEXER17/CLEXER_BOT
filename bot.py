@@ -1853,6 +1853,12 @@ _scan_running = {"scan1": False, "scan2": False, "test1": False, "test2": False}
 # each with retries) finishes — and since _scan_run_mode/_scan_trigger_hm are shared globals (not per-
 # execution state), the new trigger overwrites them mid-flight, corrupting the still-running cycle's
 # model/gateway classification for its remaining API calls (not just its displayed tag).
+_scan_pending_special = {"scan1": None, "scan2": None, "test1": None, "test2": None}  # 2026-07-30 — a
+# verified/special-time hm tuple queued because it arrived while _scan_running[kind] was still True.
+# Special slots are VIP-facing and must NEVER be silently dropped (admin instruction), but they also
+# can't just run in parallel with the in-flight cycle — that's the exact corruption _scan_running guards
+# against. So instead of skipping, the tick is queued here and _run_queued_special fires it the instant
+# the running cycle clears its flag — see _queue_special_slot / _run_queued_special near main().
 _scan_tried_now = {1: [], 2: []}  # live-mirrored `tried` list from each scan's current cycle — lets Scan1
                                    # and Scan2 (running concurrently, minutes-long Claude analyses per coin)
                                    # see what the OTHER one is mid-analysis on RIGHT NOW, so they don't both
@@ -9326,7 +9332,9 @@ Reasoning: [one line]"""
                     # Only auto-triggered runs touch _scan_running — a manual
                     # /scan1 finishing shouldn't clear the flag out from under
                     # a still-running auto cycle (see _scan_running docstring).
-                    _scan_running["scan1" if scan_ver == 1 else "scan2"] = False
+                    _kind_ = "scan1" if scan_ver == 1 else "scan2"
+                    _scan_running[_kind_] = False
+                    _run_queued_special(_kind_)
         threading.Thread(target=lambda: _do_scan(cid=chat_id, scan_ver=ver), daemon=True).start()
 
     elif cmd == "/syncup" and is_admin:
@@ -12682,6 +12690,7 @@ def _run_test_scan_and_clear_flag(cid, scan_ver: int):
         _scan_running[_kind] = False  # only ever auto-triggered (see this
         # wrapper's callers) — safe to clear unconditionally, unlike Scan1/Scan2
         # where manual /scan1 runs share the same code path.
+        _run_queued_special(_kind)
 
 def _run_test_scan(cid, scan_ver: int):
     """CLEXER SCALP v1 test scan. Sends [DEMO] signal to TG. Places real copy
@@ -13108,31 +13117,50 @@ def _run_test_scan(cid, scan_ver: int):
 
 _TRIGGER_LABEL = {"scan1": "S1", "scan2": "S2", "test1": "TS1", "test2": "TS2"}
 
-def _notify_special_slot_skipped(kind: str, hm: tuple):
-    """A special-time trigger tick arrived for `kind`, but _scan_running[kind]
-    was still True — a previous cycle for this SAME kind (e.g. an earlier
-    dense-grid tick) hadn't finished yet, so the guard added in the
-    overlapping-scan fix (2026-07-29) silently skipped starting a new one.
-    That's correct for a regular slot, but a special/verified slot going
-    fully silent (no signal AND no "no signal" message) reads to VIP as the
-    bot having missed it — so this posts an explicit "slot skipped" notice
-    in its place, same channels the real "no signal" message would use."""
+def _queue_special_slot(kind: str, hm: tuple):
+    """A trigger tick arrived for `kind` while _scan_running[kind] was still
+    True — a previous cycle for this SAME kind (e.g. an earlier dense-grid
+    tick) hadn't finished yet. Running it in parallel isn't safe (that's the
+    exact overlapping-scan corruption _scan_running exists to prevent), but
+    per admin instruction (2026-07-30) a VIP-facing special/verified slot
+    must NEVER be silently dropped either. So instead of skipping, queue it
+    here — _run_queued_special fires it the instant the running cycle
+    clears its flag, ahead of whatever the next natural tick would be.
+    Regular (non-special) slots still just skip quietly, as before — they're
+    Signal-only and nothing VIP is watching for."""
     if hm not in _SCAN_SPECIAL.get(kind, set()):
-        return  # only special slots are worth a notice — regular ones are Signal-only anyway
-    _label = _TRIGGER_LABEL[kind]
-    _trig_str = f"{hm[0]}:{hm[1]:02d}"
-    _is_unverified = hm in _SCAN_SPECIAL_NO_COPY.get(kind, set())
-    _msg = _scan_box(
-        f"{_label} No Signal", f"⏸ {_label}  |  {_trig_str} IST",
-        [[f"⏭ {_smallcaps_title('Slot Skipped')}",
-          f"{_smallcaps_title('Previous scan cycle was still running — this slot did not fire')}."]],
-    )
+        return
+    _scan_pending_special[kind] = hm
     if ADMIN_CHAT_ID:
-        send_reply(ADMIN_CHAT_ID, f"⏭ <b>[{_label}]</b> {_trig_str} IST — skipped, previous cycle still running.", important=True)
-    if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
-        _send_plain_reply(TELEGRAM_CHANNEL_ID, _msg)
-    if not _is_unverified:
-        send_to_tier_channels(_msg, share_free=False)
+        _label = _TRIGGER_LABEL[kind]
+        _trig_str = f"{hm[0]}:{hm[1]:02d}"
+        send_reply(ADMIN_CHAT_ID,
+            f"⏳ <b>[{_label}]</b> {_trig_str} IST verified slot — previous cycle still running, "
+            f"queued to fire the instant it's free.", important=True)
+
+def _run_queued_special(kind: str):
+    """Call right after a cycle for `kind` finishes and clears _scan_running.
+    If a special slot got queued mid-cycle by _queue_special_slot, fire it
+    now. This is what "never skip VIP verified times" means in practice:
+    true preemption (interrupting the in-flight cycle) isn't safe, so the
+    queued slot instead runs the moment it's safe to, not at its next tick."""
+    hm = _scan_pending_special.get(kind)
+    if hm is None:
+        return
+    _scan_pending_special[kind] = None
+    if not ADMIN_CHAT_ID:
+        return
+    _scan_run_mode[kind] = "special"
+    _scan_trigger_hm[kind] = hm
+    _scan_running[kind] = True
+    if kind == "scan1":
+        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1), daemon=True).start()
+    elif kind == "scan2":
+        threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2), daemon=True).start()
+    elif kind == "test1":
+        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1), daemon=True).start()
+    elif kind == "test2":
+        threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2), daemon=True).start()
 
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_scan_tick_time
@@ -13383,7 +13411,7 @@ def main():
             if SCAN1_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_SCHEDULE and _cur_hm not in _scan1_triggered_today:
                 _scan1_triggered_today.add(_cur_hm)
                 if _scan_running["scan1"]:
-                    _notify_special_slot_skipped("scan1", _cur_hm)
+                    _queue_special_slot("scan1", _cur_hm)
                 else:
                     print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
@@ -13396,7 +13424,7 @@ def main():
             if SCAN2_AUTO_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_SCHEDULE and (_cur_hm, 2) not in _scan1_triggered_today:
                 _scan1_triggered_today.add((_cur_hm, 2))
                 if _scan_running["scan2"]:
-                    _notify_special_slot_skipped("scan2", _cur_hm)
+                    _queue_special_slot("scan2", _cur_hm)
                 else:
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
@@ -13409,7 +13437,7 @@ def main():
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN1_TEST_SCHEDULE and _cur_hm not in _test_triggered_today:
                 _test_triggered_today.add(_cur_hm)
                 if _scan_running["test1"]:
-                    _notify_special_slot_skipped("test1", _cur_hm)
+                    _queue_special_slot("test1", _cur_hm)
                 else:
                     print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
@@ -13422,7 +13450,7 @@ def main():
             if TEST_SCAN_ENABLED and not bot_paused.is_set() and not bot_stopped.is_set() and _cur_hm in SCAN2_TEST_SCHEDULE and (_cur_hm, 2) not in _test_triggered_today:
                 _test_triggered_today.add((_cur_hm, 2))
                 if _scan_running["test2"]:
-                    _notify_special_slot_skipped("test2", _cur_hm)
+                    _queue_special_slot("test2", _cur_hm)
                 else:
                     print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST")
                     if ADMIN_CHAT_ID:
