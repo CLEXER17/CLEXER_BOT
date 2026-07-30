@@ -1860,6 +1860,16 @@ _SCAN_SPECIAL_NO_COPY = {
 # 2026-07-29) these locks exist to prevent.
 _scan_running         = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # regular track
 _scan_running_special = {"scan1": False, "scan2": False, "test1": False, "test2": False}  # special track
+# What tick is CURRENTLY holding each lock — (epoch_time_acquired, (hour,min)) — so a
+# collision notice can say WHICH run is still in the way and how long it's been going,
+# and so a lock held far longer than any real cycle should take (stuck/hung thread,
+# e.g. a network call that never times out) gets force-cleared instead of blocking
+# that track forever. See _notify_same_track_collision / _STUCK_LOCK_SECONDS.
+_scan_running_at         = {"scan1": None, "scan2": None, "test1": None, "test2": None}
+_scan_running_special_at = {"scan1": None, "scan2": None, "test1": None, "test2": None}
+_STUCK_LOCK_SECONDS = 900  # 15 min — a real cycle (up to 3 candidates, each with Claude
+# retries) can legitimately take several minutes, but never this long; past this, treat
+# the lock as abandoned rather than let it block its track indefinitely.
 
 # Per-THREAD scan classification (2026-07-30, replaces the old shared
 # _scan_run_mode/_scan_trigger_hm dicts). Two cycles of the same kind can now
@@ -13138,21 +13148,46 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
 
 _TRIGGER_LABEL = {"scan1": "S1", "scan2": "S2", "test1": "TS1", "test2": "TS2"}
 
-def _notify_same_track_collision(kind: str, hm: tuple, is_special: bool):
+def _clear_if_stuck(kind: str, lock: dict, lock_at: dict, cur_hm: tuple) -> bool:
+    """A track's lock has been held past _STUCK_LOCK_SECONDS — far longer
+    than any real cycle (up to 3 candidates, each with Claude retries) should
+    ever take. That's not "still working," it's a hung thread (e.g. a network
+    call that never times out) that would otherwise block this track forever.
+    Force-clears the lock and returns True so the caller proceeds to start
+    the new cycle instead of reporting yet another collision."""
+    _held = lock_at.get(kind)
+    if not _held or (time.time() - _held[0]) <= _STUCK_LOCK_SECONDS:
+        return False
+    _age_min = (time.time() - _held[0]) / 60
+    _held_hm = _held[1]
+    print(f"  [STUCK] {kind} lock held {_age_min:.0f}m since {_held_hm[0]}:{_held_hm[1]:02d} IST — force-clearing")
+    if ADMIN_CHAT_ID:
+        send_reply(ADMIN_CHAT_ID,
+            f"⚠️ <b>[{_TRIGGER_LABEL[kind]}]</b> the cycle from {_held_hm[0]}:{_held_hm[1]:02d} IST has been "
+            f"running {_age_min:.0f}m — that's far longer than normal, so it's being treated as stuck and "
+            f"force-cleared. Starting {cur_hm[0]}:{cur_hm[1]:02d} IST now.", important=True)
+    lock[kind] = False
+    return True
+
+def _notify_same_track_collision(kind: str, hm: tuple, is_special: bool, blocker_hm: tuple, blocker_age_s: float):
     """Both the regular and special tracks now run independently (2026-07-30),
     so a special slot no longer has to wait on a regular cycle at all. The
     only thing still guarded against is two cycles on the SAME track for the
     SAME kind overlapping (e.g. two special Scan2 slots landing back to
     back) — that's still the original shared-state corruption risk. Given
     how far apart _SCAN_SPECIAL times are for any one kind, this should be
-    very rare; when it happens, tell the admin instead of silently skipping."""
+    very rare; when it happens, tell the admin instead of silently skipping —
+    including WHICH earlier tick is still holding the lock and for how long,
+    so a genuinely stuck cycle (vs. just a slow one) is easy to spot."""
     _label = _TRIGGER_LABEL[kind]
     _trig_str = f"{hm[0]}:{hm[1]:02d}"
     _track = "verified/special" if is_special else "regular"
+    _blocker_str = f"{blocker_hm[0]}:{blocker_hm[1]:02d}" if blocker_hm else "?"
+    _age_min = blocker_age_s / 60
     if ADMIN_CHAT_ID:
         send_reply(ADMIN_CHAT_ID,
-            f"⏭ <b>[{_label}]</b> {_trig_str} IST — skipped, another {_track} {_label} cycle is "
-            f"already running on the same track.", important=True)
+            f"⏭ <b>[{_label}]</b> {_trig_str} IST — skipped, the {_track} {_label} cycle from "
+            f"<b>{_blocker_str} IST</b> ({_age_min:.0f}m ago) is still running on the same track.", important=True)
 
 def main():
     global last_signal_scan_time, last_price_check_time, last_tick_time, last_scan_tick_time
@@ -13407,12 +13442,15 @@ def main():
                 _scan1_triggered_today.add(_cur_hm)
                 _is_spec = _cur_hm in _SCAN_SPECIAL["scan1"]
                 _lock = _scan_running_special if _is_spec else _scan_running
-                if _lock["scan1"]:
-                    _notify_same_track_collision("scan1", _cur_hm, _is_spec)
+                _lock_at = _scan_running_special_at if _is_spec else _scan_running_at
+                if _lock["scan1"] and not _clear_if_stuck("scan1", _lock, _lock_at, _cur_hm):
+                    _held = _lock_at.get("scan1")
+                    _notify_same_track_collision("scan1", _cur_hm, _is_spec, _held[1] if _held else None, time.time() - _held[0] if _held else 0)
                 else:
                     print(f"  [AUTO-SCAN1] {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
                         _lock["scan1"] = True
+                        _lock_at["scan1"] = (time.time(), _cur_hm)
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=1, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # Scan2: special times (Direct) + hourly :07/:27 regular grid (Aerolink)
@@ -13420,12 +13458,15 @@ def main():
                 _scan1_triggered_today.add((_cur_hm, 2))
                 _is_spec = _cur_hm in _SCAN_SPECIAL["scan2"]
                 _lock = _scan_running_special if _is_spec else _scan_running
-                if _lock["scan2"]:
-                    _notify_same_track_collision("scan2", _cur_hm, _is_spec)
+                _lock_at = _scan_running_special_at if _is_spec else _scan_running_at
+                if _lock["scan2"] and not _clear_if_stuck("scan2", _lock, _lock_at, _cur_hm):
+                    _held = _lock_at.get("scan2")
+                    _notify_same_track_collision("scan2", _cur_hm, _is_spec, _held[1] if _held else None, time.time() - _held[0] if _held else 0)
                 else:
                     print(f"  [AUTO-SCAN2] {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
                         _lock["scan2"] = True
+                        _lock_at["scan2"] = (time.time(), _cur_hm)
                         threading.Thread(target=lambda: _run_auto_scan(ADMIN_CHAT_ID, scan_ver=2, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # TS1: own independent special times (Direct) + hourly :09/:27 regular grid (Aerolink)
@@ -13433,12 +13474,15 @@ def main():
                 _test_triggered_today.add(_cur_hm)
                 _is_spec = _cur_hm in _SCAN_SPECIAL["test1"]
                 _lock = _scan_running_special if _is_spec else _scan_running
-                if _lock["test1"]:
-                    _notify_same_track_collision("test1", _cur_hm, _is_spec)
+                _lock_at = _scan_running_special_at if _is_spec else _scan_running_at
+                if _lock["test1"] and not _clear_if_stuck("test1", _lock, _lock_at, _cur_hm):
+                    _held = _lock_at.get("test1")
+                    _notify_same_track_collision("test1", _cur_hm, _is_spec, _held[1] if _held else None, time.time() - _held[0] if _held else 0)
                 else:
                     print(f"  [TEST-SCAN] TS1 at {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
                         _lock["test1"] = True
+                        _lock_at["test1"] = (time.time(), _cur_hm)
                         threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 1, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # TS2: own independent special times + schedule — fully separate from TS1
@@ -13446,12 +13490,15 @@ def main():
                 _test_triggered_today.add((_cur_hm, 2))
                 _is_spec = _cur_hm in _SCAN_SPECIAL["test2"]
                 _lock = _scan_running_special if _is_spec else _scan_running
-                if _lock["test2"]:
-                    _notify_same_track_collision("test2", _cur_hm, _is_spec)
+                _lock_at = _scan_running_special_at if _is_spec else _scan_running_at
+                if _lock["test2"] and not _clear_if_stuck("test2", _lock, _lock_at, _cur_hm):
+                    _held = _lock_at.get("test2")
+                    _notify_same_track_collision("test2", _cur_hm, _is_spec, _held[1] if _held else None, time.time() - _held[0] if _held else 0)
                 else:
                     print(f"  [TEST-SCAN] TS2 at {_ist_now.strftime('%H:%M')} IST{' (verified)' if _is_spec else ''}")
                     if ADMIN_CHAT_ID:
                         _lock["test2"] = True
+                        _lock_at["test2"] = (time.time(), _cur_hm)
                         threading.Thread(target=lambda: _run_test_scan_and_clear_flag(ADMIN_CHAT_ID, 2, is_special=_is_spec, trigger_hm=_cur_hm), daemon=True).start()
 
             # Sleep hours
