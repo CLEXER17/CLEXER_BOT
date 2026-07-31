@@ -3963,7 +3963,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         conf = signal.get("confidence", "LOW"); rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
         if rank.get(conf,1) < rank.get(min_conf,1):
             send_telegram(f"<b>Signal filtered - low confidence</b>\n\n"
-                f"Found: <b>{sig_type}</b> @ {entry:,.0f}\n"
+                f"Clex found: <b>{sig_type}</b> @ {entry:,.0f}\n"
                 f"Confidence: <b>{conf}</b> (required: {min_conf})\n\n"
                 f"<i>/resetsl to lower bar.</i>")
             return None
@@ -6612,7 +6612,7 @@ ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 /scan2 - Run Scan2 only (fresh momentum)
 /closescan - Clear all active scan trades
 /scantv on|off - Scan uses TV bridge (on) or BingX (off)
-/coin ETHUSDT - Analyze any coin (AI-powered)
+/coin ETHUSDT - Analyze any coin (Clex)
 /compare - Run V9+B1 × BingX+TV side-by-side
 
 <b>CHANNELS</b>
@@ -9361,7 +9361,7 @@ Reasoning: [one line]"""
                             _no_sig_msg = _scan_box(
                                 f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
                                 [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
-                                  f"{_smallcaps_title('Analyzed but no clean setup at this slot')}."]],
+                                  f"{_smallcaps_title('Clex analyzed but no clean setup at this slot')}."]],
                             )
                         # Signal channel always gets it. VERIFIED slots ALSO post to
                         # VIP (2026-07-28 request) — VIP users are specifically primed
@@ -13165,7 +13165,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     _no_sig_msg = _scan_box(
                         f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
                         [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
-                          f"{_smallcaps_title('Analyzed but no clean setup at this slot')}."]],
+                          f"{_smallcaps_title('Clex analyzed but no clean setup at this slot')}."]],
                     )
                 # Signal channel always gets it; VERIFIED slots also post to VIP —
                 # same reasoning as the live scan path.
