@@ -2360,6 +2360,25 @@ def _test_aerolink_key(key: str, model: str = "claude-opus-5", timeout: int = 20
     except Exception as e:
         return False, str(e)[:150]
 
+_aero_key_rotor = 0
+_aero_key_rotor_lock = threading.Lock()
+
+def _next_aero_offset() -> int:
+    """Rotating starting offset for Aerolink key selection, established once
+    per scan cycle and stashed in _scan_ctx (2026-07-30). Without this, every
+    cycle's FIRST attempt always picked key slot 1 (attempt=0, attempt % N)
+    — harmless with one cycle at a time, but with multiple Scan1/Scan2/TS1/
+    TS2 cycles now able to run at once, their first attempts all piled onto
+    the SAME key simultaneously (confirmed live: several concurrent scans
+    all logging gateway=aerolink-key1 at once), leaving the other 11
+    configured keys idle — a plausible contributor to slow responses even
+    with plenty of keys available. Each new cycle now starts at a different
+    key instead, spreading concurrent load across all configured slots."""
+    global _aero_key_rotor
+    with _aero_key_rotor_lock:
+        _aero_key_rotor += 1
+        return _aero_key_rotor
+
 def _test_all_aerolink_keys(cid):
     """Admin-only /aerolinktest — pings every CONFIGURED Aerolink key slot
     one at a time with a tiny message, so you can see at a glance which
@@ -2395,7 +2414,8 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     until keys are added later."""
     if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
         _keys = _aerolink_configured_keys()
-        key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
+        _offset = getattr(_scan_ctx, "aero_offset", 0)
+        key = _keys[(attempt + _offset) % len(_keys)] if _keys else AEROLINK_API_KEY
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -2404,10 +2424,13 @@ def _pick_aerolink_key(attempt: int, bad_keys: set) -> str:
     earlier in the CURRENT scan cycle (see _claude_client_skip) — a key that
     just failed on coin #1 gets skipped on coin #2/#3 instead of being
     retried from scratch every time. Falls back to the full list if every
-    key has somehow already been marked bad, rather than crashing."""
+    key has somehow already been marked bad, rather than crashing. Also
+    applies this cycle's rotating start offset (_scan_ctx.aero_offset) so
+    concurrent cycles don't all start at the same key — see _next_aero_offset."""
     _all = _aerolink_configured_keys()
     _keys = [k for k in _all if k not in bad_keys] or _all
-    return _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
+    _offset = getattr(_scan_ctx, "aero_offset", 0)
+    return _keys[(attempt + _offset) % len(_keys)] if _keys else AEROLINK_API_KEY
 
 def _claude_client_skip(kind: str, attempt: int, bad_keys: set, scan_ver: int = None):
     """Like _claude_client, but for callers doing their own multi-coin retry
@@ -2422,15 +2445,17 @@ def _claude_client_skip(kind: str, attempt: int, bad_keys: set, scan_ver: int = 
 
 def _aerolink_gw_debug_tag(using_aero: bool, attempt: int, bad_keys: set = None) -> str:
     """Debug label for scan logs — 'direct', or 'aerolink-keyN' showing which
-    of the up-to-10 configured Aerolink key slots this attempt will actually
-    rotate to (same slot-skipping logic as _claude_client/_claude_client_skip)."""
+    of the up-to-12 configured Aerolink key slots this attempt will actually
+    rotate to (same slot-skipping + rotor-offset logic as _claude_client/
+    _pick_aerolink_key — must match exactly, this is what shows up in logs)."""
     if not using_aero:
         return "direct"
     _all = _aerolink_configured_keys()
     _keys = [k for k in _all if k not in (bad_keys or set())] or _all
     if not _keys:
         return "aerolink-key1"
-    idx = _all.index(_keys[attempt % len(_keys)]) + 1
+    _offset = getattr(_scan_ctx, "aero_offset", 0)
+    idx = _all.index(_keys[(attempt + _offset) % len(_keys)]) + 1
     return f"aerolink-key{idx}"
 
 def _claude_retry_budget(using_aero: bool) -> int:
@@ -8706,6 +8731,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             # shared dict keyed by kind anymore (see _scan_ctx docstring).
             _scan_ctx.special = _is_special
             _scan_ctx.trigger_hm = _trigger_hm
+            _scan_ctx.aero_offset = _next_aero_offset()  # spreads this cycle's Aerolink
+            # calls across a different starting key than any other concurrently-running
+            # cycle — see _next_aero_offset docstring.
             if _auto:
                 # Runs entirely in this thread — safe to set here, can't leak
                 # into the admin's own separate interactions (different thread).
@@ -12769,6 +12797,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
     # concurrently without reading each other's classification.
     _scan_ctx.special = is_special
     _scan_ctx.trigger_hm = trigger_hm
+    _scan_ctx.aero_offset = _next_aero_offset()  # see _do_scan's matching line
     lbl = "S1" if scan_ver == 1 else "S2"
     _kind = f"test{scan_ver}"
     # "Demo scan starting" DM removed 2026-07-28 — routine noise, not an
