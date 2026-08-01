@@ -1310,6 +1310,29 @@ ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
 registered_users: set = set()
 user_usernames: dict = {}   # chat_id (str) → @username, best-effort, for admin display
 blocked_users: set = set()  # chat_ids where sendMessage failed with "bot was blocked by the user"
+_group_seen_users: dict = {}  # {group_chat_id_str: {user_id_str: {"name":..., "username":...}}} —
+# 2026-07-31: the Telegram Bot API has no way to list a group's actual membership
+# (no privacy exception for bots, admin or not), so this is the closest thing to a
+# mention-all list — everyone the bot has personally seen post a message in that
+# group, built up over time. Used by the broadcast group-mention feature. See
+# _track_group_seen_user (records) and the broadcast send path (uses it).
+
+def _track_group_seen_user(chat_id, user_id, from_obj: dict):
+    """Records a user as having posted in this group. Only touches settings
+    (local + central save) when a genuinely NEW user is found — once a
+    group's regulars have all posted at least once, this becomes a no-op on
+    every subsequent message from them, not a write on every single message."""
+    if not user_id:
+        return
+    _cid_str, _uid_str = str(chat_id), str(user_id)
+    _group = _group_seen_users.setdefault(_cid_str, {})
+    if _uid_str in _group:
+        return
+    _group[_uid_str] = {
+        "name": from_obj.get("first_name") or from_obj.get("username") or "User",
+        "username": from_obj.get("username", ""),
+    }
+    save_settings()
 
 RATE_LIMIT_USES   = 2
 RATE_LIMIT_WINDOW = 3600
@@ -4191,6 +4214,7 @@ def load_settings():
             ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", True)
             ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", False)
             ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
+            _group_seen_users.update(d.get("group_seen_users", {}))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -4242,6 +4266,7 @@ def save_settings():
             "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
             "demo1_ct_enabled": ct.DEMO1_CT_ENABLED,
             "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
+            "group_seen_users": _group_seen_users,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -4686,22 +4711,63 @@ def _all_broadcast_channel_targets() -> list:
             out.append((c["id"], c.get("label") or (("⭐ VIP" if c.get("tier")=="vip" else "🆓 Free") + f" · {c['id']}")))
     return out
 
-def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", channel_targets=None):
+_TG_MSG_LIMIT = 4096
+
+def _send_group_mentions(chat_id) -> int:
+    """After a broadcast lands in a group, follow up with mention links for
+    everyone the bot has seen post there (_group_seen_users — see its
+    docstring for why this, not a true member list, is the ceiling here).
+    Chunked across multiple messages if the combined mentions would exceed
+    Telegram's 4096-char message limit. Returns how many messages were sent
+    (0 if this target isn't a tracked group)."""
+    _seen = _group_seen_users.get(str(chat_id))
+    if not _seen:
+        return 0
+    _mentions = [f'<a href="tg://user?id={uid}">{_html.escape(info.get("name") or "User")}</a>'
+                 for uid, info in _seen.items()]
+    _prefix = "📢 "
+    _chunks = []; _cur = _prefix
+    for m in _mentions:
+        _piece = m + " "
+        if len(_cur) + len(_piece) > _TG_MSG_LIMIT - 20:  # small safety margin
+            _chunks.append(_cur.strip()); _cur = _prefix
+        _cur += _piece
+    if _cur.strip() != _prefix.strip():
+        _chunks.append(_cur.strip())
+    _sent = 0
+    for chunk in _chunks:
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}, timeout=10)
+            if r.status_code == 200: _sent += 1
+        except Exception as e:
+            print(f"  [GROUP MENTION] {chat_id}: {e}")
+        time.sleep(0.05)
+    return _sent
+
+def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", channel_targets=None, target_user=None):
     """channel_targets: optional explicit list of channel/group chat_ids to use
-    instead of the legacy-only default — set by the new multi-select picker."""
-    if mode == "users":
+    instead of the legacy-only default — set by the new multi-select picker.
+    target_user: single chat_id, only used when mode == "specific_user"."""
+    if mode == "specific_user":
+        targets = [target_user] if target_user else []
+    elif mode == "users":
         targets = [u for u in registered_users if u not in blocked_users]
-    elif mode == "channels":
-        targets = channel_targets if channel_targets is not None else [cid for cid, _ in _all_broadcast_channel_targets()]
+    elif mode in ("channels", "free", "vip"):
+        targets = channel_targets if channel_targets is not None else [cid for cid, _ in _bc_picker_targets(mode)]
     else:
         _chan = channel_targets if channel_targets is not None else [cid for cid, _ in _all_broadcast_channel_targets()]
         targets = [u for u in registered_users if u not in blocked_users] + _chan
-    ok = 0; fail = 0
+    ok = 0; fail = 0; mentioned = 0
     for cid in targets:
-        if send_to_user(cid, text, file_id, file_type): ok += 1
+        if send_to_user(cid, text, file_id, file_type):
+            ok += 1
+            mentioned += _send_group_mentions(cid)
         else: fail += 1
         time.sleep(0.05)
-    send_reply(admin_chat_id, f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed")
+    _done_msg = f"<b>Broadcast Done</b>\n{ok} delivered | {fail} failed"
+    if mentioned: _done_msg += f"\n👥 {mentioned} mention message(s) sent to groups"
+    send_reply(admin_chat_id, _done_msg)
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
@@ -7943,13 +8009,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         threading.Thread(target=check_news, args=(True,), daemon=True).start()
 
     elif cmd == "/broadcast":
-        _bc_btns = {"inline_keyboard": [[
-            {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
-            {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
-        ], [
-            {"text": "🌍 Both (Users + Channels)", "callback_data": "broadcast_mode:all"},
-        ]]}
-        send_reply(chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?", reply_markup=_bc_btns)
+        send_reply(chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?", reply_markup=_broadcast_mode_btns())
 
     elif cmd == "/adminlinks" and is_admin:
         send_adminlinks_screen(chat_id)
@@ -9630,6 +9690,63 @@ Reasoning: [one line]"""
         send_reply(chat_id, f"Unknown: {cmd}\n/help")
 
 _bc_picker_state: dict = {}  # chat_id str -> {"text","file_id","file_type","mode","selected": set()}
+_BC_MODE_LABELS = {"users": "Users Only", "channels": "Channels Only", "all": "All (Users + Channels)",
+                    "free": "Free Channels", "vip": "VIP Channels", "specific_user": "Specific User"}
+_BC_USERS_PER_PAGE = 10
+
+def _broadcast_mode_btns() -> dict:
+    return {"inline_keyboard": [[
+        {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
+        {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
+    ], [
+        {"text": "🌍 All (Users + Channels)", "callback_data": "broadcast_mode:all"},
+    ], [
+        {"text": "🆓 Free Channels", "callback_data": "broadcast_mode:free"},
+        {"text": "⭐ VIP Channels",  "callback_data": "broadcast_mode:vip"},
+    ], [
+        {"text": "👤 Specific User", "callback_data": "bcuser_open:0"},
+    ]]}
+
+def _channels_by_tier_targets(tier: str) -> list:
+    """Like _channels_by_tier, but returns [(id, label), ...] pairs — for the
+    broadcast picker, which needs a label per channel, not just the id."""
+    _icon = "⭐ VIP" if tier == "vip" else "🆓 Free"
+    return [(c["id"], c.get("label") or f"{_icon} · {c['id']}")
+            for c in CHANNELS if c.get("tier") == tier and c.get("id")]
+
+def send_broadcast_user_picker(chat_id, page: int = 0, message_id=None):
+    """Paginated 'pick one user' screen for the Specific User broadcast mode —
+    same idea as send_userstats_list but with a tappable button per user
+    (that one just renders a text block) since here the admin needs to
+    actually select exactly one."""
+    ids = sorted([u for u in registered_users if int(u) > 0 and u not in blocked_users], key=lambda u: int(u))
+    if not ids:
+        _help_edit_or_send(chat_id, "⚠️ No registered users yet.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "bcback"}]]}, message_id=message_id)
+        return
+    start = page * _BC_USERS_PER_PAGE
+    page_ids = ids[start:start + _BC_USERS_PER_PAGE]
+    rows = []
+    for uid in page_ids:
+        _uname = user_usernames.get(str(uid))
+        _label = f"@{_uname}" if _uname else f"ID {uid}"
+        rows.append([{"text": f"👤 {_label}", "callback_data": f"bcuser:{uid}"}])
+    nav = []
+    if page > 0: nav.append({"text": "◀️ Prev", "callback_data": f"bcuser_open:{page-1}"})
+    if start + _BC_USERS_PER_PAGE < len(ids): nav.append({"text": "Next ▶️", "callback_data": f"bcuser_open:{page+1}"})
+    if nav: rows.append(nav)
+    rows.append([{"text": "🚫 Back", "callback_data": "bcback"}])
+    _total_pages = (len(ids) - 1) // _BC_USERS_PER_PAGE + 1
+    _help_edit_or_send(chat_id,
+        f"👤 <b>Pick a user</b>\n\n{len(ids)} registered — page {page+1}/{_total_pages}",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def _bc_picker_targets(mode: str) -> list:
+    """[(id, label), ...] for whatever the picker/send step should offer —
+    narrowed to just that tier for free/vip, everything for channels/all."""
+    if mode in ("free", "vip"):
+        return _channels_by_tier_targets(mode)
+    return _all_broadcast_channel_targets()
 
 def handle_broadcast_message(chat_id, message):
     text = message.get("text") or message.get("caption") or ""
@@ -9638,14 +9755,18 @@ def handle_broadcast_message(chat_id, message):
     if photo:   file_id = photo[-1]["file_id"]; file_type = "photo"
     elif doc:   file_id = doc["file_id"];       file_type = "document"
     if not text and not file_id: send_reply(chat_id, "Empty. /cancel to abort."); return
-    mode = broadcast_pending.get(chat_id, {}).get("mode", "all")
+    _pending = broadcast_pending.get(chat_id, {})
+    mode = _pending.get("mode", "all")
+    target_user = _pending.get("target_user")
     del broadcast_pending[chat_id]
-    if mode == "users":
-        _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[mode]
-        send_reply(chat_id, f"📢 Broadcasting to {_mode_label}...")
-        threading.Thread(target=do_broadcast, args=(chat_id, text, file_id, file_type, mode), daemon=True).start()
+    if mode in ("users", "specific_user"):
+        _label = _BC_MODE_LABELS.get(mode, mode) if mode == "users" else (
+            f"@{user_usernames[str(target_user)]}" if user_usernames.get(str(target_user)) else f"user {target_user}")
+        send_reply(chat_id, f"📢 Broadcasting to {_label}...")
+        threading.Thread(target=do_broadcast,
+            args=(chat_id, text, file_id, file_type, mode, None, target_user), daemon=True).start()
         return
-    all_targets = _all_broadcast_channel_targets()
+    all_targets = _bc_picker_targets(mode)
     _bc_picker_state[str(chat_id)] = {
         "text": text, "file_id": file_id, "file_type": file_type, "mode": mode,
         "selected": {cid for cid, _ in all_targets},  # pre-select all by default
@@ -9655,7 +9776,7 @@ def handle_broadcast_message(chat_id, message):
 def _send_broadcast_picker(chat_id, message_id=None):
     st = _bc_picker_state.get(str(chat_id))
     if not st: return
-    all_targets = _all_broadcast_channel_targets()
+    all_targets = _bc_picker_targets(st["mode"])
     if not all_targets:
         send_reply(chat_id, "⚠️ No channels are set up yet — add one via /channelmgmt or /adminlinks first.")
         _bc_picker_state.pop(str(chat_id), None)
@@ -11749,9 +11870,21 @@ def command_listener():
                     elif cb_data.startswith("broadcast_mode:") and cb_is_admin:
                         _mode = cb_data.split(":", 1)[1]
                         broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
-                        _mode_lbl = {"users": "Users Only", "channels": "Channels Only", "all": "Both"}[_mode]
                         _help_edit_or_send(cb_chat_id,
-                            f"📢 <b>Broadcast — {_mode_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            f"📢 <b>Broadcast — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            None, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("bcuser_open:") and cb_is_admin:
+                        _page = int(cb_data.split(":", 1)[1])
+                        send_broadcast_user_picker(cb_chat_id, page=_page, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("bcuser:") and cb_is_admin:
+                        _picked = cb_data.split(":", 1)[1]
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": "specific_user", "msg_id": cb_msg_id, "target_user": _picked}
+                        _uname = user_usernames.get(str(_picked))
+                        _u_lbl = f"@{_uname}" if _uname else f"user {_picked}"
+                        _help_edit_or_send(cb_chat_id,
+                            f"📢 <b>Broadcast — To {_u_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
 
                     elif cb_data.startswith("bctgl:") and cb_is_admin:
@@ -11766,22 +11899,15 @@ def command_listener():
                         st = _bc_picker_state.pop(str(cb_chat_id), None)
                         _mode = st["mode"] if st else "all"
                         broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
-                        _mode_lbl = {"users": "Users Only", "channels": "Channels Only", "all": "Both"}[_mode]
                         _help_edit_or_send(cb_chat_id,
-                            f"📢 <b>Broadcast — {_mode_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            f"📢 <b>Broadcast — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
 
                     elif cb_data == "bcback" and cb_is_admin:
                         _bc_picker_state.pop(str(cb_chat_id), None)
                         broadcast_pending.pop(cb_chat_id, None)
-                        _bc_btns = {"inline_keyboard": [[
-                            {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
-                            {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
-                        ], [
-                            {"text": "🌍 Both (Users + Channels)", "callback_data": "broadcast_mode:all"},
-                        ]]}
                         _help_edit_or_send(cb_chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?",
-                            _bc_btns, message_id=cb_msg_id)
+                            _broadcast_mode_btns(), message_id=cb_msg_id)
 
                     elif cb_data == "bcsend" and cb_is_admin:
                         st = _bc_picker_state.pop(str(cb_chat_id), None)
@@ -11790,7 +11916,7 @@ def command_listener():
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Nothing to send — start over.", "show_alert": True}, timeout=5)
                         else:
                             _sel = list(st["selected"])
-                            _mode_label = {"users": "registered users", "channels": "channels", "all": "users + channels"}[st["mode"]]
+                            _mode_label = _BC_MODE_LABELS.get(st["mode"], st["mode"])
                             _help_edit_or_send(cb_chat_id, f"📢 Broadcasting to {_mode_label} ({len(_sel)} channels)...", None, message_id=cb_msg_id)
                             threading.Thread(target=do_broadcast,
                                 args=(cb_chat_id, st["text"], st["file_id"], st["file_type"], st["mode"], _sel), daemon=True).start()
@@ -12069,6 +12195,11 @@ def command_listener():
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
+
+                # Group-mention tracking (2026-07-31) — see _track_group_seen_user
+                # docstring for why this exists instead of a real member list.
+                if msg.get("chat", {}).get("type") in ("group", "supergroup") and sender_uid:
+                    _track_group_seen_user(cid, sender_uid, msg.get("from", {}))
 
                 # Telegram Stars payment completed — arrives as a normal message
                 # carrying successful_payment, no webhook/poll loop needed (unlike
