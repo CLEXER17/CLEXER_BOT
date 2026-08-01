@@ -296,6 +296,8 @@
       <div class="card">
         <div class="barshead"><span class="ttl" style="margin:0">Daily P/L</span><span id="dailyTot" class="up">+$0</span></div>
         <div class="barsscroll"><svg id="dailyBars"></svg></div>
+        <div id="dailyBarDetail"></div>
+        <div id="dailyPager" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:8px;font-size:11px;color:var(--muted)"></div>
         <div class="barslegend"><span><i class="sw" style="background:var(--long)"></i>Gain day</span><span><i class="sw" style="background:var(--short)"></i>Loss day</span><span><i class="sw" style="background:var(--gold)"></i>Today</span></div>
       </div>
       <div class="ttl" style="margin:14px 2px 8px">Best / Worst Trade</div>
@@ -753,8 +755,50 @@
       '<circle cx="'+end[0].toFixed(1)+'" cy="'+end[1].toFixed(1)+'" r="6" fill="#00D18F" opacity="0.25"/>';
   }
 
-  function renderDailyBars(values){
-    if(!values||!values.length) return;
+  // Daily P/L — now paginated (7 days/page) and each bar shows its real date
+  // on click, instead of a bare index (1,2,3...) with no way to tell which
+  // calendar day it actually was. DAILY_DAYS holds every {date,value} pair
+  // for the currently-loaded window (set in loadPortfolio); dailyPageIdx is
+  // which page is showing, 0 = most recent 7 days.
+  let DAILY_DAYS=[]; let dailyPageIdx=0;
+  const DAILY_PAGE_SIZE=7;
+
+  function setDailyDays(days){ // days: [{date:"YYYY-MM-DD", value:number}, ...] oldest->newest
+    DAILY_DAYS=days;
+    dailyPageIdx=0; // always land on the most recent page first
+    renderDailyPage();
+  }
+
+  function renderDailyPage(){
+    const totalPages=Math.max(1,Math.ceil(DAILY_DAYS.length/DAILY_PAGE_SIZE));
+    if(dailyPageIdx>=totalPages) dailyPageIdx=totalPages-1;
+    if(dailyPageIdx<0) dailyPageIdx=0;
+    // Page 0 = most recent 7 days = the LAST slice of the oldest->newest array
+    const endIdx=DAILY_DAYS.length-dailyPageIdx*DAILY_PAGE_SIZE;
+    const startIdx=Math.max(0,endIdx-DAILY_PAGE_SIZE);
+    const pageDays=DAILY_DAYS.slice(startIdx,endIdx);
+    renderDailyBars(pageDays);
+    const pager=document.getElementById("dailyPager");
+    if(DAILY_DAYS.length<=DAILY_PAGE_SIZE){ pager.innerHTML=""; return; }
+    let html='<button id="dpPrev" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:3px 9px;font-size:11px;cursor:pointer">◀</button>';
+    html+='<span>Page '+(dailyPageIdx+1)+'/'+totalPages+'</span>';
+    html+='<button id="dpNext" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:3px 9px;font-size:11px;cursor:pointer">▶</button>';
+    pager.innerHTML=html;
+    document.getElementById("dpPrev").disabled=dailyPageIdx>=totalPages-1;
+    document.getElementById("dpNext").disabled=dailyPageIdx<=0;
+    document.getElementById("dpPrev").onclick=()=>{ dailyPageIdx++; renderDailyPage(); };
+    document.getElementById("dpNext").onclick=()=>{ dailyPageIdx--; renderDailyPage(); };
+  }
+
+  function renderDailyBars(days){
+    document.getElementById("dailyBarDetail").innerHTML="";
+    if(!days||!days.length){
+      document.getElementById("dailyBars").innerHTML="";
+      const tot=document.getElementById("dailyTot");
+      tot.textContent="+$0"; tot.className="up";
+      return;
+    }
+    const values=days.map(d=>d.value);
     const n=values.length, compact=n<=12;
     const barW=compact?24:14, step=compact?42:24;
     const width=n*step, height=150, topPad=26, bottomPad=34;
@@ -762,23 +806,36 @@
     const maxAbs=Math.max(1,...values.map(v=>Math.abs(v)));
     const scale=(plotH/2*0.85)/maxAbs;
     const total=values.reduce((a,b)=>a+b,0);
+    const todayStr=new Date().toISOString().slice(0,10);
     let parts=['<line x1="0" y1="'+midY+'" x2="'+width+'" y2="'+midY+'" stroke="#1E242E" stroke-width="1"/>'];
-    values.forEach((v,i)=>{
+    days.forEach((d,i)=>{
+      const v=d.value;
       const cx=i*step+step/2;
       const h=Math.max(Math.abs(v)*scale,2);
       const isPos=v>=0, y=isPos?midY-h:midY;
       const color=isPos?"#00D18F":"#FF4D5E";
-      const isToday=i===n-1;
+      const isToday=d.date===todayStr;
       const strokeAttr=isToday?' stroke="#FFB020" stroke-width="1.5"':'';
-      parts.push('<rect x="'+(cx-barW/2).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+barW+'" height="'+h.toFixed(1)+'" rx="4" fill="'+color+'" opacity="0.92"'+strokeAttr+'/>');
+      parts.push('<rect class="dailybar" data-date="'+d.date+'" data-v="'+v+'" x="'+(cx-barW/2).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+barW+'" height="'+h.toFixed(1)+'" rx="4" fill="'+color+'" opacity="0.92"'+strokeAttr+' style="cursor:pointer"/>');
       const valY=isPos?(midY-h-7):(midY+h+15);
-      parts.push('<text x="'+cx+'" y="'+valY.toFixed(1)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="'+color+'">'+(isPos?"+":"")+fmt(v,2)+'</text>');
-      parts.push('<text x="'+cx+'" y="'+(height-8)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#6B7480">'+(i+1)+'</text>');
+      parts.push('<text x="'+cx+'" y="'+valY.toFixed(1)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="'+color+'" style="pointer-events:none">'+(isPos?"+":"")+fmt(v,2)+'</text>');
+      const dayNum=(d.date||"").slice(8,10)||(i+1);
+      parts.push('<text x="'+cx+'" y="'+(height-8)+'" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#6B7480" style="pointer-events:none">'+dayNum+'</text>');
     });
     const svg=document.getElementById("dailyBars");
     svg.setAttribute("width",width); svg.setAttribute("height",height);
     svg.setAttribute("viewBox","0 0 "+width+" "+height);
     svg.innerHTML=parts.join("");
+    svg.querySelectorAll(".dailybar").forEach(el=>{
+      el.addEventListener("click",()=>{
+        const v=parseFloat(el.dataset.v);
+        const detail=document.getElementById("dailyBarDetail");
+        detail.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--gold);border-radius:8px;padding:8px 10px;margin-top:8px">`+
+          `<span style="font-size:11px;color:var(--muted)">${el.dataset.date}</span>`+
+          `<span style="font-size:12px;font-weight:700;color:${v>=0?"var(--long)":"var(--short)"}">${v>=0?"+":"-"}$${fmt(Math.abs(v),2)}</span>`+
+        `</div>`;
+      });
+    });
     const tot=document.getElementById("dailyTot");
     tot.textContent=(total>=0?"+":"-")+"$"+fmt(Math.abs(total),2);
     tot.className=total>=0?"up":"down";
@@ -915,7 +972,10 @@
       countUp(document.getElementById("wr"),wr,"",0,900);
       setTimeout(()=>document.getElementById("wr").textContent=wr+"%",920);
       document.getElementById("winbar").style.width=wr+"%";
-      document.getElementById("avgr").textContent="+"+(stats.avg_r||0)+"R";
+      const _avgR=stats.avg_r||0;
+      const avgrEl=document.getElementById("avgr");
+      avgrEl.textContent=(_avgR>=0?"+":"")+_avgR+"R";
+      avgrEl.className="v "+(_avgR>=0?"up":"down");
       document.getElementById("pf").textContent=stats.profit_factor||"0";
       document.getElementById("session").textContent=stats.best_session||"—";
     }catch(e){ console.warn("portfolio stats:", e); }
@@ -941,8 +1001,8 @@
         const day=(c.closed_at||"").slice(0,10);
         if(day) dailyMap[day]=(dailyMap[day]||0)+(c.pnl||0);
       });
-      const days=Object.keys(dailyMap).sort().slice(-30);
-      if(days.length) renderDailyBars(days.map(d=>dailyMap[d]));
+      const dayKeys=Object.keys(dailyMap).sort().slice(-30); // oldest->newest, up to 30 real trading days
+      setDailyDays(dayKeys.map(d=>({date:d, value:dailyMap[d]})));
 
       // streak — trailing same-result run counting back from the most recent trade
       let streak=0, streakWin=null;
@@ -956,19 +1016,34 @@
       streakEl.textContent = h.length ? (streak+" "+(streakWin?("win"+(streak!==1?"s":"")):("loss"+(streak!==1?"es":"")))) : "—";
       streakEl.className = "v "+(streakWin===false?"down":"up");
 
+      // P/L by coin — built FIRST now: a coin's true total, summed across every
+      // fill (a trade that hits TP1 then closes separately produces two rows
+      // for the SAME coin, and trade_log has no shared trade-id to merge them
+      // by, only symbol+closed_at — unreliable once TP1 and the final close
+      // land in different minutes, which is the common case, not the
+      // exception). Best/Worst Trade below reuses this SAME per-coin total
+      // instead of scanning individual rows, so it can never disagree with
+      // what P/L by Coin shows — e.g. a coin with two $0.4-ish wins (real
+      // total $0.88) now correctly beats a coin with one $0.69 single win,
+      // instead of losing to it because neither of its two rows alone was
+      // the single biggest number.
+      const coinMap={};
+      h.forEach(c=>{ const s=c.symbol||"?"; coinMap[s]=(coinMap[s]||0)+(c.pnl||0); });
+      const coinEntries=Object.entries(coinMap);
+
       // best / worst trade — "Worst" only ever shows a genuine loss, never
-      // the same winning trade duplicated under a red label when there's no
+      // the same winning coin duplicated under a red label when there's no
       // loss on record yet
-      if(h.length){
-        const best=h.reduce((a,b)=>(b.pnl||0)>(a.pnl||0)?b:a);
-        document.getElementById("bestSym").textContent=(best.symbol||"—").replace("USDT","")+"/USDT";
-        document.getElementById("bestPnl").textContent=((best.pnl||0)>=0?"+":"-")+"$"+fmt(Math.abs(best.pnl||0),2);
-        document.getElementById("bestPnl").className="v "+((best.pnl||0)>=0?"up":"down");
-        const losses=h.filter(c=>(c.pnl||0)<0);
-        if(losses.length){
-          const worst=losses.reduce((a,b)=>(b.pnl||0)<(a.pnl||0)?b:a);
-          document.getElementById("worstSym").textContent=(worst.symbol||"—").replace("USDT","")+"/USDT";
-          document.getElementById("worstPnl").textContent="-$"+fmt(Math.abs(worst.pnl||0),2);
+      if(coinEntries.length){
+        const [bestSym,bestPnl]=coinEntries.reduce((a,b)=>b[1]>a[1]?b:a);
+        document.getElementById("bestSym").textContent=(bestSym||"—").replace("USDT","")+"/USDT";
+        document.getElementById("bestPnl").textContent=(bestPnl>=0?"+":"-")+"$"+fmt(Math.abs(bestPnl),2);
+        document.getElementById("bestPnl").className="v "+(bestPnl>=0?"up":"down");
+        const lossCoins=coinEntries.filter(([,v])=>v<0);
+        if(lossCoins.length){
+          const [worstSym,worstPnl]=lossCoins.reduce((a,b)=>b[1]<a[1]?b:a);
+          document.getElementById("worstSym").textContent=(worstSym||"—").replace("USDT","")+"/USDT";
+          document.getElementById("worstPnl").textContent="-$"+fmt(Math.abs(worstPnl),2);
           document.getElementById("worstPnl").className="v down";
         }else{
           document.getElementById("worstSym").textContent="No losses yet";
@@ -977,10 +1052,7 @@
         }
       }
 
-      // P/L by coin
-      const coinMap={};
-      h.forEach(c=>{ const s=c.symbol||"?"; coinMap[s]=(coinMap[s]||0)+(c.pnl||0); });
-      const coinRows=Object.entries(coinMap).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,5);
+      const coinRows=coinEntries.sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,5);
       const maxCoinAbs=Math.max(1,...coinRows.map(r=>Math.abs(r[1])));
       document.getElementById("coinPnl").innerHTML = coinRows.length ? coinRows.map(([sym,v])=>{
         const pos=v>=0, pct=Math.round(Math.abs(v)/maxCoinAbs*100);
@@ -1002,8 +1074,24 @@
 
       // equity curve from cumulative pnl, expressed as % of the REAL account
       // balance (was dividing by a hardcoded 100 regardless of account size,
-      // so a real $0.44 gain on a $15 account rounded to "0.0%" every time)
-      const hist30=[...h].reverse().slice(0,30);
+      // so a real $0.44 gain on a $15 account rounded to "0.0%" every time).
+      // Was also ignoring the 7D/30D/ALL toggle entirely (always the same
+      // slice regardless of `p`), AND slicing wrong even for one fixed
+      // window: h is newest-first, so [...h].reverse().slice(0,30) reverses
+      // to oldest-first FIRST, then takes the OLDEST 30 of up to 50 stored —
+      // excluding the 20 most recent trades from an "equity curve," the one
+      // place recency matters most. Now actually filters by the selected
+      // window, and picks the most recent N within it before ordering
+      // chronologically for the curve.
+      const now=Date.now();
+      const parseClosedAt=s=>{ const t=Date.parse((s||"").replace(" ","T")); return isNaN(t)?null:t; };
+      let windowed=h;
+      if(p==="7D"||p==="30D"){
+        const days=p==="7D"?7:30;
+        const cutoff=now-days*86400000;
+        windowed=h.filter(c=>{ const t=parseClosedAt(c.closed_at); return t!==null && t>=cutoff; });
+      }
+      const hist30=windowed.slice(0,30).reverse(); // most recent 30 in the window, oldest->newest
       if(hist30.length>=1){
         const histSum=hist30.reduce((a,c)=>a+(c.pnl||0),0);
         let startBal=realBal-histSum;
@@ -1015,6 +1103,13 @@
         const g=document.getElementById("gainPct");
         g.textContent=(gainPct>=0?"+":"")+gainPct+"%";
         g.className=gainPct>=0?"up":"down";
+      }else{
+        // No trades at all in this window (e.g. picked 7D but haven't traded
+        // in a week) — a flat line at 0%, not stale data left over from
+        // whatever was drawn before, and not a silently blank chart.
+        drawCurve([100,100]);
+        const g=document.getElementById("gainPct");
+        g.textContent="+0.0%"; g.className="up";
       }
 
     }catch(e){ console.warn("portfolio history:", e); }

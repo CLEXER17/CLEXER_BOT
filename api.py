@@ -661,24 +661,60 @@ def get_trade_history(user: dict = Depends(get_current_user)):
     return {"history": history, "total": len(history)}
 
 
+def _session_for_hm(hour: int, minute: int) -> str:
+    """Mirrors bot.py's get_session() IST hour ranges exactly, so 'best
+    session' means the same LONDON/NEW_YORK/ASIA windows the bot itself
+    schedules signals around."""
+    mins = hour * 60 + minute
+    if 450 <= mins < 990: return "LONDON"
+    if mins >= 1110 or mins < 60: return "NEW_YORK"
+    return "ASIA"
+
+# Approximate R-multiple per result — trade_log doesn't store entry/SL (only
+# symbol/side/pnl/result/closed_at), so a true per-trade R can't be computed.
+# These mirror the bot's own documented target design (TP1 = 1.5x SL
+# distance, TP2 = 3x) — a reasonable historical average, not a fabricated
+# number, but still an approximation since real position sizing/partial
+# closes aren't reflected. Generic WIN/LOSS results (no specific TP/SL/BE
+# tag) are skipped rather than guessed.
+_R_BY_RESULT = {"TP2": 3.0, "TP1": 1.5, "BE": 0.0, "SL": -1.0}
+
 @app.get("/trades/stats")
 def get_trade_stats(user: dict = Depends(get_current_user)):
     """Per-user win/loss/P&L stats — see get_trade_history() for why this no
-    longer reads the bot's global trade_stats. avg_r and best_session aren't
-    tracked per-user anywhere yet, so they come back as neutral defaults
-    rather than fabricated numbers."""
+    longer reads the bot's global trade_stats. avg_r and best_session are now
+    computed from the same per-user trade_log get_trade_history() reads."""
     ct_users = _kv_dict("ct_users")
     urec = ct_users.get(str(user.get("id", "")), {})
     h = urec.get("history", {}) or {}
     won  = h.get("won_usdt", 0.0)
     lost = h.get("lost_usdt", 0.0)
+
+    log = urec.get("trade_log", [])
+    r_values = [_R_BY_RESULT[t["result"]] for t in log if t.get("result") in _R_BY_RESULT]
+    avg_r = round(sum(r_values) / len(r_values), 2) if r_values else 0
+
+    session_pnl = {}
+    for t in log:
+        try:
+            dt = datetime.strptime(t.get("closed_at", ""), "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        sess = _session_for_hm(dt.hour, dt.minute)
+        session_pnl[sess] = session_pnl.get(sess, 0.0) + (t.get("pnl") or 0.0)
+    best_session = "—"
+    if session_pnl:
+        _SESSION_LABEL = {"LONDON": "London", "NEW_YORK": "New York", "ASIA": "Asia"}
+        best_key = max(session_pnl, key=session_pnl.get)
+        best_session = _SESSION_LABEL.get(best_key, best_key)
+
     return {
         "wins": h.get("profit", 0),
         "losses": h.get("loss", 0),
         "total_pnl": h.get("total_pnl", 0.0),
         "profit_factor": round(won / lost, 2) if lost else (won and "∞" or 0),
-        "avg_r": 0,
-        "best_session": "—",
+        "avg_r": avg_r,
+        "best_session": best_session,
     }
 
 # ═════════════════════════════════════════════════════════════════════════════
