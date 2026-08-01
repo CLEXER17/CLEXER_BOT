@@ -5056,6 +5056,7 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
     """channel_targets: optional explicit list of channel/group chat_ids to use
     instead of the legacy-only default — set by the new multi-select picker.
     target_user: single chat_id, only used when mode == "specific_user"."""
+    text = _apply_premium_emojis(text)
     if mode == "specific_user":
         targets = [target_user] if target_user else []
     elif mode == "users":
@@ -8577,6 +8578,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
         elif str(chat_id) in _schedule_time_pending: del _schedule_time_pending[str(chat_id)]; send_reply(chat_id, "Cancelled.")
+        elif str(chat_id) in _schedule_msg_edit_pending: del _schedule_msg_edit_pending[str(chat_id)]; send_reply(chat_id, "Cancelled.")
         else: send_reply(chat_id, "Nothing to cancel.")
 
     elif cmd == "/ctclose" and is_admin:
@@ -10164,6 +10166,32 @@ def _bc_picker_targets(mode: str) -> list:
 _schedule_time_pending: dict = {}  # chat_id str -> {"text","file_id","file_type","mode","channel_targets","target_user"}
 # awaiting the admin's "DD.MM.YYYY H.MMam/pm" reply, after which a scheduled-broadcast entry gets created.
 
+_schedule_msg_edit_pending: dict = {}  # chat_id str -> sid — awaiting a replacement message for a
+# scheduled broadcast's content (text/photo/document), leaving its fire time/target untouched.
+
+def _prompt_schedule_msg_edit(chat_id, sid: str, message_id=None):
+    _schedule_msg_edit_pending[str(chat_id)] = sid
+    _help_edit_or_send(chat_id,
+        f"✏️ <b>Edit Message — #{sid}</b>\n\n"
+        f"Send the new text/photo/document to replace it with. You can also reply to "
+        f"(quote) an existing message to reuse its text/image. Fire time and target are untouched.\n\n"
+        f"<i>/cancel to abort</i>", None, message_id=message_id)
+
+def handle_schedule_msg_edit_message(chat_id, message):
+    sid = _schedule_msg_edit_pending.get(str(chat_id))
+    if not sid:
+        return
+    text, file_id, file_type = _extract_broadcast_content(message)
+    if not text and not file_id:
+        send_reply(chat_id, "Empty. /cancel to abort."); return
+    del _schedule_msg_edit_pending[str(chat_id)]
+    item = _scheduled_broadcasts.get(sid)
+    if not item:
+        send_reply(chat_id, f"⚠️ #{sid} no longer exists — it may have already fired or been cancelled."); return
+    item["text"] = text; item["file_id"] = file_id; item["file_type"] = file_type
+    _save_scheduled_broadcasts()
+    send_reply(chat_id, f"✅ <b>#{sid} message updated</b>\n\nFires: <b>{_fmt_schedule_datetime(item['fire_at'])} IST</b>\n\nSee /scheduledbroadcasts.")
+
 def _prompt_schedule_time(chat_id, content: dict, message_id=None):
     """content: {"text","file_id","file_type","mode","channel_targets","target_user"} —
     already-composed broadcast, just needs a fire time now."""
@@ -10220,9 +10248,10 @@ def send_scheduled_broadcasts_screen(chat_id, message_id=None):
         _preview = _html.escape((item.get("text") or "(file only)")[:40])
         lines.append(f"\n<b>#{sid}</b> — {_fmt_schedule_datetime(item['fire_at'])} IST — {_label}\n<i>{_preview}</i>")
         rows.append([
-            {"text": f"✏️ Edit Time #{sid}", "callback_data": f"schedbc_edit:{sid}"},
-            {"text": f"🗑 Cancel #{sid}",     "callback_data": f"schedbc_cancel:{sid}"},
+            {"text": f"✏️ Edit Time #{sid}",    "callback_data": f"schedbc_edit:{sid}"},
+            {"text": f"📝 Edit Message #{sid}", "callback_data": f"schedbc_editmsg:{sid}"},
         ])
+        rows.append([{"text": f"🗑 Cancel #{sid}", "callback_data": f"schedbc_cancel:{sid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_main"}])
     _help_edit_or_send(chat_id, "\n".join(lines), {"inline_keyboard": rows}, message_id=message_id)
 
@@ -10247,12 +10276,12 @@ def _fire_due_scheduled_broadcasts():
             send_admin(f"📅 <b>Scheduled broadcast #{sid} firing now</b> — {_BC_MODE_LABELS.get(item.get('mode'), item.get('mode'))}")
     _save_scheduled_broadcasts()
 
-def handle_broadcast_message(chat_id, message):
-    # Replying to (quoting) an existing message while composing — pull whatever
-    # that quoted message had (photo/document/text) as a fallback source, so
-    # quoting a past post with an image reuses its image instead of the admin
-    # having to re-download and re-upload it. The admin's own typed text/media
-    # always wins if they provided any; the quote only fills in what's missing.
+def _extract_broadcast_content(message: dict) -> tuple:
+    """Pulls (text, file_id, file_type) from a compose/edit message. Replying
+    to (quoting) an existing message fills in whatever the admin's own message
+    didn't provide (photo/document/text) — so quoting a past post with an
+    image reuses its image instead of re-downloading and re-uploading it. The
+    admin's own typed text/media always wins if they provided any."""
     _quoted = message.get("reply_to_message") or {}
     text = message.get("text") or message.get("caption") or _quoted.get("text") or _quoted.get("caption") or ""
     photo = message.get("photo") or _quoted.get("photo")
@@ -10260,6 +10289,10 @@ def handle_broadcast_message(chat_id, message):
     file_id = None; file_type = None
     if photo:   file_id = photo[-1]["file_id"]; file_type = "photo"
     elif doc:   file_id = doc["file_id"];       file_type = "document"
+    return text, file_id, file_type
+
+def handle_broadcast_message(chat_id, message):
+    text, file_id, file_type = _extract_broadcast_content(message)
     if not text and not file_id: send_reply(chat_id, "Empty. /cancel to abort."); return
     _pending = broadcast_pending.get(chat_id, {})
     mode = _pending.get("mode", "all")
@@ -12515,6 +12548,13 @@ def command_listener():
                         else:
                             send_scheduled_broadcasts_screen(cb_chat_id, message_id=cb_msg_id)
 
+                    elif cb_data.startswith("schedbc_editmsg:") and cb_is_admin:
+                        _sid = cb_data.split(":", 1)[1]
+                        if _sid in _scheduled_broadcasts:
+                            _prompt_schedule_msg_edit(cb_chat_id, _sid, message_id=cb_msg_id)
+                        else:
+                            send_scheduled_broadcasts_screen(cb_chat_id, message_id=cb_msg_id)
+
                     elif cb_data.startswith("schedbc_cancel:") and cb_is_admin:
                         _sid = cb_data.split(":", 1)[1]
                         _scheduled_broadcasts.pop(_sid, None)
@@ -12877,6 +12917,8 @@ def command_listener():
                     handle_broadcast_message(cid, msg); continue
                 if str(cid) in _schedule_time_pending and not text.startswith("/"):
                     handle_schedule_time_message(cid, text); continue
+                if str(cid) in _schedule_msg_edit_pending and not text.startswith("/"):
+                    handle_schedule_msg_edit_message(cid, msg); continue
                 # Pending input — user typed value after tapping a button
                 if cid in pending_input and not text.startswith("/"):
                     pi = pending_input[cid]
