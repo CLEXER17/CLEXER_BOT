@@ -65,6 +65,14 @@ COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1004368662009")   # pri
 # CoinTrendzBot, since bots can't message each other privately or read each other's DMs.
 # CLEXER posts "/c <coin>" here and watches for CoinTrendzBot's image reply in the same group.
 COINTRENDZ_BOT_USERNAME = os.getenv("COINTRENDZ_BOT_USERNAME", "cointrendzbot").lower()
+# CoinTrendzBot (like most bots) ignores messages sent by OTHER bot accounts — a real human
+# has to send "/c <coin>" for it to reply. TG_USER_* configure a SECOND, real Telegram
+# account (not CLEXER's bot token) used only to send that command — see the userbot section
+# near _request_coin_chart_image. TG_USER_SESSION_STRING is generated once via a local
+# interactive login (userbot_login.py) and then reused headlessly here on every restart.
+TG_USER_API_ID = os.getenv("TG_USER_API_ID", "")
+TG_USER_API_HASH = os.getenv("TG_USER_API_HASH", "")
+TG_USER_SESSION_STRING = os.getenv("TG_USER_SESSION_STRING", "")
 STARS_PER_USD = float(os.getenv("STARS_PER_USD", "62.5"))   # Telegram's real Stars rate: 100 Stars ≈ $1.60, i.e. $1 ≈ 62.5 Stars
 
 SYMBOL               = "BTCUSDT"
@@ -599,6 +607,63 @@ def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None, prot
         print(f"  [PLAIN REPLY] {chat_id}: {e}")
     return None
 
+# ─── Userbot (real Telegram account) — see TG_USER_* comment ───────────────
+# CoinTrendzBot ignores messages from other bot accounts, so getting it to
+# actually reply requires a genuine human-looking sender. This runs a SECOND
+# Telegram login (Telethon, a real user session — not the Bot API) in its own
+# thread/event loop, used ONLY to send "/c <coin>" into the shared group.
+# CLEXER's own bot-token listener (command_listener/getUpdates) still captures
+# CoinTrendzBot's reply exactly as before, since CLEXER's bot is also a
+# member of that group — this only replaces WHO sends the request.
+_userbot_loop = None
+_userbot_client = None
+_userbot_ready = threading.Event()
+
+def _start_userbot():
+    """Call once at startup (see main()). No-op if TG_USER_* isn't configured
+    — chart-image requests just won't get a reply from CoinTrendzBot until
+    it is (see userbot_login.py for how to generate TG_USER_SESSION_STRING)."""
+    global _userbot_loop, _userbot_client
+    if not (TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING):
+        print("[USERBOT] Not configured (TG_USER_API_ID/API_HASH/SESSION_STRING) — "
+              "CoinTrendzBot chart requests will go out via the bot account and likely be ignored.")
+        return
+    def _run():
+        global _userbot_loop, _userbot_client
+        import asyncio
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _userbot_loop = loop
+        _userbot_client = TelegramClient(StringSession(TG_USER_SESSION_STRING),
+            int(TG_USER_API_ID), TG_USER_API_HASH, loop=loop)
+        try:
+            loop.run_until_complete(_userbot_client.start())
+            print("[USERBOT] Connected.")
+            _userbot_ready.set()
+            loop.run_forever()
+        except Exception as e:
+            print(f"[USERBOT] connect error: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
+def _send_via_userbot(chat_id, text: str, timeout: float = 10.0) -> bool:
+    """Sends `text` into `chat_id` as the real user account. Synchronous
+    wrapper around the async Telethon client running in its own loop/thread —
+    callers don't need to know or care that it's asyncio underneath."""
+    if not _userbot_ready.wait(5):
+        return False
+    if not (_userbot_loop and _userbot_client):
+        return False
+    import asyncio
+    fut = asyncio.run_coroutine_threadsafe(_userbot_client.send_message(int(chat_id), text), _userbot_loop)
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:
+        print(f"[USERBOT] send failed: {e}")
+        return False
+
 # ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
 # Bots can't message each other privately or read each other's replies — the
 # ONLY way to get a chart image out of another bot is to share a group with
@@ -613,7 +678,8 @@ _coin_chart_pending_event = None
 _coin_chart_pending_result: dict = {}
 
 def _request_coin_chart_image(coin: str, timeout: float = 15.0):
-    """Sends '/c <coin>' to the shared CoinTrendzBot group and waits (up to
+    """Sends '/c <coin>' to the shared CoinTrendzBot group (via the userbot —
+    see above, a real bot-token send would just get ignored) and waits (up to
     `timeout`s) for its image reply there, returning the photo's file_id —
     directly reusable in CLEXER's own sendPhoto calls, no re-download/re-
     upload needed. Returns None on timeout or send failure; callers must
@@ -626,11 +692,9 @@ def _request_coin_chart_image(coin: str, timeout: float = 15.0):
         _ev = threading.Event()
         _coin_chart_pending_event = _ev
         _coin_chart_pending_result.clear()
-        try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": COINTRENDZ_GROUP_ID, "text": f"/c {coin.lower()}"}, timeout=10)
-        except Exception as e:
-            print(f"  [COINTRENDZ] request send error: {e}")
+        _sent = _send_via_userbot(COINTRENDZ_GROUP_ID, f"/c {coin.lower()}")
+        if not _sent:
+            print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin}")
             _coin_chart_pending_event = None
             return None
         _got = _ev.wait(timeout)
@@ -13650,6 +13714,7 @@ def main():
     ct.set_username_resolver(lambda uid: user_usernames.get(str(uid)))
     ct.load()
     load_settings()
+    _start_userbot()
 
     # Retroactive 1:3 sweep — catches any slot ALREADY sitting at a 1:3-
     # reducible ratio (e.g. from before this feature existed, or restored

@@ -11,3 +11,4 @@ uvicorn
 psycopg2-binary
 pydantic
 websocket-client
+telethon
