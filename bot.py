@@ -1949,62 +1949,33 @@ _KIND_GRID_MINUTES = {"scan1": (2, 23), "scan2": (7, 27), "demo1": (9, 27), "dem
 _SLOT_BLACKLIST: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2": set()}
 _SLOT_RELOCATED: dict = {"scan1": set(), "scan2": set(), "demo1": set(), "demo2": set()}
 
-def _slot_hits_1_3(tp: int, sl: int) -> bool:
-    return sl >= 3 and sl >= tp * 3
-
-def _kind_active_times(kind: str) -> set:
-    """Every (h,m) currently occupied for this kind — special (verified or
-    not), the fixed regular grid, and anything already relocated here from a
-    previous hop. Used to know what's "taken" when looking for a hop target."""
-    sched_kind = _SLOT_SCHEDULE_KIND[kind]
-    ma, mb = _KIND_GRID_MINUTES[kind]
-    special = _SCAN_SPECIAL.get(sched_kind, set())
-    return (special | _regular_grid((ma, mb), special)
-            | _regular_grid(_DENSE_GRID_MINUTES, special, near_thresh=0)
-            | _SLOT_RELOCATED.get(kind, set()))
-
-def _find_hop_target(kind: str, hm: tuple):
-    """Finds the next free, never-blacklisted minute in the SAME hour for this
-    kind — tries +4 repeatedly first; if that whole hour is exhausted, falls
-    back to ONE +2 step from the original failed minute and resumes +4
-    stepping from there (the +2 step is just a one-time unstick move, not a
-    new permanent step size — a slot that lands via it and later fails again
-    still hops by +4 like normal). Never rolls into the next hour. Returns
-    None if nothing is free anywhere in the hour."""
-    h, m = hm
-    occupied = _kind_active_times(kind)
-    blacklist = _SLOT_BLACKLIST.get(kind, set())
-
-    def _free(cand_m):
-        return 0 <= cand_m <= 59 and (h, cand_m) not in occupied and (h, cand_m) not in blacklist
-
-    cand_m = m
-    while cand_m + 4 <= 59:
-        cand_m += 4
-        if _free(cand_m):
-            return (h, cand_m)
-
-    cand_m = m + 2
-    if cand_m > 59:
-        return None
-    if _free(cand_m):
-        return (h, cand_m)
-    while cand_m + 4 <= 59:
-        cand_m += 4
-        if _free(cand_m):
-            return (h, cand_m)
-    return None
+def _slot_underperforming(kind: str, tp: int, sl: int) -> bool:
+    """True once a slot has at least 3 recorded trades AND its win rate is
+    below that kind's minimum (_SLOT_EVAL_THRESHOLD) — 2026-07-30 admin rule:
+    a slot with fewer than 3 results (e.g. 1/1, 0/1, 0/2) is left alone,
+    still proving itself; the moment it has its 3rd result (or any count
+    beyond that), it's judged on win rate like everything else. Replaces the
+    old fixed "sl>=3 and a 1:3 loss ratio" rule, which ignored win% entirely
+    and could leave a slot at, say, 1/4 (20%) untouched forever if it never
+    hit exactly that ratio shape."""
+    total = tp + sl
+    if total < 3:
+        return False
+    win_pct = tp / total * 100
+    return win_pct < _SLOT_EVAL_THRESHOLD.get(kind, 50)
 
 def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     """Call right after a slot's stats update, before the normal promote/
-    demote evaluation. If this slot just crossed the losing-ratio bar (see
-    _slot_hits_1_3), retires it permanently (blacklisted, removed from
-    special/unverified if it was there) and relocates to a fresh minute if
-    one's free. Returns True if it fired, so the caller skips the normal
-    promote/demote check for this (now-retired) time this cycle."""
+    demote evaluation. If this slot is underperforming (see
+    _slot_underperforming), retires it permanently — blacklisted, removed
+    from special/unverified if it was there. No relocation/hop to a new
+    minute (2026-07-30 admin rule: once blocked, stay blocked, don't go
+    looking for a replacement time) — the slot just stops being used.
+    Returns True if it fired, so the caller skips the normal promote/demote
+    check for this (now-retired) time this cycle."""
     key = _slot_key(kind, hm)
     st = _slot_stats.get(key)
-    if not st or not _slot_hits_1_3(st.get("tp", 0), st.get("sl", 0)):
+    if not st or not _slot_underperforming(kind, st.get("tp", 0), st.get("sl", 0)):
         return False
     if hm in _SLOT_BLACKLIST.get(kind, set()):
         return False  # already retired earlier — nothing new to do
@@ -2013,17 +1984,12 @@ def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     _SCAN_SPECIAL.get(sched_kind, set()).discard(hm)
     _SCAN_SPECIAL_NO_COPY.get(sched_kind, set()).discard(hm)
     hm_str = f"{hm[0]}:{hm[1]:02d}"
-    target = _find_hop_target(kind, hm)
-    if target:
-        _SLOT_RELOCATED.setdefault(kind, set()).add(target)
-        t_str = f"{target[0]}:{target[1]:02d}"
-        send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
-                   f"Hit a losing ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
-                   f"Now testing fresh at <b>{t_str}</b> instead (0/0, unverified).", pin=True)
-    else:
-        send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
-                   f"Hit a losing ratio ({st['tp']}tp/{st['sl']}sl) — retired permanently.\n"
-                   f"No free minute left in that hour — not replaced.", pin=True)
+    total = st["tp"] + st["sl"]
+    win_pct = st["tp"] / total * 100 if total else 0
+    send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
+               f"{win_pct:.0f}% win rate ({st['tp']}tp/{st['sl']}sl) — below the "
+               f"{_SLOT_EVAL_THRESHOLD.get(kind, 50)}% minimum. Retired permanently, "
+               f"no replacement time.", pin=True)
     _rebuild_schedules()
     _save_slot_state()
     return True
