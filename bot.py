@@ -612,7 +612,7 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
     getting the real, unredacted `text`, completely unchanged. VIP and the
     legacy channels always get the real `text` either way."""
     ids = {}
-    channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
+    channels = [("1", TELEGRAM_CHANNEL_ID)]  # channel 2 retired 2026-07-31 — now just another VIP channel via CHANNELS/tier routing below, no longer a hardcoded second broadcast target
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
@@ -669,7 +669,7 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
     generic "no real numbers" version still makes sense to show."""
     reply_map = reply_map or {}
     ids = {}
-    channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
+    channels = [("1", TELEGRAM_CHANNEL_ID)]  # channel 2 retired — see send_entry_signal's matching comment
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
@@ -740,12 +740,14 @@ def send_to_tier_channels(text: str, share_free: bool):
             except Exception as e: print(f"  [TIER CHANNEL] free {cid}: {e}")
 
 def _all_channel_ids() -> list:
-    """Every destination CLEXER posts signals to — legacy channels (skipping
-    any that are currently paused via /pausechannel) + all VIP/Free tier channels."""
+    """Every destination CLEXER posts signals to — the legacy Signal channel
+    (skipping it if currently paused via /pausechannel) + all VIP/Free tier
+    channels. Channel 2 retired as a hardcoded destination (2026-07-31) —
+    it's now just another entry in the VIP tier list, so it's already
+    covered by the _channels_by_tier("vip") loop below; listing it again
+    here would double it up in anything that iterates this (e.g. broadcast)."""
     ids = []
     if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"): ids.append(("legacy1", TELEGRAM_CHANNEL_ID))
-    _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
-    if _ch2 and not channel_paused.get("2"): ids.append(("legacy2", _ch2))
     for cid in _channels_by_tier("vip"): ids.append(("vip", cid))
     for cid in _channels_by_tier("free"): ids.append(("free", cid))
     return ids
@@ -4473,7 +4475,7 @@ def _style_keyboard(markup, rotate=True):
 def send_telegram(text, include_ch2=True, with_bot_button=False):
     success = False
     text = _apply_premium_emojis(text)
-    channels = [("1", TELEGRAM_CHANNEL_ID), ("2", os.getenv("TELEGRAM_CHANNEL_ID_2",""))]
+    channels = [("1", TELEGRAM_CHANNEL_ID)]  # channel 2 retired — see send_entry_signal's matching comment
     for key, cid in channels:
         if not cid: continue
         if channel_paused.get(key): continue
@@ -4673,12 +4675,12 @@ def send_to_user(chat_id, text, file_id=None, file_type=None):
     except Exception as e: print(f"  [USER SEND] {chat_id}: {e}"); return False
 
 def _all_broadcast_channel_targets() -> list:
-    """Every channel/group the bot can broadcast to — legacy channels + every
-    VIP/Free tier channel. Returns [(id, label), ...]."""
+    """Every channel/group the bot can broadcast to — the legacy Signal
+    channel + every VIP/Free tier channel. Returns [(id, label), ...].
+    Channel 2 retired as a hardcoded target (2026-07-31) — it's now just
+    another VIP-tier entry in CHANNELS, already covered by the loop below."""
     out = []
-    if TELEGRAM_CHANNEL_ID: out.append((TELEGRAM_CHANNEL_ID, "📡 Signal Channel 1"))
-    _ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
-    if _ch2: out.append((_ch2, "📡 Signal Channel 2"))
+    if TELEGRAM_CHANNEL_ID: out.append((TELEGRAM_CHANNEL_ID, "📡 Signal Channel"))
     for c in CHANNELS:
         if c.get("id"):
             out.append((c["id"], c.get("label") or (("⭐ VIP" if c.get("tier")=="vip" else "🆓 Free") + f" · {c['id']}")))
@@ -8025,44 +8027,24 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         send_channelmgmt_screen(chat_id)
 
     elif cmd == "/channels":
-        ch2 = os.getenv("TELEGRAM_CHANNEL_ID_2","")
         s1 = "PAUSED" if channel_paused["1"] else "ACTIVE"
-        s2 = "PAUSED" if channel_paused["2"] else ("ACTIVE" if ch2 else "NOT SET")
+        _vip_n = len(_channels_by_tier("vip")); _free_n = len(_channels_by_tier("free"))
         send_reply(chat_id,
             f"<b>Channel Status</b>\n\n"
-            f"Channel 1: <b>{s1}</b>\n<code>{TELEGRAM_CHANNEL_ID}</code>\n\n"
-            f"Channel 2: <b>{s2}</b>\n<code>{ch2 or 'not configured'}</code>\n\n"
-            f"/pausechannel 1 or 2\n/resumechannel 1 or 2")
+            f"Signal Channel: <b>{s1}</b>\n<code>{TELEGRAM_CHANNEL_ID}</code>\n\n"
+            f"VIP channels: <b>{_vip_n}</b>  |  Free channels: <b>{_free_n}</b>\n"
+            f"Manage those with /channelmgmt\n\n"
+            f"/pausechannel — pause the Signal channel\n/resumechannel — resume it")
 
     elif cmd == "/pausechannel":
-        def _ch_btns(action):
-            s1 = "⏸ Paused" if channel_paused.get("1") else "✅ Live"
-            s2 = "⏸ Paused" if channel_paused.get("2") else "✅ Live"
-            return {"inline_keyboard": [[
-                {"text": f"📢 Channel 1  {s1}", "callback_data": f"{action}:1"},
-                {"text": f"📢 Channel 2  {s2}", "callback_data": f"{action}:2"},
-            ]]}
-        if len(parts) < 2 or parts[1] not in ("1","2"):
-            send_reply(chat_id, "<b>⏸ Pause Channel</b>\n\nSelect channel:", reply_markup=_ch_btns("pausech")); return
-        key = parts[1]
-        channel_paused[key] = True
+        channel_paused["1"] = True
         save_settings()
-        send_reply(chat_id, f"<b>Channel {key} PAUSED ⏸</b>", reply_markup=_ch_btns("pausech"))
+        send_reply(chat_id, "<b>Signal Channel PAUSED ⏸</b>")
 
     elif cmd == "/resumechannel":
-        def _ch_btns_r(action):
-            s1 = "⏸ Paused" if channel_paused.get("1") else "✅ Live"
-            s2 = "⏸ Paused" if channel_paused.get("2") else "✅ Live"
-            return {"inline_keyboard": [[
-                {"text": f"📢 Channel 1  {s1}", "callback_data": f"{action}:1"},
-                {"text": f"📢 Channel 2  {s2}", "callback_data": f"{action}:2"},
-            ]]}
-        if len(parts) < 2 or parts[1] not in ("1","2"):
-            send_reply(chat_id, "<b>▶️ Resume Channel</b>\n\nSelect channel:", reply_markup=_ch_btns_r("resumech")); return
-        key = parts[1]
-        channel_paused[key] = False
+        channel_paused["1"] = False
         save_settings()
-        send_reply(chat_id, f"<b>Channel {key} RESUMED ✅</b>", reply_markup=_ch_btns_r("resumech"))
+        send_reply(chat_id, "<b>Signal Channel RESUMED ✅</b>")
 
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
@@ -9751,12 +9733,18 @@ _SCAN_SUBCATS = {
         ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
+        ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
+        ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
+        ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
         ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
         ("/alt2",    "⏰", "Scan2 Times",       "Edit the exact hour:minute slots Scan2 fires at."),
         ("/altdemo", "⏰", "TS1 Times",   "Edit the exact hour:minute slots TS1 (demo scan1) fires at."),
         ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
+        ("/st",   "⭐", "Special Times Performance", "Win rate for every verified/unverified special-time slot, per scan kind."),
+        ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
+        ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
     ]),
     "run": ("🔍 Run Now", [
         ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
@@ -9767,7 +9755,8 @@ _SCAN_SUBCATS = {
         ("/demo",   "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
     ]),
     "lookup": ("🪙 Coin Lookup", [
-        ("/coin", "🪙", "Coin Lookup", "Type any coin's name and the bot finds and analyzes it for you."),
+        ("/coin",   "🪙", "Coin Lookup", "Type any coin's name and the bot finds and analyzes it for you."),
+        ("/liqmap", "🗺", "Liquidation Heatmap", "Estimated long/short liquidation pressure zones for any coin, by leverage tier."),
     ]),
 }
 
@@ -11924,10 +11913,6 @@ def command_listener():
                         _toggle_cmd("/test off", cb_chat_id, cb_cid, cb_msg_id, "scan")
                     elif cb_data == "test_run" and cb_is_scanadmin:
                         _toggle_cmd("/test run", cb_chat_id, cb_cid, cb_msg_id, "scan")
-                    elif cb_data.startswith("pausech:"):
-                        _toggle_cmd(f"/pausechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
-                    elif cb_data.startswith("resumech:"):
-                        _toggle_cmd(f"/resumechannel {cb_data.split(':')[1]}", cb_chat_id, cb_cid, cb_msg_id, "broadcast")
                     elif cb_data.startswith("userinfo:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/user {uid}", cb_chat_id, {}, sender_id=cb_cid)
