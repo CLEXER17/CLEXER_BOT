@@ -661,6 +661,71 @@ def get_trade_history(user: dict = Depends(get_current_user)):
     return {"history": history, "total": len(history)}
 
 
+@app.get("/virtual/state")
+def get_virtual_state(user: dict = Depends(get_current_user)):
+    """Paper-trading state for the Mini App's Virtual tab — settings, open
+    positions and closed history, all driven server-side by bot.py's
+    ct.virtual_on_signal/tp1/close hooks (see copytrade.py), keyed under each
+    user's own ct_users record same as real trade_log."""
+    ct_users = _kv_dict("ct_users")
+    urec = ct_users.get(str(user.get("id", "")), {}) or {}
+    v = urec.get("virtual") or {}
+    log = list(reversed((v.get("trade_log") or [])[-50:]))
+    history = [{
+        "symbol": t.get("symbol"), "side": t.get("side"),
+        "pnl": t.get("pnl"), "result": t.get("result"),
+        "closed_at": t.get("closed_at"),
+    } for t in log]
+    open_positions = [{"symbol": sym, **pos} for sym, pos in (v.get("open") or {}).items()]
+    return {
+        "enabled":  bool(v.get("enabled", False)),
+        "balance":  v.get("balance", 1000.0),
+        "leverage": v.get("leverage", 10.0),
+        "open":     open_positions,
+        "history":  history,
+        "tier":     urec.get("tier", "free"),
+    }
+
+
+class VirtualToggle(BaseModel):
+    enabled: bool
+
+@app.post("/virtual/toggle")
+def virtual_toggle(body: VirtualToggle, user: dict = Depends(get_current_user)):
+    """Queues an event for bot.py's existing payment-events poller to apply —
+    same race-free pattern as CryptoBot payments/VIP grants (see payment_events
+    above): api.py never writes ct_users directly since bot.py's copytrade.py
+    is the one long-running process that owns it in memory. Takes effect within
+    the poller's ~30s cycle."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO payment_events (cid, event_type, amount, meta)
+                VALUES (%s, 'virtual_toggle', 0, %s)
+            """, (str(user["id"]), json.dumps({"enabled": body.enabled})))
+        conn.commit()
+    return {"queued": True, "enabled": body.enabled}
+
+
+class VirtualSettings(BaseModel):
+    balance:  Optional[float] = None
+    leverage: Optional[float] = None
+
+@app.post("/virtual/settings")
+def virtual_settings(body: VirtualSettings, user: dict = Depends(get_current_user)):
+    """Syncs the Mini App's Virtual Calculator (balance/leverage) into the
+    backend so new server-driven virtual positions size off it. Same queued
+    pattern as virtual_toggle above."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO payment_events (cid, event_type, amount, meta)
+                VALUES (%s, 'virtual_settings', 0, %s)
+            """, (str(user["id"]), json.dumps({"balance": body.balance, "leverage": body.leverage})))
+        conn.commit()
+    return {"queued": True}
+
+
 def _session_for_hm(hour: int, minute: int) -> str:
     """Mirrors bot.py's get_session() IST hour ranges exactly, so 'best
     session' means the same LONDON/NEW_YORK/ASIA windows the bot itself

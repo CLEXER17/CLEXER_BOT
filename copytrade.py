@@ -127,6 +127,9 @@ SCAN1_CT_ENABLED = True  # toggle with /ctpause scan1|on|off — copy trade for 
 SCAN2_CT_ENABLED = True  # toggle with /ctpause scan2|on|off — copy trade for Scan2 signals
 DEMO1_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan1 signals
 DEMO2_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan2 signals
+ORPHAN_ADOPT_ENABLED = False  # toggle from Copy Trade By Type screen — when OFF (default), monitor_sl_tp
+                               # never adopts/adjusts SL+TP on a user's BingX position that didn't come
+                               # from a real bot signal (i.e. one they opened themselves)
 
 def _now_ist() -> str:
     return (datetime.now(timezone.utc) + IST).strftime("%d %b %I:%M %p IST")
@@ -341,6 +344,8 @@ def _default_user(username: str = "?") -> dict:
         "vip_start":      "",     # "DD.MM.YYYY" — only meaningful when tier == "vip" with an expiry
         "vip_end":        "",     # "DD.MM.YYYY" — VIP auto-downgrades to free after this date
         "vip_grace_notified_at": 0,  # set once the 24h renew-or-removed reminder has been sent
+        "virtual":        {"enabled": False, "balance": 1000.0, "leverage": 10.0,
+                           "open": {}, "trade_log": []},  # paper trading — defaults OFF, opt-in only
     }
 
 
@@ -709,6 +714,106 @@ def _users_with_copy(share_free: bool = True) -> list[tuple[str, dict, str, str]
         except Exception as e:
             print(f"[CT] decrypt error {cid}: {e}")
     return out
+
+# ─── VIRTUAL TRADING (paper — no real orders, per-user simulated P&L) ─────────
+# Independent of real copytrade connection: gated only by the user's own on/off
+# toggle plus tier. VIP mirrors every tier_routed signal; Free mirrors only the
+# ones that also made the free channel. Keyed by symbol, same scoping the real
+# on_scan_tp1/tp2/sl(symbol) hooks already use (one open position per symbol).
+
+def _virtual_default() -> dict:
+    return {"enabled": False, "balance": 1000.0, "leverage": 10.0, "open": {}, "trade_log": []}
+
+def virtual_set_enabled(cid: str, on: bool):
+    user = _get(cid) or _default_user()
+    v = user.setdefault("virtual", _virtual_default())
+    v["enabled"] = bool(on)
+    _set(cid, user)
+
+def virtual_set_settings(cid: str, balance: float = None, leverage: float = None):
+    """Mirrors the Mini App's Virtual Calculator (#vcBalance/#vcLev) into the
+    backend so server-driven signal events can size new positions off it."""
+    user = _get(cid) or _default_user()
+    v = user.setdefault("virtual", _virtual_default())
+    if balance is not None and balance > 0: v["balance"] = float(balance)
+    if leverage is not None and leverage > 0: v["leverage"] = float(leverage)
+    _set(cid, user)
+
+def _virtual_eligible(tier_routed: bool, share_free: bool) -> list:
+    """A tier change only affects which NEW signals get mirrored going forward —
+    positions already open keep tracking to their real close under whatever
+    rule was active when they opened, since virtual_on_tp1/virtual_on_close
+    scan every user's open dict regardless of their CURRENT tier."""
+    if not tier_routed:
+        return []
+    out = []
+    for cid, user in list(_db.items()):
+        v = user.get("virtual")
+        if not v or not v.get("enabled"):
+            continue
+        tier = user.get("tier", "free")
+        if tier == "vip" or (tier == "free" and share_free):
+            out.append((cid, user))
+    return out
+
+def virtual_on_signal(symbol: str, side: str, entry: float, sl: float, tp1: float, tp2: float,
+                       tier_routed: bool = True, share_free: bool = True):
+    entry = float(entry or 0)
+    if entry <= 0:
+        return
+    for cid, user in _virtual_eligible(tier_routed, share_free):
+        v = user["virtual"]
+        bal = float(v.get("balance") or 1000.0)
+        lev = float(v.get("leverage") or 10.0)
+        v.setdefault("open", {})[symbol] = {
+            "side": side, "entry": entry, "sl": float(sl or 0),
+            "tp1": float(tp1 or 0), "tp2": float(tp2 or 0),
+            "qty": (bal * lev) / entry, "tp1_hit": False,
+        }
+        _set(cid, user)
+
+def _virtual_pnl(pos: dict, close_price: float, portion: float) -> float:
+    qty = pos["qty"] * portion
+    if pos["side"] == "BUY":
+        return round((close_price - pos["entry"]) * qty, 4)
+    return round((pos["entry"] - close_price) * qty, 4)
+
+def _virtual_log(v: dict, symbol: str, side: str, pnl: float, result: str):
+    v["balance"] = round(float(v.get("balance") or 0) + pnl, 4)
+    log = v.setdefault("trade_log", [])
+    log.append({"symbol": symbol, "side": side, "pnl": pnl, "result": result,
+                "closed_at": (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d %H:%M")})
+    if len(log) > 50: del log[:-50]
+
+def virtual_on_tp1(symbol: str, tp1_price: float):
+    tp1_price = float(tp1_price or 0)
+    if tp1_price <= 0: return
+    for cid, user in list(_db.items()):
+        v = user.get("virtual")
+        if not v: continue
+        pos = v.get("open", {}).get(symbol)
+        if not pos or pos.get("tp1_hit"): continue
+        portion = TP1_CLOSE_PCT / 100.0
+        pnl = _virtual_pnl(pos, tp1_price, portion)
+        _virtual_log(v, symbol, pos["side"], pnl, "TP1")
+        pos["tp1_hit"] = True
+        pos["qty"] *= (1 - portion)
+        _set(cid, user)
+
+def virtual_on_close(symbol: str, close_price: float, result: str):
+    """Final close (TP2/SL/BE/TIMEOUT) — realizes P&L on whatever qty is still
+    open (the full position if TP1 never hit, the runner half if it did)."""
+    close_price = float(close_price or 0)
+    if close_price <= 0: return
+    for cid, user in list(_db.items()):
+        v = user.get("virtual")
+        if not v: continue
+        pos = v.get("open", {}).pop(symbol, None)
+        if not pos: continue
+        pnl = _virtual_pnl(pos, close_price, 1.0)
+        _virtual_log(v, symbol, pos["side"], pnl, result)
+        _set(cid, user)
+
 
 def on_signal(signal: dict, price: float, share_free: bool = True) -> list[str]:
     """
@@ -1178,6 +1283,10 @@ def set_demo1_ct(enabled: bool):
 def set_demo2_ct(enabled: bool):
     global DEMO2_CT_ENABLED
     DEMO2_CT_ENABLED = enabled
+
+def set_orphan_adopt(enabled: bool):
+    global ORPHAN_ADOPT_ENABLED
+    ORPHAN_ADOPT_ENABLED = enabled
 
 def is_scan_tp1_hit(symbol: str) -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
@@ -1994,8 +2103,15 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                     continue
 
                 # ── Orphan: BingX has position, bot has no state → adopt it ──
-                # Also check adopted_symbols (multi-position tracking)
+                # Also check adopted_symbols (multi-position tracking).
+                # Admin toggle (/ctpause → Orphan Adjust, default OFF) — when off,
+                # a position that didn't come from a real bot signal (BTC or a
+                # scan slot) is left completely alone, adopted or not. The user
+                # may have opened it manually on their own BingX account and
+                # doesn't want the bot moving its SL/TP.
                 adopted = user.get("adopted_symbols", {})
+                if not is_known and not ORPHAN_ADOPT_ENABLED:
+                    continue
                 if not is_known and sym not in adopted:
                     # Track via adopted_symbols only — do NOT write scan_symbol (legacy key)
                     # to avoid double-slot detection with s1_/s1b_/etc.

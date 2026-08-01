@@ -1,4 +1,4 @@
-"""
+﻿"""
 CLEXER Signal Bot V17.8.5
 """
 
@@ -435,7 +435,7 @@ def _load_free_tracker():
         print(f"[FREE TRACKER] load error: {e}")
 
 def _channels_by_tier(tier: str) -> list:
-    return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id")]
+    return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id") and not c.get("paused")]
 
 def _in_free_window() -> bool:
     now = datetime.now(timezone.utc) + IST
@@ -2007,6 +2007,16 @@ trade_stats = {
     "scan2_sl": 0, "scan2_tp1": 0, "scan2_tp2": 0, "scan2_signals": 0,
 }
 
+# Same shape as trade_stats' scan1/scan2 fields, but only ever incremented for
+# tier_routed (actually shown in VIP) signals — /stats' win rate reads THIS,
+# not trade_stats, so a slot's displayed win rate reflects what VIP actually
+# saw, not diluted by regular-grid/unverified runs nobody in VIP ever viewed.
+# BTC needs no equivalent — every BTC signal is already tier_routed=True.
+vip_trade_stats = {
+    "scan1_sl": 0, "scan1_tp1": 0, "scan1_tp2": 0, "scan1_signals": 0,
+    "scan2_sl": 0, "scan2_tp1": 0, "scan2_tp2": 0, "scan2_signals": 0,
+}
+
 STATE_FILE       = os.path.join(DATA_DIR, "clexer_state.json")
 TRADE_LOG_CSV    = os.path.join(DATA_DIR, "trade_history.csv")
 API_COST_LOG     = os.path.join(DATA_DIR, "api_cost_log.csv")
@@ -2833,6 +2843,7 @@ def save_state():
         "demo1_trades": demo_scan1_trades,
         "demo2_trades": demo_scan2_trades,
         "stats":        trade_stats,
+        "vip_stats":    vip_trade_stats,
         "history":      signal_history,
         "outcomes":     trade_outcomes,
         "scan_history": scan_history,
@@ -2889,6 +2900,7 @@ def load_active_trade():
             d = json.load(open(path))
         if d is not None:
             trade_stats.update(d.get("stats", {}))
+            vip_trade_stats.update(d.get("vip_stats", {}))
             signal_history[:] = d.get("history", [])
             trade_outcomes[:]  = d.get("outcomes", [])
             scan_history[:]    = d.get("scan_history", [])
@@ -4497,6 +4509,7 @@ def load_settings():
             ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", True)
             ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", False)
             ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
+            ct.ORPHAN_ADOPT_ENABLED = d.get("orphan_adopt_enabled", False)
             _group_seen_users.update(d.get("group_seen_users", {}))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
@@ -4549,6 +4562,7 @@ def save_settings():
             "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
             "demo1_ct_enabled": ct.DEMO1_CT_ENABLED,
             "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
+            "orphan_adopt_enabled": ct.ORPHAN_ADOPT_ENABLED,
             "group_seen_users": _group_seen_users,
     }
     try:
@@ -5182,6 +5196,8 @@ def run_tick_check():
                 active_trade["entry_hit"] = True
                 save_active_trade()
                 ct.on_entry_hit(entry, sl, tp1, tp2)
+                ct.virtual_on_signal(SYMBOL, sig, entry, sl, tp1, tp2,
+                    tier_routed=True, share_free=active_trade.get("share_free", True))
                 send_lifecycle_reply(
                     f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
                     f"{'🟩' if sig=='BUY' else '🟥'} <b>{sig} — {SYMBOL}</b>\n\n"
@@ -5210,7 +5226,7 @@ def run_tick_check():
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
-            ct.on_tp2(entry, tp2); reset_trade(); return True
+            ct.on_tp2(entry, tp2); ct.virtual_on_close(SYMBOL, tp2, "TP2"); reset_trade(); return True
 
         # TP1 — use candle high/low
         if not t["tp1_hit"]:
@@ -5221,6 +5237,7 @@ def run_tick_check():
                 _delete_trail_sl_messages(active_trade)
                 save_active_trade()
                 ct.on_tp1(entry, tp1)
+                ct.virtual_on_tp1(SYMBOL, tp1)
                 _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
                     f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
@@ -5270,7 +5287,9 @@ def run_tick_check():
                 _send_sl_reassurance(SYMBOL, "BTC", sig, entry,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
-            ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
+            ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False))
+            ct.virtual_on_close(SYMBOL, sl, "BE" if active_trade.get("tp1_hit", False) else "SL")
+            reset_trade(); return True
     except Exception as e: print(f"  [TICK ERROR] {e}")
     return False
 
@@ -5382,12 +5401,16 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     if result == "tp2":
         trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
         trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
+        if t.get("tier_routed"):
+            vip_trade_stats[f"scan{ver}_tp2"] += 1
+            vip_trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
         _delete_trail_sl_messages(t)
         _log_scan_history(t, "TP2", price)
         _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
         _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
         ct.on_scan_tp2(sym)
+        ct.virtual_on_close(sym, price, "TP2")
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
             "entry_price": entry, "sl_price": t.get("sl", 0), "tp2_price": tp2})
@@ -5406,9 +5429,11 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         t["tp1_hit"] = True; t["sl"] = entry
         _delete_trail_sl_messages(t)
         trade_stats["scan_tp1"] += 1; trade_stats[f"scan{ver}_tp1"] += 1
+        if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_tp1"] += 1
         send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
         ct.on_scan_tp1(sym)
+        ct.virtual_on_tp1(sym, tp1)
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
             "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
@@ -5423,6 +5448,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     # sl / be
     close_result = "BE" if t["tp1_hit"] else "SL"
     trade_stats["scan_sl"] += 1; trade_stats[f"scan{ver}_sl"] += 1
+    if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_sl"] += 1
     _delete_trail_sl_messages(t)
     _log_scan_history(t, close_result, price)
     # Follows the entry's own tier_routed flag now (2026-07-28) — a verified
@@ -5433,6 +5459,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
     ct.on_scan_sl(sym)
+    ct.virtual_on_close(sym, price, close_result)
     log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": t.get("sl", 0)})
@@ -5819,6 +5846,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
             ct.on_scan_sl(sym)
+            ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
                 "entry_price": entry, "sl_price": t.get("sl",0)})
@@ -5875,6 +5903,9 @@ def _tick_one(ver: int, t: dict) -> bool:
         if tp2_hit:
             trade_stats["scan_tp2"] += 1; trade_stats["scan_tp1"] += (0 if t["tp1_hit"] else 1)
             trade_stats[f"scan{ver}_tp2"] += 1; trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
+            if t.get("tier_routed"):
+                vip_trade_stats[f"scan{ver}_tp2"] += 1
+                vip_trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
             _delete_trail_sl_messages(t)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
@@ -5882,6 +5913,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
             ct.on_scan_tp2(sym)
+            ct.virtual_on_close(sym, price, "TP2")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
@@ -5903,10 +5935,12 @@ def _tick_one(ver: int, t: dict) -> bool:
                 _delete_trail_sl_messages(t)
                 trade_stats["scan_tp1"] += 1
                 trade_stats[f"scan{ver}_tp1"] += 1
+                if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
                 send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
                 ct.on_scan_tp1(sym)
+                ct.virtual_on_tp1(sym, tp1)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
@@ -5923,6 +5957,7 @@ def _tick_one(ver: int, t: dict) -> bool:
         if sl_hit:
             trade_stats["scan_sl"] += 1
             trade_stats[f"scan{ver}_sl"] += 1
+            if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_sl"] += 1
             result = "BE" if t["tp1_hit"] else "SL"
             _delete_trail_sl_messages(t)
             _log_scan_history(t, result, price)
@@ -5930,6 +5965,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
                 tier_routed=(result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
             ct.on_scan_sl(sym)
+            ct.virtual_on_close(sym, price, result)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
@@ -6016,6 +6052,7 @@ def run_price_check():
             _delete_trail_sl_messages(active_trade)
             log_trade_outcome("TP2_HIT", "hit during 1H check")
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
+            ct.virtual_on_close(SYMBOL, active_trade.get("tp2",0), "TP2")
             _tp2_msg = fmt_update("TP2_HIT")
             _tp2_ids = send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
@@ -6053,13 +6090,16 @@ def run_price_check():
                 _send_sl_reassurance(SYMBOL, "BTC", active_trade.get("signal","?"), active_trade.get("entry",0),
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
-            ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False)); reset_trade(); return True
+            ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False))
+            ct.virtual_on_close(SYMBOL, active_trade.get("sl",0), "BE" if active_trade.get("tp1_hit", False) else "SL")
+            reset_trade(); return True
         elif status == "TP1_HIT" and not active_trade["tp1_hit"]:
             active_trade["tp1_hit"] = True; active_trade["sl"] = active_trade["entry"]
             trade_stats["total_tp1"] += 1; trade_stats["consecutive_sl"] = 0
             _delete_trail_sl_messages(active_trade)
             save_active_trade()
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
+            ct.virtual_on_tp1(SYMBOL, active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
             send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
@@ -6847,6 +6887,7 @@ def _poll_payment_events():
             for ev in r.json().get("events", []):
                 try:
                     cid = ev["cid"]; etype = ev["event_type"]; amount = float(ev["amount"])
+                    meta = ev.get("meta") or {}
                     if etype == "topup":
                         u = ct._db.get(str(cid)) or ct._default_user(cid)
                         u["wallet_balance"] = round(u.get("wallet_balance", 0) + amount, 2)
@@ -6855,6 +6896,10 @@ def _poll_payment_events():
                     elif etype == "vip":
                         _grant_vip(cid, days=30)
                         send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.")
+                    elif etype == "virtual_toggle":
+                        ct.virtual_set_enabled(cid, bool(meta.get("enabled")))
+                    elif etype == "virtual_settings":
+                        ct.virtual_set_settings(cid, balance=meta.get("balance"), leverage=meta.get("leverage"))
                     requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
                 except Exception as e:
                     print(f"  [PAYMENT EVENTS] apply error for event {ev.get('id')}: {e}")
@@ -6947,8 +6992,8 @@ ADMIN_HELP = """<b>CLEXER V17.8.5 - Admin Commands</b>
 
 <b>CHANNELS</b>
 /channels - show status
-/pausechannel 1 or 2
-/resumechannel 1 or 2
+/pausechannel - pick a channel to pause
+/resumechannel - pick a channel to resume
 
 <b>CHARTS (off by default)</b>
 /images on|off
@@ -7102,6 +7147,100 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
         data={"chat_id": chat_id, "caption": f"{period_label} — {len(filtered)} rows"},
         files={"document": (fname, content, "text/csv")}, timeout=30)
+
+def _do_coin_analysis(cid: str, sym: str, entry_type: str):
+    """The actual /coin lookup analysis, run after the user picks Market or
+    Pullback entry style. MARKET asks Claude for a single tradeable entry
+    price near current market; PULLBACK asks for a zone to wait for, same as
+    the original (and only) behavior before this choice existed."""
+    try:
+        pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                          params={"symbol": sym}, timeout=10).json()
+        if pr.get("code") != 0:
+            send_reply(cid, f"❌ Could not fetch ticker for {sym}: {pr.get('msg','?')}"); return
+        d      = pr.get("data", {})
+        price  = float(d.get("lastPrice", 0))
+        change = float(d.get("priceChangePercent", 0))
+        high24 = float(d.get("highPrice", 0))
+        low24  = float(d.get("lowPrice",  0))
+        vol    = float(d.get("volume", 0))
+
+        _is_market = entry_type == "MARKET"
+        _entry_json_field = ('"entry":"e.g. 1794.20 (at or very near current price)"' if _is_market
+                              else '"entry_zone":"e.g. 1791-1798"')
+        _entry_instr = ("Give a MARKET entry — a single price at or within ~0.2% of the current price, "
+                        "tradeable right now, not a zone to wait for."
+                        if _is_market else
+                        "Give a PULLBACK entry — a zone (low-high) the price should retrace to before entering, "
+                        "not the current price.")
+        resp = _claude_client().messages.create(
+            model=SCAN_MODEL, max_tokens=700,
+            system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
+            messages=[{"role": "user", "content":
+                f"Analyze {sym} for a short-term futures trade:\n"
+                f"Current Price: ${price:,.6g}\n"
+                f"24h Change: {change:+.2f}%\n"
+                f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
+                f"24h Volume: ${vol:,.0f}\n"
+                f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
+                f"{_entry_instr}\n\n"
+                f'Return this exact JSON shape:\n'
+                f'{{"bias":"LONG|SHORT|WAIT",{_entry_json_field},'
+                f'"sl":"e.g. 1846","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
+                f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
+                f'"practical_note":"1-2 sentences, the actual trade plan in plain words",'
+                f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
+                f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
+        _log_api_usage(f"coin_{sym}", SCAN_MODEL,
+                       resp.usage.input_tokens, resp.usage.output_tokens,
+                       gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
+        import json as _cjson, re as _cre
+        _raw = _claude_text(resp)
+        _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
+        a = _cjson.loads(_m.group()) if _m else {}
+        bias  = str(a.get("bias","WAIT")).upper()
+        conf  = str(a.get("confidence","LOW")).upper()
+        arrow = "🟢" if change >= 0 else "🔴"
+        bias_emoji = "🟢" if bias == "LONG" else ("🔴" if bias == "SHORT" else "🟡")
+        reasoning = a.get("reasoning") or []
+        btc_watch = a.get("btc_watch") or []
+        _reason_lines = "\n".join(f"• {_smallcaps_title(str(r))}" for r in reasoning) or f"• {_smallcaps_title('No clear structure yet')}"
+        _btc_lines = "\n".join(f"• {_smallcaps_title(str(b))}" for b in btc_watch)
+        coin_disp = sym.replace("-", "/")
+        _BORDER = "࿇═════════════════════════════════࿇"
+        _DIV    = "━━━━━━━━━━━━━━━━━━━━"
+        _entry_label = "Market Entry" if _is_market else "Entry Zone"
+        _entry_val   = a.get("entry", "—") if _is_market else a.get("entry_zone", "—")
+        text_out = (
+            f"{_BORDER}\n"
+            f"✦ {_smallcaps_title('Coin Analysis')} ✦\n"
+            f"{_BORDER}\n\n"
+            f"{arrow} {coin_disp}  {'📈' if _is_market else '⏳'} {entry_type.title()}\n"
+            f"📅 {ist_str()}\n\n"
+            f"{_DIV}\n\n"
+            f"💰 {_smallcaps_title('Price')}: ${price:,.6g} ({change:+.2f}%)\n"
+            f"📈 24ʜ {_smallcaps_title('High')}: ${high24:,.6g}\n"
+            f"📉 24ʜ {_smallcaps_title('Low')}: ${low24:,.6g}\n"
+            f"📦 {_smallcaps_title('Volume')}: ${vol/1e6:.1f}M\n\n"
+            f"{_DIV}\n\n"
+            f"🧠 {_smallcaps_title('AI Analysis')}\n\n"
+            f"📍 {_smallcaps_title('Bias')}: {bias_emoji} {bias}\n\n"
+            f"🎯 {_smallcaps_title(_entry_label)}:\n{_entry_val}\n\n"
+            f"🛑 {_smallcaps_title('Stop Loss')}:\n{a.get('sl','—')}\n\n"
+            f"🎯 {_smallcaps_title('Targets')}:\n"
+            f"• TP1: {a.get('tp1','—')}\n"
+            f"• TP2: {a.get('tp2','—')}\n\n"
+            f"📊 {_smallcaps_title('Confidence')}:\n{conf}\n\n"
+            f"{_DIV}\n\n"
+            f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
+            f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(str(a.get('practical_note','Size small — low-conviction setup.')))}</blockquote>\n\n"
+            + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
+            + f"{_DIV}"
+        )
+        send_reply(cid, text_out)
+    except Exception as e:
+        send_reply(cid, f"❌ Error: {e}")
+        import traceback; traceback.print_exc()
 
 def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_special=False, _trigger_hm=None):
     # auto=True marks a command as scheduler-triggered (not a human typing it)
@@ -7902,12 +8041,14 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if not STATS_VISIBLE_TO_USERS and not is_admin and not is_co_admin(_check_id):
             send_reply(chat_id, "⚠️ Win rate & trade statistics are currently disabled by admin."); return
         ts = trade_stats
+        vs = vip_trade_stats  # Scan1/Scan2 win rate — VIP-shown (tier_routed) trades only,
+                               # not diluted by regular-grid/unverified runs nobody in VIP ever saw
         btc_total = ts['total_tp1'] + ts['total_tp2'] + ts['total_sl'] or 1
         btc_wr = (ts['total_tp1'] + ts['total_tp2']) / btc_total * 100
-        s1_total = ts['scan1_tp1'] + ts['scan1_tp2'] + ts['scan1_sl'] or 1
-        s1_wr = (ts['scan1_tp1'] + ts['scan1_tp2']) / s1_total * 100
-        s2_total = ts['scan2_tp1'] + ts['scan2_tp2'] + ts['scan2_sl'] or 1
-        s2_wr = (ts['scan2_tp1'] + ts['scan2_tp2']) / s2_total * 100
+        s1_total = vs['scan1_tp1'] + vs['scan1_tp2'] + vs['scan1_sl'] or 1
+        s1_wr = (vs['scan1_tp1'] + vs['scan1_tp2']) / s1_total * 100
+        s2_total = vs['scan2_tp1'] + vs['scan2_tp2'] + vs['scan2_sl'] or 1
+        s2_wr = (vs['scan2_tp1'] + vs['scan2_tp2']) / s2_total * 100
         _stats_btns = {"inline_keyboard": [
             [{"text": "🔄 Refresh", "callback_data": "stats_win"}],
             [{"text": "🗑 Reset BTC",   "callback_data": "reset_btc_stats"},
@@ -7922,13 +8063,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"Win rate: <b>{btc_wr:.0f}%</b>\n"
             f"Stop hunts: {ts['stop_hunts']} | Missed: {ts['missed_entries']}\n"
             f"Consec SL: {ts['consecutive_sl']} | Cooldown: {ts['cooldown_scans']}\n\n"
-            f"<b>Scan1 Trades</b>\n"
-            f"Signals: {ts['scan1_signals']}\n"
-            f"TP1: {ts['scan1_tp1']} | TP2: {ts['scan1_tp2']} | SL: {ts['scan1_sl']}\n"
+            f"<b>Scan1 Trades</b> <i>(VIP-shown only)</i>\n"
+            f"Signals: {vs['scan1_signals']}\n"
+            f"TP1: {vs['scan1_tp1']} | TP2: {vs['scan1_tp2']} | SL: {vs['scan1_sl']}\n"
             f"Win rate: <b>{s1_wr:.0f}%</b>\n\n"
-            f"<b>Scan2 Trades</b>\n"
-            f"Signals: {ts['scan2_signals']}\n"
-            f"TP1: {ts['scan2_tp1']} | TP2: {ts['scan2_tp2']} | SL: {ts['scan2_sl']}\n"
+            f"<b>Scan2 Trades</b> <i>(VIP-shown only)</i>\n"
+            f"Signals: {vs['scan2_signals']}\n"
+            f"TP1: {vs['scan2_tp1']} | TP2: {vs['scan2_tp2']} | SL: {vs['scan2_sl']}\n"
             f"Win rate: <b>{s2_wr:.0f}%</b>", reply_markup=_stats_btns)
 
     elif cmd == "/session":
@@ -8413,17 +8554,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"Signal Channel: <b>{s1}</b>\n<code>{TELEGRAM_CHANNEL_ID}</code>\n\n"
             f"VIP channels: <b>{_vip_n}</b>  |  Free channels: <b>{_free_n}</b>\n"
             f"Manage those with /channelmgmt\n\n"
-            f"/pausechannel — pause the Signal channel\n/resumechannel — resume it")
+            f"/pausechannel — pick a channel to pause\n/resumechannel — pick a channel to resume")
 
-    elif cmd == "/pausechannel":
-        channel_paused["1"] = True
-        save_settings()
-        send_reply(chat_id, "<b>Signal Channel PAUSED ⏸</b>")
-
-    elif cmd == "/resumechannel":
-        channel_paused["1"] = False
-        save_settings()
-        send_reply(chat_id, "<b>Signal Channel RESUMED ✅</b>")
+    elif cmd in ("/pausechannel", "/resumechannel"):
+        send_pausechannel_screen(chat_id)
 
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
@@ -9606,6 +9740,8 @@ Reasoning: [one line]"""
                         # 2026-07-27) — unverified special-time slots and the regular
                         # hourly grid both stay Channel-1-only now, same as before.
                         _tier_routed = _is_special and _ai_category(_kind) == "verified"
+                        if _tier_routed:
+                            vip_trade_stats[f"scan{scan_ver}_signals"] += 1
                         # Only verified/special-time (tier_routed) signals ever compete
                         # for the Free-channel share — a regular-grid (Signal-only, never
                         # posted to VIP/Free) trade must never consume quota or be marked
@@ -9643,6 +9779,12 @@ Reasoning: [one line]"""
                         # must never auto-execute real orders on them until admin moves
                         # them out of _SCAN_SPECIAL_NO_COPY.
                         _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+                        if _tier_routed:
+                            # Virtual (paper) mirroring follows what's actually SHOWN in
+                            # VIP/Free, not the real-copytrade safety gate above — unlike
+                            # real orders, an unverified slot is still safe to paper-trade.
+                            ct.virtual_on_signal(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
+                                tier_routed=_tier_routed, share_free=_effective_share_free)
                         if _tier_routed and not _is_unverified:
                             ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
                             # Real order confirmation — kept even during quiet
@@ -9889,7 +10031,7 @@ Reasoning: [one line]"""
                 ""); return
         query = parts[1].upper().strip()
         send_reply(chat_id, f"🔍 Searching for <b>{query}</b> on BingX...")
-        def _do_coin(cid=chat_id, q=query):
+        def _do_coin_resolve(cid=chat_id, q=query):
             try:
                 # Fetch all BingX perpetual contracts
                 r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts",
@@ -9926,86 +10068,16 @@ Reasoning: [one line]"""
                             lines.append(f"• <code>/coin {sym.replace('-','')}</code>")
                     send_reply(cid, "\n".join(lines) + ""); return
 
-                # Exact match — fetch ticker then analyze
                 sym = matches[0]   # e.g. "ETH-USDT"
-                pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
-                                  params={"symbol": sym}, timeout=10).json()
-                if pr.get("code") != 0:
-                    send_reply(cid, f"❌ Could not fetch ticker for {sym}: {pr.get('msg','?')}"); return
-                d    = pr.get("data", {})
-                price  = float(d.get("lastPrice", 0))
-                change = float(d.get("priceChangePercent", 0))
-                high24 = float(d.get("highPrice", 0))
-                low24  = float(d.get("lowPrice",  0))
-                vol    = float(d.get("volume", 0))
-
-                # Ask Claude for structured analysis (JSON, not freeform prose)
-                resp = _claude_client().messages.create(
-                    model=SCAN_MODEL, max_tokens=700,
-                    system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
-                    messages=[{"role": "user", "content":
-                        f"Analyze {sym} for a short-term futures trade:\n"
-                        f"Current Price: ${price:,.6g}\n"
-                        f"24h Change: {change:+.2f}%\n"
-                        f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
-                        f"24h Volume: ${vol:,.0f}\n"
-                        f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
-                        f'Return this exact JSON shape:\n'
-                        f'{{"bias":"LONG|SHORT|WAIT","entry_zone":"e.g. 1791-1798",'
-                        f'"sl":"e.g. 1846","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
-                        f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
-                        f'"practical_note":"1-2 sentences, the actual trade plan in plain words",'
-                        f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
-                        f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
-                _log_api_usage(f"coin_{sym}", SCAN_MODEL,
-                               resp.usage.input_tokens, resp.usage.output_tokens,
-                               gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
-                import json as _cjson, re as _cre
-                _raw = _claude_text(resp)
-                _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
-                a = _cjson.loads(_m.group()) if _m else {}
-                bias  = str(a.get("bias","WAIT")).upper()
-                conf  = str(a.get("confidence","LOW")).upper()
-                arrow = "🟢" if change >= 0 else "🔴"
-                bias_emoji = "🟢" if bias == "LONG" else ("🔴" if bias == "SHORT" else "🟡")
-                reasoning = a.get("reasoning") or []
-                btc_watch = a.get("btc_watch") or []
-                _reason_lines = "\n".join(f"• {_smallcaps_title(str(r))}" for r in reasoning) or f"• {_smallcaps_title('No clear structure yet')}"
-                _btc_lines = "\n".join(f"• {_smallcaps_title(str(b))}" for b in btc_watch)
-                coin_disp = sym.replace("-", "/")
-                _BORDER = "࿇═════════════════════════════════࿇"
-                _DIV    = "━━━━━━━━━━━━━━━━━━━━"
-                text_out = (
-                    f"{_BORDER}\n"
-                    f"✦ {_smallcaps_title('Coin Analysis')} ✦\n"
-                    f"{_BORDER}\n\n"
-                    f"{arrow} {coin_disp}\n"
-                    f"📅 {ist_str()}\n\n"
-                    f"{_DIV}\n\n"
-                    f"💰 {_smallcaps_title('Price')}: ${price:,.6g} ({change:+.2f}%)\n"
-                    f"📈 24ʜ {_smallcaps_title('High')}: ${high24:,.6g}\n"
-                    f"📉 24ʜ {_smallcaps_title('Low')}: ${low24:,.6g}\n"
-                    f"📦 {_smallcaps_title('Volume')}: ${vol/1e6:.1f}M\n\n"
-                    f"{_DIV}\n\n"
-                    f"🧠 {_smallcaps_title('AI Analysis')}\n\n"
-                    f"📍 {_smallcaps_title('Bias')}: {bias_emoji} {bias}\n\n"
-                    f"🎯 {_smallcaps_title('Entry Zone')}:\n{a.get('entry_zone','—')}\n\n"
-                    f"🛑 {_smallcaps_title('Stop Loss')}:\n{a.get('sl','—')}\n\n"
-                    f"🎯 {_smallcaps_title('Targets')}:\n"
-                    f"• TP1: {a.get('tp1','—')}\n"
-                    f"• TP2: {a.get('tp2','—')}\n\n"
-                    f"📊 {_smallcaps_title('Confidence')}:\n{conf}\n\n"
-                    f"{_DIV}\n\n"
-                    f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
-                    f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(str(a.get('practical_note','Size small — low-conviction setup.')))}</blockquote>\n\n"
-                    + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
-                    + f"{_DIV}"
-                )
-                send_reply(cid, text_out)
+                send_reply(cid, f"🪙 <b>{sym.replace('-','/')}</b> found — pick your entry style:",
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "📈 Market Entry",   "callback_data": f"coinlookup:MARKET:{sym}"},
+                        {"text": "⏳ Pullback Entry", "callback_data": f"coinlookup:PULLBACK:{sym}"},
+                    ]]})
             except Exception as e:
                 send_reply(cid, f"❌ Error: {e}")
                 import traceback; traceback.print_exc()
-        threading.Thread(target=_do_coin, daemon=True).start()
+        threading.Thread(target=_do_coin_resolve, daemon=True).start()
 
     else:
         send_reply(chat_id, f"Unknown: {cmd}\n/help")
@@ -10716,12 +10788,12 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
         result_text = "✅ <b>BTC stats reset.</b>"
     elif action_id == "reset_scan1_stats":
         for k in ("scan1_sl","scan1_tp1","scan1_tp2","scan1_signals"):
-            ts[k] = 0
+            ts[k] = 0; vip_trade_stats[k] = 0
         save_state()
         result_text = "✅ <b>Scan1 stats reset.</b>"
     elif action_id == "reset_scan2_stats":
         for k in ("scan2_sl","scan2_tp1","scan2_tp2","scan2_signals"):
-            ts[k] = 0
+            ts[k] = 0; vip_trade_stats[k] = 0
         save_state()
         result_text = "✅ <b>Scan2 stats reset.</b>"
     elif action_id == "reset_signal_history":
@@ -11024,6 +11096,26 @@ def send_channelmgmt_screen(chat_id, message_id=None):
         "free-tier bot users copy exactly the same signals the free channels got.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
+def send_pausechannel_screen(chat_id, message_id=None):
+    _s1_flag = "⏸ PAUSED" if channel_paused["1"] else "✅ ACTIVE"
+    rows = [
+        [{"text": f"📡 Signal Channel — {_s1_flag}", "callback_data": "noop"}],
+        [{"text": "⏸ Pause",  "callback_data": "chpause:sig"},
+         {"text": "▶️ Resume", "callback_data": "chresume:sig"}],
+    ]
+    for i, c in enumerate(CHANNELS):
+        label = c.get("label") or (("⭐ VIP" if c.get("tier") == "vip" else "🆓 Free") + f" · {c.get('id','?')}")
+        _flag = "⏸ PAUSED" if c.get("paused") else "✅ ACTIVE"
+        rows.append([{"text": f"{label} — {_flag}", "callback_data": "noop"}])
+        rows.append([{"text": "⏸ Pause",  "callback_data": f"chpause:{i}"},
+                      {"text": "▶️ Resume", "callback_data": f"chresume:{i}"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "broadcast_sub:channels"}])
+    _help_edit_or_send(chat_id,
+        "<b>⏸ Pause / Resume a Channel</b>\n\n"
+        "<blockquote>Pausing stops new signals from being sent there — everything else (analysis, "
+        "other channels, copy trade) keeps running normally. Resume any time.</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_trailsl_screen(chat_id, message_id=None):
     _btc_flag   = "✅ ON" if TRAIL_SL_BTC   else "❌ OFF"
     _scan1_flag = "✅ ON" if TRAIL_SL_SCAN1 else "❌ OFF"
@@ -11145,6 +11237,7 @@ def send_ctpause_screen(chat_id, message_id=None):
     _scan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
     _demo1_flag = "✅ ON" if ct.DEMO1_CT_ENABLED else "❌ OFF"
     _demo2_flag = "✅ ON" if ct.DEMO2_CT_ENABLED else "❌ OFF"
+    _orphan_flag = "✅ ON" if ct.ORPHAN_ADOPT_ENABLED else "❌ OFF"
     rows = [
         [{"text": f"₿ BTC Copy Trade  {_btc_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctbtc_on"},
@@ -11161,13 +11254,19 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🧪 Demo2 Copy Trade  {_demo2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctdemo2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctdemo2_off"}],
+        [{"text": f"🛡️ Orphan Position Adjust  {_orphan_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctorphan_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctorphan_off"}],
         [{"text": "◀️  Back", "callback_data": "scan_sub:toggles"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>📋 Copy Trade — By Type</b>\n\n"
         "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, Scan2, Demo1 and Demo2 signals.\n"
         "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.\n"
-        "Demo1/Demo2 are OFF by default — turning them ON places REAL orders on users' accounts for demo signals too.</blockquote>",
+        "Demo1/Demo2 are OFF by default — turning them ON places REAL orders on users' accounts for demo signals too.\n\n"
+        "🛡️ <b>Orphan Position Adjust</b>: OFF by default. When a connected user has a position on BingX "
+        "that didn't come from a real bot signal (they opened it themselves), ON means the bot adopts it and "
+        "manages its SL/TP like any other copy trade. OFF leaves it completely alone.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_go_screen(chat_id, message_id=None):
@@ -12103,6 +12202,32 @@ def command_listener():
                         ct.set_demo2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctdemo2_off" and cb_is_scanadmin:
                         ct.set_demo2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctorphan_on" and cb_is_scanadmin:
+                        ct.set_orphan_adopt(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctorphan_off" and cb_is_scanadmin:
+                        ct.set_orphan_adopt(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+
+                    # ── Coin lookup — Market vs Pullback entry choice ─────────
+                    elif cb_data.startswith("coinlookup:") and cb_is_scanadmin:
+                        _, _etype, _sym = cb_data.split(":", 2)
+                        send_reply(cb_chat_id, f"🧠 Analyzing <b>{_sym.replace('-','/')}</b> ({_etype.title()} entry)...")
+                        threading.Thread(target=_do_coin_analysis, args=(cb_chat_id, _sym, _etype), daemon=True).start()
+
+                    # ── Pause / Resume a channel ──────────────────────────────
+                    elif cb_data.startswith("chpause:") and cb_is_admin:
+                        _tgt = cb_data.split(":", 1)[1]
+                        if _tgt == "sig": channel_paused["1"] = True
+                        else:
+                            _i = int(_tgt)
+                            if 0 <= _i < len(CHANNELS): CHANNELS[_i]["paused"] = True
+                        save_settings(); send_pausechannel_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("chresume:") and cb_is_admin:
+                        _tgt = cb_data.split(":", 1)[1]
+                        if _tgt == "sig": channel_paused["1"] = False
+                        else:
+                            _i = int(_tgt)
+                            if 0 <= _i < len(CHANNELS): CHANNELS[_i]["paused"] = False
+                        save_settings(); send_pausechannel_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
@@ -13087,6 +13212,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
         ct.on_scan_tp2(sym)
+        ct.virtual_on_close(sym, cp, "TP2")
         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
         _slot_hm = _slot_hm_for_trade(t, created)
@@ -13114,6 +13240,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
         ct.on_scan_tp1(sym)
+        ct.virtual_on_tp1(sym, tp1)
         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
             tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
             entry_date=_ist_date_str(created), sig_id=sig_id)
@@ -13138,6 +13265,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         tag=sig_id)
     _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
     ct.on_scan_sl(sym)
+    ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
         _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
         _send_sl_reassurance(sym, f"TS{dver}", sig, entry,
@@ -13212,6 +13340,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
+                        ct.virtual_on_close(sym, cp, "TP2")
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _slot_hm_for_trade(t, created)
@@ -13237,6 +13366,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
+                        ct.virtual_on_close(sym, cp, lbl)
                         if lbl == "SL":
                             _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
                             _send_sl_reassurance(sym, f"TS{_dver}", sig, entry,
@@ -13263,6 +13393,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp1(sym)
+                        ct.virtual_on_tp1(sym, tp1)
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
                             entry_date=_ist_date_str(created), sig_id=sig_id)
@@ -13285,6 +13416,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
+                        ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
@@ -13698,6 +13830,9 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
             _demo_is_unverified = _demo1_tier_routed and trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+            if _demo1_tier_routed:
+                ct.virtual_on_signal(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
+                    tier_routed=_demo1_tier_routed, share_free=_demo_share_free)
             if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified:
                 _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}

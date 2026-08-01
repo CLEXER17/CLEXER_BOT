@@ -340,6 +340,9 @@
         <span style="font-size:10px;background:var(--gold-dim);color:var(--gold);padding:3px 8px;border-radius:20px">Practice mode</span>
       </div>
 
+      <button id="vToggleBtn" onclick="toggleVirtual()" style="width:100%;margin-bottom:14px;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-family:var(--mono);font-size:13px;font-weight:600;cursor:pointer">⚪ Virtual Trading: OFF</button>
+      <div style="font-size:11px;color:var(--muted);margin:-8px 0 14px;line-height:1.5">When ON, every real CLEXER signal for your tier is mirrored here automatically as a paper trade — VIP gets every VIP signal, Free gets every Free-channel signal. No real money moves.</div>
+
       <!-- Virtual Calculator -->
       <div class="card" id="vcalc-card" style="border:1px solid var(--gold-dim);">
         <div class="ttl" style="color:var(--gold)">⚡ Signal Profit Calculator</div>
@@ -1133,9 +1136,14 @@
     // taking the whole mini app down with it (blank chart, price stuck at "—").
     // Always fall back to localStorage on any CS failure, not just when CS is absent.
     try{
-      if(CS){ CS.setItem("vc_settings", JSON.stringify({bal, lev})); return; }
+      if(CS){ CS.setItem("vc_settings", JSON.stringify({bal, lev})); }
     }catch(e){}
     try{ localStorage.setItem("clexer_vc", JSON.stringify({bal, lev})); }catch(e){}
+    // Sync into the backend too — server-driven virtual positions (opened when
+    // a signal fires) size off this, not just the on-screen calculator preview.
+    api("/virtual/settings", {method:"POST", body: JSON.stringify({
+      balance: parseFloat(bal) || null, leverage: parseFloat(lev) || null,
+    })}).catch(e => console.warn("virtual settings sync:", e));
   }
   function vcLoad(){
     try{
@@ -1169,42 +1177,25 @@
     try{ if(CS) CS.setItem("vc_history", data); }catch(e){}
     try{ localStorage.setItem("clexer_vh", data); }catch(e){}
   }
-  function vhLoadCloud(cb){
-    try{
-      if(CS){
-        CS.getItem("vc_history", (err, val) => {
-          if(!err && val){ try{ cb(JSON.parse(val)); return; }catch(e){} }
-          cb(vhLoad());
-        });
-        return;
-      }
-    }catch(e){}
-    cb(vhLoad());
+  // Virtual on/off toggle — defaults OFF for everyone, opt-in only. Gates
+  // server-side mirroring in copytrade.py (ct.virtual_on_signal), not just
+  // this calculator preview.
+  let virtualEnabled = false;
+  function setVirtualToggle(on){
+    virtualEnabled = !!on;
+    const btn = document.getElementById("vToggleBtn");
+    if(!btn) return;
+    btn.textContent = virtualEnabled ? "🟢 Virtual Trading: ON" : "⚪ Virtual Trading: OFF";
+    btn.style.background = virtualEnabled ? "rgba(0,209,143,.12)" : "var(--bg3)";
+    btn.style.color = virtualEnabled ? "var(--up)" : "var(--text)";
+    btn.style.borderColor = virtualEnabled ? "var(--up)" : "var(--border)";
   }
-
-  function syncVirtualHistory(closedTrades, existingHist){
-    const bal  = parseFloat(document.getElementById("vcBalance").value) || 1000;
-    const lev  = parseFloat(document.getElementById("vcLev").value)     || 10;
-    const hist = existingHist || [];
-    const seen = new Set(hist.map(h => h.id));
-    let changed = false;
-    for(const c of closedTrades){
-      const id = (c.symbol||"") + "|" + (c.time||c.closed_at||"");
-      if(seen.has(id)) continue;
-      const entry  = parseFloat(c.entry)  || 0;
-      const close  = parseFloat(c.close_price || c.close || 0);
-      const isLong = (c.signal||c.direction||"LONG").toUpperCase() === "BUY" || (c.signal||"").toUpperCase() === "LONG";
-      const sign   = isLong ? 1 : -1;
-      if(!entry || !close) continue;
-      const posSize = bal * lev;
-      const qty     = posSize / entry;
-      const pnl     = (close - entry) * qty * sign;
-      hist.push({ id, symbol: c.symbol, result: c.result, entry, close, pnl: parseFloat(pnl.toFixed(2)),
-                  time: c.time || c.closed_at || "", side: isLong ? "LONG" : "SHORT" });
-      changed = true;
-    }
-    if(changed) vhSave(hist);
-    return hist;
+  async function toggleVirtual(){
+    haptic("sel");
+    const next = !virtualEnabled;
+    setVirtualToggle(next);
+    try{ await api("/virtual/toggle", {method:"POST", body: JSON.stringify({enabled: next})}); }
+    catch(e){ console.warn("virtual toggle:", e); setVirtualToggle(!next); }
   }
 
   function renderVirtualHistory(hist){
@@ -1229,13 +1220,19 @@
   }
 
   async function loadVirtual(){
-    let closed = [];
-    try{ closed = (await api("/trades/history")).history || []; }
-    catch(e){ console.warn("virtual history fetch:", e); }
-    vhLoadCloud(existing => {
-      const updated = syncVirtualHistory(closed, existing);
-      document.getElementById("vhList").innerHTML = renderVirtualHistory(updated);
-    });
+    document.getElementById("vhList").innerHTML = renderVirtualHistory(vhLoad());
+    try{
+      const st = await api("/virtual/state");
+      document.getElementById("vcBalance").value = st.balance;
+      document.getElementById("vcLev").value = st.leverage;
+      setVirtualToggle(st.enabled);
+      const hist = (st.history || []).map(h => ({
+        symbol: h.symbol, side: h.side === "BUY" ? "LONG" : "SHORT",
+        pnl: h.pnl, result: h.result, time: h.closed_at,
+      }));
+      vhSave(hist);
+      document.getElementById("vhList").innerHTML = renderVirtualHistory(hist);
+    }catch(e){ console.warn("virtual state fetch:", e); }
     calcVirtual();
   }
 
