@@ -777,21 +777,25 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
 
 def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes):
     """Uploads an already-downloaded chart image (raw bytes, from the
-    userbot) to every destination a signal's entry text just went to —
-    reply_map is exactly what send_entry_signal returned, so this reuses its
-    keys to recover each real chat_id instead of re-deriving the tier-
-    routing logic. Multipart upload, not a file_id — see
-    _request_coin_chart_image's docstring for why."""
+    userbot) to every destination a signal's entry text just went to, as a
+    genuine reply-threaded follow-up to that entry message — reply_map is
+    exactly what send_entry_signal returned, so this reuses both its keys
+    (which chat) and values (which message_id to thread under) instead of
+    re-deriving the tier-routing logic. Multipart upload, not a file_id —
+    see _request_coin_chart_image's docstring for why."""
     if not photo_bytes:
         return
-    for key in (reply_map or {}).keys():
+    for key, mid in (reply_map or {}).items():
         if key == "ch1": cid = TELEGRAM_CHANNEL_ID
         elif ":" in key: cid = key.split(":", 1)[1]
         else: continue
         if not cid: continue
         try:
+            _data = {"chat_id": cid}
+            if mid:
+                _data["reply_parameters"] = json.dumps({"message_id": mid, "allow_sending_without_reply": True})
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                data={"chat_id": cid}, files={"photo": ("chart.png", photo_bytes)}, timeout=20)
+                data=_data, files={"photo": ("chart.png", photo_bytes)}, timeout=20)
         except Exception as e:
             print(f"  [CHART IMG] send to {cid} failed: {e}")
 
