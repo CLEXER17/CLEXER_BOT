@@ -639,7 +639,14 @@ def _start_userbot():
         _userbot_client = TelegramClient(StringSession(TG_USER_SESSION_STRING),
             int(TG_USER_API_ID), TG_USER_API_HASH, loop=loop)
         try:
-            loop.run_until_complete(_userbot_client.start())
+            # Telethon's client.start(), called outside an async function with
+            # no currently-RUNNING loop, runs the whole login synchronously
+            # itself (using the loop just set via set_event_loop internally)
+            # and returns the client — NOT a coroutine. Wrapping it in
+            # run_until_complete() (as before) fails with "An asyncio.Future,
+            # a coroutine or an awaitable is required", since there's nothing
+            # left to await by the time it returns. Just call it directly.
+            _userbot_client.start()
             print("[USERBOT] Connected.")
             _userbot_ready.set()
             loop.run_forever()
