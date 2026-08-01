@@ -12576,8 +12576,11 @@ def command_listener():
                 # normal command processing at all) except to actually CAPTURE
                 # CoinTrendzBot's photo reply while a request is genuinely pending.
                 if str(cid) == str(COINTRENDZ_GROUP_ID):
-                    if (_coin_chart_pending_event is not None
-                            and msg.get("from", {}).get("username", "").lower() == COINTRENDZ_BOT_USERNAME):
+                    _ctb_from = msg.get("from", {})
+                    _ctb_uname = (_ctb_from.get("username") or "").lower()
+                    print(f"  [COINTRENDZ GROUP] from=@{_ctb_uname or '?'} ({_ctb_from.get('first_name','?')}) "
+                          f"has_photo={bool(msg.get('photo'))} pending={_coin_chart_pending_event is not None}")
+                    if (_coin_chart_pending_event is not None and _ctb_uname == COINTRENDZ_BOT_USERNAME):
                         _photo = msg.get("photo")
                         if _photo:
                             _coin_chart_pending_result["file_id"] = _photo[-1]["file_id"]
