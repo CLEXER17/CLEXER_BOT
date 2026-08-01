@@ -629,16 +629,15 @@ _userbot_ready = threading.Event()
 _cointrendz_group_msg_ids: list = []
 
 def _any_scan_or_chart_busy() -> bool:
-    """True while it's NOT safe to clean the shared group — a chart request
-    is currently mid-flight (would be reading/deleting the very message it's
-    waiting on), or any Scan1/Scan2/TS1/TS2 cycle (regular or special track)
-    is running and could kick off a chart request any moment."""
-    if _coin_chart_pending_event is not None:
-        return True
-    for _kind in ("scan1", "scan2", "test1", "test2"):
-        if _scan_running.get(_kind) or _scan_running_special.get(_kind):
-            return True
-    return False
+    """True while it's NOT safe to clean the shared group — i.e. a chart
+    request is CURRENTLY mid-flight there (would be reading/deleting the very
+    message it's waiting on). Originally also blocked on any Scan1/Scan2/
+    TS1/TS2 cycle running anywhere in the bot, but the dense grid means some
+    scan is running almost continuously — that check made cleanup basically
+    never fire in practice (2026-07-31). A scan that hasn't reached its
+    chart-request step yet doesn't actually conflict with cleaning this
+    group, so this now only checks the real risk."""
+    return _coin_chart_pending_event is not None
 
 def _clean_cointrendz_group():
     """Deletes every tracked message in the shared CoinTrendzBot group via
