@@ -10248,8 +10248,15 @@ def _fire_due_scheduled_broadcasts():
     _save_scheduled_broadcasts()
 
 def handle_broadcast_message(chat_id, message):
-    text = message.get("text") or message.get("caption") or ""
-    photo = message.get("photo"); doc = message.get("document")
+    # Replying to (quoting) an existing message while composing — pull whatever
+    # that quoted message had (photo/document/text) as a fallback source, so
+    # quoting a past post with an image reuses its image instead of the admin
+    # having to re-download and re-upload it. The admin's own typed text/media
+    # always wins if they provided any; the quote only fills in what's missing.
+    _quoted = message.get("reply_to_message") or {}
+    text = message.get("text") or message.get("caption") or _quoted.get("text") or _quoted.get("caption") or ""
+    photo = message.get("photo") or _quoted.get("photo")
+    doc = message.get("document") or _quoted.get("document")
     file_id = None; file_type = None
     if photo:   file_id = photo[-1]["file_id"]; file_type = "photo"
     elif doc:   file_id = doc["file_id"];       file_type = "document"
