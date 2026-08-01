@@ -60,7 +60,7 @@ ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
 CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot Crypto Pay API token
-COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1001925613577")   # private group both
+COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1004368662009")   # private group both
 # CLEXER BOT and @CoinTrendzBot are members of — the ONLY way to get a chart image out of
 # CoinTrendzBot, since bots can't message each other privately or read each other's DMs.
 # CLEXER posts "/c <coin>" here and watches for CoinTrendzBot's image reply in the same group.
