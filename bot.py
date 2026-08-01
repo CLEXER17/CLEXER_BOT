@@ -684,7 +684,7 @@ _coin_chart_lock = threading.Lock()
 _coin_chart_pending_event = None
 _coin_chart_pending_result: dict = {}
 
-def _request_coin_chart_image(coin: str, timeout: float = 15.0):
+def _request_coin_chart_image(coin: str, timeout: float = 30.0):
     """Sends '/c <coin>' to the shared CoinTrendzBot group (via the userbot —
     see above, a real bot-token send would just get ignored) and waits (up to
     `timeout`s) for its image reply there, returning the photo's file_id —
@@ -7538,7 +7538,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _cp_demo_sig = {"symbol": _cp_sym, "signal": "BUY", "entry": _cp_price, "sl": _cp_price - _cp_sl_dist,
                          "tp1": _cp_price + _cp_sl_dist * 1.5, "tp2": _cp_price + _cp_sl_dist * 3, "ver": 1}
         send_reply(chat_id, "🧪 <b>DEMO PREVIEW — not a real trade</b>\n\n" + fmt_scan_signal(_cp_demo_sig))
-        send_reply(chat_id, "🧪 Fetching chart image from CoinTrendzBot (up to 15s)...")
+        send_reply(chat_id, "🧪 Fetching chart image from CoinTrendzBot (up to 30s)...")
         def _run_chartpreview():
             _fid = _request_coin_chart_image(_cp_coin.lower())
             if _fid:
@@ -12570,12 +12570,14 @@ def command_listener():
                     _track_group_seen_user(cid, sender_uid, msg.get("from", {}))
 
                 # CoinTrendzBot chart-image capture (2026-07-31) — see the relay's
-                # comment block above send_entry_signal. Always ignore CoinTrendzBot's
-                # own messages in that group past this point (it's not a user, has no
-                # commands of its own to run here) — but only actually CAPTURE its
-                # photo as an answer while a request is genuinely pending.
-                if str(cid) == str(COINTRENDZ_GROUP_ID) and msg.get("from", {}).get("username", "").lower() == COINTRENDZ_BOT_USERNAME:
-                    if _coin_chart_pending_event is not None:
+                # comment block above send_entry_signal. This whole group exists
+                # ONLY for the chart relay — CLEXER stays completely silent there
+                # (no "Unknown command" replies to Kaito's own "/c <coin>", no
+                # normal command processing at all) except to actually CAPTURE
+                # CoinTrendzBot's photo reply while a request is genuinely pending.
+                if str(cid) == str(COINTRENDZ_GROUP_ID):
+                    if (_coin_chart_pending_event is not None
+                            and msg.get("from", {}).get("username", "").lower() == COINTRENDZ_BOT_USERNAME):
                         _photo = msg.get("photo")
                         if _photo:
                             _coin_chart_pending_result["file_id"] = _photo[-1]["file_id"]
