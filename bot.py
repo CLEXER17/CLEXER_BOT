@@ -622,6 +622,48 @@ _userbot_loop = None
 _userbot_client = None
 _userbot_ready = threading.Event()
 
+# Every message seen in the shared group (both Kaito's own "/c <coin>" and
+# CoinTrendzBot's replies) — periodically deleted to keep the group tidy
+# instead of accumulating forever. See _clean_cointrendz_group /
+# _any_scan_or_chart_busy and the cleanup loop started in main().
+_cointrendz_group_msg_ids: list = []
+
+def _any_scan_or_chart_busy() -> bool:
+    """True while it's NOT safe to clean the shared group — a chart request
+    is currently mid-flight (would be reading/deleting the very message it's
+    waiting on), or any Scan1/Scan2/TS1/TS2 cycle (regular or special track)
+    is running and could kick off a chart request any moment."""
+    if _coin_chart_pending_event is not None:
+        return True
+    for _kind in ("scan1", "scan2", "test1", "test2"):
+        if _scan_running.get(_kind) or _scan_running_special.get(_kind):
+            return True
+    return False
+
+def _clean_cointrendz_group():
+    """Deletes every tracked message in the shared CoinTrendzBot group via
+    Kaito's account — only when nothing's using the group right now (see
+    _any_scan_or_chart_busy). Silently no-ops if the userbot isn't
+    connected, there's nothing to clean, or a scan is currently running —
+    the next periodic check just tries again later."""
+    if not _cointrendz_group_msg_ids or _any_scan_or_chart_busy():
+        return
+    if not (_userbot_ready.is_set() and _userbot_loop and _userbot_client):
+        return
+    import asyncio
+    _ids = list(_cointrendz_group_msg_ids)
+    _cointrendz_group_msg_ids.clear()
+    async def _do_delete():
+        await _userbot_client.delete_messages(int(COINTRENDZ_GROUP_ID), _ids)
+    fut = asyncio.run_coroutine_threadsafe(_do_delete(), _userbot_loop)
+    try:
+        fut.result(timeout=20)
+        print(f"[USERBOT] cleaned {len(_ids)} message(s) from the CoinTrendzBot group")
+    except Exception as e:
+        print(f"[USERBOT] group cleanup failed (needs delete rights in that group?): {e}")
+        # Put them back — nothing was actually deleted (or we can't tell), don't just lose track of them.
+        _cointrendz_group_msg_ids.extend(_ids)
+
 # ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
 # Requests are serialized (one at a time via _coin_chart_lock) because
 # CoinTrendzBot's image reply carries no machine-readable caption identifying
@@ -666,6 +708,10 @@ def _start_userbot():
                 # Runs on THIS thread's loop, for every new message in the
                 # shared group — Kaito's own account sees CoinTrendzBot's
                 # replies fine, no bot-to-bot restriction applies here.
+                # Track EVERY message here for the group-cleanup loop, before
+                # the early-returns below — the cleanup should catch anything
+                # that lands in this group, not just chart replies.
+                _cointrendz_group_msg_ids.append(event.id)
                 if _coin_chart_pending_event is None or not event.photo:
                     return
                 sender = await event.get_sender()
@@ -13820,6 +13866,15 @@ def main():
                 print(f"[SCHEDULED BC] fire check error: {e}")
             time.sleep(30)  # fine enough to hit "2.05pm" without checking every tick
     threading.Thread(target=_scheduled_broadcast_loop, daemon=True).start()
+
+    def _cointrendz_cleanup_loop():
+        while True:
+            time.sleep(300)  # every 5 min — no need to check more often than that
+            try:
+                _clean_cointrendz_group()
+            except Exception as e:
+                print(f"[USERBOT] cleanup loop error: {e}")
+    threading.Thread(target=_cointrendz_cleanup_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
     # Liquidation feeds (Bybit + OKX) and the order-book wall tracker are
     # stopped 2026-07-28 — combined with the dense scan grid, message volume
