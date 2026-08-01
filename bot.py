@@ -12637,6 +12637,16 @@ def command_listener():
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
 
+                # Never respond to another bot, anywhere (2026-07-31, safety) — a
+                # command-like message from a bot account (accidental, malicious,
+                # or a bot-loop) never gets processed or replied to. Telegram
+                # already never delivers bot->bot messages for OTHER bots to see
+                # this bot (see the CoinTrendzBot relay's comments), but this
+                # covers every chat CLEXER is actually a member of, not just one
+                # group, and doesn't rely on that platform behavior holding.
+                if msg.get("from", {}).get("is_bot"):
+                    continue
+
                 # Group-mention tracking (2026-07-31) — see _track_group_seen_user
                 # docstring for why this exists instead of a real member list.
                 if msg.get("chat", {}).get("type") in ("group", "supergroup") and sender_uid:
