@@ -5052,10 +5052,34 @@ def _send_group_mentions(chat_id) -> int:
         time.sleep(0.05)
     return _sent
 
-def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", channel_targets=None, target_user=None):
+def _copy_message_to(dest_chat_id, from_chat_id, message_id) -> bool:
+    """Copies a message byte-for-byte (formatting, media, premium-emoji
+    entities — everything) via Telegram's copyMessage. Used instead of
+    send_to_user when the broadcast was composed by quoting an existing
+    message with no new text of its own — reconstructing that message as
+    plain text would lose all its entities (bold/code/premium-emoji spans
+    live in a separate array on the source message, not inline in its text)."""
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/copyMessage",
+            json={"chat_id": dest_chat_id, "from_chat_id": from_chat_id, "message_id": message_id}, timeout=15)
+        _cid_int = int(dest_chat_id)
+        if r.status_code == 403 and "blocked" in r.text.lower():
+            if _cid_int not in blocked_users:
+                blocked_users.add(_cid_int); save_users()
+        elif r.status_code == 200 and _cid_int in blocked_users:
+            blocked_users.discard(_cid_int); save_users()
+        return r.status_code == 200
+    except Exception as e:
+        print(f"  [COPY MSG] {dest_chat_id}: {e}")
+        return False
+
+def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", channel_targets=None, target_user=None, copy_from=None):
     """channel_targets: optional explicit list of channel/group chat_ids to use
     instead of the legacy-only default — set by the new multi-select picker.
-    target_user: single chat_id, only used when mode == "specific_user"."""
+    target_user: single chat_id, only used when mode == "specific_user".
+    copy_from: optional (from_chat_id, message_id) — when set, every target
+    gets a copyMessage of that source instead of a freshly-built text/photo
+    send, preserving the original's exact formatting (see _copy_message_to)."""
     text = _apply_premium_emojis(text)
     if mode == "specific_user":
         targets = [target_user] if target_user else []
@@ -5068,7 +5092,9 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
         targets = [u for u in registered_users if u not in blocked_users] + _chan
     ok = 0; fail = 0; mentioned = 0
     for cid in targets:
-        if send_to_user(cid, text, file_id, file_type):
+        _sent = (_copy_message_to(cid, copy_from[0], copy_from[1]) if copy_from
+                 else send_to_user(cid, text, file_id, file_type))
+        if _sent:
             ok += 1
             mentioned += _send_group_mentions(cid)
         else: fail += 1
@@ -10181,14 +10207,14 @@ def handle_schedule_msg_edit_message(chat_id, message):
     sid = _schedule_msg_edit_pending.get(str(chat_id))
     if not sid:
         return
-    text, file_id, file_type = _extract_broadcast_content(message)
-    if not text and not file_id:
+    text, file_id, file_type, copy_from = _extract_broadcast_content(message)
+    if not text and not file_id and not copy_from:
         send_reply(chat_id, "Empty. /cancel to abort."); return
     del _schedule_msg_edit_pending[str(chat_id)]
     item = _scheduled_broadcasts.get(sid)
     if not item:
         send_reply(chat_id, f"⚠️ #{sid} no longer exists — it may have already fired or been cancelled."); return
-    item["text"] = text; item["file_id"] = file_id; item["file_type"] = file_type
+    item["text"] = text; item["file_id"] = file_id; item["file_type"] = file_type; item["copy_from"] = copy_from
     _save_scheduled_broadcasts()
     send_reply(chat_id, f"✅ <b>#{sid} message updated</b>\n\nFires: <b>{_fmt_schedule_datetime(item['fire_at'])} IST</b>\n\nSee /scheduledbroadcasts.")
 
@@ -10245,7 +10271,7 @@ def send_scheduled_broadcasts_screen(chat_id, message_id=None):
     rows = []
     for sid, item in _items:
         _label = _BC_MODE_LABELS.get(item.get("mode", ""), item.get("mode", "?"))
-        _preview = _html.escape((item.get("text") or "(file only)")[:40])
+        _preview = _html.escape((item.get("text") or ("(quoted message)" if item.get("copy_from") else "(file only)"))[:40])
         lines.append(f"\n<b>#{sid}</b> — {_fmt_schedule_datetime(item['fire_at'])} IST — {_label}\n<i>{_preview}</i>")
         rows.append([
             {"text": f"✏️ Edit Time #{sid}",    "callback_data": f"schedbc_edit:{sid}"},
@@ -10270,30 +10296,45 @@ def _fire_due_scheduled_broadcasts():
         _admin_cid = item.get("created_by") or ADMIN_CHAT_ID
         threading.Thread(target=do_broadcast, args=(
             _admin_cid, item.get("text", ""), item.get("file_id"), item.get("file_type"),
-            item.get("mode", "all"), item.get("channel_targets"), item.get("target_user")
+            item.get("mode", "all"), item.get("channel_targets"), item.get("target_user"), item.get("copy_from")
         ), daemon=True).start()
         if ADMIN_CHAT_ID:
             send_admin(f"📅 <b>Scheduled broadcast #{sid} firing now</b> — {_BC_MODE_LABELS.get(item.get('mode'), item.get('mode'))}")
     _save_scheduled_broadcasts()
 
 def _extract_broadcast_content(message: dict) -> tuple:
-    """Pulls (text, file_id, file_type) from a compose/edit message. Replying
-    to (quoting) an existing message fills in whatever the admin's own message
-    didn't provide (photo/document/text) — so quoting a past post with an
-    image reuses its image instead of re-downloading and re-uploading it. The
-    admin's own typed text/media always wins if they provided any."""
+    """Pulls (text, file_id, file_type, copy_from) from a compose/edit message.
+    copy_from is (from_chat_id, message_id) when the admin replied to (quoted)
+    an existing message and typed NO new text/media of their own — in that
+    case the quoted message is copied byte-for-byte via Telegram's copyMessage
+    later (see _copy_message_to), since reconstructing it as plain text would
+    silently lose all its formatting: bold/code/premium-emoji spans live in a
+    separate "entities" array on the source message, not inline in its "text"
+    field, so a naive .get("text") comes back completely unstyled — this was
+    the actual cause of quoted broadcasts sending as plain.
+    If the admin DID type their own text/attach their own media, that always
+    wins and the quote only fills in whatever's still missing (e.g. reusing a
+    quoted photo under new typed text) — same as before, no copy_from needed
+    since the admin's own text has no entities to lose."""
     _quoted = message.get("reply_to_message") or {}
-    text = message.get("text") or message.get("caption") or _quoted.get("text") or _quoted.get("caption") or ""
-    photo = message.get("photo") or _quoted.get("photo")
-    doc = message.get("document") or _quoted.get("document")
+    own_text = message.get("text") or message.get("caption") or ""
+    own_photo = message.get("photo"); own_doc = message.get("document")
+    if _quoted and not own_text and not own_photo and not own_doc:
+        _from_chat = (_quoted.get("chat") or {}).get("id")
+        _msg_id = _quoted.get("message_id")
+        if _from_chat and _msg_id:
+            return "", None, None, (_from_chat, _msg_id)
+    text = own_text or _quoted.get("text") or _quoted.get("caption") or ""
+    photo = own_photo or _quoted.get("photo")
+    doc = own_doc or _quoted.get("document")
     file_id = None; file_type = None
     if photo:   file_id = photo[-1]["file_id"]; file_type = "photo"
     elif doc:   file_id = doc["file_id"];       file_type = "document"
-    return text, file_id, file_type
+    return text, file_id, file_type, None
 
 def handle_broadcast_message(chat_id, message):
-    text, file_id, file_type = _extract_broadcast_content(message)
-    if not text and not file_id: send_reply(chat_id, "Empty. /cancel to abort."); return
+    text, file_id, file_type, copy_from = _extract_broadcast_content(message)
+    if not text and not file_id and not copy_from: send_reply(chat_id, "Empty. /cancel to abort."); return
     _pending = broadcast_pending.get(chat_id, {})
     mode = _pending.get("mode", "all")
     target_user = _pending.get("target_user")
@@ -10302,19 +10343,19 @@ def handle_broadcast_message(chat_id, message):
     if mode in ("users", "specific_user"):
         if scheduled:
             _prompt_schedule_time(chat_id, {"text": text, "file_id": file_id, "file_type": file_type,
-                "mode": mode, "channel_targets": None, "target_user": target_user})
+                "mode": mode, "channel_targets": None, "target_user": target_user, "copy_from": copy_from})
             return
         _label = _BC_MODE_LABELS.get(mode, mode) if mode == "users" else (
             f"@{user_usernames[str(target_user)]}" if user_usernames.get(str(target_user)) else f"user {target_user}")
         send_reply(chat_id, f"📢 Broadcasting to {_label}...")
         threading.Thread(target=do_broadcast,
-            args=(chat_id, text, file_id, file_type, mode, None, target_user), daemon=True).start()
+            args=(chat_id, text, file_id, file_type, mode, None, target_user, copy_from), daemon=True).start()
         return
     all_targets = _bc_picker_targets(mode)
     _bc_picker_state[str(chat_id)] = {
         "text": text, "file_id": file_id, "file_type": file_type, "mode": mode,
         "selected": {cid for cid, _ in all_targets},  # pre-select all by default
-        "scheduled": scheduled,
+        "scheduled": scheduled, "copy_from": copy_from,
     }
     _send_broadcast_picker(chat_id)
 
@@ -12532,13 +12573,13 @@ def command_listener():
                         elif st.get("scheduled"):
                             _prompt_schedule_time(cb_chat_id, {"text": st["text"], "file_id": st["file_id"],
                                 "file_type": st["file_type"], "mode": st["mode"], "channel_targets": list(st["selected"]),
-                                "target_user": None}, message_id=cb_msg_id)
+                                "target_user": None, "copy_from": st.get("copy_from")}, message_id=cb_msg_id)
                         else:
                             _sel = list(st["selected"])
                             _mode_label = _BC_MODE_LABELS.get(st["mode"], st["mode"])
                             _help_edit_or_send(cb_chat_id, f"📢 Broadcasting to {_mode_label} ({len(_sel)} channels)...", None, message_id=cb_msg_id)
                             threading.Thread(target=do_broadcast,
-                                args=(cb_chat_id, st["text"], st["file_id"], st["file_type"], st["mode"], _sel), daemon=True).start()
+                                args=(cb_chat_id, st["text"], st["file_id"], st["file_type"], st["mode"], _sel, None, st.get("copy_from")), daemon=True).start()
 
                     elif cb_data.startswith("schedbc_edit:") and cb_is_admin:
                         _sid = cb_data.split(":", 1)[1]
