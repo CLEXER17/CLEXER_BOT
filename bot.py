@@ -60,6 +60,11 @@ ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
 CRYPTO_PAY_API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot Crypto Pay API token
+COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1001925613577")   # private group both
+# CLEXER BOT and @CoinTrendzBot are members of — the ONLY way to get a chart image out of
+# CoinTrendzBot, since bots can't message each other privately or read each other's DMs.
+# CLEXER posts "/c <coin>" here and watches for CoinTrendzBot's image reply in the same group.
+COINTRENDZ_BOT_USERNAME = os.getenv("COINTRENDZ_BOT_USERNAME", "cointrendzbot").lower()
 STARS_PER_USD = float(os.getenv("STARS_PER_USD", "62.5"))   # Telegram's real Stars rate: 100 Stars ≈ $1.60, i.e. $1 ≈ 62.5 Stars
 
 SYMBOL               = "BTCUSDT"
@@ -593,6 +598,72 @@ def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None, prot
     except Exception as e:
         print(f"  [PLAIN REPLY] {chat_id}: {e}")
     return None
+
+# ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
+# Bots can't message each other privately or read each other's replies — the
+# ONLY way to get a chart image out of another bot is to share a group with
+# it, post the command there, and watch for its reply in that same group
+# (see COINTRENDZ_GROUP_ID's comment). Requests are serialized (one at a
+# time via _coin_chart_lock) because CoinTrendzBot's image reply carries no
+# machine-readable caption identifying which coin it's answering — so
+# "whatever it sends back next" is only a safe assumption if nothing else
+# could be mid-flight at the same moment.
+_coin_chart_lock = threading.Lock()
+_coin_chart_pending_event = None
+_coin_chart_pending_result: dict = {}
+
+def _request_coin_chart_image(coin: str, timeout: float = 15.0):
+    """Sends '/c <coin>' to the shared CoinTrendzBot group and waits (up to
+    `timeout`s) for its image reply there, returning the photo's file_id —
+    directly reusable in CLEXER's own sendPhoto calls, no re-download/re-
+    upload needed. Returns None on timeout or send failure; callers must
+    treat that as "no chart available this time," never block a real trade
+    signal on it."""
+    global _coin_chart_pending_event
+    if not COINTRENDZ_GROUP_ID:
+        return None
+    with _coin_chart_lock:
+        _ev = threading.Event()
+        _coin_chart_pending_event = _ev
+        _coin_chart_pending_result.clear()
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": COINTRENDZ_GROUP_ID, "text": f"/c {coin.lower()}"}, timeout=10)
+        except Exception as e:
+            print(f"  [COINTRENDZ] request send error: {e}")
+            _coin_chart_pending_event = None
+            return None
+        _got = _ev.wait(timeout)
+        _coin_chart_pending_event = None
+        return _coin_chart_pending_result.get("file_id") if _got else None
+
+def _send_chart_image_for_reply_map(reply_map: dict, file_id: str):
+    """Sends an already-fetched chart image (by file_id) to every destination
+    a signal's entry text just went to — reply_map is exactly what
+    send_entry_signal returned, so this reuses its keys to recover each
+    real chat_id instead of re-deriving the tier-routing logic."""
+    if not file_id:
+        return
+    for key in (reply_map or {}).keys():
+        if key == "ch1": cid = TELEGRAM_CHANNEL_ID
+        elif ":" in key: cid = key.split(":", 1)[1]
+        else: continue
+        if not cid: continue
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                json={"chat_id": cid, "photo": file_id}, timeout=15)
+        except Exception as e:
+            print(f"  [CHART IMG] send to {cid} failed: {e}")
+
+def _attach_chart_image_async(coin: str, reply_map: dict):
+    """Fires off the chart fetch+attach in its own background thread — the
+    real trade signal (already sent by the time this is called) must never
+    wait on a third-party bot's reply."""
+    def _run():
+        _fid = _request_coin_chart_image(coin)
+        if _fid:
+            _send_chart_image_for_reply_map(reply_map, _fid)
+    threading.Thread(target=_run, daemon=True).start()
 
 def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True,
                        locked_text: str = None, sig_id: str = None) -> dict:
@@ -4872,6 +4943,7 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
         share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"])
     for k, v in (_ids or {}).items():
         if k.startswith("free:"): _track_free_sl(signal["sig_id"], k.split(":", 1)[1], "entry_mid", v)
+    _attach_chart_image_async(SYMBOL.replace("USDT", ""), _ids)
     return _ids
 
 def fmt_update(status, price=None):
@@ -9385,6 +9457,7 @@ Reasoning: [one line]"""
                             sig_id=slot_data["sig_id"])
                         for _k, _v in (slot_data["reply_map"] or {}).items():
                             if _k.startswith("free:"): _track_free_sl(slot_data["sig_id"], _k.split(":", 1)[1], "entry_mid", _v)
+                        _attach_chart_image_async(chosen_sym.replace("-USDT", "").replace("USDT", ""), slot_data["reply_map"])
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
@@ -12396,6 +12469,19 @@ def command_listener():
                 if msg.get("chat", {}).get("type") in ("group", "supergroup") and sender_uid:
                     _track_group_seen_user(cid, sender_uid, msg.get("from", {}))
 
+                # CoinTrendzBot chart-image capture (2026-07-31) — see the relay's
+                # comment block above send_entry_signal. Always ignore CoinTrendzBot's
+                # own messages in that group past this point (it's not a user, has no
+                # commands of its own to run here) — but only actually CAPTURE its
+                # photo as an answer while a request is genuinely pending.
+                if str(cid) == str(COINTRENDZ_GROUP_ID) and msg.get("from", {}).get("username", "").lower() == COINTRENDZ_BOT_USERNAME:
+                    if _coin_chart_pending_event is not None:
+                        _photo = msg.get("photo")
+                        if _photo:
+                            _coin_chart_pending_result["file_id"] = _photo[-1]["file_id"]
+                            _coin_chart_pending_event.set()
+                    continue
+
                 # Telegram Stars payment completed — arrives as a normal message
                 # carrying successful_payment, no webhook/poll loop needed (unlike
                 # CryptoBot, Stars payments settle inside Telegram itself). Mirrors
@@ -13401,6 +13487,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id)
             for _k, _v in (_demo_reply_map or {}).items():
                 if _k.startswith("free:"): _track_free_sl(_demo_sig_id, _k.split(":", 1)[1], "entry_mid", _v)
+            _attach_chart_image_async(coin, _demo_reply_map)
 
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
