@@ -608,16 +608,28 @@ def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None, prot
     return None
 
 # ─── Userbot (real Telegram account) — see TG_USER_* comment ───────────────
-# CoinTrendzBot ignores messages from other bot accounts, so getting it to
-# actually reply requires a genuine human-looking sender. This runs a SECOND
-# Telegram login (Telethon, a real user session — not the Bot API) in its own
-# thread/event loop, used ONLY to send "/c <coin>" into the shared group.
-# CLEXER's own bot-token listener (command_listener/getUpdates) still captures
-# CoinTrendzBot's reply exactly as before, since CLEXER's bot is also a
-# member of that group — this only replaces WHO sends the request.
+# Telegram never delivers messages from one bot to ANOTHER bot via the Bot
+# API — not a privacy-mode setting, a hard platform rule to prevent bot-loop
+# spam (confirmed 2026-07-31: CLEXER's bot-token listener saw zero events for
+# CoinTrendzBot's replies even with privacy mode off and the bot re-added to
+# the group). So both sending the command AND watching for/downloading the
+# reply have to happen through a genuine human-looking account — this runs a
+# SECOND Telegram login (Telethon, a real user session, not the Bot API) in
+# its own thread/event loop for exactly that. CLEXER's bot token is only used
+# afterward, to actually POST the downloaded image bytes to real signal
+# destinations — it never touches CoinTrendzBot directly.
 _userbot_loop = None
 _userbot_client = None
 _userbot_ready = threading.Event()
+
+# ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
+# Requests are serialized (one at a time via _coin_chart_lock) because
+# CoinTrendzBot's image reply carries no machine-readable caption identifying
+# which coin it's answering — so "whatever it sends back next" is only a
+# safe assumption if nothing else could be mid-flight at the same moment.
+_coin_chart_lock = threading.Lock()
+_coin_chart_pending_event = None
+_coin_chart_pending_result: dict = {}
 
 def _start_userbot():
     """Call once at startup (see main()). No-op if TG_USER_* isn't configured
@@ -626,12 +638,12 @@ def _start_userbot():
     global _userbot_loop, _userbot_client
     if not (TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING):
         print("[USERBOT] Not configured (TG_USER_API_ID/API_HASH/SESSION_STRING) — "
-              "CoinTrendzBot chart requests will go out via the bot account and likely be ignored.")
+              "CoinTrendzBot chart requests won't work until it is.")
         return
     def _run():
         global _userbot_loop, _userbot_client
         import asyncio
-        from telethon import TelegramClient
+        from telethon import TelegramClient, events
         from telethon.sessions import StringSession
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -643,11 +655,31 @@ def _start_userbot():
             # no currently-RUNNING loop, runs the whole login synchronously
             # itself (using the loop just set via set_event_loop internally)
             # and returns the client — NOT a coroutine. Wrapping it in
-            # run_until_complete() (as before) fails with "An asyncio.Future,
-            # a coroutine or an awaitable is required", since there's nothing
-            # left to await by the time it returns. Just call it directly.
+            # run_until_complete() fails with "An asyncio.Future, a coroutine
+            # or an awaitable is required", since there's nothing left to
+            # await by the time it returns. Just call it directly.
             _userbot_client.start()
             print("[USERBOT] Connected.")
+
+            @_userbot_client.on(events.NewMessage(chats=int(COINTRENDZ_GROUP_ID)))
+            async def _on_group_message(event):
+                # Runs on THIS thread's loop, for every new message in the
+                # shared group — Kaito's own account sees CoinTrendzBot's
+                # replies fine, no bot-to-bot restriction applies here.
+                if _coin_chart_pending_event is None or not event.photo:
+                    return
+                sender = await event.get_sender()
+                _uname = (getattr(sender, "username", None) or "").lower()
+                if _uname != COINTRENDZ_BOT_USERNAME:
+                    return
+                try:
+                    _bytes = await event.download_media(file=bytes)
+                except Exception as e:
+                    print(f"[USERBOT] chart download failed: {e}")
+                    return
+                _coin_chart_pending_result["photo_bytes"] = _bytes
+                _coin_chart_pending_event.set()
+
             _userbot_ready.set()
             loop.run_forever()
         except Exception as e:
@@ -671,25 +703,14 @@ def _send_via_userbot(chat_id, text: str, timeout: float = 10.0) -> bool:
         print(f"[USERBOT] send failed: {e}")
         return False
 
-# ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
-# Bots can't message each other privately or read each other's replies — the
-# ONLY way to get a chart image out of another bot is to share a group with
-# it, post the command there, and watch for its reply in that same group
-# (see COINTRENDZ_GROUP_ID's comment). Requests are serialized (one at a
-# time via _coin_chart_lock) because CoinTrendzBot's image reply carries no
-# machine-readable caption identifying which coin it's answering — so
-# "whatever it sends back next" is only a safe assumption if nothing else
-# could be mid-flight at the same moment.
-_coin_chart_lock = threading.Lock()
-_coin_chart_pending_event = None
-_coin_chart_pending_result: dict = {}
-
 def _request_coin_chart_image(coin: str, timeout: float = 30.0):
-    """Sends '/c <coin>' to the shared CoinTrendzBot group (via the userbot —
-    see above, a real bot-token send would just get ignored) and waits (up to
-    `timeout`s) for its image reply there, returning the photo's file_id —
-    directly reusable in CLEXER's own sendPhoto calls, no re-download/re-
-    upload needed. Returns None on timeout or send failure; callers must
+    """Sends '/c <coin>' to the shared CoinTrendzBot group via the userbot,
+    then waits (up to `timeout`s) for the userbot's own NewMessage handler
+    (_on_group_message, registered in _start_userbot) to download
+    CoinTrendzBot's image reply there. Returns the raw image bytes — a
+    file_id obtained via Kaito's user session isn't valid in CLEXER's bot-
+    token API calls, so callers must upload these bytes directly (multipart),
+    not reference a file_id. Returns None on timeout/failure; callers must
     treat that as "no chart available this time," never block a real trade
     signal on it."""
     global _coin_chart_pending_event
@@ -706,14 +727,16 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
             return None
         _got = _ev.wait(timeout)
         _coin_chart_pending_event = None
-        return _coin_chart_pending_result.get("file_id") if _got else None
+        return _coin_chart_pending_result.get("photo_bytes") if _got else None
 
-def _send_chart_image_for_reply_map(reply_map: dict, file_id: str):
-    """Sends an already-fetched chart image (by file_id) to every destination
-    a signal's entry text just went to — reply_map is exactly what
-    send_entry_signal returned, so this reuses its keys to recover each
-    real chat_id instead of re-deriving the tier-routing logic."""
-    if not file_id:
+def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes):
+    """Uploads an already-downloaded chart image (raw bytes, from the
+    userbot) to every destination a signal's entry text just went to —
+    reply_map is exactly what send_entry_signal returned, so this reuses its
+    keys to recover each real chat_id instead of re-deriving the tier-
+    routing logic. Multipart upload, not a file_id — see
+    _request_coin_chart_image's docstring for why."""
+    if not photo_bytes:
         return
     for key in (reply_map or {}).keys():
         if key == "ch1": cid = TELEGRAM_CHANNEL_ID
@@ -722,7 +745,7 @@ def _send_chart_image_for_reply_map(reply_map: dict, file_id: str):
         if not cid: continue
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                json={"chat_id": cid, "photo": file_id}, timeout=15)
+                data={"chat_id": cid}, files={"photo": ("chart.png", photo_bytes)}, timeout=20)
         except Exception as e:
             print(f"  [CHART IMG] send to {cid} failed: {e}")
 
@@ -731,9 +754,9 @@ def _attach_chart_image_async(coin: str, reply_map: dict):
     real trade signal (already sent by the time this is called) must never
     wait on a third-party bot's reply."""
     def _run():
-        _fid = _request_coin_chart_image(coin)
-        if _fid:
-            _send_chart_image_for_reply_map(reply_map, _fid)
+        _img = _request_coin_chart_image(coin)
+        if _img:
+            _send_chart_image_for_reply_map(reply_map, _img)
     threading.Thread(target=_run, daemon=True).start()
 
 def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True,
@@ -7540,11 +7563,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         send_reply(chat_id, "🧪 <b>DEMO PREVIEW — not a real trade</b>\n\n" + fmt_scan_signal(_cp_demo_sig))
         send_reply(chat_id, "🧪 Fetching chart image from CoinTrendzBot (up to 30s)...")
         def _run_chartpreview():
-            _fid = _request_coin_chart_image(_cp_coin.lower())
-            if _fid:
+            _img = _request_coin_chart_image(_cp_coin.lower())
+            if _img:
                 try:
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                        json={"chat_id": chat_id, "photo": _fid, "caption": "🧪 Demo chart preview — not a real trade"}, timeout=15)
+                        data={"chat_id": chat_id, "caption": "🧪 Demo chart preview — not a real trade"},
+                        files={"photo": ("chart.png", _img)}, timeout=20)
                 except Exception as e:
                     send_reply(chat_id, f"⚠️ Chart send failed: {e}")
             else:
@@ -12569,22 +12593,15 @@ def command_listener():
                 if msg.get("chat", {}).get("type") in ("group", "supergroup") and sender_uid:
                     _track_group_seen_user(cid, sender_uid, msg.get("from", {}))
 
-                # CoinTrendzBot chart-image capture (2026-07-31) — see the relay's
-                # comment block above send_entry_signal. This whole group exists
-                # ONLY for the chart relay — CLEXER stays completely silent there
-                # (no "Unknown command" replies to Kaito's own "/c <coin>", no
-                # normal command processing at all) except to actually CAPTURE
-                # CoinTrendzBot's photo reply while a request is genuinely pending.
+                # Shared CoinTrendzBot group (2026-07-31) — CLEXER's bot-token
+                # listener can never see CoinTrendzBot's replies there (Telegram
+                # doesn't deliver bot-to-bot messages at all — see the relay's
+                # comment block above send_entry_signal); the userbot's own
+                # Telethon event handler (_on_group_message, in _start_userbot)
+                # captures and downloads those instead. CLEXER just needs to
+                # stay silent in this group — no "Unknown command" replies to
+                # Kaito's own "/c <coin>", no normal command processing at all.
                 if str(cid) == str(COINTRENDZ_GROUP_ID):
-                    _ctb_from = msg.get("from", {})
-                    _ctb_uname = (_ctb_from.get("username") or "").lower()
-                    print(f"  [COINTRENDZ GROUP] from=@{_ctb_uname or '?'} ({_ctb_from.get('first_name','?')}) "
-                          f"has_photo={bool(msg.get('photo'))} pending={_coin_chart_pending_event is not None}")
-                    if (_coin_chart_pending_event is not None and _ctb_uname == COINTRENDZ_BOT_USERNAME):
-                        _photo = msg.get("photo")
-                        if _photo:
-                            _coin_chart_pending_result["file_id"] = _photo[-1]["file_id"]
-                            _coin_chart_pending_event.set()
                     continue
 
                 # Telegram Stars payment completed — arrives as a normal message
