@@ -1960,6 +1960,74 @@ _SLOT_MIN_STREAK_FOR_REVERIFY = 2
 # demo1/demo2 each map to their own independent schedule kind (test1/test2).
 _SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
 _SLOT_STATE_FILE = os.path.join(DATA_DIR, "slot_auto_state.json")
+_SCHEDULED_BC_FILE = os.path.join(DATA_DIR, "scheduled_broadcasts.json")
+_scheduled_broadcasts: dict = {}  # {id_str: {"text","file_id","file_type","mode",
+# "channel_targets","target_user","fire_at" (epoch), "created_by", "label"}} —
+# admin-scheduled /schedulebroadcast entries, persisted so a Railway restart
+# doesn't lose one that's still days away. See _load/_save_scheduled_broadcasts
+# and the firing check in main()'s _scheduled_broadcast_loop.
+_scheduled_bc_next_id = 1
+
+def _load_scheduled_broadcasts():
+    global _scheduled_broadcasts, _scheduled_bc_next_id
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/scheduled_broadcasts")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_SCHEDULED_BC_FILE, r.json(), "SCHEDULED BC")
+        if d is None and os.path.exists(_SCHEDULED_BC_FILE):
+            with open(_SCHEDULED_BC_FILE) as f:
+                d = json.load(f)
+        if d is None:
+            return
+        _scheduled_broadcasts = d.get("items", {})
+        _scheduled_bc_next_id = d.get("next_id", 1)
+        print(f"[SCHEDULED BC] Loaded {len(_scheduled_broadcasts)} pending")
+    except Exception as e:
+        print(f"[SCHEDULED BC] load error: {e}")
+
+def _save_scheduled_broadcasts():
+    d = {"items": _scheduled_broadcasts, "next_id": _scheduled_bc_next_id}
+    try:
+        with open(_SCHEDULED_BC_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception as e:
+        print(f"[SCHEDULED BC] local save error: {e}")
+    if CLEXER_API_URL and is_active_server():
+        try:
+            _kv_push("scheduled_broadcasts", d)
+        except Exception as e:
+            print(f"[SCHEDULED BC] central push error: {e}")
+
+def _parse_schedule_datetime(s: str):
+    """Parses "DD.MM.YYYY H.MMam/pm" (IST) — e.g. "26.05.2026 2.05pm" — into
+    a real epoch timestamp. Returns None if the text doesn't match. The
+    conversion mirrors now_ist()'s convention (see IST's definition): an IST
+    wall-clock value is the REAL utc value plus 5:30, so going back to a real
+    epoch from a typed IST value means subtracting 5:30 before treating it
+    as UTC."""
+    s = s.strip().lower().replace(" ", " ")
+    m = re.match(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2})\.(\d{2})\s*(am|pm)$', s)
+    if not m:
+        return None
+    day, month, year, hour, minute, ampm = m.groups()
+    day, month, year, hour, minute = int(day), int(month), int(year), int(hour), int(minute)
+    if not (1 <= month <= 12 and 1 <= day <= 31 and 0 <= minute <= 59 and 1 <= hour <= 12):
+        return None
+    if hour == 12: hour = 0
+    if ampm == "pm": hour += 12
+    try:
+        _naive_ist = datetime(year, month, day, hour, minute)
+        _real_utc = (_naive_ist - IST).replace(tzinfo=timezone.utc)
+        return _real_utc.timestamp()
+    except Exception:
+        return None
+
+def _fmt_schedule_datetime(epoch: float) -> str:
+    """Reverse of _parse_schedule_datetime, for display — epoch -> IST wall-clock string."""
+    dt = datetime.fromtimestamp(epoch, timezone.utc) + IST
+    return dt.strftime("%d.%m.%Y %I.%M%p").lower()
 _slot_stats: dict = {}  # "kind|H.M" -> {"tp": int, "sl": int, "streak": int}
 
 def _slot_key(kind: str, hm: tuple) -> str:
@@ -2220,6 +2288,7 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
     return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
 
 _load_slot_state()
+_load_scheduled_broadcasts()
 
 # Self-heal on startup: a promote/demote/reverify only ever fires live, right
 # when a trade closes at that exact slot — if a redeploy happened between an
@@ -6727,7 +6796,7 @@ SCAN_USE_TV = False
 
 ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/close","/sltobe","/setsl","/settp1","/settp2","/tvstatus",
-    "/broadcast","/users","/allusers","/user","/kick","/pauseuser",
+    "/broadcast","/schedulebroadcast","/scheduledbroadcasts","/users","/allusers","/user","/kick","/pauseuser",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
@@ -8011,6 +8080,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/broadcast":
         send_reply(chat_id, "📢 <b>Broadcast Mode</b>\n\nWho should receive this message?", reply_markup=_broadcast_mode_btns())
 
+    elif cmd == "/schedulebroadcast" and is_admin:
+        send_reply(chat_id, "📅 <b>Schedule Broadcast</b>\n\nWho should receive this message?", reply_markup=_broadcast_mode_btns(scheduled=True))
+
+    elif cmd == "/scheduledbroadcasts" and is_admin:
+        send_scheduled_broadcasts_screen(chat_id)
+
     elif cmd == "/adminlinks" and is_admin:
         send_adminlinks_screen(chat_id)
 
@@ -8108,6 +8183,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/cancel":
         if chat_id in broadcast_pending: del broadcast_pending[chat_id]; send_reply(chat_id, "Cancelled.")
+        elif str(chat_id) in _schedule_time_pending: del _schedule_time_pending[str(chat_id)]; send_reply(chat_id, "Cancelled.")
         else: send_reply(chat_id, "Nothing to cancel.")
 
     elif cmd == "/ctclose" and is_admin:
@@ -9694,17 +9770,18 @@ _BC_MODE_LABELS = {"users": "Users Only", "channels": "Channels Only", "all": "A
                     "free": "Free Channels", "vip": "VIP Channels", "specific_user": "Specific User"}
 _BC_USERS_PER_PAGE = 10
 
-def _broadcast_mode_btns() -> dict:
+def _broadcast_mode_btns(scheduled: bool = False) -> dict:
+    _s = ":sched" if scheduled else ""
     return {"inline_keyboard": [[
-        {"text": "👥 Users Only",    "callback_data": "broadcast_mode:users"},
-        {"text": "📢 Channels Only", "callback_data": "broadcast_mode:channels"},
+        {"text": "👥 Users Only",    "callback_data": f"broadcast_mode:users{_s}"},
+        {"text": "📢 Channels Only", "callback_data": f"broadcast_mode:channels{_s}"},
     ], [
-        {"text": "🌍 All (Users + Channels)", "callback_data": "broadcast_mode:all"},
+        {"text": "🌍 All (Users + Channels)", "callback_data": f"broadcast_mode:all{_s}"},
     ], [
-        {"text": "🆓 Free Channels", "callback_data": "broadcast_mode:free"},
-        {"text": "⭐ VIP Channels",  "callback_data": "broadcast_mode:vip"},
+        {"text": "🆓 Free Channels", "callback_data": f"broadcast_mode:free{_s}"},
+        {"text": "⭐ VIP Channels",  "callback_data": f"broadcast_mode:vip{_s}"},
     ], [
-        {"text": "👤 Specific User", "callback_data": "bcuser_open:0"},
+        {"text": "👤 Specific User", "callback_data": f"bcuser_open:0{_s}"},
     ]]}
 
 def _channels_by_tier_targets(tier: str) -> list:
@@ -9714,11 +9791,12 @@ def _channels_by_tier_targets(tier: str) -> list:
     return [(c["id"], c.get("label") or f"{_icon} · {c['id']}")
             for c in CHANNELS if c.get("tier") == tier and c.get("id")]
 
-def send_broadcast_user_picker(chat_id, page: int = 0, message_id=None):
+def send_broadcast_user_picker(chat_id, page: int = 0, scheduled: bool = False, message_id=None):
     """Paginated 'pick one user' screen for the Specific User broadcast mode —
     same idea as send_userstats_list but with a tappable button per user
     (that one just renders a text block) since here the admin needs to
     actually select exactly one."""
+    _s = ":sched" if scheduled else ""
     ids = sorted([u for u in registered_users if int(u) > 0 and u not in blocked_users], key=lambda u: int(u))
     if not ids:
         _help_edit_or_send(chat_id, "⚠️ No registered users yet.",
@@ -9730,10 +9808,10 @@ def send_broadcast_user_picker(chat_id, page: int = 0, message_id=None):
     for uid in page_ids:
         _uname = user_usernames.get(str(uid))
         _label = f"@{_uname}" if _uname else f"ID {uid}"
-        rows.append([{"text": f"👤 {_label}", "callback_data": f"bcuser:{uid}"}])
+        rows.append([{"text": f"👤 {_label}", "callback_data": f"bcuser:{uid}{_s}"}])
     nav = []
-    if page > 0: nav.append({"text": "◀️ Prev", "callback_data": f"bcuser_open:{page-1}"})
-    if start + _BC_USERS_PER_PAGE < len(ids): nav.append({"text": "Next ▶️", "callback_data": f"bcuser_open:{page+1}"})
+    if page > 0: nav.append({"text": "◀️ Prev", "callback_data": f"bcuser_open:{page-1}{_s}"})
+    if start + _BC_USERS_PER_PAGE < len(ids): nav.append({"text": "Next ▶️", "callback_data": f"bcuser_open:{page+1}{_s}"})
     if nav: rows.append(nav)
     rows.append([{"text": "🚫 Back", "callback_data": "bcback"}])
     _total_pages = (len(ids) - 1) // _BC_USERS_PER_PAGE + 1
@@ -9748,6 +9826,92 @@ def _bc_picker_targets(mode: str) -> list:
         return _channels_by_tier_targets(mode)
     return _all_broadcast_channel_targets()
 
+_schedule_time_pending: dict = {}  # chat_id str -> {"text","file_id","file_type","mode","channel_targets","target_user"}
+# awaiting the admin's "DD.MM.YYYY H.MMam/pm" reply, after which a scheduled-broadcast entry gets created.
+
+def _prompt_schedule_time(chat_id, content: dict, message_id=None):
+    """content: {"text","file_id","file_type","mode","channel_targets","target_user"} —
+    already-composed broadcast, just needs a fire time now."""
+    _schedule_time_pending[str(chat_id)] = content
+    _help_edit_or_send(chat_id,
+        "📅 <b>When should this fire?</b>\n\n"
+        "Reply with the date and time (IST), like this:\n<code>26.05.2026 2.05pm</code>\n\n"
+        "<i>/cancel to abort</i>", None, message_id=message_id)
+
+def handle_schedule_time_message(chat_id, text: str):
+    """The admin's reply to _prompt_schedule_time — parses it and, if valid
+    and in the future, either creates a new scheduled-broadcast entry or (if
+    content carries "edit_id", from the /scheduledbroadcasts Edit button)
+    just updates that existing entry's fire time, leaving its message/target
+    untouched. Invalid/past input keeps the pending state so they can just
+    retry, rather than making them redo the whole compose flow."""
+    global _scheduled_bc_next_id
+    content = _schedule_time_pending.get(str(chat_id))
+    if not content:
+        return
+    fire_at = _parse_schedule_datetime(text)
+    if fire_at is None:
+        send_reply(chat_id, "⚠️ Couldn't read that — use exactly this format: <code>26.05.2026 2.05pm</code>\n\n<i>/cancel to abort</i>")
+        return
+    if fire_at <= time.time():
+        send_reply(chat_id, "⚠️ That time is already in the past — pick a future date/time.\n\n<i>/cancel to abort</i>")
+        return
+    del _schedule_time_pending[str(chat_id)]
+    _edit_id = content.get("edit_id")
+    if _edit_id and _edit_id in _scheduled_broadcasts:
+        _scheduled_broadcasts[_edit_id]["fire_at"] = fire_at
+        _save_scheduled_broadcasts()
+        send_reply(chat_id, f"✅ <b>#{_edit_id} updated</b>\n\nNew time: <b>{_fmt_schedule_datetime(fire_at)} IST</b>")
+        return
+    _sid = str(_scheduled_bc_next_id)
+    _scheduled_bc_next_id += 1
+    _scheduled_broadcasts[_sid] = {**content, "fire_at": fire_at, "created_by": chat_id}
+    _save_scheduled_broadcasts()
+    _label = _BC_MODE_LABELS.get(content["mode"], content["mode"])
+    send_reply(chat_id,
+        f"✅ <b>Scheduled #{_sid}</b>\n\nTo: {_label}\nFires: <b>{_fmt_schedule_datetime(fire_at)} IST</b>\n\n"
+        f"See /scheduledbroadcasts to view, edit, or cancel it.")
+
+def send_scheduled_broadcasts_screen(chat_id, message_id=None):
+    if not _scheduled_broadcasts:
+        _help_edit_or_send(chat_id, "📅 <b>Scheduled Broadcasts</b>\n\nNothing scheduled. Use /schedulebroadcast to add one.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "help_main"}]]}, message_id=message_id)
+        return
+    _items = sorted(_scheduled_broadcasts.items(), key=lambda kv: kv[1]["fire_at"])
+    lines = ["📅 <b>Scheduled Broadcasts</b>"]
+    rows = []
+    for sid, item in _items:
+        _label = _BC_MODE_LABELS.get(item.get("mode", ""), item.get("mode", "?"))
+        _preview = _html.escape((item.get("text") or "(file only)")[:40])
+        lines.append(f"\n<b>#{sid}</b> — {_fmt_schedule_datetime(item['fire_at'])} IST — {_label}\n<i>{_preview}</i>")
+        rows.append([
+            {"text": f"✏️ Edit Time #{sid}", "callback_data": f"schedbc_edit:{sid}"},
+            {"text": f"🗑 Cancel #{sid}",     "callback_data": f"schedbc_cancel:{sid}"},
+        ])
+    rows.append([{"text": "◀️  Back", "callback_data": "help_main"}])
+    _help_edit_or_send(chat_id, "\n".join(lines), {"inline_keyboard": rows}, message_id=message_id)
+
+def _fire_due_scheduled_broadcasts():
+    """Checked periodically from main()'s _scheduled_broadcast_loop — fires
+    any entry whose fire_at has passed, exactly like the admin had just
+    tapped Send/Schedule at that moment."""
+    _now = time.time()
+    _due = [sid for sid, item in _scheduled_broadcasts.items() if item.get("fire_at", 0) <= _now]
+    if not _due:
+        return
+    for sid in _due:
+        item = _scheduled_broadcasts.pop(sid, None)
+        if not item:
+            continue
+        _admin_cid = item.get("created_by") or ADMIN_CHAT_ID
+        threading.Thread(target=do_broadcast, args=(
+            _admin_cid, item.get("text", ""), item.get("file_id"), item.get("file_type"),
+            item.get("mode", "all"), item.get("channel_targets"), item.get("target_user")
+        ), daemon=True).start()
+        if ADMIN_CHAT_ID:
+            send_admin(f"📅 <b>Scheduled broadcast #{sid} firing now</b> — {_BC_MODE_LABELS.get(item.get('mode'), item.get('mode'))}")
+    _save_scheduled_broadcasts()
+
 def handle_broadcast_message(chat_id, message):
     text = message.get("text") or message.get("caption") or ""
     photo = message.get("photo"); doc = message.get("document")
@@ -9758,8 +9922,13 @@ def handle_broadcast_message(chat_id, message):
     _pending = broadcast_pending.get(chat_id, {})
     mode = _pending.get("mode", "all")
     target_user = _pending.get("target_user")
+    scheduled = _pending.get("scheduled", False)
     del broadcast_pending[chat_id]
     if mode in ("users", "specific_user"):
+        if scheduled:
+            _prompt_schedule_time(chat_id, {"text": text, "file_id": file_id, "file_type": file_type,
+                "mode": mode, "channel_targets": None, "target_user": target_user})
+            return
         _label = _BC_MODE_LABELS.get(mode, mode) if mode == "users" else (
             f"@{user_usernames[str(target_user)]}" if user_usernames.get(str(target_user)) else f"user {target_user}")
         send_reply(chat_id, f"📢 Broadcasting to {_label}...")
@@ -9770,6 +9939,7 @@ def handle_broadcast_message(chat_id, message):
     _bc_picker_state[str(chat_id)] = {
         "text": text, "file_id": file_id, "file_type": file_type, "mode": mode,
         "selected": {cid for cid, _ in all_targets},  # pre-select all by default
+        "scheduled": scheduled,
     }
     _send_broadcast_picker(chat_id)
 
@@ -9788,7 +9958,7 @@ def _send_broadcast_picker(chat_id, message_id=None):
     rows.append([
         {"text": "◀️ Previous", "callback_data": "bcprev"},
         {"text": "🚫 Back",     "callback_data": "bcback"},
-        {"text": "✅ Send",     "callback_data": "bcsend"},
+        {"text": "📅 Schedule" if st.get("scheduled") else "✅ Send", "callback_data": "bcsend"},
     ])
     n = len(st["selected"])
     text = f"📢 <b>Choose channels/groups</b>\n\n{n} of {len(all_targets)} selected. Tap to toggle."
@@ -9982,6 +10152,8 @@ _SETTINGS_SUBCATS = {
 _BROADCAST_SUBCATS = {
     "messaging": ("📢 Messaging", [
         ("/broadcast",   "📢", "Message All Users", "Send a message to every registered user of the bot."),
+        ("/schedulebroadcast",   "📅", "Schedule a Broadcast", "Same as /broadcast, but fires automatically at a date+time you set instead of right away."),
+        ("/scheduledbroadcasts", "🗓", "Scheduled Broadcasts", "View, edit the time of, or cancel any broadcast you've scheduled."),
         ("/latestnews",  "📰", "News Feed Status",  "Check whether the live liquidation feed is running."),
     ]),
     "channels": ("📡 Channel Control", [
@@ -11868,23 +12040,25 @@ def command_listener():
                             message_id=cb_msg_id)
 
                     elif cb_data.startswith("broadcast_mode:") and cb_is_admin:
-                        _mode = cb_data.split(":", 1)[1]
-                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
+                        _parts = cb_data.split(":"); _mode = _parts[1]; _sched = _parts[-1] == "sched"
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id, "scheduled": _sched}
+                        _hdr = "📅 Schedule" if _sched else "Broadcast"
                         _help_edit_or_send(cb_chat_id,
-                            f"📢 <b>Broadcast — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            f"📢 <b>{_hdr} — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
 
                     elif cb_data.startswith("bcuser_open:") and cb_is_admin:
-                        _page = int(cb_data.split(":", 1)[1])
-                        send_broadcast_user_picker(cb_chat_id, page=_page, message_id=cb_msg_id)
+                        _parts = cb_data.split(":"); _page = int(_parts[1]); _sched = _parts[-1] == "sched"
+                        send_broadcast_user_picker(cb_chat_id, page=_page, scheduled=_sched, message_id=cb_msg_id)
 
                     elif cb_data.startswith("bcuser:") and cb_is_admin:
-                        _picked = cb_data.split(":", 1)[1]
-                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": "specific_user", "msg_id": cb_msg_id, "target_user": _picked}
+                        _parts = cb_data.split(":"); _picked = _parts[1]; _sched = _parts[-1] == "sched"
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": "specific_user", "msg_id": cb_msg_id, "target_user": _picked, "scheduled": _sched}
                         _uname = user_usernames.get(str(_picked))
                         _u_lbl = f"@{_uname}" if _uname else f"user {_picked}"
+                        _hdr = "📅 Schedule" if _sched else "Broadcast"
                         _help_edit_or_send(cb_chat_id,
-                            f"📢 <b>Broadcast — To {_u_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            f"📢 <b>{_hdr} — To {_u_lbl}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
 
                     elif cb_data.startswith("bctgl:") and cb_is_admin:
@@ -11898,9 +12072,11 @@ def command_listener():
                     elif cb_data == "bcprev" and cb_is_admin:
                         st = _bc_picker_state.pop(str(cb_chat_id), None)
                         _mode = st["mode"] if st else "all"
-                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id}
+                        _sched = bool(st and st.get("scheduled"))
+                        broadcast_pending[cb_chat_id] = {"step": "waiting_message", "mode": _mode, "msg_id": cb_msg_id, "scheduled": _sched}
+                        _hdr = "📅 Schedule" if _sched else "Broadcast"
                         _help_edit_or_send(cb_chat_id,
-                            f"📢 <b>Broadcast — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
+                            f"📢 <b>{_hdr} — {_BC_MODE_LABELS.get(_mode, _mode)}</b>\n\nSend message now (text/image/PDF).\n\n<i>/cancel to abort</i>",
                             None, message_id=cb_msg_id)
 
                     elif cb_data == "bcback" and cb_is_admin:
@@ -11914,12 +12090,31 @@ def command_listener():
                         if not st:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                 json={"callback_query_id": cb["id"], "text": "⚠️ Nothing to send — start over.", "show_alert": True}, timeout=5)
+                        elif st.get("scheduled"):
+                            _prompt_schedule_time(cb_chat_id, {"text": st["text"], "file_id": st["file_id"],
+                                "file_type": st["file_type"], "mode": st["mode"], "channel_targets": list(st["selected"]),
+                                "target_user": None}, message_id=cb_msg_id)
                         else:
                             _sel = list(st["selected"])
                             _mode_label = _BC_MODE_LABELS.get(st["mode"], st["mode"])
                             _help_edit_or_send(cb_chat_id, f"📢 Broadcasting to {_mode_label} ({len(_sel)} channels)...", None, message_id=cb_msg_id)
                             threading.Thread(target=do_broadcast,
                                 args=(cb_chat_id, st["text"], st["file_id"], st["file_type"], st["mode"], _sel), daemon=True).start()
+
+                    elif cb_data.startswith("schedbc_edit:") and cb_is_admin:
+                        _sid = cb_data.split(":", 1)[1]
+                        _item = _scheduled_broadcasts.get(_sid)
+                        if _item:
+                            _prompt_schedule_time(cb_chat_id, {**_item, "edit_id": _sid}, message_id=cb_msg_id)
+                        else:
+                            send_scheduled_broadcasts_screen(cb_chat_id, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("schedbc_cancel:") and cb_is_admin:
+                        _sid = cb_data.split(":", 1)[1]
+                        _scheduled_broadcasts.pop(_sid, None)
+                        _save_scheduled_broadcasts()
+                        send_scheduled_broadcasts_screen(cb_chat_id, message_id=cb_msg_id)
+
                     elif cb_data == "confirm_no":
                         pc = _pending_confirm.pop(cb_cid, None)
                         _back_cb = pc["back_cb"] if pc else "help_main"
@@ -12253,6 +12448,8 @@ def command_listener():
                 register_user(cid, uname if uname != "?" else None)
                 if cid in broadcast_pending and not text.startswith("/"):
                     handle_broadcast_message(cid, msg); continue
+                if str(cid) in _schedule_time_pending and not text.startswith("/"):
+                    handle_schedule_time_message(cid, text); continue
                 # Pending input — user typed value after tapping a button
                 if cid in pending_input and not text.startswith("/"):
                     pi = pending_input[cid]
@@ -13404,6 +13601,15 @@ def main():
                 print(f"[VIP] expiry check error: {e}")
             time.sleep(3600)  # hourly is plenty for a date-based expiry
     threading.Thread(target=_vip_expiry_loop, daemon=True).start()
+
+    def _scheduled_broadcast_loop():
+        while True:
+            try:
+                _fire_due_scheduled_broadcasts()
+            except Exception as e:
+                print(f"[SCHEDULED BC] fire check error: {e}")
+            time.sleep(30)  # fine enough to hit "2.05pm" without checking every tick
+    threading.Thread(target=_scheduled_broadcast_loop, daemon=True).start()
     threading.Thread(target=_daily_summary_loop, daemon=True).start()
     # Liquidation feeds (Bybit + OKX) and the order-book wall tracker are
     # stopped 2026-07-28 — combined with the dense scan grid, message volume
