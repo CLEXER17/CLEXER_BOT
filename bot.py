@@ -56,6 +56,11 @@ CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, 
 _CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-5"}
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
+TELEGRAM_CHANNEL_ID_2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")  # VIP mirror — gets every VIP signal/update/
+                                                                 # daily-recap pin alongside real VIP channels,
+                                                                 # but stays OUT of CHANNELS/_channelmgmt on
+                                                                 # purpose (admin wants it separate from the
+                                                                 # user-editable VIP/Free channel list)
 ADMIN_CHAT_ID       = os.getenv("ADMIN_CHAT_ID",       "")
 TV_BRIDGE_URL       = os.getenv("TV_BRIDGE_URL", "").rstrip("/")
 MINI_APP_URL        = os.getenv("MINI_APP_URL", "").rstrip("/")   # Railway mini app URL for chart screenshots
@@ -381,7 +386,7 @@ def _delete_trail_sl_messages(t: dict):
         return
     for _k, _mid in _ids.items():
         if _k == "ch1": _cid = TELEGRAM_CHANNEL_ID
-        elif _k == "ch2": _cid = os.getenv("TELEGRAM_CHANNEL_ID_2", "")
+        elif _k == "ch2": _cid = TELEGRAM_CHANNEL_ID_2
         else: _cid = _k.split(":", 1)[1]
         if not _cid: continue
         try:
@@ -435,7 +440,10 @@ def _load_free_tracker():
         print(f"[FREE TRACKER] load error: {e}")
 
 def _channels_by_tier(tier: str) -> list:
-    return [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id") and not c.get("paused")]
+    ids = [c["id"] for c in CHANNELS if c.get("tier") == tier and c.get("id") and not c.get("paused")]
+    if tier == "vip" and TELEGRAM_CHANNEL_ID_2 and not channel_paused.get("2"):
+        ids.append(TELEGRAM_CHANNEL_ID_2)
+    return ids
 
 def _in_free_window() -> bool:
     now = datetime.now(timezone.utc) + IST
@@ -533,7 +541,7 @@ def _react_to_ids(ids: dict, emoji: str = "🔥"):
     """Reacts to every destination message_id in a send_lifecycle_reply-style
     ids dict (e.g. {"ch1": mid, "vip:123": mid, "free:456": mid})."""
     for key, mid in (ids or {}).items():
-        cid = key.split(":", 1)[1] if ":" in key else (TELEGRAM_CHANNEL_ID if key == "ch1" else os.getenv("TELEGRAM_CHANNEL_ID_2", ""))
+        cid = key.split(":", 1)[1] if ":" in key else (TELEGRAM_CHANNEL_ID if key == "ch1" else TELEGRAM_CHANNEL_ID_2)
         if cid and mid:
             _react_to_message(cid, mid, emoji)
 
@@ -5006,6 +5014,8 @@ def _all_broadcast_channel_targets() -> list:
     for c in CHANNELS:
         if c.get("id"):
             out.append((c["id"], c.get("label") or (("⭐ VIP" if c.get("tier")=="vip" else "🆓 Free") + f" · {c['id']}")))
+    if TELEGRAM_CHANNEL_ID_2:
+        out.append((TELEGRAM_CHANNEL_ID_2, "⭐ VIP Mirror (Channel 2)"))
     return out
 
 _TG_MSG_LIMIT = 4096
@@ -8549,11 +8559,16 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/channels":
         s1 = "PAUSED" if channel_paused["1"] else "ACTIVE"
         _vip_n = len(_channels_by_tier("vip")); _free_n = len(_channels_by_tier("free"))
+        _ch2_line = ""
+        if TELEGRAM_CHANNEL_ID_2:
+            s2 = "PAUSED" if channel_paused.get("2") else "ACTIVE"
+            _ch2_line = f"VIP Mirror (Channel 2): <b>{s2}</b>\n<code>{TELEGRAM_CHANNEL_ID_2}</code>\n\n"
         send_reply(chat_id,
             f"<b>Channel Status</b>\n\n"
             f"Signal Channel: <b>{s1}</b>\n<code>{TELEGRAM_CHANNEL_ID}</code>\n\n"
-            f"VIP channels: <b>{_vip_n}</b>  |  Free channels: <b>{_free_n}</b>\n"
-            f"Manage those with /channelmgmt\n\n"
+            f"{_ch2_line}"
+            f"VIP channels: <b>{_vip_n}</b> (incl. Channel 2)  |  Free channels: <b>{_free_n}</b>\n"
+            f"Manage the VIP/Free list with /channelmgmt\n\n"
             f"/pausechannel — pick a channel to pause\n/resumechannel — pick a channel to resume")
 
     elif cmd in ("/pausechannel", "/resumechannel"):
@@ -10105,8 +10120,11 @@ def _channels_by_tier_targets(tier: str) -> list:
     """Like _channels_by_tier, but returns [(id, label), ...] pairs — for the
     broadcast picker, which needs a label per channel, not just the id."""
     _icon = "⭐ VIP" if tier == "vip" else "🆓 Free"
-    return [(c["id"], c.get("label") or f"{_icon} · {c['id']}")
-            for c in CHANNELS if c.get("tier") == tier and c.get("id")]
+    out = [(c["id"], c.get("label") or f"{_icon} · {c['id']}")
+           for c in CHANNELS if c.get("tier") == tier and c.get("id")]
+    if tier == "vip" and TELEGRAM_CHANNEL_ID_2:
+        out.append((TELEGRAM_CHANNEL_ID_2, "⭐ VIP Mirror (Channel 2)"))
+    return out
 
 def send_broadcast_user_picker(chat_id, page: int = 0, scheduled: bool = False, message_id=None):
     """Paginated 'pick one user' screen for the Specific User broadcast mode —
@@ -11103,6 +11121,11 @@ def send_pausechannel_screen(chat_id, message_id=None):
         [{"text": "⏸ Pause",  "callback_data": "chpause:sig"},
          {"text": "▶️ Resume", "callback_data": "chresume:sig"}],
     ]
+    if TELEGRAM_CHANNEL_ID_2:
+        _s2_flag = "⏸ PAUSED" if channel_paused.get("2") else "✅ ACTIVE"
+        rows.append([{"text": f"⭐ VIP Mirror (Channel 2) — {_s2_flag}", "callback_data": "noop"}])
+        rows.append([{"text": "⏸ Pause",  "callback_data": "chpause:ch2"},
+                      {"text": "▶️ Resume", "callback_data": "chresume:ch2"}])
     for i, c in enumerate(CHANNELS):
         label = c.get("label") or (("⭐ VIP" if c.get("tier") == "vip" else "🆓 Free") + f" · {c.get('id','?')}")
         _flag = "⏸ PAUSED" if c.get("paused") else "✅ ACTIVE"
@@ -11113,7 +11136,10 @@ def send_pausechannel_screen(chat_id, message_id=None):
     _help_edit_or_send(chat_id,
         "<b>⏸ Pause / Resume a Channel</b>\n\n"
         "<blockquote>Pausing stops new signals from being sent there — everything else (analysis, "
-        "other channels, copy trade) keeps running normally. Resume any time.</blockquote>",
+        "other channels, copy trade) keeps running normally. Resume any time.\n\n"
+        "⭐ VIP Mirror (Channel 2) automatically gets every VIP signal, update and the pinned daily "
+        "recap — it's not part of the VIP/Free list below on purpose, so it stays separate from "
+        "/channelmgmt.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_trailsl_screen(chat_id, message_id=None):
@@ -12217,6 +12243,7 @@ def command_listener():
                     elif cb_data.startswith("chpause:") and cb_is_admin:
                         _tgt = cb_data.split(":", 1)[1]
                         if _tgt == "sig": channel_paused["1"] = True
+                        elif _tgt == "ch2": channel_paused["2"] = True
                         else:
                             _i = int(_tgt)
                             if 0 <= _i < len(CHANNELS): CHANNELS[_i]["paused"] = True
@@ -12224,6 +12251,7 @@ def command_listener():
                     elif cb_data.startswith("chresume:") and cb_is_admin:
                         _tgt = cb_data.split(":", 1)[1]
                         if _tgt == "sig": channel_paused["1"] = False
+                        elif _tgt == "ch2": channel_paused["2"] = False
                         else:
                             _i = int(_tgt)
                             if 0 <= _i < len(CHANNELS): CHANNELS[_i]["paused"] = False
