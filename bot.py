@@ -6872,7 +6872,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -7451,6 +7451,34 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "✅ Test sent — scroll up: does the 2nd message show <b>\"Reply to CRYPTO CLEXER\"</b> quoting the 1st message? If yes, reply-threading works correctly.")
         else:
             send_reply(chat_id, "❌ <b>Test FAILED at step 2</b> — entry sent OK, but the reply message failed to send. Check logs for [PLAIN REPLY] errors.")
+
+    elif cmd == "/cp" and is_admin:
+        if len(parts) < 2:
+            send_reply(chat_id,
+                "<b>Chart Preview</b>\n\nUsage: <code>/cp btc</code>\n\n"
+                "Shows a DEMO signal with the CoinTrendzBot chart image, sent to YOUR DM only — "
+                "not a real trade, nothing posted to any channel."); return
+        _cp_coin = parts[1].upper()
+        _cp_sym = f"{_cp_coin}-USDT"
+        _cp_price = get_bingx_price(_cp_sym) or 0
+        if not _cp_price:
+            send_reply(chat_id, f"⚠️ Couldn't get a live price for {_cp_coin} — check the symbol (e.g. BTC, PEPE, SOL)."); return
+        _cp_sl_dist = _cp_price * 0.02
+        _cp_demo_sig = {"symbol": _cp_sym, "signal": "BUY", "entry": _cp_price, "sl": _cp_price - _cp_sl_dist,
+                         "tp1": _cp_price + _cp_sl_dist * 1.5, "tp2": _cp_price + _cp_sl_dist * 3, "ver": 1}
+        send_reply(chat_id, "🧪 <b>DEMO PREVIEW — not a real trade</b>\n\n" + fmt_scan_signal(_cp_demo_sig))
+        send_reply(chat_id, "🧪 Fetching chart image from CoinTrendzBot (up to 15s)...")
+        def _run_chartpreview():
+            _fid = _request_coin_chart_image(_cp_coin.lower())
+            if _fid:
+                try:
+                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                        json={"chat_id": chat_id, "photo": _fid, "caption": "🧪 Demo chart preview — not a real trade"}, timeout=15)
+                except Exception as e:
+                    send_reply(chat_id, f"⚠️ Chart send failed: {e}")
+            else:
+                send_reply(chat_id, "⚠️ CoinTrendzBot didn't reply in time — no chart image this time. (Check the shared group and bot username.)")
+        threading.Thread(target=_run_chartpreview, daemon=True).start()
 
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
@@ -10121,6 +10149,7 @@ _SCAN_SUBCATS = {
     "lookup": ("🪙 Coin Lookup", [
         ("/coin",   "🪙", "Coin Lookup", "Type any coin's name and the bot finds and analyzes it for you."),
         ("/liqmap", "🗺", "Liquidation Heatmap", "Estimated long/short liquidation pressure zones for any coin, by leverage tier."),
+        ("/cp",     "🧪", "Chart Preview (Demo)", "See a demo signal + CoinTrendzBot chart image in your own DM — not a real trade, nothing posted anywhere."),
     ]),
 }
 
