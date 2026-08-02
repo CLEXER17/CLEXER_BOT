@@ -7200,7 +7200,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -8616,6 +8616,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/userstats" and is_admin:
         send_userstats_screen(chat_id)
+
+    elif cmd == "/leaderboard" and is_admin:
+        send_leaderboard_screen(chat_id)
 
     elif cmd == "/aiconfig" and is_scanadmin:
         send_aiconfig_screen(chat_id)
@@ -10598,6 +10601,7 @@ _COPYADMIN_SUBCATS = {
         ("/users",     "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
         ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
+        ("/leaderboard", "🏆", "Volume Leaderboard", "Ranks users by real copy-trade volume — Today, 7D, 30D, Year, or All-Time."),
     ]),
     "manage": ("🛡 Moderation", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
@@ -11136,6 +11140,55 @@ def send_adminlinks_screen(chat_id, message_id=None):
         f"buttons on their main /help menu.\n\n"
         f"{channel_line}</blockquote>")
     _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id=message_id)
+
+_LEADERBOARD_LABELS = {"day": "Today", "week": "Last 7 Days", "month": "Last 30 Days",
+                        "year": "Last 365 Days", "all": "All-Time"}
+_LEADERBOARD_DAYS = {"day": 0, "week": 6, "month": 29, "year": 364}
+
+def _leaderboard_data(period: str) -> list:
+    """[(cid, username, volume, pnl), ...] sorted by volume descending. Real
+    copy-trade volume only (notional USD closed — qty * close price at each
+    TP1/TP2/SL), tracked in ct._record_pnl via user["volume_by_day"]
+    (day/week/month/year — rolling windows) or history.total_volume (all-time,
+    unaffected by any per-day/per-log capping)."""
+    now = datetime.now(timezone.utc) + IST
+    days_back = _LEADERBOARD_DAYS.get(period)
+    rows = []
+    for cid, user in list(ct._db.items()):
+        h = user.get("history") or {}
+        if period == "all":
+            vol = h.get("total_volume", 0.0)
+        else:
+            vbd = user.get("volume_by_day") or {}
+            vol = sum(vbd.get((now - timedelta(days=i)).strftime("%Y-%m-%d"), 0.0)
+                      for i in range(days_back + 1))
+        if vol <= 0:
+            continue
+        uname = user.get("username", "?")
+        rows.append((cid, uname, round(vol, 2), h.get("total_pnl", 0.0)))
+    rows.sort(key=lambda r: r[2], reverse=True)
+    return rows
+
+def send_leaderboard_screen(chat_id, period: str = "all", message_id=None):
+    rows = _leaderboard_data(period)
+    lines = [f"🏆 <b>Volume Leaderboard — {_LEADERBOARD_LABELS.get(period, period)}</b>\n"]
+    if not rows:
+        lines.append("<i>No tracked copy-trade volume yet for this period.</i>")
+    else:
+        _medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        for i, (cid, uname, vol, pnl) in enumerate(rows[:25]):
+            rank = _medals.get(i, f"{i+1}.")
+            label = f"@{uname}" if uname and uname != "?" else f"ID {cid}"
+            pnl_str = f"{'+' if pnl >= 0 else ''}{pnl:,.2f}"
+            lines.append(f"{rank} {label} — <b>${vol:,.0f}</b> vol  ({pnl_str} P/L)")
+    def _pbtn(p, label):
+        return {"text": ("✅ " if period == p else "") + label, "callback_data": f"lboard:{p}"}
+    rows_kb = [
+        [_pbtn("day", "Today"), _pbtn("week", "7D"), _pbtn("month", "30D")],
+        [_pbtn("year", "Year"), _pbtn("all", "All-Time")],
+        [{"text": "◀️  Back", "callback_data": "copyadmin_sub:directory"}],
+    ]
+    _help_edit_or_send(chat_id, "\n".join(lines), {"inline_keyboard": rows_kb}, message_id=message_id)
 
 def send_userstats_screen(chat_id, message_id=None):
     # Negative chat_ids are groups/channels, not individual users — exclude them.
@@ -12105,6 +12158,7 @@ def command_listener():
                         }
                         _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size", "/freelimit": "freelimit"}
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
+                                        "/leaderboard": send_leaderboard_screen,
                                         "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
@@ -12449,6 +12503,10 @@ def command_listener():
                         threading.Thread(target=_do_coin_analysis, args=(cb_chat_id, _sym, _etype), daemon=True).start()
 
                     # ── Pause / Resume a channel ──────────────────────────────
+                    elif cb_data.startswith("lboard:") and cb_is_admin:
+                        _period = cb_data.split(":", 1)[1]
+                        send_leaderboard_screen(cb_chat_id, _period, message_id=cb_msg_id)
+
                     elif cb_data.startswith("chpause:") and cb_is_admin:
                         _tgt = cb_data.split(":", 1)[1]
                         if _tgt == "sig": channel_paused["1"] = True

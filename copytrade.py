@@ -671,12 +671,23 @@ def _calc_pnl(side: str, entry: float, close_price: float, qty: float) -> float:
     raw = (close_price - entry) * qty if side == "BUY" else (entry - close_price) * qty
     return round(raw, 4)
 
-def _record_pnl(user: dict, pnl: float, symbol: str = "BTC-USDT", side: str = "", result: str = ""):
+def _record_pnl(user: dict, pnl: float, symbol: str = "BTC-USDT", side: str = "", result: str = "", volume: float = 0.0):
     h = user.setdefault("history", {"total":0,"profit":0,"loss":0,
                                      "total_pnl":0.0,"won_usdt":0.0,"lost_usdt":0.0})
     # backfill missing keys for old users
     h.setdefault("total_pnl", 0.0); h.setdefault("won_usdt", 0.0); h.setdefault("lost_usdt", 0.0)
+    h.setdefault("total_volume", 0.0)  # notional USD closed (qty * close price), all-time — /leaderboard reads this
     h["total_pnl"] = round(h["total_pnl"] + pnl, 4)
+    if volume > 0:
+        h["total_volume"] = round(h["total_volume"] + volume, 2)
+        # Daily-bucketed volume — /leaderboard sums whichever days fall in the
+        # selected window (day/week/month/year). Far more compact than a raw
+        # per-trade log (~365 entries/year vs. thousands) and never needs
+        # capping the way trade_log's 50-entry cap would undercount a heavy
+        # trader's month/year/all-time volume.
+        _today = (datetime.now(timezone.utc) + IST).strftime("%Y-%m-%d")
+        _vbd = user.setdefault("volume_by_day", {})
+        _vbd[_today] = round(_vbd.get(_today, 0.0) + volume, 2)
     if pnl >= 0: h["won_usdt"]  = round(h["won_usdt"]  + pnl, 4)
     else:        h["lost_usdt"] = round(h["lost_usdt"] + abs(pnl), 4)
     # Per-trade closed-trade log — the Mini App's Portfolio "Recent Closed"
@@ -1001,7 +1012,7 @@ def on_tp1(entry: float, tp1: float = 0):
 
             # Record TP1 PnL on the portion that closed
             pnl = _calc_pnl(user["pos_side"], entry, close_price, tp1_qty)
-            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "TP1")
+            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "TP1", volume=tp1_qty * close_price)
             user["history"]["total"] += 1; user["history"]["profit"] += 1
 
             # BE SL slightly inside entry so BingX accepts (SL must be < current price for LONG)
@@ -1046,7 +1057,7 @@ def on_tp2(entry: float = 0, tp2: float = 0):
             print(f"[CT] on_tp2 {cid}: {e}")
         if entry > 0 and tp2 > 0:
             pnl = _calc_pnl(user["pos_side"], entry, tp2, user.get("pos_qty", 0.001))
-            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "TP2")
+            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "TP2", volume=user.get("pos_qty", 0.001) * tp2)
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""
         user["failed_copy"] = False
@@ -1089,7 +1100,7 @@ def on_sl(entry: float = 0, sl: float = 0, tp1_hit: bool = False):
             print(f"[CT] on_sl {cid}: {e}")
         if entry > 0 and sl > 0:
             pnl = _calc_pnl(user["pos_side"], entry, sl, user.get("pos_qty", 0.001))
-            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "BE" if tp1_hit else "SL")
+            _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "BE" if tp1_hit else "SL", volume=user.get("pos_qty", 0.001) * sl)
             if not tp1_hit:
                 user["history"]["total"] += 1
                 user["history"]["loss"] += 1
@@ -1599,7 +1610,7 @@ def on_scan_tp1(symbol: str):
             closed_qty = round(qty - remaining_qty, 4)
             if tp1_price and closed_qty > 0:
                 pnl = _calc_pnl(side, entry_price, tp1_price, closed_qty)
-                _record_pnl(user, pnl, symbol, side, "TP1")
+                _record_pnl(user, pnl, symbol, side, "TP1", volume=closed_qty * tp1_price)
                 user["history"]["total"] += 1; user["history"]["profit"] += 1
 
             user[f"{p}qty"]     = remaining_qty
@@ -1640,7 +1651,7 @@ def on_scan_tp2(symbol: str):
             remaining_qty = float(user.get(f"{p}qty", 0))
             if entry_price and tp2_price and remaining_qty > 0:
                 pnl = _calc_pnl(user[f"{p}side"], entry_price, tp2_price, remaining_qty)
-                _record_pnl(user, pnl, symbol, user[f"{p}side"], "TP2")
+                _record_pnl(user, pnl, symbol, user[f"{p}side"], "TP2", volume=remaining_qty * tp2_price)
                 user["history"]["total"] += 1; user["history"]["profit"] += 1
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol} pnl record: {e}")
@@ -1784,7 +1795,7 @@ def on_scan_sl(symbol: str):
             tp1_hit     = bool(user.get(f"{p}tp1_hit", False))
             if entry_price and sl_price and close_qty > 0:
                 pnl = _calc_pnl(user[f"{p}side"], entry_price, sl_price, close_qty)
-                _record_pnl(user, pnl, symbol, user[f"{p}side"], "BE" if tp1_hit else "SL")
+                _record_pnl(user, pnl, symbol, user[f"{p}side"], "BE" if tp1_hit else "SL", volume=close_qty * sl_price)
                 if not tp1_hit:
                     user["history"]["total"] += 1
                     user["history"]["loss"] += 1
