@@ -69,7 +69,7 @@ COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1004368662009")   # pri
 # CLEXER BOT and @CoinTrendzBot are members of — the ONLY way to get a chart image out of
 # CoinTrendzBot, since bots can't message each other privately or read each other's DMs.
 # CLEXER posts "/c <coin>" here and watches for CoinTrendzBot's image reply in the same group.
-COINTRENDZ_GROUP_ID_2 = os.getenv("COINTRENDZ_GROUP_ID_2", "-5520236366")   # fallback group — CLEXER
+COINTRENDZ_GROUP_ID_2 = os.getenv("COINTRENDZ_GROUP_ID_2", "-1003992837549")   # fallback group — CLEXER
 # switches here once the active group nears CoinTrendzBot's free-tier ~250-command/24h cap
 # ("Free group limit reached... try again in Xh Ym"), instead of chart requests just failing.
 COINTRENDZ_GROUP_IDS = [g for g in (COINTRENDZ_GROUP_ID, COINTRENDZ_GROUP_ID_2) if g]
