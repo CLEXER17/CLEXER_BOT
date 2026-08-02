@@ -648,24 +648,53 @@ _cointrendz_group_msg_ids: dict = {}
 _cointrendz_group_requests: dict = {}
 _cointrendz_active_group_idx = 0
 
+# group_id str -> epoch until which CoinTrendzBot itself has confirmed this
+# group is rate-limited ("Free group limit reached... try again in Xh Ym").
+# Needed on top of the request-count guess above because that count only
+# tracks requests made SINCE this bot process started — it has no idea a
+# group is already mid-cooldown from before a restart/deploy, which is
+# exactly what made the first version of this keep hammering an already-
+# limited group instead of switching. See _on_group_message for where this
+# gets set, from CoinTrendzBot's own rejection reply.
+_cointrendz_group_blocked_until: dict = {}
+
+def _cointrendz_mark_blocked(gid: str, reply_text: str = ""):
+    """CoinTrendzBot rejected a request with its own rate-limit message —
+    parses 'try again in Xh Ym' if present, otherwise assumes a conservative
+    1-hour cooldown so the group isn't retried too soon."""
+    minutes = 60
+    m = re.search(r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?", reply_text or "", re.IGNORECASE)
+    if m and (m.group(1) or m.group(2)):
+        minutes = int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+    _cointrendz_group_blocked_until[gid] = time.time() + minutes * 60
+    print(f"  [COINTRENDZ] group {gid} confirmed rate-limited by CoinTrendzBot — blocked for {minutes}m")
+
 def _cointrendz_group_count(gid: str) -> int:
     now = time.time()
     hits = [t for t in _cointrendz_group_requests.get(gid, []) if now - t < 86400]
     _cointrendz_group_requests[gid] = hits
     return len(hits)
 
-def _cointrendz_pick_group() -> str:
+def _cointrendz_pick_group(exclude: set = None) -> str:
     """Which group the NEXT '/c' request should go to — stays on the current
-    one until it nears the 24h cap, then advances to the next configured
-    group. If every group is near its cap, falls back to whichever one is
-    active rather than returning nothing — a rate-limited request just times
-    out like any other missed chart (see _request_coin_chart_image)."""
+    one until it nears the 24h cap or CoinTrendzBot has actually confirmed
+    it's rate-limited, then advances to the next configured group. `exclude`
+    lets a caller rule out groups already tried in this same request (see
+    _request_coin_chart_image's retry loop). If every group is unusable,
+    falls back to whichever one is active rather than returning nothing — a
+    rate-limited request just times out like any other missed chart."""
     global _cointrendz_active_group_idx
+    exclude = exclude or set()
+    now = time.time()
     for _ in range(len(COINTRENDZ_GROUP_IDS)):
         gid = COINTRENDZ_GROUP_IDS[_cointrendz_active_group_idx]
-        if _cointrendz_group_count(gid) < COINTRENDZ_GROUP_LIMIT:
+        _blocked = _cointrendz_group_blocked_until.get(gid, 0) > now
+        if gid not in exclude and not _blocked and _cointrendz_group_count(gid) < COINTRENDZ_GROUP_LIMIT:
             return gid
-        print(f"  [COINTRENDZ] group {gid} near its 24h limit — switching to the next configured group")
+        if _blocked:
+            print(f"  [COINTRENDZ] group {gid} still in CoinTrendzBot's own cooldown — switching")
+        elif gid not in exclude:
+            print(f"  [COINTRENDZ] group {gid} near its 24h limit — switching to the next configured group")
         _cointrendz_active_group_idx = (_cointrendz_active_group_idx + 1) % len(COINTRENDZ_GROUP_IDS)
     return COINTRENDZ_GROUP_IDS[_cointrendz_active_group_idx]
 
@@ -755,11 +784,23 @@ def _start_userbot():
                 # the early-returns below — the cleanup should catch anything
                 # that lands in any of these groups, not just chart replies.
                 _cointrendz_group_msg_ids.setdefault(str(event.chat_id), []).append(event.id)
-                if _coin_chart_pending_event is None or not event.photo:
+                if _coin_chart_pending_event is None:
                     return
                 sender = await event.get_sender()
                 _uname = (getattr(sender, "username", None) or "").lower()
                 if _uname != COINTRENDZ_BOT_USERNAME:
+                    return
+                if not event.photo:
+                    # No image — check if this is CoinTrendzBot's own rate-limit
+                    # rejection ("Free group limit reached... try again in Xh
+                    # Ym") so the group gets marked blocked and the caller can
+                    # retry against another configured group immediately,
+                    # instead of just waiting out the full timeout for nothing.
+                    _rtext = (event.raw_text or "")
+                    if "limit reached" in _rtext.lower() or "cooldown" in _rtext.lower():
+                        _cointrendz_mark_blocked(str(event.chat_id), _rtext)
+                        _coin_chart_pending_result["blocked_group"] = str(event.chat_id)
+                        _coin_chart_pending_event.set()
                     return
                 try:
                     _bytes = await event.download_media(file=bytes)
@@ -808,19 +849,30 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
     if not COINTRENDZ_GROUP_IDS:
         return None
     with _coin_chart_lock:
-        _gid = _cointrendz_pick_group()
-        _ev = threading.Event()
-        _coin_chart_pending_event = _ev
-        _coin_chart_pending_result.clear()
-        _sent = _send_via_userbot(_gid, f"/c {coin.lower()}")
-        if not _sent:
-            print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin} (group {_gid})")
+        _tried = set()
+        for _attempt in range(len(COINTRENDZ_GROUP_IDS)):
+            _gid = _cointrendz_pick_group(exclude=_tried)
+            _tried.add(_gid)
+            _ev = threading.Event()
+            _coin_chart_pending_event = _ev
+            _coin_chart_pending_result.clear()
+            _sent = _send_via_userbot(_gid, f"/c {coin.lower()}")
+            if not _sent:
+                print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin} (group {_gid})")
+                _coin_chart_pending_event = None
+                return None
+            _cointrendz_group_requests.setdefault(_gid, []).append(time.time())
+            _got = _ev.wait(timeout)
             _coin_chart_pending_event = None
-            return None
-        _cointrendz_group_requests.setdefault(_gid, []).append(time.time())
-        _got = _ev.wait(timeout)
-        _coin_chart_pending_event = None
-        return _coin_chart_pending_result.get("photo_bytes") if _got else None
+            if not _got:
+                return None
+            if _coin_chart_pending_result.get("blocked_group") == _gid:
+                # CoinTrendzBot just confirmed this group is rate-limited —
+                # already marked blocked (see _on_group_message); try the
+                # next configured group right away instead of giving up.
+                continue
+            return _coin_chart_pending_result.get("photo_bytes")
+        return None
 
 def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes):
     """Uploads an already-downloaded chart image (raw bytes, from the
