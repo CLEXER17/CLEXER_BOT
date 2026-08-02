@@ -668,7 +668,8 @@ def get_virtual_state(user: dict = Depends(get_current_user)):
     ct.virtual_on_signal/tp1/close hooks (see copytrade.py), keyed under each
     user's own ct_users record same as real trade_log."""
     ct_users = _kv_dict("ct_users")
-    urec = ct_users.get(str(user.get("id", "")), {}) or {}
+    cid = str(user.get("id", ""))
+    urec = ct_users.get(cid, {}) or {}
     v = urec.get("virtual") or {}
     log = list(reversed((v.get("trade_log") or [])[-50:]))
     history = [{
@@ -677,8 +678,28 @@ def get_virtual_state(user: dict = Depends(get_current_user)):
         "closed_at": t.get("closed_at"),
     } for t in log]
     open_positions = [{"symbol": sym, **pos} for sym, pos in (v.get("open") or {}).items()]
+    enabled = bool(v.get("enabled", False))
+    # A toggle tap is only APPLIED once bot.py's payment-events poller picks it
+    # up (up to ~30s later) — without this check, re-opening the Virtual tab
+    # inside that window read the still-stale ct_users value and visibly
+    # flipped the switch back off/on right after the user had just tapped it.
+    # An unprocessed toggle event is the user's own most recent intent, so it
+    # wins over the possibly-stale ct_users snapshot.
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT meta FROM payment_events
+                    WHERE cid = %s AND event_type = 'virtual_toggle' AND processed = FALSE
+                    ORDER BY id DESC LIMIT 1
+                """, (cid,))
+                row = cur.fetchone()
+        if row:
+            enabled = bool((row["meta"] or {}).get("enabled", enabled))
+    except Exception as e:
+        print(f"[VIRTUAL STATE] pending-toggle check error: {e}")
     return {
-        "enabled":  bool(v.get("enabled", False)),
+        "enabled":  enabled,
         "balance":  v.get("balance", 1000.0),
         "leverage": v.get("leverage", 10.0),
         "open":     open_positions,
