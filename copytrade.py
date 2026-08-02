@@ -989,6 +989,110 @@ def virtual_on_close(symbol: str, close_price: float, result: str):
         _set(cid, user)
 
 
+def _ccxt_open_btc_position(cid, user, side: str, entry: float, sl: float, tp1: float, tp2: float,
+                             entry_type: str, price: float, lev: int, qty: float) -> str:
+    """Non-BingX BTC trade open via ccxt — MARKET (immediate SL/TP1/TP2) or
+    LIMIT (pullback — SL/TP1/TP2 placed later once filled, see
+    _ccxt_confirm_btc_entry). Mirrors on_signal's BingX branches below."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    uname = user.get("username", "?")
+    if not HAS_CCXT:
+        return f"❌ @{uname}: ccxt not installed on the server — contact admin"
+    ccxt_set_leverage(exchange, api_key, api_secret, BINGX_SYMBOL, lev, password)
+    close_side = "SELL" if side == "BUY" else "BUY"
+    if entry_type == "MARKET":
+        entry_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, side, "MARKET", qty, password=password)
+        if not entry_r["ok"]:
+            user["failed_copy"] = True; _set(cid, user)
+            return f"❌ @{uname}: {entry_r['msg']}"
+        tp1_qty, tp2_qty = _tp1_split(qty)
+        sl_r  = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "STOP_MARKET",
+                                 qty, stop_price=sl, password=password)
+        tp1_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "TAKE_PROFIT_MARKET",
+                                 tp1_qty, stop_price=tp1, password=password)
+        tp2_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "TAKE_PROFIT_MARKET",
+                                 tp2_qty, stop_price=tp2, password=password)
+        user["in_position"] = True; user["pos_side"] = side; user["pos_qty"] = qty
+        user["sl_order_id"] = sl_r.get("id", ""); user["tp_order_id"] = tp2_r.get("id", "")
+        user["tp1_order_id"] = tp1_r.get("id", ""); user["limit_order_id"] = ""; user["failed_copy"] = False
+        _set(cid, user)
+        status = f"SL:{'✅' if sl_r['ok'] else '❌'} TP1:{'✅' if tp1_r['ok'] else '❌'} TP2:{'✅' if tp2_r['ok'] else '❌'}"
+        return f"✅ @{uname} {side} {qty} BTC on {exchange.title()} | {status}"
+    else:  # PULLBACK
+        r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, side, "LIMIT", qty, price=entry, password=password)
+        if not r["ok"]:
+            user["failed_copy"] = True; _set(cid, user)
+            return f"❌ @{uname}: {r['msg']}"
+        user["in_position"] = False; user["pos_side"] = side; user["pos_qty"] = qty
+        user["limit_order_id"] = r["id"]; user["sl_order_id"] = ""; user["tp_order_id"] = ""
+        user["failed_copy"] = False
+        _set(cid, user)
+        return f"✅ @{uname} limit {side} {qty} BTC @ {entry:,.0f} on {exchange.title()}"
+
+def _ccxt_confirm_btc_entry(cid, user, sl: float, tp1: float, tp2: float):
+    """Non-BingX pullback fill confirmation — mirrors on_entry_hit below."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+    qty = user.get("pos_qty", 0.001)
+    tp1_qty, tp2_qty = _tp1_split(qty)
+    sl_r  = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "STOP_MARKET",
+                             qty, stop_price=sl, password=password)
+    tp1_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "TAKE_PROFIT_MARKET",
+                             tp1_qty, stop_price=tp1, password=password)
+    tp2_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "TAKE_PROFIT_MARKET",
+                             tp2_qty, stop_price=tp2, password=password)
+    user["in_position"] = True
+    user["sl_order_id"] = sl_r.get("id", ""); user["tp1_order_id"] = tp1_r.get("id", "")
+    user["tp_order_id"] = tp2_r.get("id", ""); user["limit_order_id"] = ""
+    _set(cid, user)
+    print(f"[CT-CCXT] confirm_btc_entry {cid}: SL@{sl:,.0f} TP1@{tp1:,.0f} TP2@{tp2:,.0f} placed on {exchange}")
+
+def _ccxt_btc_tp1(cid, user, entry: float, tp1: float):
+    """Non-BingX BTC TP1 partial close via ccxt — mirrors on_tp1 below."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
+    full_qty = user.get("pos_qty", 0.001)
+    tp1_qty, tp2_qty = _tp1_split(full_qty)
+    close_price = tp1 if tp1 > 0 else entry
+    ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "MARKET", tp1_qty,
+                      reduce_only=True, password=password)
+    pnl = _calc_pnl(user["pos_side"], entry, close_price, tp1_qty)
+    _record_pnl(user, pnl, "BTC-USDT", user["pos_side"], "TP1", volume=tp1_qty * close_price)
+    user["history"]["total"] += 1; user["history"]["profit"] += 1
+    remaining_qty = max(round(full_qty - tp1_qty, 4), 0.0001)
+    be_sl_price = round(entry * 0.999, 2) if user["pos_side"] == "BUY" else round(entry * 1.001, 2)
+    sl_r = ccxt_place_order(exchange, api_key, api_secret, BINGX_SYMBOL, close_side, "STOP_MARKET",
+                            remaining_qty, stop_price=be_sl_price, password=password)
+    user["tp1_order_id"] = ""; user["sl_order_id"] = sl_r.get("id", ""); user["pos_qty"] = remaining_qty
+    _set(cid, user)
+    print(f"[CT-CCXT] btc_tp1 {cid}: remaining={remaining_qty} BTC @ {close_price:,.0f} pnl={pnl:+.2f} SL→BE@{entry:,.0f}")
+
+def _ccxt_btc_close(cid, user, entry: float, close_price: float, result: str) -> str:
+    """Non-BingX BTC full close (TP2 or SL/BE) via ccxt — mirrors on_tp2/on_sl below."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    side = user["pos_side"]; qty = user.get("pos_qty", 0.001); uname = user.get("username", "?")
+    r = ccxt_close_position(exchange, api_key, api_secret, BINGX_SYMBOL, side, qty, password)
+    if entry > 0 and close_price > 0:
+        pnl = _calc_pnl(side, entry, close_price, qty)
+        _record_pnl(user, pnl, "BTC-USDT", side, result, volume=qty * close_price)
+        if result == "SL":
+            user["history"]["total"] += 1; user["history"]["loss"] += 1
+        elif result == "TP2":
+            user["history"]["total"] += 1; user["history"]["profit"] += 1
+    user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
+    user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["tp1_order_id"] = ""; user["failed_copy"] = False
+    _set(cid, user)
+    print(f"[CT-CCXT] btc_close {cid}: {result} ok={r['ok']} msg={r['msg']}")
+    return f"{'✅' if r['ok'] else '❌'} @{uname} closed: {r['msg'] or 'ok'}"
+
 def on_signal(signal: dict, price: float, share_free: bool = True) -> list[str]:
     """
     Called when bot generates BUY/SELL signal.
@@ -1039,6 +1143,12 @@ def on_signal(signal: dict, price: float, share_free: bool = True) -> list[str]:
             else:
                 lev = user.get("leverage", 10)
             qty = _calc_qty(user["size_usdt"], price, lev)
+
+            if user.get("exchange", "bingx") != "bingx":
+                results.append(_ccxt_open_btc_position(cid, user, side, entry, sl, tp1, tp2,
+                                                        entry_type, price, lev, qty))
+                continue
+
             _set_leverage(api_key, api_secret, side, lev)
             _qty_note = _min_qty_risk_note(user["size_usdt"], price, lev)
 
@@ -1136,6 +1246,12 @@ def on_tp1(entry: float, tp1: float = 0):
     double-close (BingX's 50% + our own 50% = the whole position gone)."""
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
+        if user.get("exchange", "bingx") != "bingx":
+            try:
+                _ccxt_btc_tp1(cid, user, entry, tp1)
+            except Exception as e:
+                print(f"[CT-CCXT] btc_tp1 {cid}: {e}")
+            continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
@@ -1202,6 +1318,13 @@ def on_tp2(entry: float = 0, tp2: float = 0):
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         uname = user.get("username", "?")
+        if user.get("exchange", "bingx") != "bingx":
+            try:
+                results.append(_ccxt_btc_close(cid, user, entry, tp2, "TP2"))
+            except Exception as e:
+                results.append(f"❌ @{uname}: {e}")
+                print(f"[CT-CCXT] btc_close tp2 {cid}: {e}")
+            continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
@@ -1241,6 +1364,13 @@ def on_sl(entry: float = 0, sl: float = 0, tp1_hit: bool = False):
     for cid, user, api_key, api_secret in _users_with_copy():
         if not user.get("in_position"): continue
         uname = user.get("username", "?")
+        if user.get("exchange", "bingx") != "bingx":
+            try:
+                results.append(_ccxt_btc_close(cid, user, entry, sl, "BE" if tp1_hit else "SL"))
+            except Exception as e:
+                results.append(f"❌ @{uname}: {e}")
+                print(f"[CT-CCXT] btc_close sl {cid}: {e}")
+            continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
@@ -1290,7 +1420,12 @@ def on_cancel_limits():
         try:
             oid = user.get("limit_order_id","")
             if oid:
-                _cancel_order(api_key, api_secret, oid)
+                exchange = user.get("exchange", "bingx")
+                if exchange == "bingx":
+                    _cancel_order(api_key, api_secret, oid)
+                elif HAS_CCXT:
+                    password = _decrypt(user.get("api_password_enc", ""))
+                    ccxt_cancel_order(exchange, api_key, api_secret, BINGX_SYMBOL, oid, password)
             user["limit_order_id"] = ""; user["pos_side"] = ""
             user["failed_copy"] = False
             _set(cid, user)
@@ -1311,6 +1446,12 @@ def on_entry_hit(entry: float, sl: float, tp1: float, tp2: float):
         if user.get("in_position"): continue          # market-entry users already set
         if not user.get("pos_side"): continue         # no pending trade at all
         if not user.get("limit_order_id"): continue   # no pending limit — skip (not a TV copy)
+        if user.get("exchange", "bingx") != "bingx":
+            try:
+                _ccxt_confirm_btc_entry(cid, user, sl, tp1, tp2)
+            except Exception as e:
+                print(f"[CT-CCXT] confirm_btc_entry {cid}: {e}")
+            continue
         try:
             close_side = "SELL" if user["pos_side"] == "BUY" else "BUY"
             pos_side   = "LONG" if user["pos_side"] == "BUY" else "SHORT"
@@ -1351,7 +1492,16 @@ def on_close_all():
     for cid, user, api_key, api_secret in _users_with_copy():
         try:
             uname = user.get("username","?")
-            if user.get("in_position") and user.get("pos_side"):
+            exchange = user.get("exchange", "bingx")
+            if exchange != "bingx":
+                if user.get("in_position") and user.get("pos_side") and HAS_CCXT:
+                    password = _decrypt(user.get("api_password_enc", ""))
+                    r = ccxt_close_position(exchange, api_key, api_secret, BINGX_SYMBOL,
+                                             user["pos_side"], user.get("pos_qty", 0.001), password)
+                    results.append(f"{'✅' if r['ok'] else '❌'} @{uname} closed: {r['msg']}")
+                else:
+                    results.append(f"✅ @{uname} no open position")
+            elif user.get("in_position") and user.get("pos_side"):
                 r = _close_position(api_key, api_secret, user["pos_side"])
                 results.append(f"{'✅' if r.get('code')==0 else '❌'} @{uname} closed: {r.get('msg','') or 'ok'}")
             else:
