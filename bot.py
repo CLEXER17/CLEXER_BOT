@@ -4683,6 +4683,7 @@ def load_settings():
             ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", False)
             ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
             ct.ORPHAN_ADOPT_ENABLED = d.get("orphan_adopt_enabled", False)
+            ct.AUTO_SLTP_GLOBAL_ENABLED = d.get("auto_sltp_global_enabled", True)
             _group_seen_users.update(d.get("group_seen_users", {}))
             PAUSED_AEROLINK_KEYS.update(d.get("paused_aerolink_keys", []))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
@@ -4737,6 +4738,7 @@ def save_settings():
             "demo1_ct_enabled": ct.DEMO1_CT_ENABLED,
             "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
             "orphan_adopt_enabled": ct.ORPHAN_ADOPT_ENABLED,
+            "auto_sltp_global_enabled": ct.AUTO_SLTP_GLOBAL_ENABLED,
             "group_seen_users": _group_seen_users,
             "paused_aerolink_keys": list(PAUSED_AEROLINK_KEYS),
     }
@@ -11597,6 +11599,7 @@ def send_ctpause_screen(chat_id, message_id=None):
     _demo1_flag = "✅ ON" if ct.DEMO1_CT_ENABLED else "❌ OFF"
     _demo2_flag = "✅ ON" if ct.DEMO2_CT_ENABLED else "❌ OFF"
     _orphan_flag = "✅ ON" if ct.ORPHAN_ADOPT_ENABLED else "❌ OFF"
+    _sltp_flag = "✅ ON" if ct.AUTO_SLTP_GLOBAL_ENABLED else "❌ OFF"
     rows = [
         [{"text": f"₿ BTC Copy Trade  {_btc_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctbtc_on"},
@@ -11616,6 +11619,9 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🛡️ Orphan Position Adjust  {_orphan_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctorphan_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctorphan_off"}],
+        [{"text": f"🛡️ Auto-Manage SL/TP — All Users  {_sltp_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctsltp_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctsltp_off"}],
         [{"text": "◀️  Back", "callback_data": "scan_sub:toggles"}],
     ]
     _help_edit_or_send(chat_id,
@@ -11625,7 +11631,11 @@ def send_ctpause_screen(chat_id, message_id=None):
         "Demo1/Demo2 are OFF by default — turning them ON places REAL orders on users' accounts for demo signals too.\n\n"
         "🛡️ <b>Orphan Position Adjust</b>: OFF by default. When a connected user has a position on BingX "
         "that didn't come from a real bot signal (they opened it themselves), ON means the bot adopts it and "
-        "manages its SL/TP like any other copy trade. OFF leaves it completely alone.</blockquote>",
+        "manages its SL/TP like any other copy trade. OFF leaves it completely alone.\n\n"
+        "🛡️ <b>Auto-Manage SL/TP — All Users</b>: ON by default — master switch for every user's ghost-state "
+        "cleanup, orphan adoption, and missing-SL/TP reconciliation at once. OFF turns the whole monitor off "
+        "for EVERY connected user, regardless of what each user set for themselves in /autosltp — flip it back "
+        "ON and each user's own setting takes over again.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_go_screen(chat_id, message_id=None):
@@ -12597,6 +12607,10 @@ def command_listener():
                         ct.set_orphan_adopt(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctorphan_off" and cb_is_scanadmin:
                         ct.set_orphan_adopt(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctsltp_on" and cb_is_scanadmin:
+                        ct.set_auto_sltp_global(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctsltp_off" and cb_is_scanadmin:
+                        ct.set_auto_sltp_global(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Coin lookup — Market vs Pullback entry choice ─────────
                     elif cb_data.startswith("coinlookup:") and cb_is_scanadmin:

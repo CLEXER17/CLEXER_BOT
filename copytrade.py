@@ -138,6 +138,10 @@ DEMO2_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade
 ORPHAN_ADOPT_ENABLED = False  # toggle from Copy Trade By Type screen — when OFF (default), monitor_sl_tp
                                # never adopts/adjusts SL+TP on a user's BingX position that didn't come
                                # from a real bot signal (i.e. one they opened themselves)
+AUTO_SLTP_GLOBAL_ENABLED = True  # admin master switch (Copy Trade By Type screen) — when OFF, monitor_sl_tp
+                                  # skips EVERY user, regardless of any individual user's own /autosltp
+                                  # setting. Doesn't overwrite per-user preferences — just gates on top of
+                                  # them, so toggling this back ON restores whatever each user had set.
 
 def _now_ist() -> str:
     return (datetime.now(timezone.utc) + IST).strftime("%d %b %I:%M %p IST")
@@ -1615,6 +1619,10 @@ def set_orphan_adopt(enabled: bool):
     global ORPHAN_ADOPT_ENABLED
     ORPHAN_ADOPT_ENABLED = enabled
 
+def set_auto_sltp_global(enabled: bool):
+    global AUTO_SLTP_GLOBAL_ENABLED
+    AUTO_SLTP_GLOBAL_ENABLED = enabled
+
 def is_scan_tp1_hit(symbol: str) -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
     for cid, user, _, _ in _users_with_copy():
@@ -2431,6 +2439,8 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
     4. If position exists with known state → verify SL+TP orders, re-place any missing
     """
     fixes = []
+    if not AUTO_SLTP_GLOBAL_ENABLED:
+        return fixes
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
         if not user.get("auto_manage_sltp", True):
