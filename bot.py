@@ -13119,6 +13119,15 @@ def command_listener():
                         send_reply(cid, "⚠️ Admin contact isn't set up right now.")
                 elif text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
+                elif (((ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) or is_co_admin(cid))
+                        and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,14}", text or "")):
+                    # Bare coin-name typing (e.g. just "eth") — /coin's own help
+                    # text has always described this shortcut ("Just type a
+                    # coin's name... and the bot finds it and analyzes it for
+                    # you"), but nothing actually implemented it — plain text
+                    # from the admin/co-admin silently went nowhere. Reuses
+                    # /coin's own resolve+analyze flow and permission check.
+                    handle_command(f"/coin {text}", cid, msg, sender_id=sender_uid)
                 elif str(cid) in _chat_sessions:
                     # Regular users must actually forward a message (in a private
                     # chat) or reply directly to one of the bot's own messages (in
