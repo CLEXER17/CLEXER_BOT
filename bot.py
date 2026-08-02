@@ -861,9 +861,16 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
             _coin_chart_pending_result.clear()
             _sent_id = _send_via_userbot(_gid, f"/c {coin.lower()}")
             if not _sent_id:
-                print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin} (group {_gid})")
+                print(f"  [COINTRENDZ] userbot send failed for /c {coin} (group {_gid}) — "
+                      f"likely not reachable by the userbot account (unresolved peer/not a member)")
                 _coin_chart_pending_event = None
-                return None
+                # Don't just give up — a group that's flat-out unreachable
+                # (wrong id, userbot never joined, etc.) shouldn't take the
+                # whole relay down when another configured group is fine.
+                # Skip it for an hour so every request doesn't re-attempt a
+                # doomed send, and try the next group in this same call.
+                _cointrendz_group_blocked_until[_gid] = time.time() + 3600
+                continue
             # Track our own "/c coin" command message directly — Telethon's
             # NewMessage event doesn't reliably fire for messages the SAME
             # client just sent (Telegram doesn't always push an update back
