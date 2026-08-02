@@ -4938,7 +4938,12 @@ def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
             text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
         for _ex_name, (_ex_glyph, _ex_eid) in _EXCHANGE_NAME_EMOJI.items():
             if _ex_name in text:
-                text = text.replace(_ex_name, f'<tg-emoji emoji-id="{_ex_eid}">{_ex_glyph}</tg-emoji> {_ex_name}')
+                # Plain glyph only, no <tg-emoji> wrap — these IDs came from a
+                # screenshot, not a verified Bot API lookup, and an invalid
+                # custom-emoji document ID makes Telegram reject the WHOLE
+                # message (Bad Request: DOCUMENT_INVALID), silently killing
+                # unrelated sends like the startup deploy notice.
+                text = text.replace(_ex_name, f'{_ex_glyph} {_ex_name}')
     if GLOBAL_SMALLCAPS_ENABLED:
         text = _smallcaps_body(text)
     return text
