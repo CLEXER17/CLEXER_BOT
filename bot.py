@@ -69,6 +69,11 @@ COINTRENDZ_GROUP_ID = os.getenv("COINTRENDZ_GROUP_ID", "-1004368662009")   # pri
 # CLEXER BOT and @CoinTrendzBot are members of — the ONLY way to get a chart image out of
 # CoinTrendzBot, since bots can't message each other privately or read each other's DMs.
 # CLEXER posts "/c <coin>" here and watches for CoinTrendzBot's image reply in the same group.
+COINTRENDZ_GROUP_ID_2 = os.getenv("COINTRENDZ_GROUP_ID_2", "-5520236366")   # fallback group — CLEXER
+# switches here once the active group nears CoinTrendzBot's free-tier ~250-command/24h cap
+# ("Free group limit reached... try again in Xh Ym"), instead of chart requests just failing.
+COINTRENDZ_GROUP_IDS = [g for g in (COINTRENDZ_GROUP_ID, COINTRENDZ_GROUP_ID_2) if g]
+COINTRENDZ_GROUP_LIMIT = 235   # switch groups BEFORE hitting CoinTrendzBot's real 250/24h cap
 COINTRENDZ_BOT_USERNAME = os.getenv("COINTRENDZ_BOT_USERNAME", "cointrendzbot").lower()
 # CoinTrendzBot (like most bots) ignores messages sent by OTHER bot accounts — a real human
 # has to send "/c <coin>" for it to reply. TG_USER_* configure a SECOND, real Telegram
@@ -630,11 +635,39 @@ _userbot_loop = None
 _userbot_client = None
 _userbot_ready = threading.Event()
 
-# Every message seen in the shared group (both Kaito's own "/c <coin>" and
-# CoinTrendzBot's replies) — periodically deleted to keep the group tidy
-# instead of accumulating forever. See _clean_cointrendz_group /
-# _any_scan_or_chart_busy and the cleanup loop started in main().
-_cointrendz_group_msg_ids: list = []
+# Every message seen in each shared group (both Kaito's own "/c <coin>" and
+# CoinTrendzBot's replies), keyed by group_id str — periodically deleted to
+# keep the group tidy instead of accumulating forever. See
+# _clean_cointrendz_group / _any_scan_or_chart_busy and the cleanup loop
+# started in main().
+_cointrendz_group_msg_ids: dict = {}
+
+# Rolling 24h "/c" request timestamps per group_id str — lets CLEXER switch to
+# the next configured group BEFORE hitting CoinTrendzBot's own free-tier cap,
+# instead of requests just silently failing once a group's limit is hit.
+_cointrendz_group_requests: dict = {}
+_cointrendz_active_group_idx = 0
+
+def _cointrendz_group_count(gid: str) -> int:
+    now = time.time()
+    hits = [t for t in _cointrendz_group_requests.get(gid, []) if now - t < 86400]
+    _cointrendz_group_requests[gid] = hits
+    return len(hits)
+
+def _cointrendz_pick_group() -> str:
+    """Which group the NEXT '/c' request should go to — stays on the current
+    one until it nears the 24h cap, then advances to the next configured
+    group. If every group is near its cap, falls back to whichever one is
+    active rather than returning nothing — a rate-limited request just times
+    out like any other missed chart (see _request_coin_chart_image)."""
+    global _cointrendz_active_group_idx
+    for _ in range(len(COINTRENDZ_GROUP_IDS)):
+        gid = COINTRENDZ_GROUP_IDS[_cointrendz_active_group_idx]
+        if _cointrendz_group_count(gid) < COINTRENDZ_GROUP_LIMIT:
+            return gid
+        print(f"  [COINTRENDZ] group {gid} near its 24h limit — switching to the next configured group")
+        _cointrendz_active_group_idx = (_cointrendz_active_group_idx + 1) % len(COINTRENDZ_GROUP_IDS)
+    return COINTRENDZ_GROUP_IDS[_cointrendz_active_group_idx]
 
 def _any_scan_or_chart_busy() -> bool:
     """True while it's NOT safe to clean the shared group — i.e. a chart
@@ -648,28 +681,31 @@ def _any_scan_or_chart_busy() -> bool:
     return _coin_chart_pending_event is not None
 
 def _clean_cointrendz_group():
-    """Deletes every tracked message in the shared CoinTrendzBot group via
+    """Deletes every tracked message in each shared CoinTrendzBot group via
     Kaito's account — only when nothing's using the group right now (see
     _any_scan_or_chart_busy). Silently no-ops if the userbot isn't
     connected, there's nothing to clean, or a scan is currently running —
     the next periodic check just tries again later."""
-    if not _cointrendz_group_msg_ids or _any_scan_or_chart_busy():
+    if not any(_cointrendz_group_msg_ids.values()) or _any_scan_or_chart_busy():
         return
     if not (_userbot_ready.is_set() and _userbot_loop and _userbot_client):
         return
     import asyncio
-    _ids = list(_cointrendz_group_msg_ids)
-    _cointrendz_group_msg_ids.clear()
-    async def _do_delete():
-        await _userbot_client.delete_messages(int(COINTRENDZ_GROUP_ID), _ids)
-    fut = asyncio.run_coroutine_threadsafe(_do_delete(), _userbot_loop)
-    try:
-        fut.result(timeout=20)
-        print(f"[USERBOT] cleaned {len(_ids)} message(s) from the CoinTrendzBot group")
-    except Exception as e:
-        print(f"[USERBOT] group cleanup failed (needs delete rights in that group?): {e}")
-        # Put them back — nothing was actually deleted (or we can't tell), don't just lose track of them.
-        _cointrendz_group_msg_ids.extend(_ids)
+    for _gid, _ids in list(_cointrendz_group_msg_ids.items()):
+        if not _ids:
+            continue
+        _ids = list(_ids)
+        _cointrendz_group_msg_ids[_gid] = []
+        async def _do_delete(gid=_gid, ids=_ids):
+            await _userbot_client.delete_messages(int(gid), ids)
+        fut = asyncio.run_coroutine_threadsafe(_do_delete(), _userbot_loop)
+        try:
+            fut.result(timeout=20)
+            print(f"[USERBOT] cleaned {len(_ids)} message(s) from CoinTrendzBot group {_gid}")
+        except Exception as e:
+            print(f"[USERBOT] group {_gid} cleanup failed (needs delete rights in that group?): {e}")
+            # Put them back — nothing was actually deleted (or we can't tell), don't just lose track of them.
+            _cointrendz_group_msg_ids.setdefault(_gid, []).extend(_ids)
 
 # ─── CoinTrendzBot chart-image relay (2026-07-31) ──────────────────────────
 # Requests are serialized (one at a time via _coin_chart_lock) because
@@ -710,15 +746,15 @@ def _start_userbot():
             _userbot_client.start()
             print("[USERBOT] Connected.")
 
-            @_userbot_client.on(events.NewMessage(chats=int(COINTRENDZ_GROUP_ID)))
+            @_userbot_client.on(events.NewMessage(chats=[int(g) for g in COINTRENDZ_GROUP_IDS]))
             async def _on_group_message(event):
-                # Runs on THIS thread's loop, for every new message in the
-                # shared group — Kaito's own account sees CoinTrendzBot's
+                # Runs on THIS thread's loop, for every new message in any of
+                # the shared groups — Kaito's own account sees CoinTrendzBot's
                 # replies fine, no bot-to-bot restriction applies here.
                 # Track EVERY message here for the group-cleanup loop, before
                 # the early-returns below — the cleanup should catch anything
-                # that lands in this group, not just chart replies.
-                _cointrendz_group_msg_ids.append(event.id)
+                # that lands in any of these groups, not just chart replies.
+                _cointrendz_group_msg_ids.setdefault(str(event.chat_id), []).append(event.id)
                 if _coin_chart_pending_event is None or not event.photo:
                     return
                 sender = await event.get_sender()
@@ -757,8 +793,10 @@ def _send_via_userbot(chat_id, text: str, timeout: float = 10.0) -> bool:
         return False
 
 def _request_coin_chart_image(coin: str, timeout: float = 30.0):
-    """Sends '/c <coin>' to the shared CoinTrendzBot group via the userbot,
-    then waits (up to `timeout`s) for the userbot's own NewMessage handler
+    """Sends '/c <coin>' to whichever configured CoinTrendzBot group is
+    currently active (see _cointrendz_pick_group — auto-switches groups
+    before hitting CoinTrendzBot's free-tier ~250-command/24h cap), then
+    waits (up to `timeout`s) for the userbot's own NewMessage handler
     (_on_group_message, registered in _start_userbot) to download
     CoinTrendzBot's image reply there. Returns the raw image bytes — a
     file_id obtained via Kaito's user session isn't valid in CLEXER's bot-
@@ -767,17 +805,19 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
     treat that as "no chart available this time," never block a real trade
     signal on it."""
     global _coin_chart_pending_event
-    if not COINTRENDZ_GROUP_ID:
+    if not COINTRENDZ_GROUP_IDS:
         return None
     with _coin_chart_lock:
+        _gid = _cointrendz_pick_group()
         _ev = threading.Event()
         _coin_chart_pending_event = _ev
         _coin_chart_pending_result.clear()
-        _sent = _send_via_userbot(COINTRENDZ_GROUP_ID, f"/c {coin.lower()}")
+        _sent = _send_via_userbot(_gid, f"/c {coin.lower()}")
         if not _sent:
-            print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin}")
+            print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin} (group {_gid})")
             _coin_chart_pending_event = None
             return None
+        _cointrendz_group_requests.setdefault(_gid, []).append(time.time())
         _got = _ev.wait(timeout)
         _coin_chart_pending_event = None
         return _coin_chart_pending_result.get("photo_bytes") if _got else None
@@ -12926,7 +12966,7 @@ def command_listener():
                 # captures and downloads those instead. CLEXER just needs to
                 # stay silent in this group — no "Unknown command" replies to
                 # Kaito's own "/c <coin>", no normal command processing at all.
-                if str(cid) == str(COINTRENDZ_GROUP_ID):
+                if str(cid) in COINTRENDZ_GROUP_IDS:
                     continue
 
                 # Telegram Stars payment completed — arrives as a normal message
