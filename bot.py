@@ -10583,7 +10583,7 @@ _HELP_CATS = {
 # Each entry: subcat_id -> (label, [(cmd, emoji, bold_title, slim_description), ...])
 _COPYUSER_SUBCATS = {
     "connect": ("🔗 Connection", [
-        ("/connect",    "🔗", "Connect Account",    "Link your BingX API key so the bot can copy trades for you."),
+        ("/connect",    "🔗", "Connect Account",    "Link your exchange account (BingX or any other supported exchange) so the bot can copy trades for you."),
         ("/disconnect", "🔌", "Disconnect Account", "Remove your BingX API key. Open positions stay open — manage them manually."),
     ]),
     "controls": ("⚙️ Trading Controls", [
@@ -11877,6 +11877,33 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
     text = f"<b>{label}</b>\n\n<blockquote>Tap any command to run it instantly 👇</blockquote>"
     _help_edit_or_send(chat_id, text, markup, message_id)
 
+_CONNECT_EXCHANGE_LABELS = {"bingx": "BingX", "binance": "Binance", "bybit": "Bybit", "okx": "OKX",
+    "kucoinfutures": "KuCoin", "gate": "Gate.io", "mexc": "MEXC", "htx": "HTX",
+    "kraken": "Kraken", "coinbase": "Coinbase"}
+
+def send_connect_exchange_picker(chat_id, message_id=None):
+    """Step 0 of /connect — pick which exchange before entering credentials.
+    BingX keeps its exact original flow; any other exchange routes through
+    the generic ccxt adapter (see copytrade.py's SUPPORTED_EXCHANGES/
+    ccxt_* functions)."""
+    _back_cb, _ = _find_back_target("/connect")
+    rows = []
+    row = []
+    for ex in ct.POPULAR_EXCHANGES:
+        row.append({"text": _CONNECT_EXCHANGE_LABELS.get(ex, ex.title()), "callback_data": f"connectex:{ex}"})
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "🔍 Other exchange", "callback_data": "connectex:other"}])
+    rows.append([{"text": "◀️  Back", "callback_data": _back_cb}])
+    _help_edit_or_send(chat_id,
+        "🔗 <b>Connect Account — Pick Exchange</b>\n\n"
+        "<blockquote>BingX is the most tested path. Any other exchange listed here (or typed under "
+        "\"Other\") works through a generic adapter — some exchanges only need an API key, no secret; "
+        "you'll be able to skip that step if so.</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
+
 def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
     entry = _COPYUSER_SUBCATS.get(sub_id)
     if not entry:
@@ -12213,9 +12240,7 @@ def command_listener():
                     elif cb_data.startswith("help_cmd:"):
                         cmd_text = cb_data.split(":", 1)[1]
                         # Check if non-admin is pressing an admin-only button
-                        _INPUT_PROMPTS = {
-                            "/connect":     "🔗 <b>Connect BingX — Step 1/2</b>\n\nPlease type your <b>API Key</b>:",
-                        }
+                        _INPUT_PROMPTS = {}
                         # Find which subcategory (or top-level category) this command belongs to (for Back button)
                         _back_cb, _cmd_cat = _find_back_target(cmd_text)
                         _back_markup = {"inline_keyboard": [[
@@ -12223,7 +12248,7 @@ def command_listener():
 
                         _CONFIRM_FIRST = {
                             "/closescan":  ("closescan", "Clear ALL open Scan1 + Scan2 trades? This closes them in the bot immediately."),
-                            "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your BingX account? Your API keys will be removed (open positions stay open — manage them manually)."),
+                            "/disconnect": (f"disconnect:{cb_cid}", "Disconnect your account? Your API keys will be removed (open positions stay open — manage them manually)."),
                         }
                         _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size", "/freelimit": "freelimit"}
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
@@ -12235,7 +12260,9 @@ def command_listener():
                                              "/aerolinkkeys": send_aerolinkkeys_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
-                        if cmd_text in _SCREEN_CMDS and cb_is_admin:
+                        if cmd_text == "/connect":
+                            send_connect_exchange_picker(cb_chat_id, message_id=cb_msg_id)
+                        elif cmd_text in _SCREEN_CMDS and cb_is_admin:
                             _SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
                         elif cmd_text in _SCAN_SCREEN_CMDS and cb_is_scanadmin:
                             _SCAN_SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
@@ -12573,6 +12600,25 @@ def command_listener():
                         threading.Thread(target=_do_coin_analysis, args=(cb_chat_id, _sym, _etype), daemon=True).start()
 
                     # ── Pause / Resume a channel ──────────────────────────────
+                    elif cb_data.startswith("connectex:"):
+                        _ex_choice = cb_data.split(":", 1)[1]
+                        _back_cb, _ = _find_back_target("/connect")
+                        _back_mkp = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _back_cb}]]}
+                        if _ex_choice == "other":
+                            pending_input[cb_cid] = {"cmd": "/connect", "step": "exchange_name",
+                                                      "msg_id": cb_msg_id, "cat_id": _back_cb}
+                            _help_edit_or_send(cb_chat_id,
+                                "🔍 <b>Other Exchange</b>\n\nType the exchange's name (e.g. <code>kucoinfutures</code>, "
+                                "<code>bitget</code>, <code>deribit</code>) — it needs to be one ccxt supports.",
+                                _back_mkp, message_id=cb_msg_id)
+                        else:
+                            _ex_label = _CONNECT_EXCHANGE_LABELS.get(_ex_choice, _ex_choice.title())
+                            pending_input[cb_cid] = {"cmd": "/connect", "step": "api_key", "exchange": _ex_choice,
+                                                      "msg_id": cb_msg_id, "cat_id": _back_cb}
+                            _help_edit_or_send(cb_chat_id,
+                                f"🔗 <b>Connect {_ex_label} — Step 1</b>\n\nPlease type your <b>API Key</b>:",
+                                _back_mkp, message_id=cb_msg_id)
+
                     elif cb_data.startswith("aerokey:") and cb_is_scanadmin:
                         _idx = int(cb_data.split(":", 1)[1])
                         if _idx in PAUSED_AEROLINK_KEYS: PAUSED_AEROLINK_KEYS.discard(_idx)
@@ -13234,14 +13280,58 @@ def command_listener():
                     _back_mkp   = {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": _pi_back_cb}]]}
 
                     if pi["cmd"] == "/connect":
-                        if pi.get("step") == "secret":
-                            api_key = pi["api_key"]
-                            api_secret = text.strip()
+                        if pi.get("step") == "exchange_name":
+                            _ex_typed = text.strip().lower()
+                            if ct.HAS_CCXT and _ex_typed not in ct.SUPPORTED_EXCHANGES:
+                                _help_edit_or_send(cid,
+                                    f"⚠️ '{_html.escape(_ex_typed)}' isn't a ccxt-supported exchange id. Check the "
+                                    f"spelling (lowercase, no spaces, e.g. <code>kucoinfutures</code>) and try again.",
+                                    _back_mkp, message_id=_pi_msg_id)
+                            else:
+                                pending_input[cid] = {"cmd": "/connect", "step": "api_key", "exchange": _ex_typed,
+                                                      "msg_id": _pi_msg_id, "cat_id": _pi_cat_id}
+                                _help_edit_or_send(cid,
+                                    f"🔗 <b>Connect {_ex_typed.title()} — Step 1</b>\n\nPlease type your <b>API Key</b>:",
+                                    _back_mkp, message_id=_pi_msg_id)
+                        elif pi.get("step") == "api_key":
+                            pending_input[cid] = {"cmd": "/connect", "step": "secret", "exchange": pi["exchange"],
+                                                  "api_key": text.strip(), "msg_id": _pi_msg_id, "cat_id": _pi_cat_id}
+                            _help_edit_or_send(cid,
+                                "🔑 <b>Step 2</b>\n\nNow type your <b>Secret Key</b> — or send <code>skip</code> "
+                                "if this exchange doesn't need one:",
+                                _back_mkp, message_id=_pi_msg_id)
+                        elif pi.get("step") == "secret":
+                            _secret = text.strip()
+                            _exchange = pi["exchange"]; _api_key = pi["api_key"]
+                            if _exchange == "bingx":
+                                del pending_input[cid]
+                                print(f"  [CMD] pending input resolved: /connect bingx *** ***")
+                                cid_str = str(cid)
+                                _reply_capture[cid_str] = {"texts": [], "cat_id": _pi_cat_id}
+                                handle_command(f"/connect {_exchange} {_api_key} {_secret}", cid, msg)
+                                captured = _reply_capture.pop(cid_str, {})
+                                result_text = "\n\n".join(captured.get("texts", [])) or "✅ Connected"
+                                if _pi_msg_id:
+                                    _help_edit_or_send(cid, result_text, _back_mkp, message_id=_pi_msg_id,
+                                        emoji_overrides=captured.get("emoji_overrides"))
+                                else:
+                                    send_reply(cid, result_text, reply_markup=_back_mkp)
+                            else:
+                                pending_input[cid] = {"cmd": "/connect", "step": "password", "exchange": _exchange,
+                                                      "api_key": _api_key, "secret": _secret,
+                                                      "msg_id": _pi_msg_id, "cat_id": _pi_cat_id}
+                                _help_edit_or_send(cid,
+                                    "🔒 <b>Step 3</b>\n\nSome exchanges also need a passphrase/password. Type it "
+                                    "now, or send <code>skip</code> if this one doesn't need it:",
+                                    _back_mkp, message_id=_pi_msg_id)
+                        elif pi.get("step") == "password":
+                            _password = text.strip()
+                            _exchange = pi["exchange"]; _api_key = pi["api_key"]; _secret = pi["secret"]
                             del pending_input[cid]
-                            print(f"  [CMD] pending input resolved: /connect *** ***")
+                            print(f"  [CMD] pending input resolved: /connect {_exchange} *** *** ***")
                             cid_str = str(cid)
                             _reply_capture[cid_str] = {"texts": [], "cat_id": _pi_cat_id}
-                            handle_command(f"/connect {api_key} {api_secret}", cid, msg)
+                            handle_command(f"/connect {_exchange} {_api_key} {_secret} {_password}", cid, msg)
                             captured = _reply_capture.pop(cid_str, {})
                             result_text = "\n\n".join(captured.get("texts", [])) or "✅ Connected"
                             if _pi_msg_id:
@@ -13249,12 +13339,6 @@ def command_listener():
                                     emoji_overrides=captured.get("emoji_overrides"))
                             else:
                                 send_reply(cid, result_text, reply_markup=_back_mkp)
-                        else:
-                            pending_input[cid] = {"cmd": "/connect", "step": "secret",
-                                                  "api_key": text.strip(), "msg_id": _pi_msg_id, "cat_id": _pi_cat_id}
-                            _help_edit_or_send(cid,
-                                "🔑 <b>Connect BingX — Step 2/2</b>\n\nNow type your <b>Secret Key</b>:",
-                                _back_mkp, message_id=_pi_msg_id)
                     elif pi["cmd"] == "_adminlinks_set_channel":
                         del pending_input[cid]
                         SIGNAL_CHANNEL_LINK = text.strip()

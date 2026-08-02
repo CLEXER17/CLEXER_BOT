@@ -25,6 +25,14 @@ INTEGRATION HOOKS (add to bot.py at each event):
 import os, json, time, hmac, hashlib, base64, requests, threading
 from datetime import datetime, timezone, timedelta
 
+try:
+    import ccxt  # unified client for 100+ exchanges — powers copy trade for
+                 # every exchange OTHER than BingX (BingX keeps its existing
+                 # hand-rolled _bingx() calls below, unchanged)
+    HAS_CCXT = True
+except ImportError:
+    HAS_CCXT = False
+
 _SMALLCAPS_MAP = str.maketrans(
     "abcdefghijklmnopqrstuvwxyz",
     "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
@@ -323,8 +331,10 @@ def _load_last_signal():
 def _default_user(username: str = "?") -> dict:
     return {
         "username":       username,
+        "exchange":       "bingx",  # "bingx" or any ccxt exchange id (binance, bybit, okx, ...) — set via /connect
         "api_key_enc":    "",
-        "api_secret_enc": "",
+        "api_secret_enc": "",   # optional for exchanges whose relevant endpoints don't need a secret
+        "api_password_enc": "", # optional passphrase, needed by some non-BingX exchanges (OKX, KuCoin, ...)
         "connected":      False,
         "copy_on":        False,
         "size_usdt":      50.0,
@@ -469,6 +479,151 @@ def _bingx(method: str, path: str, api_key: str, api_secret: str, params: dict =
     except Exception as e:
         return {"code": -1, "msg": str(e)}
 
+# ─── GENERIC EXCHANGE ADAPTER (ccxt) ───────────────────────────────────────
+# BingX users keep using the hand-rolled _bingx()-based functions above,
+# unchanged — those are already battle-tested with real money. This section
+# is for any OTHER exchange a user connects via /connect. ccxt gives one
+# consistent interface across 100+ exchanges instead of hand-writing REST
+# request signing/endpoints per exchange the way _bingx() does for BingX —
+# realistically the only workable way to support "any exchange" at all.
+# Some exchanges' relevant endpoints only need an API key (no secret/
+# passphrase) — every ccxt_* function below takes api_secret/password as
+# optional, empty-string-default arguments for exactly that case.
+
+SUPPORTED_EXCHANGES = sorted(ccxt.exchanges) if HAS_CCXT else []
+# A short, curated list for the /connect picker UI — the full ccxt.exchanges
+# list has 100+ entries, most of which don't offer USDT-margined perpetual
+# futures at all. "Other" lets a user type any exchange id ccxt supports.
+POPULAR_EXCHANGES = ["bingx", "binance", "bybit", "okx", "kucoinfutures",
+                      "gate", "mexc", "htx", "kraken", "coinbase"]
+
+def _ccxt_client(exchange_id: str, api_key: str, api_secret: str = "", password: str = ""):
+    """One authenticated ccxt client, configured for USDT-margined perpetual
+    swaps — what every CLEXER signal is meant for. api_secret/password are
+    optional since some exchanges' relevant endpoints don't need them."""
+    if not HAS_CCXT:
+        raise RuntimeError("ccxt not installed")
+    cls = getattr(ccxt, exchange_id, None)
+    if not cls:
+        raise ValueError(f"Unknown exchange '{exchange_id}' — not supported by ccxt")
+    params = {"apiKey": api_key, "enableRateLimit": True, "options": {"defaultType": "swap"}}
+    if api_secret: params["secret"] = api_secret
+    if password:   params["password"] = password
+    return cls(params)
+
+def _ccxt_symbol(base_symbol: str) -> str:
+    """BingX-style 'ETH-USDT' -> ccxt unified 'ETH/USDT:USDT' (linear swap)."""
+    coin = base_symbol.replace("-USDT", "").replace("USDT", "").replace("-", "")
+    return f"{coin}/USDT:USDT"
+
+def ccxt_test_api(exchange_id: str, api_key: str, api_secret: str = "", password: str = "") -> tuple[bool, str]:
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        ex.fetch_balance()
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:200]
+
+def ccxt_get_balance(exchange_id: str, api_key: str, api_secret: str = "", password: str = "") -> dict:
+    """Returns the same shape _get_balance (BingX) does, so callers don't
+    need to care which exchange a user connected. {} on any failure —
+    callers must treat that as 'couldn't fetch', not 'balance is zero'."""
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        b = ex.fetch_balance()
+        usdt = b.get("USDT", {}) or {}
+        total = float(usdt.get("total") or 0)
+        free  = float(usdt.get("free") or 0)
+        used  = float(usdt.get("used") or 0)
+        return {"balance": total, "equity": total, "available": free, "used": used, "unrealized": 0.0}
+    except Exception as e:
+        print(f"[CT-CCXT] get_balance {exchange_id}: {e}")
+        return {}
+
+def ccxt_set_leverage(exchange_id: str, api_key: str, api_secret: str, symbol: str,
+                       leverage: int, password: str = "") -> bool:
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        ex.set_leverage(int(leverage), _ccxt_symbol(symbol))
+        return True
+    except Exception as e:
+        print(f"[CT-CCXT] set_leverage {exchange_id}: {e}")
+        return False
+
+def ccxt_place_order(exchange_id: str, api_key: str, api_secret: str, symbol: str, side: str,
+                      order_type: str, qty: float, price: float = 0, stop_price: float = 0,
+                      reduce_only: bool = False, password: str = "") -> dict:
+    """side: 'BUY'/'SELL'. order_type: 'MARKET'/'LIMIT'/'STOP_MARKET'/'TAKE_PROFIT_MARKET'
+    (same vocabulary _place_order/BingX already uses elsewhere in this file).
+    Returns {'ok': bool, 'id': str, 'msg': str} — deliberately a different
+    shape from BingX's raw {'code':...} responses so the two conventions can
+    never get mixed up by a caller checking the wrong field."""
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        ccxt_side = "buy" if side == "BUY" else "sell"
+        ccxt_sym = _ccxt_symbol(symbol)
+        params = {"reduceOnly": reduce_only}
+        if order_type == "MARKET":
+            o = ex.create_order(ccxt_sym, "market", ccxt_side, qty, None, params)
+        elif order_type == "LIMIT":
+            o = ex.create_order(ccxt_sym, "limit", ccxt_side, qty, price, params)
+        elif order_type == "STOP_MARKET":
+            params.update({"stopPrice": stop_price, "triggerPrice": stop_price, "reduceOnly": True})
+            o = ex.create_order(ccxt_sym, "market", ccxt_side, qty, None, params)
+        elif order_type == "TAKE_PROFIT_MARKET":
+            params.update({"stopPrice": stop_price, "triggerPrice": stop_price, "reduceOnly": True})
+            o = ex.create_order(ccxt_sym, "market", ccxt_side, qty, None, params)
+        else:
+            return {"ok": False, "id": "", "msg": f"unsupported order type {order_type}"}
+        return {"ok": True, "id": str(o.get("id", "") or ""), "msg": "ok"}
+    except Exception as e:
+        return {"ok": False, "id": "", "msg": str(e)[:200]}
+
+def ccxt_cancel_order(exchange_id: str, api_key: str, api_secret: str, symbol: str,
+                       order_id: str, password: str = "") -> bool:
+    if not order_id:
+        return True
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        ex.cancel_order(order_id, _ccxt_symbol(symbol))
+        return True
+    except Exception as e:
+        print(f"[CT-CCXT] cancel_order {exchange_id}: {e}")
+        return False
+
+def ccxt_close_position(exchange_id: str, api_key: str, api_secret: str, symbol: str,
+                         side: str, qty: float, password: str = "") -> dict:
+    """Market-closes by placing an opposite reduce-only order for the full
+    qty — most exchanges via ccxt don't expose BingX's one-call
+    'closePosition' endpoint, so this is the portable equivalent."""
+    close_side = "SELL" if side == "BUY" else "BUY"
+    return ccxt_place_order(exchange_id, api_key, api_secret, symbol, close_side, "MARKET", qty,
+                             reduce_only=True, password=password)
+
+def ccxt_get_positions(exchange_id: str, api_key: str, api_secret: str, password: str = "") -> list:
+    """Same output shape as BingX's _get_all_positions (list of dicts with
+    symbol/positionAmt/avgPrice/side/unrealizedProfit) so callers don't need
+    exchange-specific branching to read the result."""
+    try:
+        ex = _ccxt_client(exchange_id, api_key, api_secret, password)
+        positions = ex.fetch_positions()
+        out = []
+        for p in positions:
+            amt = float(p.get("contracts") or 0)
+            if amt <= 0:
+                continue
+            out.append({
+                "symbol": (p.get("symbol") or "").split(":")[0].replace("/", "-"),
+                "side": "BUY" if (p.get("side") or "").lower() == "long" else "SELL",
+                "positionAmt": amt,
+                "avgPrice": float(p.get("entryPrice") or 0),
+                "unrealizedProfit": float(p.get("unrealizedPnl") or 0),
+            })
+        return out
+    except Exception as e:
+        print(f"[CT-CCXT] get_positions {exchange_id}: {e}")
+        return []
+
 def _test_api(api_key: str, api_secret: str) -> tuple[bool, str]:
     result = _bingx("GET", "/openApi/swap/v2/user/balance", api_key, api_secret, {})
     if result.get("code") == 0:
@@ -496,17 +651,25 @@ def _get_balance(api_key: str, api_secret: str) -> dict:
         return {}
 
 def sync_all_balances():
-    """Fetches and caches real BingX balance for every connected user (not just
+    """Fetches and caches real balance for every connected user (not just
     copy_on ones — Portfolio balance should show regardless of copy trade
     state) into their ct_users record, so api.py's Mini App endpoint can serve
-    it without needing live BingX credentials itself (api.py can't decrypt
-    ct_users' api_key_enc — different encryption key from its own table)."""
+    it without needing live exchange credentials itself (api.py can't decrypt
+    ct_users' api_key_enc — different encryption key from its own table).
+    Works for BingX and any ccxt-supported exchange a user connected."""
     for cid, user in list(_db.items()):
         if not user.get("connected") or not user.get("api_key_enc"):
             continue
         try:
-            api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
-            bal = _get_balance(api_key, api_secret)
+            api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+            exchange = user.get("exchange", "bingx")
+            if exchange == "bingx":
+                bal = _get_balance(api_key, api_secret)
+            elif HAS_CCXT:
+                password = _decrypt(user.get("api_password_enc", ""))
+                bal = ccxt_get_balance(exchange, api_key, api_secret, password)
+            else:
+                bal = {}
             if not bal:
                 continue
             user["balance_usdt"]    = bal["equity"]
@@ -1308,6 +1471,48 @@ def is_scan_tp1_hit(symbol: str) -> bool:
     return False
 
 
+def _ccxt_open_scan_slot(cid, user, p: str, ver: int, symbol: str, side: str, entry: float, sl: float,
+                          tp1: float, tp2: float, lev: int, qty: float) -> str:
+    """Non-BingX scan-coin trade open, via the generic ccxt adapter — set
+    leverage, market entry, SL, TP1, TP2. Simpler than the BingX path above
+    (no multi-attempt retry loops on entry/SL/TP placement), but covers the
+    same core flow and writes the exact same slot fields (user[f"{p}..."])
+    so everything downstream (on_scan_tp1/tp2/sl, monitor_sl_tp's BingX-only
+    reconciliation aside, /mytrade, the Mini App) reads scan positions the
+    same way regardless of which exchange placed them."""
+    exchange = user.get("exchange", "bingx")
+    api_key  = _decrypt(user["api_key_enc"])
+    api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password   = _decrypt(user.get("api_password_enc", ""))
+    uname = user.get("username", "?")
+    if not HAS_CCXT:
+        return f"❌ @{uname} {symbol}: ccxt not installed on the server — contact admin"
+    ccxt_set_leverage(exchange, api_key, api_secret, symbol, lev, password)
+    entry_r = ccxt_place_order(exchange, api_key, api_secret, symbol, side, "MARKET", qty, password=password)
+    if not entry_r["ok"]:
+        return f"❌ @{uname} {symbol}: entry failed on {exchange} — {entry_r['msg']}"
+    close_side = "SELL" if side == "BUY" else "BUY"
+    tp1_qty, tp2_qty = _tp1_split(qty)
+    sl_r  = ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "STOP_MARKET", qty,
+                             stop_price=sl, password=password)
+    tp1_r = (ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "TAKE_PROFIT_MARKET",
+                              tp1_qty, stop_price=tp1, password=password) if tp1 else {"ok": True, "msg": ""})
+    tp2_r = (ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "TAKE_PROFIT_MARKET",
+                              tp2_qty, stop_price=tp2, password=password) if tp2 else {"ok": True, "msg": ""})
+    if not sl_r["ok"]:
+        ccxt_close_position(exchange, api_key, api_secret, symbol, side, qty, password)
+        return f"🚨 @{uname} {symbol} on {exchange} — SL failed ({sl_r['msg']}) — position auto-closed for safety"
+    user[f"{p}symbol"] = symbol; user[f"{p}side"] = side
+    user[f"{p}entry"]  = entry;  user[f"{p}sl"]   = sl
+    user[f"{p}tp1"]    = tp1;    user[f"{p}tp2"]  = tp2
+    user[f"{p}qty"]    = qty;    user[f"{p}tp1_hit"] = False
+    user[f"{p}lev"]    = lev
+    _set(cid, user)
+    tp_warn = ""
+    if tp1 and not tp1_r["ok"]: tp_warn += " ⚠️TP1 failed"
+    if tp2 and not tp2_r["ok"]: tp_warn += " ⚠️TP2 failed"
+    return f"✅ @{uname} {symbol} {side} {qty:.4f} lev={lev}x on {exchange.title()}{tp_warn}"
+
 def on_scan_signal(signal_dict: dict, symbol: str, price: float, share_free: bool = True) -> list[str]:
     """
     Place a scan-sourced trade (alt coin) for all copy users.
@@ -1367,6 +1572,10 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
                 lev = user.get("leverage", 10)
             # Use entry price for qty calc (not current price) so margin = size_usdt exactly
             qty = _calc_qty(user["size_usdt"], entry, lev)
+
+            if user.get("exchange", "bingx") != "bingx":
+                results.append(_ccxt_open_scan_slot(cid, user, p, ver, symbol, side, entry, sl, tp1, tp2, lev, qty))
+                continue
 
             def _place_alt(s, ot, q, pr=0, sp=0, cp=False, ps=""):
                 ps = ps or ("LONG" if s == "BUY" else "SHORT")
@@ -1524,6 +1733,55 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
     return results
 
 
+def _ccxt_scan_tp1(cid, user, p: str, symbol: str):
+    """Non-BingX TP1 partial close via ccxt — same idea as on_scan_tp1 below:
+    check whether the exchange-side TP1 order already closed its share, close
+    manually if not, move SL to breakeven, re-place TP2 on the remainder."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    side = user[f"{p}side"]
+    entry_price = float(user.get(f"{p}entry", 0))
+    qty = float(user.get(f"{p}qty", 0))
+    half_qty = max(round(qty / 2, 4), 0.001)
+    if not entry_price:
+        print(f"[CT-CCXT] scan_tp1 {cid} {symbol}: entry=0, cannot set BE SL"); return
+    user[f"{p}tp1_hit"] = True; _set(cid, user)
+    close_side = "SELL" if side == "BUY" else "BUY"
+    positions = ccxt_get_positions(exchange, api_key, api_secret, password)
+    actual_qty = next((pos["positionAmt"] for pos in positions if pos["symbol"] == symbol), 0.0)
+    if actual_qty >= qty * 0.75:
+        ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "MARKET", half_qty,
+                          reduce_only=True, password=password)
+        remaining_qty = half_qty
+    elif actual_qty >= 0.001:
+        remaining_qty = round(actual_qty, 4)
+    else:
+        print(f"[CT-CCXT] scan_tp1 {cid} {symbol}: position already fully closed, skipping BE SL")
+        _clear_scan_state(cid, user, symbol); return
+    be_sl_price = round(entry_price * 1.001 if side == "SELL" else entry_price * 0.999, 6)
+    ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "STOP_MARKET", remaining_qty,
+                      stop_price=be_sl_price, password=password)
+    tp2 = float(user.get(f"{p}tp2", 0))
+    if tp2:
+        ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "TAKE_PROFIT_MARKET",
+                          remaining_qty, stop_price=tp2, password=password)
+    user[f"{p}qty"] = remaining_qty
+    user[f"{p}sl"]  = be_sl_price
+    _set(cid, user)
+    print(f"[CT-CCXT] scan_tp1 {cid} {symbol}: done — remaining={remaining_qty} SL→BE@{be_sl_price}")
+
+def _ccxt_close_scan_slot(cid, user, p: str, symbol: str):
+    """Non-BingX full close via ccxt — used for both TP2 and SL, same as
+    on_scan_tp2/on_scan_sl below force-closing via BingX's closePosition."""
+    exchange = user.get("exchange", "bingx")
+    api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user.get("api_secret_enc", ""))
+    password = _decrypt(user.get("api_password_enc", ""))
+    side = user[f"{p}side"]
+    qty = float(user.get(f"{p}qty", 0.001))
+    r = ccxt_close_position(exchange, api_key, api_secret, symbol, side, qty, password)
+    print(f"[CT-CCXT] close_scan_slot {cid} {symbol}: ok={r['ok']} msg={r['msg']}")
+
 def on_scan_tp1(symbol: str):
     """Scan TP1 hit — cancel remaining orders, move SL to BE, re-place TP2.
     BingX's own TP1 TAKE_PROFIT_MARKET order handles the 50% close automatically.
@@ -1531,6 +1789,9 @@ def on_scan_tp1(symbol: str):
     for cid, user, api_key, api_secret in _users_with_copy():
         p = _pfx_for_symbol(user, symbol)
         if not p: continue
+        if user.get("exchange", "bingx") != "bingx":
+            _ccxt_scan_tp1(cid, user, p, symbol)
+            continue
         try:
             side        = user[f"{p}side"]
             entry_price = float(user.get(f"{p}entry", 0))
@@ -1628,21 +1889,24 @@ def on_scan_tp2(symbol: str):
         p = _pfx_for_symbol(user, symbol)
         if not p: continue
         try:
-            trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
-            for o in _get_open_orders(api_key, api_secret, symbol):
-                oid = str(o.get("orderId", ""))
-                if oid:
-                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                           {"symbol": symbol, "orderId": oid})
-            close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
-                              {"symbol": symbol, "positionSide": trade_ps})
-            if close_r.get("code") != 0:
-                rem = float(user.get(f"{p}qty", 0.001))
-                close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
-                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                       {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                        "type": "MARKET", "quantity": round(rem, 4)})
-            print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')}")
+            if user.get("exchange", "bingx") != "bingx":
+                _ccxt_close_scan_slot(cid, user, p, symbol)
+            else:
+                trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
+                for o in _get_open_orders(api_key, api_secret, symbol):
+                    oid = str(o.get("orderId", ""))
+                    if oid:
+                        _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "orderId": oid})
+                close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                                  {"symbol": symbol, "positionSide": trade_ps})
+                if close_r.get("code") != 0:
+                    rem = float(user.get(f"{p}qty", 0.001))
+                    close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+                    _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                            "type": "MARKET", "quantity": round(rem, 4)})
+                print(f"[CT] on_scan_tp2 {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol}: {e}")
         try:
@@ -1771,21 +2035,24 @@ def on_scan_sl(symbol: str):
         p = _pfx_for_symbol(user, symbol)
         if not p: continue
         try:
-            trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
-            for o in _get_open_orders(api_key, api_secret, symbol):
-                oid = str(o.get("orderId", ""))
-                if oid:
-                    _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                           {"symbol": symbol, "orderId": oid})
-            close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
-                              {"symbol": symbol, "positionSide": trade_ps})
-            if close_r.get("code") != 0:
-                rem = float(user.get(f"{p}qty", 0.001))
-                close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
-                _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
-                       {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
-                        "type": "MARKET", "quantity": round(rem, 4)})
-            print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')}")
+            if user.get("exchange", "bingx") != "bingx":
+                _ccxt_close_scan_slot(cid, user, p, symbol)
+            else:
+                trade_ps = "LONG" if user[f"{p}side"] == "BUY" else "SHORT"
+                for o in _get_open_orders(api_key, api_secret, symbol):
+                    oid = str(o.get("orderId", ""))
+                    if oid:
+                        _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                               {"symbol": symbol, "orderId": oid})
+                close_r = _bingx("POST", "/openApi/swap/v2/trade/closePosition", api_key, api_secret,
+                                  {"symbol": symbol, "positionSide": trade_ps})
+                if close_r.get("code") != 0:
+                    rem = float(user.get(f"{p}qty", 0.001))
+                    close_side = "SELL" if user[f"{p}side"] == "BUY" else "BUY"
+                    _bingx("POST", "/openApi/swap/v2/trade/order", api_key, api_secret,
+                           {"symbol": symbol, "side": close_side, "positionSide": trade_ps,
+                            "type": "MARKET", "quantity": round(rem, 4)})
+                print(f"[CT] on_scan_sl {cid} {symbol}: closed code={close_r.get('code')}")
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol}: {e}")
         try:
@@ -2013,6 +2280,13 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
     fixes = []
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
+        if user.get("exchange", "bingx") != "bingx":
+            # Orphan-adoption/SL-TP-reconciliation isn't built for non-BingX
+            # exchanges yet (real order placement/close IS — see
+            # _ccxt_open_scan_slot/_ccxt_scan_tp1/_ccxt_close_scan_slot) —
+            # skip rather than run BingX-specific calls against credentials
+            # for a different exchange.
+            continue
         try:
             ak    = _decrypt(user["api_key_enc"])
             ask   = _decrypt(user["api_secret_enc"])
@@ -2277,6 +2551,9 @@ def sync_check() -> list[str]:
     lines = []
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
+        if user.get("exchange", "bingx") != "bingx":
+            lines.append(f"ℹ️ @{user.get('username', cid)}: sync audit not built for {user.get('exchange')} yet — skipped")
+            continue
         try:
             ak   = _decrypt(user["api_key_enc"])
             ask  = _decrypt(user["api_secret_enc"])
@@ -2442,25 +2719,47 @@ def handle(cmd: str, parts: list, chat_id, username: str,
     # ── USER COMMANDS ─────────────────────────────────────────────────────────
 
     if cmd == "/connect":
-        if len(parts) < 3:
+        if len(parts) < 2:
             send_reply_fn(chat_id,
-                f"<b>Connect BingX</b>\n\n<blockquote>{_sc('Usage')}:\n<code>/connect API_KEY API_SECRET</code>\n\n"
+                f"<b>Connect Exchange</b>\n\n<blockquote>{_sc('Usage')}:\n"
+                f"<code>/connect EXCHANGE API_KEY API_SECRET</code>\n"
+                f"<code>/connect EXCHANGE API_KEY skip</code> — {_sc('if that exchange only needs an API key')}\n"
+                f"<code>/connect API_KEY API_SECRET</code> — {_sc('BingX (exchange name optional)')}\n\n"
                 f"⚠️ {_sc('Use read + trade permissions only. NEVER enable withdrawal on the key.')}</blockquote>")
             return
-        api_key = parts[1]; api_secret = parts[2]
+        _known_exchange = HAS_CCXT and parts[1].lower() in SUPPORTED_EXCHANGES
+        if _known_exchange:
+            exchange = parts[1].lower()
+            if len(parts) < 3:
+                send_reply_fn(chat_id, f"Usage: <code>/connect {exchange} API_KEY API_SECRET</code>"); return
+            api_key    = parts[2]
+            api_secret = parts[3] if len(parts) > 3 and parts[3].lower() != "skip" else ""
+            password   = parts[4] if len(parts) > 4 and parts[4].lower() != "skip" else ""
+        else:
+            # Legacy 2-arg form — always BingX
+            if len(parts) < 3:
+                send_reply_fn(chat_id, "Usage: <code>/connect API_KEY API_SECRET</code>"); return
+            exchange = "bingx"; api_key = parts[1]; api_secret = parts[2]; password = ""
         send_reply_fn(chat_id, f"{_sc('Testing API key')}...")
-        ok, err = _test_api(api_key, api_secret)
+        if exchange == "bingx":
+            ok, err = _test_api(api_key, api_secret)
+        elif HAS_CCXT:
+            ok, err = ccxt_test_api(exchange, api_key, api_secret, password)
+        else:
+            ok, err = False, "ccxt not installed on the server — contact admin"
         if not ok:
-            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n<blockquote>{err}\n\n{_sc('Check key + secret and try again.')}</blockquote>")
+            send_reply_fn(chat_id, f"<b>Connection Failed</b>\n\n<blockquote>{err}\n\n{_sc('Check your credentials and try again.')}</blockquote>")
             return
         user = _get(cid) or _default_user(username)
-        user["api_key_enc"]    = _encrypt(api_key)
-        user["api_secret_enc"] = _encrypt(api_secret)
-        user["connected"]      = True
-        user["username"]       = username
+        user["exchange"]         = exchange
+        user["api_key_enc"]      = _encrypt(api_key)
+        user["api_secret_enc"]   = _encrypt(api_secret) if api_secret else ""
+        user["api_password_enc"] = _encrypt(password) if password else ""
+        user["connected"]        = True
+        user["username"]         = username
         _set(cid, user)
         send_reply_fn(chat_id,
-            "<b>BingX Connected!</b> 🎉\n\n"
+            f"<b>{exchange.title() if exchange != 'bingx' else 'BingX'} Connected!</b> 🎉\n\n"
             f"<blockquote>✅ {_sc('API verified')}\n\n"
             f"{_sc('Margin per trade')}: <b>${user['size_usdt']} USDT</b>\n"
             f"{_sc('Leverage')}: <b>{user['leverage']}x</b> ({_sc('manual')})\n\n"
@@ -2472,12 +2771,12 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         user = _get(cid)
         if not user:
             send_reply_fn(chat_id, f"{_sc('No account connected.')}"); return
-        user["api_key_enc"] = ""; user["api_secret_enc"] = ""
+        user["api_key_enc"] = ""; user["api_secret_enc"] = ""; user["api_password_enc"] = ""
         user["connected"] = False; user["copy_on"] = False
         _set(cid, user)
         send_reply_fn(chat_id,
             "<b>Disconnected</b>\n\n"
-            f"<blockquote>{_sc('BingX API keys removed. Open positions remain open — manage them manually.')}\n\n"
+            f"<blockquote>{_sc('API keys removed. Open positions remain open — manage them manually.')}\n\n"
             "<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/setsize":
