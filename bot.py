@@ -775,6 +775,18 @@ def _start_userbot():
             _userbot_client.start()
             print("[USERBOT] Connected.")
 
+            # Force a dialog-list sync so Telethon caches the access_hash for
+            # every chat Kaito's account currently sits in — without this, a
+            # group joined AFTER this session string was first generated can
+            # fail to resolve as a valid Peer on send_message ("An invalid
+            # Peer was used...") even though the account is genuinely a
+            # member, purely because the client never looked it up yet.
+            try:
+                loop.run_until_complete(_userbot_client.get_dialogs())
+                print("[USERBOT] Dialog list synced.")
+            except Exception as e:
+                print(f"[USERBOT] dialog sync failed (non-fatal): {e}")
+
             @_userbot_client.on(events.NewMessage(chats=[int(g) for g in COINTRENDZ_GROUP_IDS]))
             async def _on_group_message(event):
                 # Runs on THIS thread's loop, for every new message in any of
