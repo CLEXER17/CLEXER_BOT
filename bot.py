@@ -2856,7 +2856,15 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     until keys are added later."""
     if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
         _keys = _aerolink_configured_keys()
-        key = _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
+        if not _keys:
+            # Every configured key is paused — rather than silently ignoring
+            # the pause and defaulting to slot 1 specifically (the old
+            # behavior, which quietly used a key the admin explicitly turned
+            # off), fall back to rotating the full unpaused list as a last
+            # resort so a scan can still complete instead of doing nothing.
+            print("  [AEROLINK] every configured key is paused — ignoring pause as a last resort")
+            _keys = [k for k in _aerolink_all_key_slots() if k]
+        key = _keys[attempt % len(_keys)]
         return anthropic.Anthropic(api_key=key, base_url=AEROLINK_BASE_URL)
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -2865,8 +2873,8 @@ def _pick_aerolink_key(attempt: int, bad_keys: set) -> str:
     earlier in the CURRENT scan cycle (see _claude_client_skip) — a key that
     just failed on coin #1 gets skipped on coin #2/#3 instead of being
     retried from scratch every time. Falls back to the full list if every
-    key has somehow already been marked bad, rather than crashing."""
-    _all = _aerolink_configured_keys()
+    key has somehow already been marked bad or paused, rather than crashing."""
+    _all = _aerolink_configured_keys() or [k for k in _aerolink_all_key_slots() if k]
     _keys = [k for k in _all if k not in bad_keys] or _all
     return _keys[attempt % len(_keys)] if _keys else AEROLINK_API_KEY
 
