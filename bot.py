@@ -4815,6 +4815,22 @@ PREMIUM_EMOJI_MAP = {
 }
 PREMIUM_EMOJIS_ENABLED = True
 
+# Exchange name -> (glyph prepended before the name, its custom emoji id) — same
+# "prepend an icon in front of the plain word" pattern the BingX glyph-swap
+# above already uses. Only exchanges whose shared icon was confidently
+# recognizable made this list — the rest just render as plain text, no risk
+# of pairing the wrong logo with the wrong name.
+_EXCHANGE_NAME_EMOJI = {
+    "Binance": ("🔶", "5291938258851904842"),
+    "Bybit":   ("🟡", "5292233074061354101"),
+    "OKX":     ("⚫", "5289753254433924065"),
+    "KuCoin":  ("🟢", "5291873495104367884"),
+    "Coinbase":("🔵", "5292252143716147573"),
+    "Kraken":  ("🟣", "5289538699342652724"),
+    "MEXC":    ("🔷", "5289959365619491652"),
+    "Deribit": ("🟪", "5291832125979371159"),
+}
+
 _SMALLCAPS_MAP = str.maketrans(
     "abcdefghijklmnopqrstuvwxyz",
     "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
@@ -4886,6 +4902,9 @@ def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
                 text = text.replace(glyph, f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>')
         if "BingX" in text:
             text = text.replace("BingX", '<tg-emoji emoji-id="5289756243731162671">🔀</tg-emoji> BingX')
+        for _ex_name, (_ex_glyph, _ex_eid) in _EXCHANGE_NAME_EMOJI.items():
+            if _ex_name in text:
+                text = text.replace(_ex_name, f'<tg-emoji emoji-id="{_ex_eid}">{_ex_glyph}</tg-emoji> {_ex_name}')
     if GLOBAL_SMALLCAPS_ENABLED:
         text = _smallcaps_body(text)
     return text
@@ -7241,8 +7260,8 @@ FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 /session - Current session
 /help - This menu
 
-<b>COPY TRADE (BingX)</b>
-/connect KEY SECRET - Link BingX
+<b>COPY TRADE</b>
+/connect [EXCHANGE] KEY SECRET - Link your exchange (BingX default)
 /disconnect - Remove keys
 /copytrade on|off - Auto-copy
 /setsize 50 - Margin per trade (USDT)
@@ -8832,7 +8851,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         scan1_trades.clear(); scan2_trades.clear(); save_state()
         send_reply(chat_id,
             f"✅ <b>Scan trades cleared</b>\n\n"
-            f"Scan1: {s1} removed\nScan2: {s2} removed\nClosed on BingX: {', '.join(_syms) if _syms else 'none'}")
+            f"Scan1: {s1} removed\nScan2: {s2} removed\nClosed on exchange: {', '.join(_syms) if _syms else 'none'}")
 
     elif cmd == "/alt" and is_scanadmin:
         _alt_btns = {"inline_keyboard": [[
@@ -10586,7 +10605,7 @@ _HELP_CATS = {
 _COPYUSER_SUBCATS = {
     "connect": ("🔗 Connection", [
         ("/connect",    "🔗", "Connect Account",    "Link your exchange account (BingX or any other supported exchange) so the bot can copy trades for you."),
-        ("/disconnect", "🔌", "Disconnect Account", "Remove your BingX API key. Open positions stay open — manage them manually."),
+        ("/disconnect", "🔌", "Disconnect Account", "Remove your exchange API key. Open positions stay open — manage them manually."),
     ]),
     "controls": ("⚙️ Trading Controls", [
         ("/copytrade", "🔄", "Copy Trading On/Off", "Turns copying ON or OFF. When ON, every signal is copied to your account automatically."),
@@ -10599,7 +10618,7 @@ _COPYUSER_SUBCATS = {
         ("/setrisk",     "🛡", "Auto-Risk Mode",    "You set a max loss amount, e.g. $2. The bot then picks the right leverage for you on every trade so you never lose more than that."),
     ]),
     "reports": ("📊 Reports", [
-        ("/mytrade",   "📋", "Open Position", "Shows your current live position on BingX, if any."),
+        ("/mytrade",   "📋", "Open Position", "Shows your current live position on your connected exchange, if any."),
         ("/mysize",    "⚙️", "My Settings",   "Your current margin, leverage, and exposure per trade."),
         ("/myhistory", "📊", "P&L History",   "Your past copy-traded results — wins, losses, total P&L."),
     ]),
@@ -10658,8 +10677,8 @@ _TRADECONTROL_SUBCATS = {
     ]),
     "close": ("❌ Close Positions", [
         ("/close",      "❌", "Close BTC Trade",     "Manually closes the currently active BTC trade right now."),
-        ("/closetrade", "❌", "Close a Coin",         "Pick any open trade (BTC, Scan1 or Scan2) to close it — on BingX for every copy user, and in the bot."),
-        ("/closescan",  "🗑", "Clear All Scan Trades","Force-closes every open Scan1/Scan2 trade on BingX for all copy users, then clears them from the bot."),
+        ("/closetrade", "❌", "Close a Coin",         "Pick any open trade (BTC, Scan1 or Scan2) to close it — on each copy user's own exchange, and in the bot."),
+        ("/closescan",  "🗑", "Clear All Scan Trades","Force-closes every open Scan1/Scan2 trade on each copy user's exchange, then clears them from the bot."),
     ]),
     "actions": ("⚡ Other Actions", [
         ("/resetsl", "🔄", "Reset SL Streak", "Clears the consecutive-SL counter and any active cooldown."),
@@ -11123,7 +11142,7 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
         for _sym in _syms:
             ct.close_coin_all(_sym)
         scan1_trades.clear(); scan2_trades.clear(); save_state()
-        result_text = f"✅ <b>Scan trades cleared</b>\n\nScan1: {s1} removed\nScan2: {s2} removed\nClosed on BingX: {', '.join(_syms) if _syms else 'none'}"
+        result_text = f"✅ <b>Scan trades cleared</b>\n\nScan1: {s1} removed\nScan2: {s2} removed\nClosed on exchange: {', '.join(_syms) if _syms else 'none'}"
     elif action_id.startswith("disconnect:"):
         uid = action_id.split(":", 1)[1]
         handle_command("/disconnect", chat_id, {}, sender_id=int(uid))
@@ -11168,7 +11187,7 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
             lst = scan1_trades if kind == "scan1" else scan2_trades
             if 0 <= idx < len(lst) and lst[idx].get("symbol") == symbol:
                 lst.pop(idx); save_state()
-        result_text = f"✅ <b>{symbol} closed</b> — on BingX for all copy users + removed from the bot."
+        result_text = f"✅ <b>{symbol} closed</b> — on each copy user's exchange + removed from the bot."
     elif action_id == "remove_channel_link":
         global SIGNAL_CHANNEL_LINK
         SIGNAL_CHANNEL_LINK = ""; save_settings()
@@ -11380,7 +11399,7 @@ def send_entrystyle_screen(chat_id, message_id=None):
         "<b>Zone Entry</b> — shows a price range (like a signal-channel style zone) and "
         "places a single LIMIT order at the zone's midpoint for every copy user. "
         "The order only fills if price actually trades back into that zone — if it never "
-        "does, the position stays unfilled on BingX (this applies to Scan1/Scan2 only).</blockquote>",
+        "does, the position stays unfilled on the exchange (this applies to Scan1/Scan2 only).</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_channel_picker_screen(chat_id, message_id=None):
@@ -11569,7 +11588,7 @@ def send_vip_pick_screen(chat_id, message_id=None):
         rows.append([{"text": label, "callback_data": f"vip_pick:{uid}"}])
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyadmin"}])
     _help_edit_or_send(chat_id,
-        "⭐ <b>Promote to VIP</b>\n\n<blockquote>Choose any registered user — they don't need to have connected BingX yet:</blockquote>",
+        "⭐ <b>Promote to VIP</b>\n\n<blockquote>Choose any registered user — they don't need to have connected an exchange yet:</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_free_pick_screen(chat_id, message_id=None):
@@ -12190,7 +12209,7 @@ def command_listener():
                                 f"Move SL to breakeven for {_match['symbol']}?", _list_back, message_id=cb_msg_id)
                         elif _action == "closetrade":
                             _ask_confirm(cb_chat_id, cb_cid, f"closetrade:{_kind}:{_match['symbol']}:{_idx}",
-                                f"Close {_match['symbol']}? This closes it on BingX for every copy user AND removes it from the bot.", _list_back, message_id=cb_msg_id)
+                                f"Close {_match['symbol']}? This closes it on each copy user's exchange AND removes it from the bot.", _list_back, message_id=cb_msg_id)
                         else:
                             _pp_state[str(cb_cid)] = {"action": _action, "kind": _kind, "symbol": _match["symbol"],
                                                        "idx": _idx, "digits": "", "back_cb": _list_back}
@@ -14626,7 +14645,7 @@ def main():
             if is_weekend_sleep():
                 if not _weekend_sleep_notified:
                     _weekend_sleep_notified = True
-                    send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — BingX orders still active.")
+                    send_admin("😴 <b>Weekend Sleep Mode</b>\n\nAll bot activity paused.\nFri 10 PM → Sun 11 PM IST.\nOpen trades are safe — exchange orders still active.")
                     # Flush Friday's daily recap right now instead of waiting for the
                     # post-midnight window — if the process restarts/goes down anytime
                     # during the weekend (Railway restart, credit limit, etc.), the

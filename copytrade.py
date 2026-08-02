@@ -3057,7 +3057,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns); return
         if not user or not user.get("connected"):
             send_reply_fn(chat_id,
-                f"{_sc('Connect BingX first')}:\n<code>/connect API_KEY API_SECRET</code>"); return
+                f"{_sc('Connect your exchange first')}:\n<code>/connect API_KEY API_SECRET</code>"); return
         if user.get("paused_by_admin"):
             send_reply_fn(chat_id, _sc("Your copy trade is paused by admin.")); return
         state = parts[1].lower()
@@ -3074,7 +3074,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             user["copy_on"] = False; _set(cid, user)
             send_reply_fn(chat_id,
                 f"<b>Copy Trade OFF ❌</b>\n\n<blockquote>{_sc('No more auto-copies.')}\n"
-                f"{_sc('Open positions remain open — manage them on BingX.')}\n\n"
+                f"{_sc('Open positions remain open — manage them on your exchange.')}\n\n"
                 "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
@@ -3109,7 +3109,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         if not user or not user.get("connected"):
             _connect_btn = {"inline_keyboard": [[{"text": "🔗  Connect Account", "callback_data": "help_cmd:/connect"}]]}
             send_reply_fn(chat_id,
-                f"<b>No Account Connected</b>\n\n<blockquote>{_sc('Connect your BingX account to see your open position.')}</blockquote>",
+                f"<b>No Account Connected</b>\n\n<blockquote>{_sc('Connect your exchange account to see your open position.')}</blockquote>",
                 reply_markup=_connect_btn); return
         try:
             api_key = _decrypt(user["api_key_enc"]); api_secret = _decrypt(user["api_secret_enc"])
@@ -3132,7 +3132,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                         f"{_sc('Entry')}:    <b>{entry:,.4g}</b>\n"
                         f"{_sc('Leverage')}: <b>{lev}x</b>\n"
                         f"{_sc('PnL')}:      <b>{pnl_s}</b>")
-                _title = "Your BingX Position" if len(_blocks) == 1 else f"Your BingX Positions ({len(_blocks)})"
+                _title = "Your Position" if len(_blocks) == 1 else f"Your Positions ({len(_blocks)})"
                 send_reply_fn(chat_id,
                     f"<b>{_title}</b>\n\n<blockquote>" + "\n\n".join(_blocks) +
                     f"\n\n<i>🛡️ Capital protected</i></blockquote>")
@@ -3156,7 +3156,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             [{"text": "🛡  Set Risk",     "callback_data": "mysize_setrisk"}]]}
         send_reply_fn(chat_id,
             f"<b>Your Settings</b>\n\n"
-            f"<blockquote>{_sc('BingX')}: {'✅ ' + _sc('Connected') if user.get('connected') else '❌ ' + _sc('Not connected')}\n"
+            f"<blockquote>{_sc('Exchange')}: {'✅ ' + _sc('Connected') if user.get('connected') else '❌ ' + _sc('Not connected')}\n"
             f"{_sc('Copy Trade')}: <b>{'✅ ON' if user.get('copy_on') else '❌ OFF'}</b>\n"
             f"{_sc('Margin per trade')}: <b>${size} USDT</b>\n"
             f"{lev_line}\n"
@@ -3176,7 +3176,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 _bx_pnl = _fetch_bingx_realized_pnl(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
                 if _bx_pnl is not None:
                     _bx_s = f"+${_bx_pnl:.2f} 🟢" if _bx_pnl > 0 else (f"-${abs(_bx_pnl):.2f} 🔴" if _bx_pnl < 0 else "$0.00")
-                    _bingx_pnl_line = f"{_sc('BingX Realized PnL (last 90d)')}: <b>{_bx_s}</b>\n\n"
+                    _bingx_pnl_line = f"{_sc('Exchange Realized PnL (last 90d)')}: <b>{_bx_s}</b>\n\n"
             except Exception as e:
                 print(f"[CT] /myhistory bingx pnl fetch: {e}")
         _myh_btns = {"inline_keyboard": [[{"text": "🗑 Reset My P&L History", "callback_data": "myhistory_reset"}]]}
@@ -3274,7 +3274,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         send_reply_fn(chat_id,
             f"<b>Users Summary</b>\n\n"
             f"<blockquote>Total registered:   {total}\n"
-            f"BingX connected:    {connected}\n"
+            f"Exchange connected: {connected}\n"
             f"Copy trade active:  {active}\n"
             f"In position now:    {in_pos}\n"
             f"Total exposure:     <b>${exposure:,.0f}</b>\n\n"
@@ -3296,7 +3296,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             tier_tag = "⭐ VIP" if tier == "vip" else "🆓 FREE"
             lines.append(
                 f"{i}. {uname}{paused} | <code>{uid}</code>  {tier_tag}\n"
-                f"   BingX:{bingx_ok} Copy:{copy_s} | "
+                f"   Exch:{bingx_ok} Copy:{copy_s} | "
                 f"${user.get('size_usdt',0):.0f} {lev_str}"
                 f"{pos_line}\n")
         send_reply_fn(chat_id, "\n".join(lines))
@@ -3346,13 +3346,13 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 _bx_pnl = _fetch_bingx_realized_pnl(_decrypt(user["api_key_enc"]), _decrypt(user["api_secret_enc"]))
                 if _bx_pnl is not None:
                     _bx_s = f"+${_bx_pnl:.2f} 🟢" if _bx_pnl > 0 else (f"-${abs(_bx_pnl):.2f} 🔴" if _bx_pnl < 0 else "$0.00")
-                    _bingx_pnl_line = f"BingX Realized PnL (last 90d): <b>{_bx_s}</b>\n"
+                    _bingx_pnl_line = f"Exchange Realized PnL (last 90d): <b>{_bx_s}</b>\n"
             except Exception as e:
                 print(f"[CT] /user bingx pnl fetch: {e}")
         send_reply_fn(chat_id,
             f"<b>{_display_uname_link(target, user)}</b> | <code>{target}</code>{paused}\n\n"
             f"<blockquote>Tier: {_tier_line}\n"
-            f"BingX: {'✅ Connected' if user.get('connected') else '❌ Not connected'}\n"
+            f"Exchange: {'✅ Connected' if user.get('connected') else '❌ Not connected'} ({user.get('exchange','bingx').title()})\n"
             f"Copy Trade: {'ON' if user.get('copy_on') else 'OFF'}\n"
             f"Size: <b>${user.get('size_usdt',0)} USDT</b> | {_lev_line}"
             f"{pos_info}\n\n"
@@ -3475,7 +3475,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         if not user:
             send_reply_fn(chat_id, f"User <code>{target}</code> not found."); return
         if not user.get("connected"):
-            send_reply_fn(chat_id, f"@{user.get('username','?')} has no BingX connected."); return
+            send_reply_fn(chat_id, f"@{user.get('username','?')} has no exchange connected."); return
 
         # Determine mode: btc / specific coin / all scan trades
         mode = parts[2].upper() if len(parts) > 2 else "BTC"
