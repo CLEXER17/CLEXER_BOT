@@ -10640,8 +10640,7 @@ def _toggle_cmd(cmd_text, chat_id, cid, msg_id, cat_id):
     handle_command(cmd_text, chat_id, {}, sender_id=cid)
     captured = _reply_capture.pop(cid_str, {})
     result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
-    if len(result_text) > 4000:
-        result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+    result_text = _safe_truncate_html(result_text, 4000)
     _base_cmd = cmd_text.split()[0]
     _back_cb, _ = _find_back_target(_base_cmd)
     _back_row = [{"text": "◀️  Back", "callback_data": _back_cb}]
@@ -10797,6 +10796,33 @@ def send_addfunds_screen(chat_id, message_id=None):
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False)
+
+def _safe_truncate_html(text: str, limit: int = 4000) -> str:
+    """Truncates HTML text at `limit` chars WITHOUT leaving a dangling open
+    tag — a blind text[:limit] slice can land mid-tag or inside an unclosed
+    <pre>/<b>/etc, which Telegram rejects outright ("can't find end tag"),
+    silently breaking whatever screen was rendering (this is exactly what
+    was happening to /nt's help-button view once the dense grid pushed its
+    combined multi-block output past 4000 chars)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # Landed mid-tag (an unmatched '<' after the last complete '>') — back up
+    # to the last fully-closed tag so no broken fragment like "<pr" survives.
+    _last_lt = cut.rfind("<")
+    _last_gt = cut.rfind(">")
+    if _last_lt > _last_gt:
+        cut = cut[:_last_lt]
+    stack = []
+    for m in re.finditer(r"</?([a-zA-Z][a-zA-Z0-9\-]*)[^>]*>", cut):
+        tag = m.group(1).lower()
+        if m.group(0).startswith("</"):
+            if stack and stack[-1] == tag:
+                stack.pop()
+        else:
+            stack.append(tag)
+    closing = "".join(f"</{t}>" for t in reversed(stack))
+    return cut + closing + "\n\n<i>...truncated</i>"
 
 def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True, emoji_overrides=None):
     base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -12005,8 +12031,7 @@ def command_listener():
                             handle_command(cmd_text, cb_chat_id, {}, sender_id=cb_cid)
                             captured = _reply_capture.pop(cid_str, {})
                             result_text = "\n\n".join(captured.get("texts", [])) or f"✅ Done: {cmd_text}"
-                            if len(result_text) > 4000:
-                                result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+                            result_text = _safe_truncate_html(result_text, 4000)
                             # Merge captured inline buttons + Back button
                             cap_mkp = captured.get("markup")
                             if cap_mkp and "inline_keyboard" in cap_mkp:
@@ -13066,8 +13091,7 @@ def command_listener():
                         handle_command(full_cmd, cid, msg)
                         captured = _reply_capture.pop(cid_str, {})
                         result_text = "\n\n".join(captured.get("texts", [])) or "✅ Done"
-                        if len(result_text) > 4000:
-                            result_text = result_text[:4000] + "\n\n<i>...truncated</i>"
+                        result_text = _safe_truncate_html(result_text, 4000)
                         cap_mkp = captured.get("markup")
                         if cap_mkp and "inline_keyboard" in cap_mkp:
                             final_mkp = {"inline_keyboard": cap_mkp["inline_keyboard"] + _back_mkp["inline_keyboard"]}
