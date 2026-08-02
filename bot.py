@@ -10589,6 +10589,7 @@ _COPYUSER_SUBCATS = {
     "controls": ("⚙️ Trading Controls", [
         ("/copytrade", "🔄", "Copy Trading On/Off", "Turns copying ON or OFF. When ON, every signal is copied to your account automatically."),
         ("/nocopy",    "🚫", "Block a Coin",         "Skip one coin. It won't be copied, even when everything else is ON."),
+        ("/autosltp",  "🛡", "Auto-Manage SL/TP",    "ON (default): the bot adopts/reconciles positions on your connected account automatically. Turn OFF if you also trade manually on the same account and don't want the bot touching those positions."),
     ]),
     "sizing": ("💰 Position Sizing", [
         ("/setsize",     "💵", "Margin Per Trade", "How much money (USDT) goes into each trade."),
@@ -12298,6 +12299,10 @@ def command_listener():
                     # ── Copytrade ON/OFF ─────────────────────────────────────
                     elif cb_data in ("copytrade_on", "copytrade_off"):
                         _toggle_cmd(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "copyuser")
+
+                    # ── Auto-Manage SL/TP ON/OFF (per-user) ───────────────────
+                    elif cb_data in ("autosltp_on", "autosltp_off"):
+                        _toggle_cmd(f"/autosltp {'on' if cb_data=='autosltp_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "copyuser")
 
                     # ── Mysize quick-set buttons ──────────────────────────────
                     elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):

@@ -354,6 +354,9 @@ def _default_user(username: str = "?") -> dict:
         "vip_start":      "",     # "DD.MM.YYYY" — only meaningful when tier == "vip" with an expiry
         "vip_end":        "",     # "DD.MM.YYYY" — VIP auto-downgrades to free after this date
         "vip_grace_notified_at": 0,  # set once the 24h renew-or-removed reminder has been sent
+        "auto_manage_sltp": True,  # per-user opt-out (see /autosltp) — when False, monitor_sl_tp
+                                    # (ghost cleanup, orphan adoption, missing SL/TP reconciliation)
+                                    # skips this user entirely; ON by default, matching prior behavior
         "virtual":        {"enabled": False, "balance": 1000.0, "leverage": 10.0,
                            "open": {}, "trade_log": []},  # paper trading — defaults OFF, opt-in only
     }
@@ -2430,6 +2433,11 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
     fixes = []
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
+        if not user.get("auto_manage_sltp", True):
+            # User opted out via /autosltp — bot never touches ghost-state
+            # cleanup, orphan adoption, or SL/TP reconciliation on their
+            # account, even for BingX. Their manual trades stay untouched.
+            continue
         if user.get("exchange", "bingx") != "bingx":
             # Orphan-adoption/SL-TP-reconciliation isn't built for non-BingX
             # exchanges yet (real order placement/close IS — see
@@ -2851,7 +2859,7 @@ def on_update_sl(new_sl: float):
 
 CT_USER_COMMANDS  = {"/connect", "/disconnect", "/setsize", "/setleverage", "/setrisk",
                      "/copytrade", "/mytrade", "/mysize", "/myhistory",
-                     "/nocopy"}
+                     "/nocopy", "/autosltp"}
 CT_ADMIN_COMMANDS = {"/allusers", "/user", "/kick", "/pauseuser",
                      "/ctretry", "/ctstatus", "/ctclose", "/setvip", "/setfree"}
 
@@ -3060,6 +3068,31 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 "<i>🛡️ Capital protected</i></blockquote>", reply_markup=_ct_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
+
+    elif cmd == "/autosltp":
+        user = _get(cid)
+        if not user or not user.get("connected"):
+            send_reply_fn(chat_id, f"{_sc('Connect your account first')}: /connect"); return
+        _as_btns = {"inline_keyboard": [[
+            {"text": "🟢  Turn ON",  "callback_data": "autosltp_on",  "style": "success"},
+            {"text": "🔴  Turn OFF", "callback_data": "autosltp_off", "style": "danger"}]]}
+        if len(parts) < 2:
+            st = "✅ ON" if user.get("auto_manage_sltp", True) else "❌ OFF"
+            send_reply_fn(chat_id,
+                f"<b>Auto-Manage SL/TP</b>\n\n<blockquote>{_sc('Status')}: <b>{st}</b>\n\n"
+                f"{_sc('When ON, the bot watches your connected account and automatically')}: "
+                f"{_sc('adopts positions it did not open itself (with an emergency SL), restores a missing SL/TP on a position it recognizes, and clears its own state if a position closed outside the bot.')}\n\n"
+                f"{_sc('Turn this OFF if you trade manually on the same account and don' + chr(39) + 't want the bot touching those positions.')}</blockquote>",
+                reply_markup=_as_btns); return
+        state = parts[1].lower()
+        if state == "on":
+            user["auto_manage_sltp"] = True; _set(cid, user)
+            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP ON ✅</b>\n\n<blockquote>{_sc('The bot will adopt/reconcile positions on your account again.')}</blockquote>", reply_markup=_as_btns)
+        elif state == "off":
+            user["auto_manage_sltp"] = False; _set(cid, user)
+            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP OFF ❌</b>\n\n<blockquote>{_sc('The bot will not touch, adopt, or reconcile any position on your account. Manage everything yourself.')}</blockquote>", reply_markup=_as_btns)
+        else:
+            send_reply_fn(chat_id, "Tap a button below:", reply_markup=_as_btns)
 
     elif cmd == "/mytrade":
         user = _get(cid)
