@@ -11173,7 +11173,7 @@ def send_leaderboard_screen(chat_id, period: str = "all", message_id=None):
     rows = _leaderboard_data(period)
     lines = [f"🏆 <b>Volume Leaderboard — {_LEADERBOARD_LABELS.get(period, period)}</b>\n"]
     if not rows:
-        lines.append("<i>No tracked copy-trade volume yet for this period.</i>")
+        lines.append("No tracked copy-trade volume yet for this period.")
     else:
         _medals = {0: "🥇", 1: "🥈", 2: "🥉"}
         for i, (cid, uname, vol, pnl) in enumerate(rows[:25]):
