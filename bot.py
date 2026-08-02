@@ -2641,12 +2641,26 @@ def _status_trade_cat(kind: str, created_at) -> str:
 
 _CAT_TAG = {"verified": "⭐", "unverified": "⚠️", "nonspecial": "➖"}
 
-def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: str, full_view: bool):
+def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: str, full_view: bool,
+                   actually_shared: bool = True):
     """Decides whether a scan/demo trade should be fully revealed, shown as
     a locked VIP tag, or hidden entirely for a given viewer — the same rule
-    /status and /trade both apply. Returns (reveal: bool, show_locked_tag: bool)."""
+    /status and /trade both apply. Returns (reveal: bool, show_locked_tag: bool).
+
+    actually_shared: whether send_entry_signal genuinely reached at least one
+    VIP/Free channel for this trade (its reply_map has a "vip:"/"free:" key) —
+    tier_routed/share_free are INTENT, decided before the actual channel post
+    was attempted, and stay True forever once set even if the post itself had
+    nowhere to go at that moment (e.g. every VIP channel was paused, or none
+    were configured yet). Without this check, that combination reveals full
+    entry/SL/TP to Free/unregistered viewers for a trade nobody in VIP or
+    Free ever actually saw either — it LOOKS like a leak even though the
+    reveal rule itself is doing exactly what it's supposed to. Defaults True
+    so any older caller that doesn't pass it keeps the previous behavior."""
     if full_view:
         return True, False
+    if not actually_shared:
+        tier_routed = False
     if viewer_tier == "vip":
         return (cat == "verified"), False
     # free / unregistered — tier_routed required too, so a stray share_free=True
@@ -2654,6 +2668,12 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
     if tier_routed and share_free:
         return True, False
     return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
+
+def _reply_map_reached_tier(reply_map: dict) -> bool:
+    """True if a trade's reply_map (send_entry_signal's return value) shows
+    it actually landed in at least one VIP or Free channel — see
+    _trade_reveal's actually_shared docstring for why this matters."""
+    return bool(reply_map) and any(k.startswith(("vip:", "free:")) for k in reply_map)
 
 _load_slot_state()
 _load_scheduled_broadcasts()
@@ -7769,10 +7789,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _user_ct = ct._get(str(chat_id))
         _tier_val = (_user_ct or {}).get("tier", "free")
         _full_status_view = is_admin or is_co_admin(_check_id)
-        def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra=""):
+        def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra="", reply_map=None):
             _cat = _status_trade_cat(kind, created_at)
             _dir = "🟢" if sig == "BUY" else "🔴"
-            _reveal, _locked = _trade_reveal(_cat, share_free, tier_routed, _tier_val, _full_status_view)
+            _reveal, _locked = _trade_reveal(_cat, share_free, tier_routed, _tier_val, _full_status_view,
+                                              actually_shared=_reply_map_reached_tier(reply_map))
             _prefix = f"{_CAT_TAG.get(_cat,'➖')} " if (_reveal and _full_status_view) else ""
             if _reveal:
                 return (f"\n\n<b>{label}:</b> {_prefix}{_dir} {sig} {sym}\n"
@@ -7786,7 +7807,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             for sc in _lst:
                 scan_lines += _status_line(f"Scan{_ver}", sc['signal'], sc['symbol'], sc['entry'], sc['sl'], sc['tp1'],
                     sc.get('entry_hit'), sc.get('tp1_hit'), sc.get('share_free', True), sc.get('tier_routed', True),
-                    f"scan{_ver}", sc.get('created_at'))
+                    f"scan{_ver}", sc.get('created_at'), reply_map=sc.get('reply_map'))
         for _dlst in (demo_scan1_trades, demo_scan2_trades):
             for dc in _dlst:
                 _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
@@ -7794,7 +7815,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _dver = dc.get('scan_ver', 1)
                 scan_lines += _status_line(f"TS{_dver}", dc['signal'], dc.get('symbol','?'), dc.get('entry',0), dc.get('sl',0), dc.get('tp1',0),
                     True, dc.get('tp1_hit'), dc.get('share_free', True), dc.get('tier_routed', True),
-                    f"demo{_dver}", dc.get('created_at'), extra=f"  P/L:{_pnl:+.2f}%")
+                    f"demo{_dver}", dc.get('created_at'), extra=f"  P/L:{_pnl:+.2f}%", reply_map=dc.get('reply_map'))
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
@@ -8168,7 +8189,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _kind = f"scan{_ver}"
                 _cat = _status_trade_cat(_kind, sc.get('created_at'))
                 _reveal, _locked = _trade_reveal(_cat, sc.get('share_free', True), sc.get('tier_routed', True),
-                                                  _trade_tier_val, _trade_full_view)
+                                                  _trade_tier_val, _trade_full_view,
+                                                  actually_shared=_reply_map_reached_tier(sc.get('reply_map')))
                 if not _reveal:
                     if _locked:
                         parts_out.append(f"<b>Scan{_ver} Trade</b>\n\n🔒 VIP-exclusive signal — upgrade to view")
@@ -8195,7 +8217,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _kind = f"demo{_dver}"
                 _cat = _status_trade_cat(_kind, dc.get('created_at'))
                 _reveal, _locked = _trade_reveal(_cat, dc.get('share_free', True), dc.get('tier_routed', True),
-                                                  _trade_tier_val, _trade_full_view)
+                                                  _trade_tier_val, _trade_full_view,
+                                                  actually_shared=_reply_map_reached_tier(dc.get('reply_map')))
                 if not _reveal:
                     if _locked:
                         parts_out.append(f"<b>TS{_dver} ALT SIGNAL</b>\n\n🔒 VIP-exclusive signal — upgrade to view")
