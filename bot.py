@@ -14666,9 +14666,11 @@ def main():
         tv_status = "Not configured"
     source_status = "Binance Fallback" if not (TV_BRIDGE_URL and tv_bridge_state["online"] and tv_bridge_state["cdp_ok"]) else "TradingView"
 
+    print(f"[STARTUP] Reached deploy-notification line. ADMIN_CHAT_ID={ADMIN_CHAT_ID!r}")
     send_admin(_deploy_status_box(
         tv_status=tv_status, source_status=source_status,
         charts_on=SEND_CHARTS, news_on=SEND_NEWS, paused=True))
+    print("[STARTUP] Deploy-notification send_admin() call returned.")
 
     MAIN_TICK = 5   # loop runs every 5s — ticker checked every TICK_INTERVAL=10s
 
