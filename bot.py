@@ -816,22 +816,25 @@ def _start_userbot():
             print(f"[USERBOT] connect error: {e}")
     threading.Thread(target=_run, daemon=True).start()
 
-def _send_via_userbot(chat_id, text: str, timeout: float = 10.0) -> bool:
+def _send_via_userbot(chat_id, text: str, timeout: float = 10.0):
     """Sends `text` into `chat_id` as the real user account. Synchronous
     wrapper around the async Telethon client running in its own loop/thread —
-    callers don't need to know or care that it's asyncio underneath."""
+    callers don't need to know or care that it's asyncio underneath.
+    Returns the sent message's id (truthy) on success, None on failure.
+    Callers that only care about success/failure can still just do
+    `if _send_via_userbot(...):` — non-zero/non-None ids are always truthy."""
     if not _userbot_ready.wait(5):
-        return False
+        return None
     if not (_userbot_loop and _userbot_client):
-        return False
+        return None
     import asyncio
     fut = asyncio.run_coroutine_threadsafe(_userbot_client.send_message(int(chat_id), text), _userbot_loop)
     try:
-        fut.result(timeout=timeout)
-        return True
+        _msg = fut.result(timeout=timeout)
+        return _msg.id
     except Exception as e:
         print(f"[USERBOT] send failed: {e}")
-        return False
+        return None
 
 def _request_coin_chart_image(coin: str, timeout: float = 30.0):
     """Sends '/c <coin>' to whichever configured CoinTrendzBot group is
@@ -856,11 +859,19 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
             _ev = threading.Event()
             _coin_chart_pending_event = _ev
             _coin_chart_pending_result.clear()
-            _sent = _send_via_userbot(_gid, f"/c {coin.lower()}")
-            if not _sent:
+            _sent_id = _send_via_userbot(_gid, f"/c {coin.lower()}")
+            if not _sent_id:
                 print(f"  [COINTRENDZ] userbot send failed/not configured for /c {coin} (group {_gid})")
                 _coin_chart_pending_event = None
                 return None
+            # Track our own "/c coin" command message directly — Telethon's
+            # NewMessage event doesn't reliably fire for messages the SAME
+            # client just sent (Telegram doesn't always push an update back
+            # for your own outgoing message), so relying only on
+            # _on_group_message left these commands never getting cleaned up
+            # even though CoinTrendzBot's image replies (genuinely incoming)
+            # were deleted fine.
+            _cointrendz_group_msg_ids.setdefault(_gid, []).append(_sent_id)
             _cointrendz_group_requests.setdefault(_gid, []).append(time.time())
             _got = _ev.wait(timeout)
             _coin_chart_pending_event = None
