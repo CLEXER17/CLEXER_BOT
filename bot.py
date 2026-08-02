@@ -727,10 +727,24 @@ def _clean_cointrendz_group():
         _cointrendz_group_msg_ids[_gid] = []
         async def _do_delete(gid=_gid, ids=_ids):
             await _userbot_client.delete_messages(int(gid), ids)
+            # delete_messages doesn't raise even when Telegram silently skips
+            # messages Kaito's account lacks rights to delete in that specific
+            # group (e.g. missing the "Delete Messages" admin permission) —
+            # a call completing without an exception does NOT guarantee
+            # anything was actually removed. Re-fetch the same ids: Telethon
+            # returns None in a message's slot once it's genuinely gone.
+            still_there = await _userbot_client.get_messages(int(gid), ids=ids)
+            return [m.id for m in still_there if m is not None]
         fut = asyncio.run_coroutine_threadsafe(_do_delete(), _userbot_loop)
         try:
-            fut.result(timeout=20)
-            print(f"[USERBOT] cleaned {len(_ids)} message(s) from CoinTrendzBot group {_gid}")
+            survived = fut.result(timeout=20)
+            if survived:
+                print(f"[USERBOT] group {_gid}: {len(_ids)-len(survived)}/{len(_ids)} actually deleted — "
+                      f"{len(survived)} still present (Kaito's account likely lacks the 'Delete Messages' "
+                      f"admin permission in THIS group specifically)")
+                _cointrendz_group_msg_ids.setdefault(_gid, []).extend(survived)
+            else:
+                print(f"[USERBOT] cleaned {len(_ids)} message(s) from CoinTrendzBot group {_gid}")
         except Exception as e:
             print(f"[USERBOT] group {_gid} cleanup failed (needs delete rights in that group?): {e}")
             # Put them back — nothing was actually deleted (or we can't tell), don't just lose track of them.
