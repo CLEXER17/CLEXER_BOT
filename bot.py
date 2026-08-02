@@ -2755,15 +2755,24 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     mdl = MODEL_REGISTRY.get(_m, _m[:6])
     return f"{gw}{mdl}"
 
+PAUSED_AEROLINK_KEYS: set = set()  # ints 1-20 — key slots the admin has manually paused
+# (e.g. a free-tier key at capacity) via /aerolinkkeys — skipped entirely everywhere
+# key rotation happens, same as an empty/unconfigured slot.
+
+def _aerolink_all_key_slots() -> tuple:
+    return (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
+            AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
+            AEROLINK_API_KEY_9, AEROLINK_API_KEY_10, AEROLINK_API_KEY_11, AEROLINK_API_KEY_12,
+            AEROLINK_API_KEY_13, AEROLINK_API_KEY_14, AEROLINK_API_KEY_15, AEROLINK_API_KEY_16,
+            AEROLINK_API_KEY_17, AEROLINK_API_KEY_18, AEROLINK_API_KEY_19, AEROLINK_API_KEY_20)
+
 def _aerolink_configured_keys() -> list:
     """All 20 possible Aerolink key slots, filtered down to whichever are
-    actually non-empty in Railway right now — single source of truth used
-    everywhere key rotation/counting/skipping happens."""
-    return [k for k in (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
-                         AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                         AEROLINK_API_KEY_9, AEROLINK_API_KEY_10, AEROLINK_API_KEY_11, AEROLINK_API_KEY_12,
-                         AEROLINK_API_KEY_13, AEROLINK_API_KEY_14, AEROLINK_API_KEY_15, AEROLINK_API_KEY_16,
-                         AEROLINK_API_KEY_17, AEROLINK_API_KEY_18, AEROLINK_API_KEY_19, AEROLINK_API_KEY_20) if k]
+    actually non-empty in Railway right now AND not manually paused —
+    single source of truth used everywhere key rotation/counting/skipping
+    happens."""
+    return [k for i, k in enumerate(_aerolink_all_key_slots(), start=1)
+            if k and i not in PAUSED_AEROLINK_KEYS]
 
 def _test_aerolink_key(key: str, model: str = "claude-opus-5", timeout: int = 20):
     """One-off validity/health check for a single Aerolink key — a tiny
@@ -2789,18 +2798,16 @@ def _test_all_aerolink_keys(cid):
     one at a time with a tiny message, so you can see at a glance which
     slots are actually valid/responding right now vs blocked/expired/out of
     credit. Zero side effects — no scan logic, nothing tracked or saved."""
-    _keys_all = (AEROLINK_API_KEY, AEROLINK_API_KEY_2, AEROLINK_API_KEY_3, AEROLINK_API_KEY_4,
-                 AEROLINK_API_KEY_5, AEROLINK_API_KEY_6, AEROLINK_API_KEY_7, AEROLINK_API_KEY_8,
-                 AEROLINK_API_KEY_9, AEROLINK_API_KEY_10, AEROLINK_API_KEY_11, AEROLINK_API_KEY_12,
-                 AEROLINK_API_KEY_13, AEROLINK_API_KEY_14, AEROLINK_API_KEY_15, AEROLINK_API_KEY_16,
-                 AEROLINK_API_KEY_17, AEROLINK_API_KEY_18, AEROLINK_API_KEY_19, AEROLINK_API_KEY_20)
-    _configured = [(i + 1, k) for i, k in enumerate(_keys_all) if k]
+    _configured = [(i, k) for i, k in enumerate(_aerolink_all_key_slots(), start=1) if k]
     if not _configured:
         send_reply(cid, "⚠️ No Aerolink keys configured."); return
     send_reply(cid, f"🔍 <b>Testing {len(_configured)} Aerolink key(s)...</b>\n\nA few seconds per key.")
     lines = []
     ok_count = 0
     for idx, key in _configured:
+        if idx in PAUSED_AEROLINK_KEYS:
+            lines.append(f"⏸ <b>Key {idx}</b> — paused, not tested (use /aerolinkkeys to resume)")
+            continue
         t0 = time.time()
         ok, detail = _test_aerolink_key(key)
         elapsed = time.time() - t0
@@ -2809,6 +2816,34 @@ def _test_all_aerolink_keys(cid):
         lines.append(f"{icon} <b>Key {idx}</b> ({elapsed:.1f}s): <code>{_html.escape(detail)}</code>")
     send_reply(cid,
         f"🧪 <b>Aerolink Key Status</b>  ({ok_count}/{len(_configured)} responding)\n\n" + "\n".join(lines))
+
+def send_aerolinkkeys_screen(chat_id, message_id=None):
+    """Admin-only /aerolinkkeys — tap any configured key slot to pause or
+    resume it. A paused key is skipped entirely everywhere key rotation
+    happens (_aerolink_configured_keys), same as if it were empty — for
+    taking a free-tier-at-capacity key out of rotation without deleting the
+    env var, then putting it back once it's usable again."""
+    _configured = [i for i, k in enumerate(_aerolink_all_key_slots(), start=1) if k]
+    if not _configured:
+        _help_edit_or_send(chat_id, "⚠️ No Aerolink keys configured.",
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "scan_sub:system"}]]}, message_id=message_id)
+        return
+    rows = []
+    row = []
+    for i in _configured:
+        _paused = i in PAUSED_AEROLINK_KEYS
+        row.append({"text": f"{'⏸' if _paused else '✅'} {i}", "callback_data": f"aerokey:{i}"})
+        if len(row) == 5:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
+    _n_paused = len(PAUSED_AEROLINK_KEYS & set(_configured))
+    _help_edit_or_send(chat_id,
+        f"🔑 <b>Aerolink Keys</b>  ({len(_configured)} configured, {_n_paused} paused)\n\n"
+        f"<blockquote>Tap a key to pause or resume it. Paused keys are skipped entirely during "
+        f"rotation — useful when a key is on the free tier and at capacity. ✅ active · ⏸ paused.</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
 
 def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
@@ -4641,6 +4676,7 @@ def load_settings():
             ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
             ct.ORPHAN_ADOPT_ENABLED = d.get("orphan_adopt_enabled", False)
             _group_seen_users.update(d.get("group_seen_users", {}))
+            PAUSED_AEROLINK_KEYS.update(d.get("paused_aerolink_keys", []))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -4694,6 +4730,7 @@ def save_settings():
             "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
             "orphan_adopt_enabled": ct.ORPHAN_ADOPT_ENABLED,
             "group_seen_users": _group_seen_users,
+            "paused_aerolink_keys": list(PAUSED_AEROLINK_KEYS),
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -7219,7 +7256,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -7830,6 +7867,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/aerolinktest" and is_admin:
         threading.Thread(target=_test_all_aerolink_keys, args=(chat_id,), daemon=True).start()
+
+    elif cmd == "/aerolinkkeys" and is_scanadmin:
+        send_aerolinkkeys_screen(chat_id)
 
     elif cmd == "/liqmap":
         if len(parts) < 2:
@@ -10568,6 +10608,8 @@ _SCAN_SUBCATS = {
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
         ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
         ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
+        ("/aerolinktest", "🧪", "Test Aerolink Keys", "Pings every configured Aerolink key slot and shows which are responding right now."),
+        ("/aerolinkkeys", "🔑", "Pause/Resume Aerolink Keys", "Tap a key slot to pause or resume it — paused keys are skipped entirely during rotation."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
         ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
@@ -12181,7 +12223,8 @@ def command_listener():
                                         "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
-                                             "/trailsl": send_trailsl_screen, "/winrate": send_winrate_screen}
+                                             "/trailsl": send_trailsl_screen, "/winrate": send_winrate_screen,
+                                             "/aerolinkkeys": send_aerolinkkeys_screen}
                         _TRDPICK_TARGETS = {"/sltobe": "sltobe", "/setsl": "setsl", "/settp1": "settp1",
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text in _SCREEN_CMDS and cb_is_admin:
@@ -12522,6 +12565,13 @@ def command_listener():
                         threading.Thread(target=_do_coin_analysis, args=(cb_chat_id, _sym, _etype), daemon=True).start()
 
                     # ── Pause / Resume a channel ──────────────────────────────
+                    elif cb_data.startswith("aerokey:") and cb_is_scanadmin:
+                        _idx = int(cb_data.split(":", 1)[1])
+                        if _idx in PAUSED_AEROLINK_KEYS: PAUSED_AEROLINK_KEYS.discard(_idx)
+                        else: PAUSED_AEROLINK_KEYS.add(_idx)
+                        save_settings()
+                        send_aerolinkkeys_screen(cb_chat_id, message_id=cb_msg_id)
+
                     elif cb_data.startswith("lboard:") and cb_is_admin:
                         _period = cb_data.split(":", 1)[1]
                         send_leaderboard_screen(cb_chat_id, _period, message_id=cb_msg_id)
