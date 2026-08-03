@@ -2178,9 +2178,12 @@ def _admin_chat_context() -> str:
         "on/off & manual run, gateway + model picks (scan and /chat separately), the /aiconfig "
         "grid (e.g. \"use aerolink opus5 for scan1 verified\"), channel pause/resume, free-channel "
         "%, server switch, /syncup, trailing SL, win-rate targets, entry style, weekend sleep, "
-        "stats access, TP1 size, VIP price, and pausing/stopping/resuming the whole bot. Trade-"
-        "affecting actions (closing a trade, editing SL/TP, broadcasts, VIP/Free grants) still "
-        "need the real command or button -- those aren't auto-executed.\n"
+        "stats access, TP1 size, VIP price, and pausing/stopping/resuming the whole bot.\n"
+        "- PECHI/BOKI can also execute trade-affecting and money/message actions the same way "
+        "(closing the active BTC trade, moving its SL to breakeven, setting its SL/TP, closing a "
+        "coin's copy-trade positions or all Scan1/Scan2 trades, sending a broadcast, granting or "
+        "revoking a user's VIP) -- these always show a Yes/Cancel confirm first before anything "
+        "actually happens, since a misread here has real consequences.\n"
         "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any of the text models "
         "listed under FULL MODEL CATALOG below\n"
         "- /chat's own AI model (text + image, separately): /chatmodel -- pick from Google "
@@ -2763,14 +2766,167 @@ def _boki_exec_aerolink_key(cid, sender_id, value):
     send_reply(cid, "\n".join(_msg) or "⚠️ Couldn't find any of those key slots configured.", skip_smallcaps=True)
     return None
 
+# ── Confirm-before-executing wrapper ────────────────────────────────────
+# Every action below moves real money (copytrade positions), sends a
+# message that can't be recalled (broadcast), or changes a paying
+# customer's access (VIP/Free) — a misread here has real consequences, so
+# unlike the settings actions above, these never fire on the first message.
+# The executor is called once with _confirmed=False (returns a clarifying
+# question OR shows a Yes/Cancel prompt via _boki_ask_confirm), then again
+# with _confirmed=True only after the admin taps Yes (2026-08-04 admin
+# request: "dont left out anything add them too").
+_boki_pending_confirm: dict = {}  # cid -> {"action_id": str, "value": str, "sender_id": ...}
+
+def _boki_ask_confirm(cid, sender_id, action_id, value, label):
+    _boki_pending_confirm[cid] = {"action_id": action_id, "value": value, "sender_id": sender_id}
+    mkp = {"inline_keyboard": [[
+        {"text": "✅ Yes, do it", "callback_data": "bokiconfirm_yes"},
+        {"text": "❌ Cancel",     "callback_data": "bokiconfirm_no"},
+    ]]}
+    send_reply(cid, f"⚠️ <b>Confirm this?</b>\n\n<blockquote>{label}</blockquote>\n\n"
+                     f"This touches real trades/money/users.", reply_markup=mkp, skip_smallcaps=True)
+
+def _boki_find_user_by_username(uname: str):
+    """Reverse-looks-up a registered user's chat id from their @username
+    (user_usernames only maps cid -> username) — case-insensitive, @ optional."""
+    w = (uname or "").strip().lstrip("@").lower()
+    if not w:
+        return None
+    for _cid, _u in user_usernames.items():
+        if (_u or "").lower() == w:
+            return _cid
+    return None
+
+def _boki_exec_close_btc_trade(cid, sender_id, value, _confirmed=False):
+    if not active_trade["signal"]:
+        return "There's no active BTC trade to close."
+    if not _confirmed:
+        _info = f"{active_trade['signal']} @ {active_trade['entry']:,.0f}"
+        _boki_ask_confirm(cid, sender_id, "close_btc_trade", value, f"Close the active BTC trade ({_info})?")
+        return None
+    _boki_run(cid, sender_id, "/close"); return None
+
+def _boki_exec_btc_sl_to_be(cid, sender_id, value, _confirmed=False):
+    if not active_trade["signal"]:
+        return "There's no active BTC trade to move to breakeven."
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "btc_sl_to_be", value,
+                           f"Move the active BTC trade's SL to breakeven (entry {active_trade['entry']:,.0f})?")
+        return None
+    _boki_run(cid, sender_id, "/sltobe"); return None
+
+def _boki_exec_btc_set_sl(cid, sender_id, value, _confirmed=False):
+    if not active_trade["signal"]:
+        return "There's no active BTC trade to set an SL on."
+    try:
+        v = float((value or "").replace(",", ""))
+    except ValueError:
+        return "What SL price for the active BTC trade?"
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "btc_set_sl", str(v),
+                           f"Set the active BTC trade's SL to {v:,.0f} (currently {active_trade['sl']:,.0f})?")
+        return None
+    _boki_run(cid, sender_id, f"/setsl {v}"); return None
+
+def _boki_exec_btc_set_tp(cid, sender_id, value, _confirmed=False):
+    if not active_trade["signal"]:
+        return "There's no active BTC trade to set a TP on."
+    parts = (value or "").split()
+    if len(parts) < 2: return "Which TP (tp1 or tp2) and what price?"
+    which = parts[0].lower()
+    if which not in ("tp1", "tp2"): return "TP1 or TP2?"
+    try:
+        v = float(parts[1].replace(",", ""))
+    except ValueError:
+        return "What price for that TP?"
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "btc_set_tp", value, f"Set the active BTC trade's {which.upper()} to {v:,.0f}?")
+        return None
+    _boki_run(cid, sender_id, f"/set{which} {v}"); return None
+
+def _boki_exec_close_coin(cid, sender_id, value, _confirmed=False):
+    v = (value or "").strip().upper()
+    if not v: return "Which coin to close (or \"all\" for every position)?"
+    if not _confirmed:
+        _label = ("Close ALL open positions (every coin, every scan)" if v == "ALL"
+                   else f"Close all {v}-USDT positions for every copy user")
+        _boki_ask_confirm(cid, sender_id, "close_coin", v, _label)
+        return None
+    _boki_run(cid, sender_id, f"/closetrade {v}"); return None
+
+def _boki_exec_close_scan_trades(cid, sender_id, value, _confirmed=False):
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "close_scan_trades", value,
+                           "Close and clear ALL current Scan1 + Scan2 trades on every symbol?")
+        return None
+    _boki_run(cid, sender_id, "/closescan"); return None
+
+def _boki_exec_broadcast(cid, sender_id, value, _confirmed=False):
+    parts = (value or "").split(None, 1)
+    if len(parts) < 2: return "Who should get it (all/vip/free/users) and what's the message?"
+    mode = parts[0].lower()
+    if mode not in ("all", "vip", "free", "users"):
+        return "Audience must be \"all\", \"vip\", \"free\", or \"users\" (users only, no channels)."
+    text = parts[1].strip()
+    if not text: return "What should the broadcast message say?"
+    if not _confirmed:
+        _label = f"Broadcast to <b>{_BC_MODE_LABELS.get(mode, mode)}</b>:\n\n{_html.escape(text)}"
+        _boki_ask_confirm(cid, sender_id, "broadcast", value, _label)
+        return None
+    send_reply(cid, f"📢 Broadcasting to {_BC_MODE_LABELS.get(mode, mode)}...")
+    threading.Thread(target=do_broadcast, args=(cid, text, None, None, mode, None, None, None), daemon=True).start()
+    return None
+
+def _boki_exec_vip_grant(cid, sender_id, value, _confirmed=False):
+    parts = (value or "").split()
+    if not parts: return "Which user (username), and for how many days?"
+    uname = parts[0].lstrip("@")
+    try:
+        days = int(parts[1]) if len(parts) > 1 else 30
+    except ValueError:
+        return "How many days of VIP?"
+    _target = _boki_find_user_by_username(uname)
+    if not _target: return f"Couldn't find a registered user @{uname} — check the username."
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "vip_grant", value, f"Grant VIP to @{uname} for {days} days?")
+        return None
+    _grant_vip(_target, days=days)
+    send_to_user(_target, f"🎉 <b>VIP Activated!</b>\n\n{days} days — tap ⭐ VIP Channel in /help to get access.")
+    send_reply(cid, f"✅ Granted @{uname} VIP for {days} days.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_free_downgrade(cid, sender_id, value, _confirmed=False):
+    uname = (value or "").strip().lstrip("@")
+    if not uname: return "Which user (username) should be downgraded to Free?"
+    _target = _boki_find_user_by_username(uname)
+    if not _target: return f"Couldn't find a registered user @{uname} — check the username."
+    if not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "free_downgrade", value,
+                           f"Downgrade @{uname} to Free (removes VIP channel access immediately)?")
+        return None
+    _u = ct._db.get(str(_target)) or ct._default_user(_target)
+    _expire_vip_user(_target, _u)
+    send_reply(cid, f"✅ @{uname} downgraded to Free.", skip_smallcaps=True)
+    return None
+
+# Actions that require a Yes/Cancel confirm before they actually run — see
+# the wrapper block above. Every executor listed here accepts a
+# _confirmed kwarg; every other action in _ADMIN_ACTIONS does not.
+_ADMIN_RISKY_ACTIONS = {
+    "close_btc_trade", "btc_sl_to_be", "btc_set_sl", "btc_set_tp",
+    "close_coin", "close_scan_trades", "broadcast", "vip_grant", "free_downgrade",
+}
+
 # ── The action catalog itself ───────────────────────────────────────────
 # Every live setting/action Boki & Pechi can actually execute (admin
 # request 2026-08-04: "train boki/pechi to execute every possible request
 # ... every code word every command ... if anything new or unable to
-# understand ask admin"). Deliberately covers the full settings surface —
-# NOT trade-affecting actions (closing trades, SL/TP edits, broadcasts,
-# VIP/Free grants) — those still require the real command/button; this
-# keeps every auto-executed action here reversible with a second message.
+# understand ask admin" — then, after seeing the first version deliberately
+# left out trade/money/broadcast actions: "dont left out anything add them
+# too"). Covers the full command/button surface; every action in
+# _ADMIN_RISKY_ACTIONS above additionally requires a Yes/Cancel confirm
+# before it actually runs, since those touch real trades, money, or a
+# message that can't be recalled.
 _ADMIN_ACTIONS = {
     "scan1_auto": {"desc": "Turn Scan1's automatic hourly scanning on or off. value: \"on\" or \"off\".", "exec": _boki_exec_scan1_auto},
     "scan2_auto": {"desc": "Turn Scan2's automatic hourly scanning on or off. value: \"on\" or \"off\".", "exec": _boki_exec_scan2_auto},
@@ -2807,6 +2963,15 @@ _ADMIN_ACTIONS = {
     "server_switch": {"desc": "Switch which server is the ACTIVE one in the multi-server rotation (the one placing real copytrade orders). value: the exact server name the admin names, e.g. \"co2\".", "exec": _boki_exec_server_switch},
     "syncup": {"desc": "Force-push all of this server's local state to the shared central store (used right before switching servers). value not needed.", "exec": _boki_exec_syncup},
     "bot_control": {"desc": "Freeze or unfreeze the WHOLE bot. value: \"pause\" (freeze everything — scans, monitoring, alerts), \"stop\" (block new scans only, keep monitoring/copytrade SL-TP running), or \"resume\" (undo pause/stop).", "exec": _boki_exec_bot_control},
+    "close_btc_trade": {"desc": "Close the currently active BTC trade right now (a real position, real money). value not needed.", "exec": _boki_exec_close_btc_trade},
+    "btc_sl_to_be": {"desc": "Move the active BTC trade's stop-loss to breakeven (its entry price). value not needed.", "exec": _boki_exec_btc_sl_to_be},
+    "btc_set_sl": {"desc": "Set a specific stop-loss PRICE on the active BTC trade. value: the price number.", "exec": _boki_exec_btc_set_sl},
+    "btc_set_tp": {"desc": "Set a specific take-profit PRICE on the active BTC trade. value normalized to \"<tp1|tp2> <price>\".", "exec": _boki_exec_btc_set_tp},
+    "close_coin": {"desc": "Close all open copy-trade positions for one coin (real trades, real money), or \"all\" for every position across every coin/scan. value: the coin ticker (e.g. \"BTC\") or \"all\".", "exec": _boki_exec_close_coin},
+    "close_scan_trades": {"desc": "Close and clear ALL current Scan1 + Scan2 trades on every symbol (real trades, real money). value not needed.", "exec": _boki_exec_close_scan_trades},
+    "broadcast": {"desc": "Send a broadcast message to users/channels right now (cannot be recalled once sent). value normalized to \"<all|vip|free|users> <message text>\" — audience word first, then the exact message to send.", "exec": _boki_exec_broadcast},
+    "vip_grant": {"desc": "Grant a specific user VIP access for N days. value normalized to \"<username> <days>\" (days defaults to 30 if not stated).", "exec": _boki_exec_vip_grant},
+    "free_downgrade": {"desc": "Downgrade a specific user from VIP back to Free tier (removes their VIP channel access immediately). value: their username.", "exec": _boki_exec_free_downgrade},
 }
 
 def _chat_classify_admin_action(own_message: str, reply_context: str):
@@ -2860,14 +3025,19 @@ def _chat_try_admin_action(cid, own_message: str, is_admin: bool, sender_id=None
     command or button uses) and sends its own confirmation, or returns a
     short clarifying question when it can't tell exactly what's meant —
     never a guess, per the admin's explicit "if unable to understand, ask
-    admin" requirement (2026-08-04). Returns True if it handled the message
-    (caller should not also generate a normal chat reply)."""
+    admin" requirement (2026-08-04). Actions in _ADMIN_RISKY_ACTIONS (real
+    trades/money/broadcasts) go through _boki_ask_confirm first instead of
+    firing immediately — see _boki_pending_confirm and the bokiconfirm_yes/
+    bokiconfirm_no callback handlers. Returns True if it handled the
+    message (caller should not also generate a normal chat reply)."""
     if not is_admin:
         return False
     action_id, value = _chat_classify_admin_action(own_message, reply_context)
     if action_id is None:
         return False
-    _clarify = _ADMIN_ACTIONS[action_id]["exec"](cid, sender_id if sender_id is not None else cid, value)
+    _sid = sender_id if sender_id is not None else cid
+    _fn = _ADMIN_ACTIONS[action_id]["exec"]
+    _clarify = _fn(cid, _sid, value, _confirmed=False) if action_id in _ADMIN_RISKY_ACTIONS else _fn(cid, _sid, value)
     if _clarify:
         send_reply(cid, f"🤔 {_clarify}", skip_smallcaps=True)
     return True
@@ -14561,6 +14731,17 @@ def command_listener():
                     elif cb_data.startswith("sync_close_scan:"):
                         _, uid, sym = cb_data.split(":")
                         handle_command(f"/closetrade {sym.replace('-USDT','')}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data == "bokiconfirm_yes" and cb_is_admin:
+                        pc = _boki_pending_confirm.pop(cb_cid, None)
+                        if not pc:
+                            send_reply(cb_chat_id, "⚠️ Nothing pending to confirm.")
+                        else:
+                            _clarify = _ADMIN_ACTIONS[pc["action_id"]]["exec"](cb_chat_id, pc["sender_id"], pc["value"], _confirmed=True)
+                            if _clarify:
+                                send_reply(cb_chat_id, f"🤔 {_clarify}", skip_smallcaps=True)
+                    elif cb_data == "bokiconfirm_no" and cb_is_admin:
+                        _boki_pending_confirm.pop(cb_cid, None)
+                        send_reply(cb_chat_id, "❌ Cancelled — nothing changed.", skip_smallcaps=True)
                     elif cb_data == "bot_go" and cb_is_admin:
                         _toggle_cmd("/go", cb_chat_id, cb_cid, cb_msg_id, "settings")
                     elif cb_data == "bot_pause" and cb_is_admin:
