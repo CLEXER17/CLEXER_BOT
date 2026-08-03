@@ -2323,6 +2323,41 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") 
             return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
+def _handle_pechi_standalone(cid, message: str):
+    """PECHI works on its own, without ever running /chat first (admin
+    request 2026-08-03) — no session, no history kept, just a single
+    question -> single answer. Called directly from the command listener
+    whenever an admin message starts with "pechi", regardless of whether a
+    /chat session exists or this is a private chat vs a group. Reuses the
+    same best-model/free-first-then-fallback logic as the in-session
+    version, just with a throwaway one-message "history" instead of a
+    real session's."""
+    _is_image = _chat_is_image_request(message)
+    try:
+        if _is_image:
+            send_reply(cid, "🎨 Generating image…")
+            if CHAT_IMAGE_MODEL != "pollinations":
+                try:
+                    reply_text, img_bytes = _chat_generate_image_aerolink(message, CHAT_IMAGE_MODEL)
+                except Exception as _aie:
+                    print(f"  [PECHI IMAGE] Aerolink model {CHAT_IMAGE_MODEL} failed ({_aie}) — falling back to Pollinations")
+                    reply_text, img_bytes = _chat_generate_image(message)
+            else:
+                reply_text, img_bytes = _chat_generate_image(message)
+            if img_bytes:
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                    data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
+                    files={"photo": ("image.png", img_bytes, "image/png")}, timeout=30)
+            else:
+                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.")
+        else:
+            _history = [{"role": "user", "parts": [{"text": message}]}]
+            reply_text = _chat_pechi_text_reply(_history, message, extra_system=_admin_chat_context())
+            send_reply(cid, reply_text)
+    except Exception as e:
+        print(f"  [PECHI] {cid}: {e}")
+        send_reply(cid, "⚠️ Pechi had an error — try again.")
+
 def _handle_chat_message(cid, text: str, sender_id=None):
     sess = _chat_sessions.get(str(cid))
     if not sess:
@@ -14176,6 +14211,15 @@ def command_listener():
                         send_reply(cid, "⚠️ Admin contact isn't set up right now.")
                 elif text.startswith("/"):
                     handle_command(text, cid, msg, sender_id=sender_uid)
+                elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _pechi_strip(text or "")[1]:
+                    # PECHI works standalone — no /chat session needed, no reply/forward
+                    # needed even in a group, since the prefix itself IS the trigger.
+                    # Sender-id gated (not cid), so it works the same in private or group.
+                    _pechi_msg, _ = _pechi_strip(text)
+                    if not _pechi_msg:
+                        send_reply(cid, "🐾 Pechi's listening — ask me something after \"pechi\".")
+                    else:
+                        _handle_pechi_standalone(cid, _pechi_msg)
                 elif (((ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) or is_co_admin(cid))
                         and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,14}", text or "")):
                     # Bare coin-name typing (e.g. just "eth") — /coin's own help
