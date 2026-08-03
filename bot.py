@@ -52,8 +52,35 @@ AEROLINK_API_KEY_19 = os.getenv("AEROLINK_API_KEY_19", "")   # 19th Aerolink key
 AEROLINK_API_KEY_20 = os.getenv("AEROLINK_API_KEY_20", "")   # 20th Aerolink key slot — rotated in on further retries, empty until set
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
-CHAT_MODEL = "google"   # "google" | "sonnet" | "opus" — /chat's text engine, admin-only via /model, defaults to Gemini
-_CHAT_MODEL_IDS = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-5"}
+CHAT_MODEL = "google"        # "google" (direct Gemini REST) or any text model id in _AEROLINK_MODEL_CATALOG — /chat's text engine, admin-only via /chatmodel, defaults to Gemini
+CHAT_IMAGE_MODEL = "pollinations"   # "pollinations" (free, no key) or any image model id in _AEROLINK_MODEL_CATALOG
+
+# Full catalog of models reachable through the Aerolink gateway (2026-08-03 admin
+# request) — used by BOTH /chatmodel (chat's text+image engine picker) and /model
+# (scan-analysis picker, text models only). All routed via the same
+# anthropic.Anthropic(base_url=AEROLINK_BASE_URL) client used everywhere else Aerolink
+# is called — just a different `model=` string, no separate API keys/clients needed.
+# CAUTION for /model specifically: the scan pipeline parses a strict "Signal:
+# BUY/SELL/WAIT, Entry:, SL:, TP1:, TP2:" text format out of the model's response via
+# regex (see the retry loop in the scan handlers) — that format is Claude-tuned, and
+# this codebase has already hit real Aerolink compatibility gaps with brand-new Claude
+# model IDs alone (see _AEROLINK_OPUS5_UNSUPPORTED). A non-Claude model (GPT/GLM/Kimi)
+# may format its answer differently and silently produce garbage entry/SL/TP values on
+# a LIVE or DEMO trade — verify any non-Claude model actually returns clean, parseable
+# output (e.g. via /aerolinktest-style manual check) before trusting it for real signals.
+_AEROLINK_MODEL_CATALOG = {
+    "claude-fable-5":              {"label": "Claude Fable 5",         "tier": "Most capable", "kind": "text"},
+    "claude-opus-4-8":             {"label": "Claude Opus 4.8",        "tier": "Most capable", "kind": "text"},
+    "claude-opus-5":               {"label": "Claude Opus 5",          "tier": "Most capable", "kind": "text"},
+    "claude-sonnet-5":             {"label": "Claude Sonnet 5",        "tier": "Balanced",     "kind": "text"},
+    "gemini-3-pro-image":          {"label": "Gemini 3 Pro Image",         "tier": "Image", "kind": "image"},
+    "gemini-3.1-flash-image":      {"label": "Gemini 3.1 Flash Image",     "tier": "Image", "kind": "image"},
+    "gemini-3.1-flash-lite-image": {"label": "Gemini 3.1 Flash Lite Image","tier": "Image", "kind": "image"},
+    "glm-5.2":                     {"label": "GLM 5.2",                "tier": "Balanced",     "kind": "text"},
+    "gpt-5.6":                     {"label": "GPT 5.6",                "tier": "Most capable", "kind": "text"},
+    "gpt-5.6-sol":                 {"label": "GPT 5.6 Sol",            "tier": "Most capable", "kind": "text"},
+    "kimi-k3":                     {"label": "Kimi K3",                "tier": "Balanced",     "kind": "text"},
+}
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN",  "")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")
 TELEGRAM_CHANNEL_ID_2 = os.getenv("TELEGRAM_CHANNEL_ID_2", "")  # VIP mirror — gets every VIP signal/update/
@@ -2093,8 +2120,8 @@ def _chat_call_claude_text(history: list, model_id: str) -> str:
 
 def _chat_generate_image(prompt: str):
     """Free, no-API-key image generation via Pollinations.ai (image.pollinations.ai) —
-    every Gemini image model on this account turned out to be billing-gated, so this
-    swaps to a genuinely free provider instead. GET request, image bytes come back
+    every Gemini image model billed DIRECTLY on this account turned out to be
+    billing-gated, so this is the fallback/default. GET request, image bytes come back
     directly in the response body (no JSON wrapper). Returns (text, image_bytes_or_None)."""
     import urllib.parse
     url = "https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt, safe="")
@@ -2102,6 +2129,39 @@ def _chat_generate_image(prompt: str):
     if not r.ok or not r.content:
         raise Exception(f"{r.status_code} {r.reason}")
     return "", r.content
+
+def _chat_generate_image_aerolink(prompt: str, model_id: str):
+    """Image generation via one of Aerolink's image models — these go through
+    Aerolink's own key/quota rather than a directly-billed Gemini account, so the
+    billing-gate issue _chat_generate_image's docstring describes doesn't apply here.
+    NOTE: Aerolink's exact response shape for an image-generation model called through
+    the Anthropic-style messages.create() endpoint isn't documented/confirmed here —
+    this defensively scans every content block for base64 image data and raises if
+    none is found, so the caller can fall back to Pollinations rather than silently
+    sending nothing. Returns (text, image_bytes_or_None); raises on any failure."""
+    import base64
+    client = _claude_client("chat")
+    resp = client.messages.create(
+        model=model_id, max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text_parts = []
+    for block in (resp.content or []):
+        _btype = getattr(block, "type", None)
+        if _btype == "text":
+            text_parts.append(getattr(block, "text", ""))
+            continue
+        # Look for base64 image data under whatever shape this block turns out
+        # to have (source.data, or a direct .data/.image field) — best-effort,
+        # since the exact schema Aerolink returns for image models isn't confirmed.
+        _src = getattr(block, "source", None)
+        _b64 = (getattr(_src, "data", None) if _src else None) or getattr(block, "data", None) or getattr(block, "image", None)
+        if _b64:
+            try:
+                return "\n".join(text_parts).strip(), base64.b64decode(_b64)
+            except Exception:
+                pass
+    raise Exception("No image data found in Aerolink response — unexpected format for this model")
 
 def _handle_chat_message(cid, text: str):
     sess = _chat_sessions.get(str(cid))
@@ -2115,7 +2175,14 @@ def _handle_chat_message(cid, text: str):
     try:
         if _is_image:
             send_reply(cid, "🎨 Generating image…")
-            reply_text, img_bytes = _chat_generate_image(text)
+            if CHAT_IMAGE_MODEL != "pollinations":
+                try:
+                    reply_text, img_bytes = _chat_generate_image_aerolink(text, CHAT_IMAGE_MODEL)
+                except Exception as _aie:
+                    print(f"  [CHAT IMAGE] Aerolink model {CHAT_IMAGE_MODEL} failed ({_aie}) — falling back to Pollinations")
+                    reply_text, img_bytes = _chat_generate_image(text)
+            else:
+                reply_text, img_bytes = _chat_generate_image(text)
             if img_bytes:
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                     data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
@@ -2126,8 +2193,8 @@ def _handle_chat_message(cid, text: str):
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            if CHAT_MODEL in _CHAT_MODEL_IDS:
-                reply_text = _chat_call_claude_text(sess["history"], _CHAT_MODEL_IDS[CHAT_MODEL])
+            if CHAT_MODEL != "google":
+                reply_text = _chat_call_claude_text(sess["history"], CHAT_MODEL)
             else:
                 reply_text = _chat_call_gemini_text(sess["history"])
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
@@ -3091,6 +3158,78 @@ def send_aerolinkkeys_screen(chat_id, message_id=None):
         f"🔑 <b>Aerolink Keys</b>  ({len(_configured)} configured, {_n_paused} paused)\n\n"
         f"<blockquote>Tap a key to pause or resume it. Paused keys are skipped entirely during "
         f"rotation — useful when a key is on the free tier and at capacity. ✅ active · ⏸ paused.</blockquote>",
+        {"inline_keyboard": rows}, message_id=message_id)
+
+def _scan_model_screen_content():
+    """Shared button/text builder for /model's AI-model picker — used by both
+    the initial /model command and the model: callback re-render, so they
+    never drift out of sync."""
+    _rows = [[
+        {"text": ("✅ " if SCAN_MODEL == "claude-opus-5" else "") + "Opus 5 ($5/$25)",  "callback_data": "model:opus"},
+        {"text": ("✅ " if SCAN_MODEL == "claude-fable-5" else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
+    ]]
+    _row = []
+    for _mid, _info in _AEROLINK_MODEL_CATALOG.items():
+        if _info["kind"] != "text" or _mid in ("claude-opus-5", "claude-fable-5"):
+            continue
+        _row.append({"text": ("✅ " if SCAN_MODEL == _mid else "") + _info["label"], "callback_data": f"model:{_mid}"})
+        if len(_row) == 2:
+            _rows.append(_row); _row = []
+    if _row:
+        _rows.append(_row)
+    _rows.append([{"text": "◀️  Back", "callback_data": "help_cat:scan"}])
+    _text = (
+        f"<b>🧠 AI Model</b>\n\n"
+        f"Active: <b>{SCAN_MODEL}</b>\n\n"
+        f"Opus 5  — $5 in / $25 out per 1M tokens\n"
+        f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
+        f"Used for all scan/BTC/coin analysis calls.\n\n"
+        f"⚠️ Non-Claude models below aren't verified to output the exact "
+        f"Signal/Entry/SL/TP1/TP2 text format the scan parser expects — test "
+        f"carefully (e.g. a manual /scan1) before trusting one for live signals.")
+    return _text, {"inline_keyboard": _rows}
+
+def send_chatmodel_screen(chat_id, message_id=None):
+    """Admin-only /chatmodel — pick /chat's text engine and image engine
+    separately (a chat message routes to one or the other depending on
+    whether _chat_is_image_request flags it). Global switch — every user's
+    /chat uses whichever engines are picked here; users can't change it
+    themselves. All non-Google/non-Pollinations options route through
+    Aerolink (see _AEROLINK_MODEL_CATALOG's caution note about unverified
+    output format on non-Claude text models)."""
+    _text_rows = [[{"text": ("✅ " if CHAT_MODEL == "google" else "") + "🟢 Google (Gemini, free)", "callback_data": "chatmodel:google"}]]
+    _row = []
+    for _mid, _info in _AEROLINK_MODEL_CATALOG.items():
+        if _info["kind"] != "text":
+            continue
+        _row.append({"text": ("✅ " if CHAT_MODEL == _mid else "") + _info["label"], "callback_data": f"chatmodel:{_mid}"})
+        if len(_row) == 2:
+            _text_rows.append(_row); _row = []
+    if _row:
+        _text_rows.append(_row)
+
+    _img_rows = [[{"text": ("✅ " if CHAT_IMAGE_MODEL == "pollinations" else "") + "🆓 Pollinations (free)", "callback_data": "chatimg:pollinations"}]]
+    _row = []
+    for _mid, _info in _AEROLINK_MODEL_CATALOG.items():
+        if _info["kind"] != "image":
+            continue
+        _row.append({"text": ("✅ " if CHAT_IMAGE_MODEL == _mid else "") + _info["label"], "callback_data": f"chatimg:{_mid}"})
+        if len(_row) == 2:
+            _img_rows.append(_row); _row = []
+    if _row:
+        _img_rows.append(_row)
+
+    rows = _text_rows + _img_rows
+    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
+    _text_label = "🟢 Google (Gemini)" if CHAT_MODEL == "google" else _AEROLINK_MODEL_CATALOG.get(CHAT_MODEL, {}).get("label", CHAT_MODEL)
+    _img_label = "🆓 Pollinations" if CHAT_IMAGE_MODEL == "pollinations" else _AEROLINK_MODEL_CATALOG.get(CHAT_IMAGE_MODEL, {}).get("label", CHAT_IMAGE_MODEL)
+    _help_edit_or_send(chat_id,
+        f"💬 <b>/chat AI Engines</b>\n\n"
+        f"Text: <b>{_text_label}</b>\nImage: <b>{_img_label}</b>\n\n"
+        f"<blockquote>Global switch — every user's /chat uses whichever engines are picked here.\n\n"
+        f"⚠️ Non-Claude/non-Google text models and the Aerolink image models aren't verified working on "
+        f"this account yet — test after switching, they'll silently fall back if something breaks "
+        f"(image) or just error out (text).</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
@@ -4890,7 +5029,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -4934,6 +5073,7 @@ def load_settings():
             WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
             VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
             CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
+            CHAT_IMAGE_MODEL = d.get("chat_image_model", CHAT_IMAGE_MODEL)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
@@ -4989,6 +5129,7 @@ def save_settings():
             "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
             "vip_monthly_price": VIP_MONTHLY_PRICE,
             "chat_model": CHAT_MODEL,
+            "chat_image_model": CHAT_IMAGE_MODEL,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
@@ -7737,7 +7878,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, STATS_VISIBLE_TO_USERS
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, STATS_VISIBLE_TO_USERS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -8154,25 +8295,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "⚠️ You don't have an active chat session. Type /chat to start one.")
 
     elif cmd == "/chatmodel" and is_admin:
-        _model_labels = {"google": "🟢 Google (Gemini)", "sonnet": "🔵 Sonnet 5", "opus": "🟠 Opus 5"}
-        if len(parts) < 2:
-            send_reply(chat_id,
-                f"<b>/chat AI Engine</b>\n\nCurrent: <b>{_model_labels[CHAT_MODEL]}</b>\n\n"
-                f"Usage: /chatmodel g|s|o\n"
-                f"g = Google (Gemini, free) — default\n"
-                f"s = Sonnet 5 (Claude, highest Sonnet)\n"
-                f"o = Opus 5 (Claude, highest Opus)\n\n"
-                f"This is a global switch — every user's /chat uses whichever engine you pick here; "
-                f"users can't change it themselves.\n\n"
-                f"<i>Note: /model is already taken (scan-analysis model picker), so this lives at /chatmodel instead.</i>")
-        else:
-            _arg = parts[1].lower()
-            _new = {"g": "google", "s": "sonnet", "o": "opus"}.get(_arg)
-            if not _new:
-                send_reply(chat_id, "Usage: /chatmodel g|s|o")
-            else:
-                CHAT_MODEL = _new; save_settings()
-                send_reply(chat_id, f"<b>/chat engine → {_model_labels[CHAT_MODEL]}</b> ✅")
+        send_chatmodel_screen(chat_id)
 
     elif cmd == "/aerolinktest" and is_admin:
         threading.Thread(target=_test_all_aerolink_keys, args=(chat_id,), daemon=True).start()
@@ -10534,19 +10657,11 @@ Reasoning: [one line]"""
             SCAN_MODEL = "claude-opus-5"
         elif _arg in ("fable", "fable5", "5"):
             SCAN_MODEL = "claude-fable-5"
+        elif _arg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_arg]["kind"] == "text":
+            SCAN_MODEL = _arg
         if _arg: save_settings()
-        _is_opus  = SCAN_MODEL == "claude-opus-5"
-        _is_fable = SCAN_MODEL == "claude-fable-5"
-        _mkp = {"inline_keyboard": [[
-            {"text": ("✅ " if _is_opus else "") + "Opus 5 ($5/$25)",  "callback_data": "model:opus"},
-            {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"},
-        ]]}
-        send_reply(chat_id,
-            f"<b>🧠 AI Model</b>\n\n"
-            f"Active: <b>{SCAN_MODEL}</b>\n\n"
-            f"Opus 5  — $5 in / $25 out per 1M tokens\n"
-            f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
-            f"Used for all scan/BTC/coin analysis calls.", reply_markup=_mkp)
+        _model_text, _mkp = _scan_model_screen_content()
+        send_reply(chat_id, _model_text, reply_markup=_mkp)
 
     elif cmd == "/gateway" and is_admin:
         _arg = parts[1].lower() if len(parts) > 1 else ""
@@ -13316,27 +13431,30 @@ def command_listener():
                     elif cb_data.startswith("srvset:") and cb_is_admin:
                         handle_command(f"/server {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("model:") and cb_is_admin:
-                        _marg = cb_data.split(":")[1]
+                        _marg = cb_data.split(":", 1)[1]
                         if _marg == "opus":  SCAN_MODEL = "claude-opus-5"
                         elif _marg == "fable": SCAN_MODEL = "claude-fable-5"
+                        elif _marg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_marg]["kind"] == "text":
+                            SCAN_MODEL = _marg
                         save_settings()
-                        _is_opus  = SCAN_MODEL == "claude-opus-5"
-                        _is_fable = SCAN_MODEL == "claude-fable-5"
-                        _model_mkp = {"inline_keyboard": [
-                            [{"text": ("✅ " if _is_opus else "") + "Opus 5 ($5/$25)",  "callback_data": "model:opus"},
-                             {"text": ("✅ " if _is_fable else "") + "Fable 5 ($10/$50)",  "callback_data": "model:fable"}],
-                            [{"text": "◀️  Back", "callback_data": "help_cat:scan"}],
-                        ]}
-                        _model_text = (
-                            f"<b>🧠 AI Model</b>\n\n"
-                            f"Active: <b>{SCAN_MODEL}</b>\n\n"
-                            f"Opus 5  — $5 in / $25 out per 1M tokens\n"
-                            f"Fable 5   — $10 in / $50 out per 1M tokens (~33% cheaper)\n\n"
-                            f"Used for all scan/BTC/coin analysis calls.")
+                        _model_text, _model_mkp = _scan_model_screen_content()
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_model_text), "parse_mode": "HTML",
                                   "reply_markup": _style_keyboard(_model_mkp)}, timeout=10)
+
+                    elif cb_data.startswith("chatmodel:") and cb_is_admin:
+                        global CHAT_MODEL, CHAT_IMAGE_MODEL
+                        _cmarg = cb_data.split(":", 1)[1]
+                        if _cmarg == "google" or (_cmarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_cmarg]["kind"] == "text"):
+                            CHAT_MODEL = _cmarg; save_settings()
+                        send_chatmodel_screen(cb_chat_id, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("chatimg:") and cb_is_admin:
+                        _ciarg = cb_data.split(":", 1)[1]
+                        if _ciarg == "pollinations" or (_ciarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_ciarg]["kind"] == "image"):
+                            CHAT_IMAGE_MODEL = _ciarg; save_settings()
+                        send_chatmodel_screen(cb_chat_id, message_id=cb_msg_id)
 
                     elif cb_data.startswith("directnu:") and cb_is_admin:
                         handle_command(f"/directnu {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
