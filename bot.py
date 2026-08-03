@@ -2336,12 +2336,25 @@ def _chat_is_trade_question(text: str) -> bool:
     t = f" {text.lower()} "
     return any(h in t for h in _CHAT_TRADE_HINTS)
 
-def _chat_resolve_coin_symbol(text: str):
-    """Best-effort coin-symbol extraction for a trade question — tries every
-    word token (longest first, so "ETHEREUM" isn't shadowed by a shorter
-    coincidental match) against BingX's live perpetual contract list, same
-    matching /coin itself uses. Returns a BingX symbol (e.g. "BTC-USDT") or
-    None if nothing in the message matches a real listed coin."""
+def _chat_resolve_coin_symbol(text: str, own_message: str = None):
+    """Best-effort coin-symbol extraction for a trade question, against
+    BingX's live perpetual contract list (same matching /coin itself uses).
+
+    Fixed 2026-08-04 after a real misfire: "reply to a BTC message" +
+    "...take-profit levels..." (from the replied-to text) resolved to TAKE
+    (a real, obscure listed token) instead of BTC, purely because "take" is
+    a longer string than "btc" and the old logic just picked the longest
+    match anywhere in the combined text, with no sense of what the user
+    actually meant. Now checked in priority order, each tier only consulted
+    if the one above found nothing:
+      1. ALL-CAPS token in the user's own current message (own_message) —
+         someone typing "BTC" in caps is the strongest possible signal.
+      2. ALL-CAPS token anywhere, including reply-context.
+      3. Any-case token in the user's own message.
+      4. Any-case token anywhere (weakest — last resort, matches old behavior).
+    Within each tier, longest match wins (still useful for e.g. "ETHEREUM"
+    vs a shorter coincidental match). Returns a BingX symbol (e.g.
+    "BTC-USDT") or None if nothing matches a real listed coin at any tier."""
     try:
         r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts", timeout=10).json()
         all_contracts = r.get("data", [])
@@ -2349,14 +2362,20 @@ def _chat_resolve_coin_symbol(text: str):
         print(f"  [CHAT TRADE] contracts fetch failed: {e}")
         return None
     _bases = {c.get("symbol", "").replace("-USDT", ""): c.get("symbol", "") for c in all_contracts}
-    _words = re.findall(r"[A-Za-z]{2,10}", text)
-    for w in sorted(set(_words), key=len, reverse=True):
-        _up = w.upper()
-        if _up in _bases:
-            return _bases[_up]
-    return None
 
-def _chat_try_trade_analysis(cid, text: str, is_admin: bool) -> bool:
+    def _search(haystack: str, caps_only: bool):
+        _words = re.findall(r"[A-Za-z]{2,10}", haystack)
+        _cands = [w for w in _words if not caps_only or w.isupper()]
+        for w in sorted(set(_cands), key=len, reverse=True):
+            if w.upper() in _bases:
+                return _bases[w.upper()]
+        return None
+
+    _own = own_message if own_message is not None else text
+    return (_search(_own, True) or _search(text, True)
+            or _search(_own, False) or _search(text, False))
+
+def _chat_try_trade_analysis(cid, text: str, is_admin: bool, own_message: str = None) -> bool:
     """If this looks like a genuine trade question about a specific real
     coin, runs it through the SAME live-data pipeline /coin uses
     (_coin_analysis_data: real BingX price/24h range/volume + SCAN_MODEL, the
@@ -2365,11 +2384,14 @@ def _chat_try_trade_analysis(cid, text: str, is_admin: bool) -> bool:
     user happened to type — but formatted as a normal chat reply
     (_chat_format_trade_analysis), not /coin's own boxed dashboard style.
     Admin-only, matching /coin's own scanadmin gate and the cost of a real
-    analysis call. Returns True if it handled the message (caller should
-    not also generate a normal chat reply)."""
+    analysis call. own_message (the user's own typed text, before any reply-
+    context is prepended) is passed through to _chat_resolve_coin_symbol so
+    it's prioritized over the replied-to message's own wording. Returns True
+    if it handled the message (caller should not also generate a normal
+    chat reply)."""
     if not is_admin or not _chat_is_trade_question(text):
         return False
-    sym = _chat_resolve_coin_symbol(text)
+    sym = _chat_resolve_coin_symbol(text, own_message=own_message)
     if not sym:
         return False
     send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
@@ -2482,7 +2504,7 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
             # always the admin here — real trade question -> live BingX pipeline.
-            if _chat_try_trade_analysis(cid, _ai_message, True):
+            if _chat_try_trade_analysis(cid, _ai_message, True, own_message=message):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
             reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context())
@@ -2556,7 +2578,7 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
-        elif _chat_try_trade_analysis(cid, _combine_reply_context(text, reply_context), _is_admin_cid):
+        elif _chat_try_trade_analysis(cid, _combine_reply_context(text, reply_context), _is_admin_cid, own_message=text):
             # Real trade question about a specific coin (2026-08-04 request) —
             # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
             # not a normal conversational reply. Still logged into history so
