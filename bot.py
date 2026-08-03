@@ -2156,7 +2156,8 @@ def _admin_chat_context() -> str:
         "/scantoggle to turn auto-scanning on/off)\n"
         "- AI Gateway (Direct vs Aerolink): /gateway direct | /gateway aerolink, or the "
         "'AI Gateway' button under Scan Control -> TV & Advanced\n"
-        "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it\n"
+        "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it, or "
+        "just tell PECHI/BOKI directly (e.g. \"unpause key2 and key3\") and it executes it live\n"
         "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any of the text models "
         "listed under FULL MODEL CATALOG below\n"
         "- /chat's own AI model (text + image, separately): /chatmodel -- pick from Google "
@@ -2396,6 +2397,75 @@ def _chat_classify_trade_intent(own_message: str, reply_context: str):
         print(f"  [CHAT TRADE] classify failed: {e}")
         return False, None, None
 
+def _chat_classify_key_action(own_message: str, reply_context: str):
+    """Detects an Aerolink key pause/unpause CONTROL request via natural
+    language (admin request 2026-08-04, e.g. "Boki unpause the aerolink
+    key2 and key3") and extracts which keys + which action. Deliberately
+    scoped to just this one well-bounded, easily-reversible action (same
+    PAUSED_AEROLINK_KEYS set /aerolinkkeys itself uses) rather than a
+    general-purpose "let the AI do anything to the bot" system. Returns
+    (is_key_action: bool, action: "pause"|"unpause"|None, keys: [int, ...])."""
+    _prompt = (
+        "Read the message(s) below and decide if the user is asking to PAUSE or UNPAUSE "
+        "one or more specific numbered Aerolink API key slots (slots are numbered 1-20).\n\n"
+        f'Replied-to message (context, may be empty): "{reply_context}"\n'
+        f'User\'s actual message: "{own_message}"\n\n'
+        'Reply with ONLY this exact JSON, nothing else:\n'
+        '{"is_key_action": true or false, "action": "pause" or "unpause" or null, "keys": [2, 3]}\n\n'
+        "Rules:\n"
+        "- is_key_action is true ONLY for an explicit request to pause/unpause/enable/disable "
+        "one or more numbered Aerolink key slots — not a general question about keys.\n"
+        '- keys is the list of integer slot numbers mentioned (e.g. "key2 and key3" -> [2, 3]).\n'
+        "- If unclear, or no specific slot numbers are given, is_key_action must be false."
+    )
+    try:
+        client = _claude_client("chat", force_aerolink=True)
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=80,
+                                       messages=[{"role": "user", "content": _prompt}])
+        _raw = _claude_text(resp) or ""
+        _m = re.search(r'\{.*\}', _raw, re.DOTALL)
+        d = json.loads(_m.group()) if _m else {}
+        if not d.get("is_key_action"):
+            return False, None, []
+        _action = d.get("action")
+        _keys = [int(k) for k in (d.get("keys") or []) if str(k).strip().lstrip("-").isdigit()]
+        return bool(_action and _keys), _action, _keys
+    except Exception as e:
+        print(f"  [CHAT KEY ACTION] classify failed: {e}")
+        return False, None, []
+
+def _chat_try_key_action(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
+    """Admin-only: lets PECHI/BOKI actually pause/unpause specific Aerolink
+    key slots via natural language ("unpause key2 and key3"), instead of
+    only being able to talk about /aerolinkkeys. Executes directly against
+    the same PAUSED_AEROLINK_KEYS set the /aerolinkkeys screen uses, then
+    persists and confirms exactly what changed. Returns True if it handled
+    the message (caller should not also generate a normal chat reply)."""
+    if not is_admin:
+        return False
+    is_action, action, keys = _chat_classify_key_action(own_message, reply_context)
+    if not is_action:
+        return False
+    _configured = [i for i, k in enumerate(_aerolink_all_key_slots(), start=1) if k]
+    _valid = [k for k in keys if k in _configured]
+    _invalid = [k for k in keys if k not in _configured]
+    for k in _valid:
+        if action == "unpause":
+            PAUSED_AEROLINK_KEYS.discard(k)
+        else:
+            PAUSED_AEROLINK_KEYS.add(k)
+    if _valid:
+        save_settings()
+    _verb = "Unpaused" if action == "unpause" else "Paused"
+    _parts = []
+    if _valid:
+        _parts.append(f"✅ {_verb} key{'s' if len(_valid) != 1 else ''} {', '.join(str(k) for k in _valid)}.")
+    if _invalid:
+        _parts.append(f"⚠️ Key{'s' if len(_invalid) != 1 else ''} {', '.join(str(k) for k in _invalid)} "
+                       f"{'are' if len(_invalid) != 1 else 'is'} not configured — nothing to do there.")
+    send_reply(cid, "\n".join(_parts) or "⚠️ Couldn't find any of those key slots configured.", skip_smallcaps=True)
+    return True
+
 def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
     """Reads both the user's own message and whatever they replied to (via
     _chat_classify_trade_intent) to decide if this is a genuine trade
@@ -2536,7 +2606,9 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
         else:
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
-            # always the admin here — real trade question -> live BingX pipeline.
+            # always the admin here.
+            if _chat_try_key_action(cid, message, True, reply_context=reply_context):
+                return
             if _chat_try_trade_analysis(cid, message, True, reply_context=reply_context):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
@@ -2611,6 +2683,11 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
+        elif _chat_try_key_action(cid, text, _is_admin_cid, reply_context=reply_context):
+            # Aerolink key pause/unpause control request (2026-08-04 request) —
+            # executed directly, not a normal conversational reply.
+            sess["history"].append({"role": "user", "parts": [{"text": text}]})
+            sess["history"].append({"role": "model", "parts": [{"text": "[executed an Aerolink key pause/unpause]"}]})
         elif _chat_try_trade_analysis(cid, text, _is_admin_cid, reply_context=reply_context):
             # Real trade question about a specific coin (2026-08-04 request) —
             # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
