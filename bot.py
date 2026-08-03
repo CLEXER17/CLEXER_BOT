@@ -1026,7 +1026,7 @@ def _tp_buttons():
     return {"inline_keyboard": [row]} if row else None
 
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None,
-                          locked_text: str = None):
+                          locked_text: str = None, exclude_ch2: bool = False):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
     to that trade's entry-signal message in every destination it has a stored
     message_id for (reply_map, from send_entry_signal). Uses plain sendMessage —
@@ -1037,7 +1037,11 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
     locked_text: when given AND share_free is False (signal was locked at
     entry), Free gets this redacted variant instead of nothing — same idea as
     send_entry_signal's locked_text, for follow-ups like Trailing SL where a
-    generic "no real numbers" version still makes sense to show."""
+    generic "no real numbers" version still makes sense to show.
+
+    exclude_ch2: skips TELEGRAM_CHANNEL_ID_2 (VIP Mirror) specifically —
+    used for SL/BE follow-ups, which VIP Mirror subscribers don't want in
+    their feed (admin request, same reasoning as no-signal notices)."""
     reply_map = reply_map or {}
     ids = {}
     channels = [("1", TELEGRAM_CHANNEL_ID)]  # channel 2 retired — see send_entry_signal's matching comment
@@ -1049,6 +1053,8 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
         if mid: ids[f"ch{key}"] = mid
     if tier_routed:
         for cid in _channels_by_tier("vip"):
+            if exclude_ch2 and str(cid) == str(TELEGRAM_CHANNEL_ID_2):
+                continue
             # No Open Bot / Get VIP buttons in VIP itself — these members are
             # already VIP and already using the bot, so both buttons are
             # dead weight here. Free/legacy channels below keep them since
@@ -1069,7 +1075,10 @@ def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwa
     """Same as send_lifecycle_reply, but also records this signal's Free-channel
     SL-hit message_id + final result (SL/BE) so /clearslfree can later find and
     delete exactly this signal's messages — only if result is a real SL, never
-    for BE. See _track_free_sl/_finalize_free_sl for the actual bookkeeping."""
+    for BE. See _track_free_sl/_finalize_free_sl for the actual bookkeeping.
+    Always excludes Channel 2 (VIP Mirror) — admin request, mirror doesn't
+    want SL/BE notices in its feed."""
+    kwargs.setdefault("exclude_ch2", True)
     ids = send_lifecycle_reply(text, reply_map, **kwargs)
     for k, v in (ids or {}).items():
         if k.startswith("free:"):
