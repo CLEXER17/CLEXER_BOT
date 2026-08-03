@@ -5233,6 +5233,26 @@ _EXCHANGE_NAME_EMOJI = {
     "Deribit": ("🟪", "5291832125979371159"),
 }
 
+def _math_sans(text: str) -> str:
+    """Converts plain ASCII letters/digits to Mathematical Sans-Serif Unicode
+    (regular weight, "slim") — used for /chat's session-start body text,
+    paired with the Mathematical Bold "AI ASSISTANT / CLEX BOT" header above
+    it (admin request 2026-08-03). Everything else (spaces, punctuation,
+    emoji, slash-commands you build around this) passes through untouched —
+    callers must keep any literal /command text OUTSIDE this conversion, or
+    Telegram stops recognizing it as a tappable command."""
+    out = []
+    for ch in text:
+        if 'A' <= ch <= 'Z':
+            out.append(chr(0x1D5A0 + (ord(ch) - ord('A'))))
+        elif 'a' <= ch <= 'z':
+            out.append(chr(0x1D5BA + (ord(ch) - ord('a'))))
+        elif '0' <= ch <= '9':
+            out.append(chr(0x1D7E2 + (ord(ch) - ord('0'))))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
 _SMALLCAPS_MAP = str.maketrans(
     "abcdefghijklmnopqrstuvwxyz",
     "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
@@ -8280,14 +8300,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
         else:
             _is_admin_own_chat = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
-            _reply_note = "" if _is_admin_own_chat else ("\n\n↪️ In a group: <b>reply directly to one of my messages</b> to get a response.\n"
-                "In a private chat: <b>forward a message here</b> instead — plain typed messages won't trigger a response.")
+            _reply_note = "" if _is_admin_own_chat else ("\n\n↪️ " + _math_sans(
+                "In a group: reply directly to one of my messages to get a response.\n"
+                "In a private chat: forward a message here instead — plain typed messages won't trigger a response."))
             send_reply(chat_id,
                 "𝐀𝐈 𝐀𝐒𝐒𝐈𝐒𝐓𝐀𝐍𝐓\n𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                "💬 <b>Chat Session Started</b>\n\n"
-                "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
-                "🎨 Need an image? Just describe what you want.\n\n"
-                f"⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with /endchat.{_reply_note}")
+                + _math_sans(
+                    "💬 Chat Session Started\n\n"
+                    "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
+                    "🎨 Need an image? Just describe what you want.\n\n"
+                    "⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with ")
+                + "/endchat" + _math_sans(".") + _reply_note)
 
     elif cmd == "/endchat":
         if _chat_sessions.pop(str(chat_id), None) is not None:
