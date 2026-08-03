@@ -8283,6 +8283,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _reply_note = "" if _is_admin_own_chat else ("\n\n↪️ In a group: <b>reply directly to one of my messages</b> to get a response.\n"
                 "In a private chat: <b>forward a message here</b> instead — plain typed messages won't trigger a response.")
             send_reply(chat_id,
+                "𝐀𝐈 𝐀𝐒𝐒𝐈𝐒𝐓𝐀𝐍𝐓\n𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
                 "💬 <b>Chat Session Started</b>\n\n"
                 "Ask me anything about crypto, trading, market analysis, or general questions.\n\n"
                 "🎨 Need an image? Just describe what you want.\n\n"
