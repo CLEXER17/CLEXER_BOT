@@ -2322,19 +2322,26 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") 
     """Best-model-for-this-message, free-first-then-fallback text reply for
     a PECHI-tagged message. Classifies via the same router used for
     CHAT_MODEL=="auto", tries Aerolink first regardless of the session's own
-    gateway setting, and on any failure falls back to Direct (if the picked
-    model is genuinely Claude) or Google (if it isn't, since Direct can't
-    serve non-Claude models at all)."""
+    gateway setting. Full fallback chain so a single provider's outage or
+    quota (Google's free tier is a famously tiny 5 RPM/20 RPD) can never be
+    a dead end: Aerolink -> Direct (if Claude) -> Google -> Direct Claude as
+    a last resort. Only raises if every one of those genuinely fails."""
     _model = _chat_classify_model(message)
-    if _model == "google":
-        return _chat_call_gemini_text(history, extra_system=extra_system)
+    if _model != "google":
+        try:
+            return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
+        except Exception as e:
+            print(f"  [PECHI] free (Aerolink) attempt with {_model} failed ({e}) — falling back")
+            if _is_claude_model(_model):
+                try:
+                    return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
+                except Exception as e2:
+                    print(f"  [PECHI] Direct fallback with {_model} also failed ({e2}) — trying Google")
     try:
-        return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
-    except Exception as e:
-        print(f"  [PECHI] free (Aerolink) attempt with {_model} failed ({e}) — falling back")
-        if _is_claude_model(_model):
-            return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
         return _chat_call_gemini_text(history, extra_system=extra_system)
+    except Exception as e3:
+        print(f"  [PECHI] Google also failed ({e3}) — final fallback to Direct Claude")
+        return _chat_call_claude_text(history, "claude-sonnet-5", extra_system=extra_system, gateway_override="direct")
 
 def _chat_boki_text_reply(history: list, message: str, extra_system: str = "") -> str:
     """BOKI trigger (admin-only, standalone, 2026-08-04): same best-model
