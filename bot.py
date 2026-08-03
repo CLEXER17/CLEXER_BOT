@@ -1722,18 +1722,34 @@ def get_active_server_name() -> str:
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
 
-def _kv_push(key: str, data) -> bool:
+def _kv_push(key: str, data, retries: int = 3, delay: float = 2.0) -> bool:
     """Push any JSON-able blob to the shared store under `key`. Used by /syncup
     for the pieces that don't already have their own dedicated push path.
     Returns True only if the server actually accepted it (2xx) — a wrong/missing
-    PUSH_STATE_SECRET returns 403, which must NOT be reported as success."""
+    PUSH_STATE_SECRET returns 403, which must NOT be reported as success.
+
+    Retries on transient failures (matching _central_get's pattern) — Railway's
+    filesystem is ephemeral, so a settings change that's saved locally but never
+    lands centrally due to a brief network blip gets silently reverted on the
+    very next redeploy, with no error visible anywhere (2026-08-04, after an
+    admin-requested Aerolink key unpause reverted on its own within minutes)."""
     if not CLEXER_API_URL:
         return False
     hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-    r = requests.post(f"{CLEXER_API_URL}/kv/{key}", json=data, headers=hdrs, timeout=15)
-    if not r.ok:
-        raise Exception(f"HTTP {r.status_code} — {r.text[:150]}")
-    return True
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.post(f"{CLEXER_API_URL}/kv/{key}", json=data, headers=hdrs, timeout=15)
+            if r.ok:
+                return True
+            last_err = f"HTTP {r.status_code} — {r.text[:150]}"
+            if r.status_code < 500:
+                break  # 4xx (e.g. bad secret) won't fix itself with a retry
+        except Exception as e:
+            last_err = str(e)
+        if attempt < retries - 1:
+            time.sleep(delay)
+    raise Exception(last_err)
 
 def _push_active_server(name: str, since: float, last_reminder_date: str = ""):
     _active_server_cache.update(name=name, since=since, last_reminder_date=last_reminder_date, checked_at=time.time())
@@ -5629,6 +5645,7 @@ def load_settings():
             ct.ORPHAN_ADOPT_ENABLED = d.get("orphan_adopt_enabled", False)
             ct.AUTO_SLTP_GLOBAL_ENABLED = d.get("auto_sltp_global_enabled", True)
             _group_seen_users.update(d.get("group_seen_users", {}))
+            PAUSED_AEROLINK_KEYS.clear()
             PAUSED_AEROLINK_KEYS.update(d.get("paused_aerolink_keys", []))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
