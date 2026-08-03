@@ -2118,6 +2118,37 @@ def _chat_call_claude_text(history: list, model_id: str) -> str:
     )
     return _claude_text(resp) or "…"
 
+_CHAT_ROUTER_MODEL = "kimi-k3"   # fast/cheap classifier for CHAT_MODEL == "auto" — via
+# Aerolink, not Gemini, so per-message routing calls don't eat into Gemini's tiny
+# 20-requests/day free quota on top of whatever "google" answers get picked too.
+
+def _chat_classify_model(message: str) -> str:
+    """CHAT_MODEL == "auto": asks a fast/cheap model to pick which text model in
+    _AEROLINK_MODEL_CATALOG should actually answer this specific message (crypto/
+    trading -> Claude, coding -> GPT, etc.) — one extra API call per message, by
+    admin request (2026-08-03), traded for better per-question model fit. Falls
+    back to "google" (free, always available) on any failure or unparseable
+    response — a bad routing call must never block the chat entirely."""
+    _catalog_desc = "\n".join(f"- {mid}: {info['label']} ({info['tier']})"
+        for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "text")
+    _prompt = (
+        "Pick the single best AI model to answer the user message below. Reply with "
+        "ONLY the model id from the list, nothing else — no punctuation, no explanation.\n\n"
+        f"Available models:\n- google: Google Gemini (general-purpose, free)\n{_catalog_desc}\n\n"
+        f"User message: {message}"
+    )
+    try:
+        client = _claude_client("chat")
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=20,
+                                       messages=[{"role": "user", "content": _prompt}])
+        _picked = (_claude_text(resp) or "").strip().split()[0].strip(".,:;\"'`").lower()
+        if _picked == "google" or (_picked in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_picked]["kind"] == "text"):
+            return _picked
+        print(f"  [CHAT ROUTE] unrecognized pick '{_picked}' — defaulting to google")
+    except Exception as e:
+        print(f"  [CHAT ROUTE] classify failed: {e}")
+    return "google"
+
 def _chat_generate_image(prompt: str):
     """Free, no-API-key image generation via Pollinations.ai (image.pollinations.ai) —
     every Gemini image model billed DIRECTLY on this account turned out to be
@@ -2193,8 +2224,12 @@ def _handle_chat_message(cid, text: str):
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            if CHAT_MODEL != "google":
-                reply_text = _chat_call_claude_text(sess["history"], CHAT_MODEL)
+            _active_model = CHAT_MODEL
+            if CHAT_MODEL == "auto":
+                _active_model = _chat_classify_model(text)
+                print(f"  [CHAT ROUTE] '{text[:60]}' -> {_active_model}")
+            if _active_model != "google":
+                reply_text = _chat_call_claude_text(sess["history"], _active_model)
             else:
                 reply_text = _chat_call_gemini_text(sess["history"])
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
@@ -3197,7 +3232,8 @@ def send_chatmodel_screen(chat_id, message_id=None):
     themselves. All non-Google/non-Pollinations options route through
     Aerolink (see _AEROLINK_MODEL_CATALOG's caution note about unverified
     output format on non-Claude text models)."""
-    _text_rows = [[{"text": ("✅ " if CHAT_MODEL == "google" else "") + "🟢 Google (Gemini, free)", "callback_data": "chatmodel:google"}]]
+    _text_rows = [[{"text": ("✅ " if CHAT_MODEL == "auto" else "") + "🤖 Auto (smart routing)", "callback_data": "chatmodel:auto"}],
+                  [{"text": ("✅ " if CHAT_MODEL == "google" else "") + "🟢 Google (Gemini, free)", "callback_data": "chatmodel:google"}]]
     _row = []
     for _mid, _info in _AEROLINK_MODEL_CATALOG.items():
         if _info["kind"] != "text":
@@ -3221,7 +3257,9 @@ def send_chatmodel_screen(chat_id, message_id=None):
 
     rows = _text_rows + _img_rows
     rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
-    _text_label = "🟢 Google (Gemini)" if CHAT_MODEL == "google" else _AEROLINK_MODEL_CATALOG.get(CHAT_MODEL, {}).get("label", CHAT_MODEL)
+    _text_label = ("🤖 Auto (smart routing)" if CHAT_MODEL == "auto" else
+                   "🟢 Google (Gemini)" if CHAT_MODEL == "google" else
+                   _AEROLINK_MODEL_CATALOG.get(CHAT_MODEL, {}).get("label", CHAT_MODEL))
     _img_label = "🆓 Pollinations" if CHAT_IMAGE_MODEL == "pollinations" else _AEROLINK_MODEL_CATALOG.get(CHAT_IMAGE_MODEL, {}).get("label", CHAT_IMAGE_MODEL)
     _help_edit_or_send(chat_id,
         f"💬 <b>/chat AI Engines</b>\n\n"
@@ -13471,7 +13509,7 @@ def command_listener():
                     elif cb_data.startswith("chatmodel:") and cb_is_admin:
                         global CHAT_MODEL, CHAT_IMAGE_MODEL
                         _cmarg = cb_data.split(":", 1)[1]
-                        if _cmarg == "google" or (_cmarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_cmarg]["kind"] == "text"):
+                        if _cmarg in ("google", "auto") or (_cmarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_cmarg]["kind"] == "text"):
                             CHAT_MODEL = _cmarg; save_settings()
                         send_chatmodel_screen(cb_chat_id, message_id=cb_msg_id)
 
