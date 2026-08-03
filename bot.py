@@ -1077,13 +1077,19 @@ def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwa
     _finalize_free_sl(sig_id, result)
     return ids
 
-def send_to_tier_channels(text: str, share_free: bool):
+def send_to_tier_channels(text: str, share_free: bool, exclude_ch2: bool = False):
     """Sends to every registered VIP channel always, and to FREE channels only
     if share_free is True (the daily quota decision made once per signal).
     Uses the true-forwardMessage relay so custom_emoji survives; falls back
-    to a direct send only if the forward relay itself fails."""
+    to a direct send only if the forward relay itself fails.
+
+    exclude_ch2: skips TELEGRAM_CHANNEL_ID_2 (VIP Mirror) specifically —
+    used for "no signal found" notices, which VIP Mirror subscribers don't
+    want cluttering their feed (admin request)."""
     text = _apply_premium_emojis(text)
     for cid in _channels_by_tier("vip"):
+        if exclude_ch2 and str(cid) == str(TELEGRAM_CHANNEL_ID_2):
+            continue
         if _send_via_true_forward(text, cid, "vip", protect=True):
             continue
         try:
@@ -10148,7 +10154,7 @@ Reasoning: [one line]"""
                         if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
                             _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
                         if _ai_category(_kind) == "verified":
-                            send_to_tier_channels(_no_sig_msg, share_free=False)
+                            send_to_tier_channels(_no_sig_msg, share_free=False, exclude_ch2=True)
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -14431,7 +14437,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
                     _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
                 if _ai_category("test", scan_ver) == "verified":
-                    send_to_tier_channels(_no_sig_msg, share_free=False)
+                    send_to_tier_channels(_no_sig_msg, share_free=False, exclude_ch2=True)
             # Admin DM removed for the routine "no clean setup" case (2026-07-28)
             # — that's not an error, and the special-slot version above already
             # goes to the Signal channel. Only a genuine API/gateway failure
