@@ -1637,28 +1637,37 @@ def _kv_pick_newer(local_path: str, kv_body: dict, log_tag: str):
 # Standby servers keep polling/analyzing normally but never place real copytrade
 # orders — flip which one is active with /server <name> from Telegram.
 SERVER_NAME = os.getenv("SERVER_NAME", "main")
-_active_server_cache = {"name": None, "checked_at": 0.0}
+_active_server_cache = {"name": None, "since": None, "last_reminder_date": "", "checked_at": 0.0}
 
-def get_active_server_name() -> str:
-    """Which server name is currently flagged active. Refreshes from the central
-    store at most once every 20s; if no central store is configured, this server
-    is always considered active (preserves single-server behavior)."""
+def _get_active_server_info() -> dict:
+    """Full active-server record — name, since (epoch it became active), and
+    last_reminder_date (IST date string, dedupes the rotation reminder below
+    to once/day). Refreshes from the central store at most once every 20s."""
     if not CLEXER_API_URL:
-        return SERVER_NAME
+        return {"name": SERVER_NAME, "since": _active_server_cache["since"] or time.time(),
+                "last_reminder_date": _active_server_cache["last_reminder_date"]}
     now = time.time()
     if now - _active_server_cache["checked_at"] < 20 and _active_server_cache["name"]:
-        return _active_server_cache["name"]
+        return dict(_active_server_cache)
     try:
-        hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-        r = requests.get(f"{CLEXER_API_URL}/kv/active_server", headers=hdrs, timeout=8)
-        if r.ok:
+        r = _central_get("/kv/active_server")
+        if r is not None and r.ok:
             body = r.json()
-            name = (body.get("data") or {}).get("name") if body.get("found") else None
+            data = (body.get("data") or {}) if body.get("found") else {}
+            name = data.get("name")
             if name:
-                _active_server_cache["name"] = name
-                _active_server_cache["checked_at"] = now
-                return name
-        else:
+                # Lazy-backfill "since" for records saved before this field
+                # existed — treat as freshly started NOW rather than assuming
+                # an unknown start time that would immediately look overdue
+                # for rotation the moment this feature first deploys.
+                since = data.get("since")
+                if since is None:
+                    since = time.time()
+                    _push_active_server(name, since, data.get("last_reminder_date", ""))
+                _active_server_cache.update(name=name, since=since,
+                                             last_reminder_date=data.get("last_reminder_date", ""), checked_at=now)
+                return dict(_active_server_cache)
+        elif r is not None:
             print(f"[SERVER] active-check HTTP {r.status_code} — {r.text[:150]}")
     except Exception as e:
         print(f"[SERVER] active-check error: {e}")
@@ -1667,7 +1676,17 @@ def get_active_server_name() -> str:
     # server before multi-server existed) — any OTHER named server (co1, co2, ...)
     # must NEVER default to assuming itself active, or two servers could both
     # decide independently that they're the one allowed to poll Telegram / trade.
-    return _active_server_cache["name"] or "main"
+    return {"name": _active_server_cache["name"] or "main",
+            "since": _active_server_cache["since"] or time.time(),
+            "last_reminder_date": _active_server_cache["last_reminder_date"]}
+
+def get_active_server_name() -> str:
+    """Which server name is currently flagged active. See _get_active_server_info
+    for refresh/caching details; if no central store is configured, this server
+    is always considered active (preserves single-server behavior)."""
+    if not CLEXER_API_URL:
+        return SERVER_NAME
+    return _get_active_server_info()["name"]
 
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
@@ -1685,15 +1704,118 @@ def _kv_push(key: str, data) -> bool:
         raise Exception(f"HTTP {r.status_code} — {r.text[:150]}")
     return True
 
-def set_active_server(name: str):
-    _active_server_cache["name"] = name
-    _active_server_cache["checked_at"] = time.time()
+def _push_active_server(name: str, since: float, last_reminder_date: str = ""):
+    _active_server_cache.update(name=name, since=since, last_reminder_date=last_reminder_date, checked_at=time.time())
     if CLEXER_API_URL:
         try:
             hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
-            requests.post(f"{CLEXER_API_URL}/kv/active_server", json={"name": name}, headers=hdrs, timeout=8)
+            requests.post(f"{CLEXER_API_URL}/kv/active_server",
+                json={"name": name, "since": since, "last_reminder_date": last_reminder_date},
+                headers=hdrs, timeout=8)
         except Exception as e:
             print(f"[SERVER] set-active error: {e}")
+
+def set_active_server(name: str):
+    """Flips the active server AND resets the rotation cycle's start time to
+    now — every switch, manual (/server) or automatic, begins a fresh
+    _SERVER_ROTATION_REMINDER_DAY/_SERVER_ROTATION_SWITCH_DAY count for
+    whichever server just became active."""
+    _push_active_server(name, time.time(), "")
+
+def _mark_rotation_reminder_sent(date_str: str):
+    info = _get_active_server_info()
+    _push_active_server(info["name"], info["since"], date_str)
+
+_SERVER_ROTATION_REMINDER_DAY = 24   # start nudging the admin to deploy a new server
+_SERVER_ROTATION_SWITCH_DAY   = 27   # from here on, auto-switch the moment a new one is detected
+
+def _register_this_server():
+    """Every server (active or standby) records itself + a heartbeat in the
+    shared registry on boot and on each rotation-loop tick — this is how the
+    rotation logic later tells a genuinely NEW server apart from an old
+    abandoned one that happens to have a similar-looking registry entry from
+    months ago (see _find_new_server)."""
+    if not CLEXER_API_URL:
+        return
+    try:
+        r = _central_get("/kv/server_registry")
+        reg = ((r.json().get("data") if r is not None and r.ok and r.json().get("found") else {}) or {})
+    except Exception:
+        reg = {}
+    now = time.time()
+    entry = reg.get(SERVER_NAME) or {}
+    entry.setdefault("first_seen", now)
+    entry["last_seen"] = now
+    reg[SERVER_NAME] = entry
+    try:
+        _kv_push("server_registry", reg)
+    except Exception as e:
+        print(f"[SERVER] registry push error: {e}")
+
+def _find_new_server(active_since: float):
+    """A server counts as "newly added" for rotation purposes only if it (a)
+    isn't this active server, (b) first registered AFTER the active server's
+    own start time (so an old abandoned server, e.g. the original "main",
+    never counts as new), and (c) has checked in within the last 3 days (so
+    a candidate that itself died in the meantime isn't picked). Returns the
+    most-recently-registered qualifying name, or None."""
+    if not CLEXER_API_URL:
+        return None
+    try:
+        r = _central_get("/kv/server_registry")
+        reg = ((r.json().get("data") if r is not None and r.ok and r.json().get("found") else {}) or {})
+    except Exception:
+        return None
+    now = time.time()
+    candidates = [(name, e) for name, e in reg.items()
+                  if name != SERVER_NAME and e.get("first_seen", 0) > active_since
+                  and (now - e.get("last_seen", 0)) < 3 * 86400]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[1].get("first_seen", 0), reverse=True)
+    return candidates[0][0]
+
+def _server_rotation_loop():
+    """Runs on every server. Only the currently-ACTIVE one actually reminds or
+    switches — a standby server just keeps its own registry heartbeat fresh
+    so it's ready to be detected as "new" once it's the one waiting to take
+    over. Reminder starts at day _SERVER_ROTATION_REMINDER_DAY; only from day
+    _SERVER_ROTATION_SWITCH_DAY onward does it also check for a qualifying
+    new server and auto-switch to it. If no new server exists yet, it just
+    keeps reminding once a day, indefinitely, until one shows up — no forced
+    switch without a real target."""
+    while True:
+        try:
+            _register_this_server()
+            if is_active_server() and CLEXER_API_URL:
+                info = _get_active_server_info()
+                days = int((time.time() - info["since"]) // 86400)
+                today = _ist_date_str()
+                if days >= _SERVER_ROTATION_REMINDER_DAY and info["last_reminder_date"] != today:
+                    new_name = _find_new_server(info["since"]) if days >= _SERVER_ROTATION_SWITCH_DAY else None
+                    if new_name:
+                        old_name = SERVER_NAME
+                        set_active_server(new_name)
+                        send_admin(
+                            f"🔄 <b>Server Auto-Switched</b>\n\n{old_name} → {new_name}\n"
+                            f"Day {days} of the rotation cycle — a new server was detected and this "
+                            f"switch happened automatically.\nThe {_SERVER_ROTATION_REMINDER_DAY}/"
+                            f"{_SERVER_ROTATION_SWITCH_DAY}-day cycle now restarts for {new_name}."
+                        )
+                    else:
+                        _mark_rotation_reminder_sent(today)
+                        _overdue = (f"\n\n⚠️ Past day {_SERVER_ROTATION_SWITCH_DAY} — still no new server "
+                                    f"detected. I'll switch automatically the moment one comes online."
+                                    if days >= _SERVER_ROTATION_SWITCH_DAY else "")
+                        send_admin(
+                            f"🖥️ <b>Server Rotation Reminder</b> — Day {days}\n\n"
+                            f"'{SERVER_NAME}' has been the active server for {days} days.\n"
+                            f"Time to deploy a new one — I'll auto-switch to it once it's live "
+                            f"(from day {_SERVER_ROTATION_SWITCH_DAY} onward).{_overdue}"
+                        )
+        except Exception as e:
+            print(f"[SERVER ROTATION] error: {e}")
+        time.sleep(6 * 3600)
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
@@ -14711,6 +14833,7 @@ def main():
                 print(f"[SERVER] active-sync error: {e}")
             time.sleep(15)
     threading.Thread(target=_active_server_loop, daemon=True).start()
+    threading.Thread(target=_server_rotation_loop, daemon=True).start()
 
     def _wait_then_poll():
         """Telegram only allows ONE process to poll getUpdates for a given bot
