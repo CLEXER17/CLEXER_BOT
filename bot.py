@@ -2324,6 +2324,56 @@ def _combine_reply_context(message: str, reply_context: str) -> str:
         return message
     return f'[Replying to this message: "{reply_context.strip()}"]\n\n{message}'
 
+_CHAT_TRADE_HINTS = ("trade", "entry", "target", "stop loss", " sl ", "sl?", "long", "short",
+                     "setup", "buy", "sell", "resistance", "support", "risk", "reward",
+                     "leverage", "position", "chart", "technical analysis", " ta ")
+
+def _chat_is_trade_question(text: str) -> bool:
+    """True if a /chat message reads like a genuine trade-setup question
+    (admin request 2026-08-04: "don't just reason from raw numbers I typed —
+    fetch real BingX data and analyze it properly"), not just casual chat
+    that happens to mention a coin name in passing."""
+    t = f" {text.lower()} "
+    return any(h in t for h in _CHAT_TRADE_HINTS)
+
+def _chat_resolve_coin_symbol(text: str):
+    """Best-effort coin-symbol extraction for a trade question — tries every
+    word token (longest first, so "ETHEREUM" isn't shadowed by a shorter
+    coincidental match) against BingX's live perpetual contract list, same
+    matching /coin itself uses. Returns a BingX symbol (e.g. "BTC-USDT") or
+    None if nothing in the message matches a real listed coin."""
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts", timeout=10).json()
+        all_contracts = r.get("data", [])
+    except Exception as e:
+        print(f"  [CHAT TRADE] contracts fetch failed: {e}")
+        return None
+    _bases = {c.get("symbol", "").replace("-USDT", ""): c.get("symbol", "") for c in all_contracts}
+    _words = re.findall(r"[A-Za-z]{2,10}", text)
+    for w in sorted(set(_words), key=len, reverse=True):
+        _up = w.upper()
+        if _up in _bases:
+            return _bases[_up]
+    return None
+
+def _chat_try_trade_analysis(cid, text: str, is_admin: bool) -> bool:
+    """If this looks like a genuine trade question about a specific real
+    coin, runs it through the SAME live-data pipeline /coin uses
+    (_do_coin_analysis: real BingX price/24h range/volume + SCAN_MODEL, the
+    bot's own designated best/most-powerful model for real analysis) instead
+    of a plain conversational reply reasoning only off whatever numbers the
+    user happened to type. Admin-only, matching /coin's own scanadmin gate
+    and the cost of a real analysis call. Returns True if it handled the
+    message (caller should not also generate a normal chat reply)."""
+    if not is_admin or not _chat_is_trade_question(text):
+        return False
+    sym = _chat_resolve_coin_symbol(text)
+    if not sym:
+        return False
+    send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
+    threading.Thread(target=_do_coin_analysis, args=(cid, sym, "MARKET"), daemon=True).start()
+    return True
+
 def _strip_trigger_word(text: str, word: str):
     """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
     starting with `word` (any case, optionally followed by a space/colon/
@@ -2421,6 +2471,10 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
         else:
             _ai_message = _combine_reply_context(message, reply_context)
+            # PECHI/BOKI are already admin-gated at the dispatcher, so this is
+            # always the admin here — real trade question -> live BingX pipeline.
+            if _chat_try_trade_analysis(cid, _ai_message, True):
+                return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
             reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context())
             send_reply(cid, reply_text, skip_smallcaps=True)
@@ -2493,6 +2547,13 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
+        elif _chat_try_trade_analysis(cid, _combine_reply_context(text, reply_context), _is_admin_cid):
+            # Real trade question about a specific coin (2026-08-04 request) —
+            # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
+            # not a normal conversational reply. Still logged into history so
+            # follow-up chat messages have some record this happened.
+            sess["history"].append({"role": "user", "parts": [{"text": text}]})
+            sess["history"].append({"role": "model", "parts": [{"text": "[ran a live BingX trade analysis]"}]})
         else:
             # Folds in the replied-to message's text (if any — see
             # _extract_reply_context), so "reply to a signal, then ask
