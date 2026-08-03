@@ -2309,6 +2309,21 @@ _CHAT_GATEWAY_SWITCH_CMDS = {
     "switch free": "aerolink", "switch to free": "aerolink",
 }
 
+def _extract_reply_context(msg: dict) -> str:
+    """Text/caption of the message being replied to, if any (admin request
+    2026-08-04) — lets /chat, PECHI, and BOKI answer questions about a
+    specific message the user replied to (e.g. reply to a signal, then ask
+    "what's the SL on this") instead of only ever seeing the user's own
+    typed words. Empty string if this message isn't a reply, or the
+    replied-to message has no readable text/caption (e.g. a bare photo)."""
+    _reply_to = msg.get("reply_to_message") or {}
+    return _reply_to.get("text") or _reply_to.get("caption") or ""
+
+def _combine_reply_context(message: str, reply_context: str) -> str:
+    if not reply_context:
+        return message
+    return f'[Replying to this message: "{reply_context.strip()}"]\n\n{message}'
+
 def _strip_trigger_word(text: str, word: str):
     """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
     starting with `word` (any case, optionally followed by a space/colon/
@@ -2375,12 +2390,17 @@ def _chat_boki_text_reply(history: list, message: str, extra_system: str = "") -
         print(f"  [BOKI] free (Aerolink) attempt with {_model} failed ({e}) — falling back to Google (still free, never Direct)")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
-def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str):
+def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply_context: str = ""):
     """Shared standalone (no /chat session) handler for PECHI/BOKI-style
     trigger words — image path is identical for both (best image model
     first, Pollinations fallback; Direct/Anthropic has no image generation
     at all, so there's nothing gateway-specific to differ there). Only the
-    text-reply function differs between triggers (see text_reply_fn)."""
+    text-reply function differs between triggers (see text_reply_fn).
+
+    reply_context: text of the message being replied to, if any (see
+    _extract_reply_context) — only folded into the TEXT path, not image
+    prompts, so a reply's content can't accidentally pollute an image
+    generation prompt."""
     _is_image = _chat_is_image_request(message)
     try:
         if _is_image:
@@ -2400,14 +2420,15 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str):
             else:
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
         else:
-            _history = [{"role": "user", "parts": [{"text": message}]}]
-            reply_text = text_reply_fn(_history, message, extra_system=_admin_chat_context())
+            _ai_message = _combine_reply_context(message, reply_context)
+            _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
+            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context())
             send_reply(cid, reply_text, skip_smallcaps=True)
     except Exception as e:
         print(f"  [{tag}] {cid}: {e}")
         send_reply(cid, f"⚠️ {tag.title()} had an error — try again.")
 
-def _handle_pechi_standalone(cid, message: str):
+def _handle_pechi_standalone(cid, message: str, reply_context: str = ""):
     """PECHI works on its own, without ever running /chat first (admin
     request 2026-08-03) — no session, no history kept, just a single
     question -> single answer. Called directly from the command listener
@@ -2415,15 +2436,15 @@ def _handle_pechi_standalone(cid, message: str):
     /chat session exists or this is a private chat vs a group. Best model
     for the message, free (Aerolink) first, falls back to Direct/Google on
     failure — see _chat_pechi_text_reply."""
-    _handle_standalone_trigger(cid, message, _chat_pechi_text_reply, "PECHI")
+    _handle_standalone_trigger(cid, message, _chat_pechi_text_reply, "PECHI", reply_context=reply_context)
 
-def _handle_boki_standalone(cid, message: str):
+def _handle_boki_standalone(cid, message: str, reply_context: str = ""):
     """BOKI (admin-only, standalone, 2026-08-04): same standalone pattern as
     PECHI, but NEVER uses the paid Direct/Anthropic API, even on failure —
     only Aerolink or Google, both free. See _chat_boki_text_reply."""
-    _handle_standalone_trigger(cid, message, _chat_boki_text_reply, "BOKI")
+    _handle_standalone_trigger(cid, message, _chat_boki_text_reply, "BOKI", reply_context=reply_context)
 
-def _handle_chat_message(cid, text: str, sender_id=None):
+def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""):
     sess = _chat_sessions.get(str(cid))
     if not sess:
         return
@@ -2473,17 +2494,21 @@ def _handle_chat_message(cid, text: str, sender_id=None):
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
-            sess["history"].append({"role": "user", "parts": [{"text": text}]})
+            # Folds in the replied-to message's text (if any — see
+            # _extract_reply_context), so "reply to a signal, then ask
+            # what's the SL on this" actually has something to answer from.
+            _ai_text = _combine_reply_context(text, reply_context)
+            sess["history"].append({"role": "user", "parts": [{"text": _ai_text}]})
             # Admin-only personal-assistant context (2026-08-03 request) — never
             # injected for a regular user's session.
             _extra_ctx = _admin_chat_context() if _is_admin_cid else ""
             if _is_pechi:
-                reply_text = _chat_pechi_text_reply(sess["history"], text, extra_system=_extra_ctx)
+                reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx)
             else:
                 _active_model = CHAT_MODEL
                 if CHAT_MODEL == "auto":
-                    _active_model = _chat_classify_model(text)
-                    print(f"  [CHAT ROUTE] '{text[:60]}' -> {_active_model}")
+                    _active_model = _chat_classify_model(_ai_text)
+                    print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
                 if _active_model != "google":
                     reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
                                                          gateway_override=sess.get("gateway"))
@@ -14290,14 +14315,14 @@ def command_listener():
                     if not _pechi_msg:
                         send_reply(cid, "🐾 Pechi's listening — ask me something after \"pechi\".")
                     else:
-                        _handle_pechi_standalone(cid, _pechi_msg)
+                        _handle_pechi_standalone(cid, _pechi_msg, reply_context=_extract_reply_context(msg))
                 elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _boki_strip(text or "")[1]:
                     # BOKI — same standalone pattern as PECHI, but free-only (never Direct).
                     _boki_msg, _ = _boki_strip(text)
                     if not _boki_msg:
                         send_reply(cid, "🆓 Boki's listening (free-only) — ask me something after \"boki\".")
                     else:
-                        _handle_boki_standalone(cid, _boki_msg)
+                        _handle_boki_standalone(cid, _boki_msg, reply_context=_extract_reply_context(msg))
                 elif (((ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) or is_co_admin(cid))
                         and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,14}", text or "")):
                     # Bare coin-name typing (e.g. just "eth") — /coin's own help
@@ -14323,7 +14348,7 @@ def command_listener():
                     _reply_to = msg.get("reply_to_message") or {}
                     _is_reply_to_bot = bool(_reply_to.get("from", {}).get("is_bot"))
                     if _is_admin_chat or _is_forward or _is_reply_to_bot:
-                        _handle_chat_message(cid, text, sender_id=sender_uid)
+                        _handle_chat_message(cid, text, sender_id=sender_uid, reply_context=_extract_reply_context(msg))
         except Exception as e:
             print(f"  [CMD] {e}")
             # Previously silent to the admin — a crash here (e.g. mid-callback,
