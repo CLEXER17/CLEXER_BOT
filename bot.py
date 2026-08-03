@@ -2153,21 +2153,30 @@ def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
 
+def _is_claude_model(model_id: str) -> bool:
+    return model_id.startswith("claude-")
+
 def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "") -> str:
     """Same conversation history format as Gemini (role 'user'/'model', one
     text part each) — translated to Claude's 'user'/'assistant' shape so
-    /model can swap engines without touching how history is stored."""
+    /model can swap engines without touching how history is stored.
+
+    Non-Claude catalog models (GPT/GLM/Kimi) always force Aerolink regardless
+    of the admin's Direct/Aerolink toggle — Anthropic's own Direct API has no
+    knowledge of those model names and would just error out — and skip the
+    Claude-only thinking/output_config params, which other providers proxied
+    through Aerolink aren't confirmed to understand."""
     messages = [{"role": "assistant" if h["role"] == "model" else "user",
                  "content": h["parts"][0]["text"]} for h in history]
-    client = _claude_client("chat")
-    resp = client.messages.create(
-        model=model_id,
-        max_tokens=2000,
-        system=_CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else ""),
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
-        messages=messages,
-    )
+    _is_claude = _is_claude_model(model_id)
+    client = _claude_client("chat", force_aerolink=not _is_claude)
+    _kwargs = dict(model=model_id, max_tokens=2000,
+                   system=_CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else ""),
+                   messages=messages)
+    if _is_claude:
+        _kwargs["thinking"] = {"type": "adaptive"}
+        _kwargs["output_config"] = {"effort": "medium"}
+    resp = client.messages.create(**_kwargs)
     return _claude_text(resp) or "…"
 
 _CHAT_ROUTER_MODEL = "kimi-k3"   # fast/cheap classifier for CHAT_MODEL == "auto" — via
@@ -2190,7 +2199,7 @@ def _chat_classify_model(message: str) -> str:
         f"User message: {message}"
     )
     try:
-        client = _claude_client("chat")
+        client = _claude_client("chat", force_aerolink=True)   # _CHAT_ROUTER_MODEL is non-Claude
         resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=20,
                                        messages=[{"role": "user", "content": _prompt}])
         _picked = (_claude_text(resp) or "").strip().split()[0].strip(".,:;\"'`").lower()
@@ -2223,7 +2232,7 @@ def _chat_generate_image_aerolink(prompt: str, model_id: str):
     none is found, so the caller can fall back to Pollinations rather than silently
     sending nothing. Returns (text, image_bytes_or_None); raises on any failure."""
     import base64
-    client = _claude_client("chat")
+    client = _claude_client("chat", force_aerolink=True)   # image models are never Claude
     resp = client.messages.create(
         model=model_id, max_tokens=2000,
         messages=[{"role": "user", "content": prompt}],
@@ -3325,7 +3334,7 @@ def send_chatmodel_screen(chat_id, message_id=None):
         f"(image) or just error out (text).</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
-def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
+def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None, force_aerolink: bool = False):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
@@ -3333,8 +3342,14 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None):
     (attempt >= 1), rotates to the next CONFIGURED slot in order, skipping any empty
     ones, so a failure on one key doesn't fail the whole call as long as another slot
     has a key in it. Slot 1 is required; slots 2-20 are optional and can be left empty
-    until keys are added later."""
-    if _ai_aerolink(kind, scan_ver) and AEROLINK_API_KEY:
+    until keys are added later.
+
+    force_aerolink: bypasses the normal kind-based gateway check (USE_AEROLINK for
+    "chat"/"btc") entirely — used when the caller already knows the target model is
+    non-Claude (GPT/GLM/Kimi/Gemini-image from _AEROLINK_MODEL_CATALOG), since
+    Anthropic's own Direct API has no knowledge of those model names at all and
+    would just error out regardless of the admin's Direct/Aerolink toggle."""
+    if (force_aerolink or _ai_aerolink(kind, scan_ver)) and AEROLINK_API_KEY:
         _keys = _aerolink_configured_keys()
         if not _keys:
             # Every configured key is paused — rather than silently ignoring
