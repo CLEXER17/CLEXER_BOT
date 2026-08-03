@@ -2278,11 +2278,43 @@ _CHAT_GATEWAY_SWITCH_CMDS = {
     "switch free": "aerolink", "switch to free": "aerolink",
 }
 
+def _pechi_strip(text: str):
+    """PECHI trigger (admin-only, 2026-08-03 request): a message prefixed
+    with "pechi" (any case, e.g. "Pechi generate a image of cow") always
+    gets the best model for THAT message and tries the free Aerolink
+    gateway first, falling back automatically on any failure — see
+    _chat_pechi_text_reply. Returns (message_with_prefix_removed, True) if
+    detected, else (original_text, False)."""
+    _stripped = text.lstrip()
+    _lower = _stripped.lower()
+    if _lower == "pechi" or any(_lower.startswith(f"pechi{sep}") for sep in (" ", ":", ",", "-")):
+        return _stripped[len("pechi"):].lstrip(" :,-").strip(), True
+    return text, False
+
+def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") -> str:
+    """Best-model-for-this-message, free-first-then-fallback text reply for
+    a PECHI-tagged message. Classifies via the same router used for
+    CHAT_MODEL=="auto", tries Aerolink first regardless of the session's own
+    gateway setting, and on any failure falls back to Direct (if the picked
+    model is genuinely Claude) or Google (if it isn't, since Direct can't
+    serve non-Claude models at all)."""
+    _model = _chat_classify_model(message)
+    if _model == "google":
+        return _chat_call_gemini_text(history, extra_system=extra_system)
+    try:
+        return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
+    except Exception as e:
+        print(f"  [PECHI] free (Aerolink) attempt with {_model} failed ({e}) — falling back")
+        if _is_claude_model(_model):
+            return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
+        return _chat_call_gemini_text(history, extra_system=extra_system)
+
 def _handle_chat_message(cid, text: str):
     sess = _chat_sessions.get(str(cid))
     if not sess:
         return
     sess["last"] = time.time()
+    _is_admin_cid = bool(ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID))
     # In-session gateway switch (admin-only, 2026-08-03 request) — typing
     # "switch direct" or "switch free" changes this ONE session's Claude
     # gateway (Direct vs Aerolink's free-tier keys) without touching the
@@ -2291,12 +2323,13 @@ def _handle_chat_message(cid, text: str):
     # chat message — resets automatically on /endchat or session timeout
     # since it's just a key in this session's own dict, not persisted.
     _norm_cmd = text.strip().lower().strip("[]").strip()
-    if ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID) and _norm_cmd in _CHAT_GATEWAY_SWITCH_CMDS:
+    if _is_admin_cid and _norm_cmd in _CHAT_GATEWAY_SWITCH_CMDS:
         sess["gateway"] = _CHAT_GATEWAY_SWITCH_CMDS[_norm_cmd]
         _gw_label = "Direct" if sess["gateway"] == "direct" else "Aerolink (free)"
         send_reply(cid, f"✅ Gateway switched to <b>{_gw_label}</b> for this chat session.\n"
                          f"<i>(Only affects Claude-model replies — non-Claude models always use Aerolink regardless.)</i>")
         return
+    text, _is_pechi = _pechi_strip(text) if _is_admin_cid else (text, False)
     _is_image = _chat_is_image_request(text)
     if not _is_image and CHAT_MODEL == "google" and not GEMINI_API_KEY:
         send_reply(cid, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
@@ -2322,18 +2355,21 @@ def _handle_chat_message(cid, text: str):
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            _active_model = CHAT_MODEL
-            if CHAT_MODEL == "auto":
-                _active_model = _chat_classify_model(text)
-                print(f"  [CHAT ROUTE] '{text[:60]}' -> {_active_model}")
             # Admin-only personal-assistant context (2026-08-03 request) — never
             # injected for a regular user's session.
-            _extra_ctx = _admin_chat_context() if (ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) else ""
-            if _active_model != "google":
-                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                     gateway_override=sess.get("gateway"))
+            _extra_ctx = _admin_chat_context() if _is_admin_cid else ""
+            if _is_pechi:
+                reply_text = _chat_pechi_text_reply(sess["history"], text, extra_system=_extra_ctx)
             else:
-                reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
+                _active_model = CHAT_MODEL
+                if CHAT_MODEL == "auto":
+                    _active_model = _chat_classify_model(text)
+                    print(f"  [CHAT ROUTE] '{text[:60]}' -> {_active_model}")
+                if _active_model != "google":
+                    reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                         gateway_override=sess.get("gateway"))
+                else:
+                    reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
             send_reply(cid, reply_text)
         # Trim history to bound token usage
