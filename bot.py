@@ -466,15 +466,22 @@ def _free_quota_available() -> bool:
     now = datetime.now(timezone.utc) + IST
     today = now.strftime("%Y-%m-%d")
     if _free_signal_tracker.get("date") != today:
+        print(f"[FREE QUOTA] day rollover — was {_free_signal_tracker}, resetting for {today}")
         _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
     _free_signal_tracker["total"] += 1
     _save_free_tracker()
-    if not _in_free_window():
+    _threshold = math.ceil(_free_signal_tracker["total"] * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
+    _win = _in_free_window()
+    _decision = _win and (_free_signal_tracker["shared"] < _threshold)
+    print(f"[FREE QUOTA] total={_free_signal_tracker['total']} shared={_free_signal_tracker['shared']} "
+          f"threshold={_threshold} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
+    if not _win:
         return False
-    return _free_signal_tracker["shared"] < math.ceil(_free_signal_tracker["total"] * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
+    return _free_signal_tracker["shared"] < _threshold
 
 def _consume_free_quota():
     _free_signal_tracker["shared"] = _free_signal_tracker.get("shared", 0) + 1
+    print(f"[FREE QUOTA] consumed -> shared now {_free_signal_tracker['shared']}")
     _save_free_tracker()
 
 _BOT_USERNAME = None
