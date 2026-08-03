@@ -3162,6 +3162,19 @@ def _claude_retry_budget(using_aero: bool) -> int:
         return 3
     return max(3, len(_aerolink_configured_keys()))
 
+def _all_aero_keys_dead(using_aero: bool, bad_keys: set) -> bool:
+    """True once every currently-configured Aerolink key has failed at least
+    once THIS scan cycle. At that point, trying another coin is pointless —
+    _pick_aerolink_key's own fallback (see its docstring) resets to the full
+    key list once every key is in bad_keys, so a later coin would just start
+    re-trying the exact same broken keys from scratch, not fail any faster
+    or find a working one. Callers should stop the whole candidate loop
+    early instead of moving to the next coin once this is True."""
+    if not using_aero:
+        return False
+    _all = set(_aerolink_configured_keys())
+    return bool(_all) and _all <= bad_keys
+
 _CSV_HEADERS = ["type","coin","direction","signal_time","entry_price","sl_price","tp1_price","tp2_price",
                  "entry_trigger_time","tp1_hit_time","tp2_hit_time","sl_hit_time","timeout_time","result","notes"]
 
@@ -10157,6 +10170,10 @@ Reasoning: [one line]"""
                         print(f"  [SCAN] {chosen_sym}: Claude failed {_retry_budget} times — skipping coin")
                         api_fail_count += 1
                         skip_log.append(f"🔴 {chosen_sym}: Claude API call failed {_retry_budget}x — NOT analyzed (last error: {_last_claude_err[:120]})")
+                        if _all_aero_keys_dead(_using_aero, _aero_bad_keys):
+                            skip_log.append("🛑 Every configured Aerolink key has failed this cycle — "
+                                            "stopping early instead of retrying more coins against the same broken keys.")
+                            break
                         continue
 
                     import re as _re
@@ -14521,6 +14538,10 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             if not _claude_ok:
                 print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1
                 skip_log.append(f"🔴 {chosen_sym}: Claude/gateway API failed {_retry_budget}x — not analyzed")
+                if _all_aero_keys_dead(_using_aero, _aero_bad_keys):
+                    skip_log.append("🛑 Every configured Aerolink key has failed this cycle — "
+                                    "stopping early instead of retrying more coins against the same broken keys.")
+                    break
                 continue
 
             _ac = analysis.replace(",","")
