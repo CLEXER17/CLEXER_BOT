@@ -403,7 +403,7 @@ def _delete_trail_sl_messages(t: dict):
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
-_free_signal_tracker = {"date": "", "total": 0, "shared": 0}  # resets automatically when the IST date rolls over
+_free_signal_tracker = {"date": "", "total": 0, "shared": 0, "credit": 0.0}  # resets automatically when the IST date rolls over
 
 def _save_free_tracker():
     """Persists _free_signal_tracker to local disk AND the central store — same
@@ -439,7 +439,8 @@ def _load_free_tracker():
             with open(path) as f:
                 d = json.load(f)
         if d is not None:
-            _free_signal_tracker = {"date": d.get("date",""), "total": d.get("total",0), "shared": d.get("shared",0)}
+            _free_signal_tracker = {"date": d.get("date",""), "total": d.get("total",0), "shared": d.get("shared",0),
+                                     "credit": d.get("credit", 0.0)}
             print(f"[FREE TRACKER] Restored {_free_signal_tracker}")
     except Exception as e:
         print(f"[FREE TRACKER] load error: {e}")
@@ -455,33 +456,36 @@ def _in_free_window() -> bool:
     return 6 <= now.hour < 23  # 06:00–23:00 IST
 
 def _free_quota_available() -> bool:
-    """FREE_SIGNAL_DAILY_LIMIT rule (now a %, not a raw count): out of every
-    day's verified/special signals, that % also gets shared to Free (e.g. 40%
-    with 10 verified fires that day -> 4 shown in Free). Every call counts
-    toward that day's total (one call per verified fire), and returns True
-    (share it) only while doing so keeps shared/total at or under the %  —
-    this naturally spreads the share across the whole day instead of front-
-    or back-loading it."""
+    """FREE_SIGNAL_DAILY_LIMIT rule (a %, not a raw count): out of every day's
+    verified/special signals, that % also gets shared to Free (e.g. 40% with
+    11 verified fires that day -> ~4 shown in Free). Uses a running "credit"
+    accumulator (leaky-bucket style) instead of a live ceil(total * pct)
+    ratio check — the ratio-check version front-loaded lockouts hard: right
+    after fire #1 shares (1/1 = 100%), fire #2's ratio-if-shared (2/2 = 100%)
+    is already over any %<100 target, so it locks almost every time,
+    regardless of the % setting. The credit version adds `pct` to a running
+    total on every real fire and shares once it crosses 1.0 (then resets by
+    1.0), which spreads shares evenly (~every 1/pct fires) all day without
+    that early-lockout artifact."""
     global _free_signal_tracker
     now = datetime.now(timezone.utc) + IST
     today = now.strftime("%Y-%m-%d")
     if _free_signal_tracker.get("date") != today:
         print(f"[FREE QUOTA] day rollover — was {_free_signal_tracker}, resetting for {today}")
-        _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
+        _free_signal_tracker = {"date": today, "total": 0, "shared": 0, "credit": 0.0}
     _free_signal_tracker["total"] += 1
+    _free_signal_tracker["credit"] = _free_signal_tracker.get("credit", 0.0) + (FREE_SIGNAL_DAILY_LIMIT / 100.0)
     _save_free_tracker()
-    _threshold = math.ceil(_free_signal_tracker["total"] * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
     _win = _in_free_window()
-    _decision = _win and (_free_signal_tracker["shared"] < _threshold)
+    _decision = _win and (_free_signal_tracker["credit"] >= 1.0)
     print(f"[FREE QUOTA] total={_free_signal_tracker['total']} shared={_free_signal_tracker['shared']} "
-          f"threshold={_threshold} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
-    if not _win:
-        return False
-    return _free_signal_tracker["shared"] < _threshold
+          f"credit={_free_signal_tracker['credit']:.2f} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
+    return _decision
 
 def _consume_free_quota():
+    _free_signal_tracker["credit"] = _free_signal_tracker.get("credit", 0.0) - 1.0
     _free_signal_tracker["shared"] = _free_signal_tracker.get("shared", 0) + 1
-    print(f"[FREE QUOTA] consumed -> shared now {_free_signal_tracker['shared']}")
+    print(f"[FREE QUOTA] consumed -> shared now {_free_signal_tracker['shared']}, credit now {_free_signal_tracker['credit']:.2f}")
     _save_free_tracker()
 
 _BOT_USERNAME = None
