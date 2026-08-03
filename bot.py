@@ -2707,6 +2707,24 @@ def _reply_map_reached_tier(reply_map: dict) -> bool:
     _trade_reveal's actually_shared docstring for why this matters."""
     return bool(reply_map) and any(k.startswith(("vip:", "free:")) for k in reply_map)
 
+def _btc_trade_reveal(share_free: bool, viewer_tier: str, full_view: bool, actually_shared: bool):
+    """BTC-specific version of _trade_reveal — BTC has no special/verified
+    category like Scan/Demo (it's always tier_routed=True by design, see
+    _send_btc_entry_signal), so /trade and /status previously showed BTC's
+    full entry/SL/TP to EVERY viewer unconditionally, even a Free/unregistered
+    user for whom share_free was False and it never actually reached a free:
+    channel — the exact same leak _trade_reveal was built to prevent for
+    Scan/Demo, just never applied to BTC. Returns (reveal, show_locked_tag)."""
+    if full_view:
+        return True, False
+    if not actually_shared:
+        return False, False  # never reached any tier channel at all — fully hidden
+    if viewer_tier == "vip":
+        return True, False   # BTC always genuinely tier_routed to VIP
+    if share_free:
+        return True, False
+    return False, True       # reached VIP but Free's quota locked it — show locked tag
+
 _load_slot_state()
 _load_scheduled_broadcasts()
 
@@ -7810,9 +7828,6 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         t = active_trade
         st = "⏸ PAUSED" if bot_paused.is_set() else ("🛑 STOPPED (scans off)" if bot_stopped.is_set() else "▶️ RUNNING")
         cd = f"Cooldown: {trade_stats['cooldown_scans']} scans\n" if trade_stats["cooldown_scans"] else ""
-        ti = (f"{t['signal']} @ {t['entry']:,.0f}\nSL:{t['sl']:,.0f}  TP1:{t['tp1']:,.0f}  TP2:{t['tp2']:,.0f}\n"
-            f"Entry:{'OK' if t['entry_hit'] else 'pending'}  TP1:{'OK' if t['tp1_hit'] else 'no'}"
-            ) if t["signal"] else "No active trade"
         src = get_current_source()
         tv_status = ("ONLINE" if (tv_bridge_state["online"] and tv_bridge_state["cdp_ok"])
             else "Bridge OK - TV not connected" if tv_bridge_state["online"] else "OFFLINE - BingX fallback") if TV_BRIDGE_URL else "Not configured - BingX"
@@ -7826,6 +7841,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _user_ct = ct._get(str(chat_id))
         _tier_val = (_user_ct or {}).get("tier", "free")
         _full_status_view = is_admin or is_co_admin(_check_id)
+        # BTC (unlike Scan/Demo) has no special/verified category — always
+        # tier_routed by design — so it uses its own reveal rule instead of
+        # _trade_reveal/_status_trade_cat. ti=None means fully hidden (never
+        # reached any tier channel), suppressing the whole BTC block below.
+        if t["signal"]:
+            _btc_reveal, _btc_locked = _btc_trade_reveal(t.get('share_free', True), _tier_val, _full_status_view,
+                                                           actually_shared=_reply_map_reached_tier(t.get('reply_map')))
+            if _btc_reveal:
+                ti = (f"{t['signal']} @ {t['entry']:,.0f}\nSL:{t['sl']:,.0f}  TP1:{t['tp1']:,.0f}  TP2:{t['tp2']:,.0f}\n"
+                    f"Entry:{'OK' if t['entry_hit'] else 'pending'}  TP1:{'OK' if t['tp1_hit'] else 'no'}")
+            elif _btc_locked:
+                ti = "🔒 VIP-exclusive signal — upgrade to view"
+            else:
+                ti = None
+        else:
+            ti = "No active trade"
         def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra="", reply_map=None):
             _cat = _status_trade_cat(kind, created_at)
             _dir = "🟢" if sig == "BUY" else "🔴"
@@ -7912,7 +7943,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
-            + f"\n<b>BTC Trade:</b>\n{ti}"
+            + (f"\n<b>BTC Trade:</b>\n{ti}" if ti is not None else "")
             + scan_lines,
             emoji_overrides={"🟢": "5262747715552438702", "🔴": "5809816842713174497", "✔️": "5206607081334906820"})
 
@@ -8203,23 +8234,30 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # Same viewer-tier filtering as /status — admin/co-admin sees
         # everything (tagged by category), VIP sees only verified trades,
         # Free sees trades it actually got plus a locked VIP tag for the
-        # rest. BTC is intentionally unfiltered, shown to everyone.
+        # rest. BTC now follows the same reveal rule via _btc_trade_reveal
+        # (previously unfiltered, shown to everyone regardless of whether it
+        # actually reached Free).
         _trade_user_ct = ct._get(str(chat_id))
         _trade_tier_val = (_trade_user_ct or {}).get("tier", "free")
         _trade_full_view = is_admin or is_co_admin(_check_id)
         # BTC trade
         t = active_trade
         if t["signal"]:
-            try: tk = get_ticker(); pl = f"Current: <b>{tk['price']:,.2f}</b>\n"
-            except: pl = ""
-            parts_out.append(
-                f"<b>BTC Trade</b>\n\n{t['signal']} - {SYMBOL}\n{pl}"
-                f"Entry: <b>{t['entry']:,.0f}</b> {'✅' if t['entry_hit'] else '⏳ pending'}\n"
-                f"SL:    <b>{t['sl']:,.0f}</b>\n"
-                f"TP1:   <b>{t['tp1']:,.0f}</b> {'✅ HIT' if t['tp1_hit'] else '⏳ pending'}\n"
-                f"TP2:   <b>{t['tp2']:,.0f}</b>\nType:  {t['entry_type']}\n"
-                + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else "")
-            )
+            _btc_reveal, _btc_locked = _btc_trade_reveal(t.get('share_free', True), _trade_tier_val, _trade_full_view,
+                                                           actually_shared=_reply_map_reached_tier(t.get('reply_map')))
+            if _btc_reveal:
+                try: tk = get_ticker(); pl = f"Current: <b>{tk['price']:,.2f}</b>\n"
+                except: pl = ""
+                parts_out.append(
+                    f"<b>BTC Trade</b>\n\n{t['signal']} - {SYMBOL}\n{pl}"
+                    f"Entry: <b>{t['entry']:,.0f}</b> {'✅' if t['entry_hit'] else '⏳ pending'}\n"
+                    f"SL:    <b>{t['sl']:,.0f}</b>\n"
+                    f"TP1:   <b>{t['tp1']:,.0f}</b> {'✅ HIT' if t['tp1_hit'] else '⏳ pending'}\n"
+                    f"TP2:   <b>{t['tp2']:,.0f}</b>\nType:  {t['entry_type']}\n"
+                    + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else "")
+                )
+            elif _btc_locked:
+                parts_out.append(f"<b>BTC Trade</b>\n\n🔒 VIP-exclusive signal — upgrade to view")
         # Scan trades — all from both lists
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
             for sc in _lst:
