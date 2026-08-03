@@ -403,7 +403,15 @@ def _delete_trail_sl_messages(t: dict):
 # ─── VIP / Free channels + user tiers ──────────────────────────────────────
 CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] — any number of each
 FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
-_free_signal_tracker = {"date": "", "total": 0, "shared": 0, "credit": 0.0}  # resets automatically when the IST date rolls over
+_free_signal_tracker = {"date": "", "total": 0, "shared": 0}  # resets automatically when the IST date rolls over
+
+def _daily_verified_slot_count() -> int:
+    """Fixed count of the day's SCHEDULED 'verified' slot times across
+    Scan1/Scan2/TS1/TS2 (admin-configured special times minus the no-copy
+    exclusions) — known upfront from settings, independent of how many of
+    those slots actually fire a real signal vs. 'no trade found' that day."""
+    return sum(len(_SCAN_SPECIAL.get(k, set())) - len(_SCAN_SPECIAL_NO_COPY.get(k, set()))
+               for k in ("scan1", "scan2", "test1", "test2"))
 
 def _save_free_tracker():
     """Persists _free_signal_tracker to local disk AND the central store — same
@@ -439,8 +447,7 @@ def _load_free_tracker():
             with open(path) as f:
                 d = json.load(f)
         if d is not None:
-            _free_signal_tracker = {"date": d.get("date",""), "total": d.get("total",0), "shared": d.get("shared",0),
-                                     "credit": d.get("credit", 0.0)}
+            _free_signal_tracker = {"date": d.get("date",""), "total": d.get("total",0), "shared": d.get("shared",0)}
             print(f"[FREE TRACKER] Restored {_free_signal_tracker}")
     except Exception as e:
         print(f"[FREE TRACKER] load error: {e}")
@@ -456,36 +463,31 @@ def _in_free_window() -> bool:
     return 6 <= now.hour < 23  # 06:00–23:00 IST
 
 def _free_quota_available() -> bool:
-    """FREE_SIGNAL_DAILY_LIMIT rule (a %, not a raw count): out of every day's
-    verified/special signals, that % also gets shared to Free (e.g. 40% with
-    11 verified fires that day -> ~4 shown in Free). Uses a running "credit"
-    accumulator (leaky-bucket style) instead of a live ceil(total * pct)
-    ratio check — the ratio-check version front-loaded lockouts hard: right
-    after fire #1 shares (1/1 = 100%), fire #2's ratio-if-shared (2/2 = 100%)
-    is already over any %<100 target, so it locks almost every time,
-    regardless of the % setting. The credit version adds `pct` to a running
-    total on every real fire and shares once it crosses 1.0 (then resets by
-    1.0), which spreads shares evenly (~every 1/pct fires) all day without
-    that early-lockout artifact."""
+    """FREE_SIGNAL_DAILY_LIMIT rule: that % of the day's SCHEDULED verified
+    slots (_daily_verified_slot_count() -- a fixed, known-upfront number from
+    the admin's special-time config, e.g. 11) sets a flat daily quota (e.g.
+    40% of 11 -> 4). Real verified fires share back-to-back, in order, from
+    the start of the day: #1 through #4 share, #5 through #11 lock -- no
+    gaps in between, no live ratio re-check. Once `shared` hits the quota
+    nothing else shares that day, however many more verified fires happen."""
     global _free_signal_tracker
     now = datetime.now(timezone.utc) + IST
     today = now.strftime("%Y-%m-%d")
     if _free_signal_tracker.get("date") != today:
-        print(f"[FREE QUOTA] day rollover — was {_free_signal_tracker}, resetting for {today}")
-        _free_signal_tracker = {"date": today, "total": 0, "shared": 0, "credit": 0.0}
+        print(f"[FREE QUOTA] day rollover - was {_free_signal_tracker}, resetting for {today}")
+        _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
     _free_signal_tracker["total"] += 1
-    _free_signal_tracker["credit"] = _free_signal_tracker.get("credit", 0.0) + (FREE_SIGNAL_DAILY_LIMIT / 100.0)
     _save_free_tracker()
+    _quota = round(_daily_verified_slot_count() * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
     _win = _in_free_window()
-    _decision = _win and (_free_signal_tracker["credit"] >= 1.0)
+    _decision = _win and (_free_signal_tracker["shared"] < _quota)
     print(f"[FREE QUOTA] total={_free_signal_tracker['total']} shared={_free_signal_tracker['shared']} "
-          f"credit={_free_signal_tracker['credit']:.2f} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
+          f"quota={_quota} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
     return _decision
 
 def _consume_free_quota():
-    _free_signal_tracker["credit"] = _free_signal_tracker.get("credit", 0.0) - 1.0
     _free_signal_tracker["shared"] = _free_signal_tracker.get("shared", 0) + 1
-    print(f"[FREE QUOTA] consumed -> shared now {_free_signal_tracker['shared']}, credit now {_free_signal_tracker['credit']:.2f}")
+    print(f"[FREE QUOTA] consumed -> shared now {_free_signal_tracker['shared']}")
     _save_free_tracker()
 
 _BOT_USERNAME = None
@@ -11105,8 +11107,7 @@ def _np_render(chat_id, cid, msg_id):
     value_str = digits if digits else "0"
     _extra = ""
     if st["target"] == "freelimit":
-        _verified_n = sum(len(_SCAN_SPECIAL.get(k, set())) - len(_SCAN_SPECIAL_NO_COPY.get(k, set()))
-                           for k in ("scan1", "scan2", "test1", "test2"))
+        _verified_n = _daily_verified_slot_count()
         _tr = _free_signal_tracker
         _today_n = _tr.get("total", 0); _shared_n = _tr.get("shared", 0)
         _actual_pct = round(_shared_n / _today_n * 100) if _today_n else 0
