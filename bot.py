@@ -8485,7 +8485,13 @@ def _chat_format_setup_validation(v: dict) -> str:
     """Conversational reply for "is this specific trade still valid"
     questions (see _coin_validate_setup_data) — leads with a direct
     yes/no/pending verdict on the ACTUAL proposed idea, not an unrelated
-    fresh recommendation."""
+    fresh recommendation. If the setup is invalid AND the model's own
+    current read points a different direction, that alternative idea is
+    pushed to a clearly-separate closing note instead of sitting right next
+    to the verdict, where it read like an equally-prominent replacement
+    recommendation competing with the actual answer (admin feedback
+    2026-08-04: "if my friend's setup was not valid, put the alternative at
+    the end of the message, not up front")."""
     coin_disp = v["sym"].replace("-", "/")
     _verdict_emoji = {"YES": "✅", "NO": "❌", "PENDING": "⏳"}.get(v["still_valid"], "⏳")
     _verdict_word = {"YES": "still <b>valid</b>", "NO": "<b>no longer valid</b>",
@@ -8496,16 +8502,22 @@ def _chat_format_setup_validation(v: dict) -> str:
         f"(entry <code>{v['proposed_entry']}</code>, target <code>{v['proposed_target']}</code>) "
         f"looks {_verdict_word}.",
         "",
-        f"<code>${v['price']:,.6g}</code> right now ({v['change']:+.2f}% today) — current bias: <b>{v['current_bias']}</b>",
-        f"Suggested stop loss: <code>{v['sl']}</code>",
-        f"Targets: <code>{v['tp1']}</code> / <code>{v['tp2']}</code>",
-        f"Confidence: <b>{v['confidence']}</b>",
+        f"<code>${v['price']:,.6g}</code> right now ({v['change']:+.2f}% today)",
         "",
         f"<blockquote>{_reason}</blockquote>",
     ]
     if v["verdict_note"]:
         lines.append("")
         lines.append(f"<i>{v['verdict_note']}</i>")
+    if v["still_valid"] == "NO" and v["current_bias"] in ("LONG", "SHORT") and v["current_bias"] != v["proposed_direction"]:
+        lines.append("")
+        lines.append(
+            f"If you're asking me instead: I'd lean <b>{v['current_bias'].title()}</b> here.\n"
+            f"Entry: <code>${v['price']:,.6g}</code>\n"
+            f"Stop loss: <code>{v['sl']}</code>\n"
+            f"Targets: <code>{v['tp1']}</code> / <code>{v['tp2']}</code>\n"
+            f"Confidence: <b>{v['confidence']}</b>"
+        )
     lines.append("")
     lines.append("<i>Educational only, not financial advice.</i>")
     return "\n".join(lines)
