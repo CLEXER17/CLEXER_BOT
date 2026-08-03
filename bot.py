@@ -2323,12 +2323,17 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") 
             return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
-def _handle_chat_message(cid, text: str):
+def _handle_chat_message(cid, text: str, sender_id=None):
     sess = _chat_sessions.get(str(cid))
     if not sess:
         return
     sess["last"] = time.time()
-    _is_admin_cid = bool(ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID))
+    # Admin-only features (PECHI, gateway switching, personal-assistant context)
+    # must key off WHO actually sent this message, not which chat it landed in —
+    # in a group, cid is the group's own id, never ADMIN_CHAT_ID, even when the
+    # admin is the one replying. sender_id (falls back to cid for old callers)
+    # is the real Telegram user id, correct in both private chats and groups.
+    _is_admin_cid = bool(ADMIN_CHAT_ID and str(sender_id if sender_id is not None else cid) == str(ADMIN_CHAT_ID))
     # In-session gateway switch (admin-only, 2026-08-03 request) — typing
     # "switch direct" or "switch free" changes this ONE session's Claude
     # gateway (Direct vs Aerolink's free-tier keys) without touching the
@@ -14196,7 +14201,7 @@ def command_listener():
                     _reply_to = msg.get("reply_to_message") or {}
                     _is_reply_to_bot = bool(_reply_to.get("from", {}).get("is_bot"))
                     if _is_admin_chat or _is_forward or _is_reply_to_bot:
-                        _handle_chat_message(cid, text)
+                        _handle_chat_message(cid, text, sender_id=sender_uid)
         except Exception as e:
             print(f"  [CMD] {e}")
             # Previously silent to the admin — a crash here (e.g. mid-callback,
