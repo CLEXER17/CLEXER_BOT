@@ -246,6 +246,10 @@ bot_stopped           = threading.Event()  # STOP: blocks new scans only, monito
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
+CHAT_USE_AEROLINK      = False  # /chat's OWN gateway for Claude models — decoupled from USE_AEROLINK above,
+# switch via /chatmodel's toggle or in-session by typing "switch direct"/"switch free" (admin only, that
+# session only — see _CHAT_GATEWAY_SWITCH_CMDS). Non-Claude catalog models always force Aerolink regardless
+# (Direct can't serve them at all — see _is_claude_model), so this only actually matters for claude-* picks.
 _AEROLINK_OPUS5_UNSUPPORTED = False  # Confirmed 2026-07-28: Lumosel (now behind the Aerolink gateway) supports Opus 5 — tag now follows whatever /aiconfig actually has set, no more silent downgrade to 4.8.
 FORCE_DIRECT48_NORMAL_UNVERIFIED = False  # /directnu on|off — forces Scan1+Scan2's "nonspecial" (regular hourly grid)
                                            # and "unverified" tiers onto Direct gateway + claude-opus-4-8, overriding
@@ -2130,6 +2134,9 @@ def _admin_chat_context() -> str:
         "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it\n"
         "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any newer catalog model\n"
         "- /chat's own AI model (text + image, separately): /chatmodel\n"
+        "- /chat's own gateway (Direct vs Aerolink, Claude models only): the Direct/Aerolink "
+        "buttons at the top of /chatmodel, or say \"switch direct\" / \"switch free\" inside an "
+        "active chat session to override it for just that session\n"
         "- Free-channel share %: the Free-Limit setting under Broadcast & Channels\n"
         "- Switch active server (multi-server rotation): /server <name>\n"
         "- Force-push all local state to the shared store before migrating servers: /syncup\n"
@@ -2156,20 +2163,31 @@ def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
 def _is_claude_model(model_id: str) -> bool:
     return model_id.startswith("claude-")
 
-def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "") -> str:
+def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "", gateway_override: str = None) -> str:
     """Same conversation history format as Gemini (role 'user'/'model', one
     text part each) — translated to Claude's 'user'/'assistant' shape so
     /model can swap engines without touching how history is stored.
 
-    Non-Claude catalog models (GPT/GLM/Kimi) always force Aerolink regardless
-    of the admin's Direct/Aerolink toggle — Anthropic's own Direct API has no
-    knowledge of those model names and would just error out — and skip the
-    Claude-only thinking/output_config params, which other providers proxied
-    through Aerolink aren't confirmed to understand."""
+    Non-Claude catalog models (GPT/GLM/Kimi) always use Aerolink regardless of
+    any gateway setting — Anthropic's own Direct API has no knowledge of those
+    model names and would just error out — and skip the Claude-only
+    thinking/output_config params, which other providers proxied through
+    Aerolink aren't confirmed to understand.
+
+    gateway_override: "direct" or "aerolink" from the current session's
+    in-chat "switch direct"/"switch free" command (see
+    _CHAT_GATEWAY_SWITCH_CMDS); None falls back to the CHAT_USE_AEROLINK
+    global default. Only matters for genuine claude-* models — see above."""
     messages = [{"role": "assistant" if h["role"] == "model" else "user",
                  "content": h["parts"][0]["text"]} for h in history]
     _is_claude = _is_claude_model(model_id)
-    client = _claude_client("chat", force_aerolink=not _is_claude)
+    if not _is_claude:
+        _want_aero = True
+    elif gateway_override is not None:
+        _want_aero = gateway_override == "aerolink"
+    else:
+        _want_aero = CHAT_USE_AEROLINK
+    client = _claude_client("chat", use_aerolink=_want_aero)
     _kwargs = dict(model=model_id, max_tokens=2000,
                    system=_CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else ""),
                    messages=messages)
@@ -2255,11 +2273,30 @@ def _chat_generate_image_aerolink(prompt: str, model_id: str):
                 pass
     raise Exception("No image data found in Aerolink response — unexpected format for this model")
 
+_CHAT_GATEWAY_SWITCH_CMDS = {
+    "switch direct": "direct", "switch to direct": "direct",
+    "switch free": "aerolink", "switch to free": "aerolink",
+}
+
 def _handle_chat_message(cid, text: str):
     sess = _chat_sessions.get(str(cid))
     if not sess:
         return
     sess["last"] = time.time()
+    # In-session gateway switch (admin-only, 2026-08-03 request) — typing
+    # "switch direct" or "switch free" changes this ONE session's Claude
+    # gateway (Direct vs Aerolink's free-tier keys) without touching the
+    # global CHAT_USE_AEROLINK default or the scan engine's own USE_AEROLINK.
+    # Intercepted here, before any AI call, so it never gets sent as a real
+    # chat message — resets automatically on /endchat or session timeout
+    # since it's just a key in this session's own dict, not persisted.
+    _norm_cmd = text.strip().lower().strip("[]").strip()
+    if ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID) and _norm_cmd in _CHAT_GATEWAY_SWITCH_CMDS:
+        sess["gateway"] = _CHAT_GATEWAY_SWITCH_CMDS[_norm_cmd]
+        _gw_label = "Direct" if sess["gateway"] == "direct" else "Aerolink (free)"
+        send_reply(cid, f"✅ Gateway switched to <b>{_gw_label}</b> for this chat session.\n"
+                         f"<i>(Only affects Claude-model replies — non-Claude models always use Aerolink regardless.)</i>")
+        return
     _is_image = _chat_is_image_request(text)
     if not _is_image and CHAT_MODEL == "google" and not GEMINI_API_KEY:
         send_reply(cid, "⚠️ Chat AI isn't configured yet — admin needs to set GEMINI_API_KEY.")
@@ -2293,7 +2330,8 @@ def _handle_chat_message(cid, text: str):
             # injected for a regular user's session.
             _extra_ctx = _admin_chat_context() if (ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) else ""
             if _active_model != "google":
-                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx)
+                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                     gateway_override=sess.get("gateway"))
             else:
                 reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
@@ -3319,22 +3357,30 @@ def send_chatmodel_screen(chat_id, message_id=None):
     if _row:
         _img_rows.append(_row)
 
-    rows = _text_rows + _img_rows
+    _gw_row = [[
+        {"text": ("✅ " if not CHAT_USE_AEROLINK else "") + "🎯 Direct", "callback_data": "chatgw:direct"},
+        {"text": ("✅ " if CHAT_USE_AEROLINK else "") + "🆓 Aerolink (free)", "callback_data": "chatgw:aerolink"},
+    ]]
+    rows = _gw_row + _text_rows + _img_rows
     rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
     _text_label = ("🤖 Auto (smart routing)" if CHAT_MODEL == "auto" else
                    "🟢 Google (Gemini)" if CHAT_MODEL == "google" else
                    _AEROLINK_MODEL_CATALOG.get(CHAT_MODEL, {}).get("label", CHAT_MODEL))
     _img_label = "🆓 Pollinations" if CHAT_IMAGE_MODEL == "pollinations" else _AEROLINK_MODEL_CATALOG.get(CHAT_IMAGE_MODEL, {}).get("label", CHAT_IMAGE_MODEL)
+    _gw_label = "Aerolink (free)" if CHAT_USE_AEROLINK else "Direct"
     _help_edit_or_send(chat_id,
         f"💬 <b>/chat AI Engines</b>\n\n"
+        f"Gateway: <b>{_gw_label}</b> <i>(Claude models only)</i>\n"
         f"Text: <b>{_text_label}</b>\nImage: <b>{_img_label}</b>\n\n"
-        f"<blockquote>Global switch — every user's /chat uses whichever engines are picked here.\n\n"
+        f"<blockquote>Global switch — every user's /chat uses whichever engines/gateway are picked here. "
+        f"You (admin) can also say \"switch direct\" or \"switch free\" inside an active chat session to "
+        f"override the gateway for JUST that session, without changing this default.\n\n"
         f"⚠️ Non-Claude/non-Google text models and the Aerolink image models aren't verified working on "
         f"this account yet — test after switching, they'll silently fall back if something breaks "
         f"(image) or just error out (text).</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
-def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None, force_aerolink: bool = False):
+def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None, force_aerolink: bool = False, use_aerolink: bool = None):
     """Returns an Anthropic client for the given scan type (btc/scan1/scan2/test).
     When that type's gateway is Aerolink, uses ONLY the Aerolink key slots +
     AEROLINK_BASE_URL — the real ANTHROPIC_API_KEY is never touched or sent to the gateway.
@@ -3345,11 +3391,17 @@ def _claude_client(kind: str = "btc", attempt: int = 0, scan_ver: int = None, fo
     until keys are added later.
 
     force_aerolink: bypasses the normal kind-based gateway check (USE_AEROLINK for
-    "chat"/"btc") entirely — used when the caller already knows the target model is
+    "btc"/scan kinds) entirely — used when the caller already knows the target model is
     non-Claude (GPT/GLM/Kimi/Gemini-image from _AEROLINK_MODEL_CATALOG), since
     Anthropic's own Direct API has no knowledge of those model names at all and
-    would just error out regardless of the admin's Direct/Aerolink toggle."""
-    if (force_aerolink or _ai_aerolink(kind, scan_ver)) and AEROLINK_API_KEY:
+    would just error out regardless of any gateway toggle.
+
+    use_aerolink: explicit True/False override that takes ABSOLUTE precedence over both
+    force_aerolink and the kind-based _ai_aerolink() check — used by /chat's own
+    independent gateway (CHAT_USE_AEROLINK / per-session "switch direct"/"switch free"),
+    which is fully decoupled from the trading engine's USE_AEROLINK toggle."""
+    _want_aero = use_aerolink if use_aerolink is not None else (force_aerolink or _ai_aerolink(kind, scan_ver))
+    if _want_aero and AEROLINK_API_KEY:
         _keys = _aerolink_configured_keys()
         if not _keys:
             # Every configured key is paused — rather than silently ignoring
@@ -5137,7 +5189,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -5182,6 +5234,7 @@ def load_settings():
             VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
             CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
             CHAT_IMAGE_MODEL = d.get("chat_image_model", CHAT_IMAGE_MODEL)
+            CHAT_USE_AEROLINK = d.get("chat_use_aerolink", CHAT_USE_AEROLINK)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
@@ -5238,6 +5291,7 @@ def save_settings():
             "vip_monthly_price": VIP_MONTHLY_PRICE,
             "chat_model": CHAT_MODEL,
             "chat_image_model": CHAT_IMAGE_MODEL,
+            "chat_use_aerolink": CHAT_USE_AEROLINK,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
@@ -8006,7 +8060,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, STATS_VISIBLE_TO_USERS
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -13577,7 +13631,7 @@ def command_listener():
                                   "reply_markup": _style_keyboard(_model_mkp)}, timeout=10)
 
                     elif cb_data.startswith("chatmodel:") and cb_is_admin:
-                        global CHAT_MODEL, CHAT_IMAGE_MODEL
+                        global CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK
                         _cmarg = cb_data.split(":", 1)[1]
                         if _cmarg in ("google", "auto") or (_cmarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_cmarg]["kind"] == "text"):
                             CHAT_MODEL = _cmarg; save_settings()
@@ -13587,6 +13641,12 @@ def command_listener():
                         _ciarg = cb_data.split(":", 1)[1]
                         if _ciarg == "pollinations" or (_ciarg in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_ciarg]["kind"] == "image"):
                             CHAT_IMAGE_MODEL = _ciarg; save_settings()
+                        send_chatmodel_screen(cb_chat_id, message_id=cb_msg_id)
+
+                    elif cb_data.startswith("chatgw:") and cb_is_admin:
+                        _cgarg = cb_data.split(":", 1)[1]
+                        if _cgarg in ("direct", "aerolink"):
+                            CHAT_USE_AEROLINK = (_cgarg == "aerolink"); save_settings()
                         send_chatmodel_screen(cb_chat_id, message_id=cb_msg_id)
 
                     elif cb_data.startswith("directnu:") and cb_is_admin:
