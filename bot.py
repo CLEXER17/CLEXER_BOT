@@ -1816,6 +1816,42 @@ def _server_rotation_loop():
         except Exception as e:
             print(f"[SERVER ROTATION] error: {e}")
         time.sleep(6 * 3600)
+
+# ═════════════════════ TEMPORARY — admin asked to delete this whole block ═════
+# (this function + its threading.Thread(...).start() call in main()) once past
+# 2026-08-05. One-off request (2026-08-03), separate from the permanent
+# _server_rotation_loop above: reminds daily (starting 4 days after this
+# deploys) to add a new server, stops reminding once one is detected via the
+# same _find_new_server() registry check, and force-switches to it on the
+# fixed date below regardless of whether the 4-day reminder delay has
+# elapsed — the date-switch doesn't depend on the reminder having fired.
+_TEMP_SWITCH_DATE = "2026-08-05"   # IST calendar date
+_temp_reminder_deployed_at = time.time()
+_temp_reminder_last_date = ""
+
+def _temp_server_reminder_loop():
+    global _temp_reminder_last_date
+    while True:
+        try:
+            if is_active_server() and CLEXER_API_URL:
+                info = _get_active_server_info()
+                new_name = _find_new_server(info["since"])
+                today = _ist_date_str()
+                if today >= _TEMP_SWITCH_DATE and new_name:
+                    old_name = SERVER_NAME
+                    set_active_server(new_name)
+                    send_admin(f"🔄 <b>Server Switched (scheduled)</b>\n\n{old_name} → {new_name}\n"
+                               f"Auto-switched on {_TEMP_SWITCH_DATE} as scheduled.")
+                elif not new_name and (time.time() - _temp_reminder_deployed_at) >= 4 * 86400 \
+                        and _temp_reminder_last_date != today:
+                    _temp_reminder_last_date = today
+                    send_admin(f"🖥️ <b>Reminder</b>: please add a new server soon — this is temporary "
+                               f"and will auto-switch on {_TEMP_SWITCH_DATE} once a new server is detected.")
+        except Exception as e:
+            print(f"[TEMP SERVER REMINDER] error: {e}")
+        time.sleep(24 * 3600)
+# ═════════════════════ END TEMPORARY BLOCK ════════════════════════════════════
+
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
@@ -14834,6 +14870,7 @@ def main():
             time.sleep(15)
     threading.Thread(target=_active_server_loop, daemon=True).start()
     threading.Thread(target=_server_rotation_loop, daemon=True).start()
+    threading.Thread(target=_temp_server_reminder_loop, daemon=True).start()  # TEMPORARY — delete after 2026-08-05, see block above
 
     def _wait_then_poll():
         """Telegram only allows ONE process to poll getUpdates for a given bot
