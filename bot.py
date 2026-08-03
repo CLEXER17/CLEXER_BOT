@@ -2292,18 +2292,31 @@ _CHAT_GATEWAY_SWITCH_CMDS = {
     "switch free": "aerolink", "switch to free": "aerolink",
 }
 
+def _strip_trigger_word(text: str, word: str):
+    """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
+    starting with `word` (any case, optionally followed by a space/colon/
+    comma/dash) has that prefix stripped. Returns (rest_of_message, True) if
+    detected, else (original_text, False)."""
+    _stripped = text.lstrip()
+    _lower = _stripped.lower()
+    if _lower == word or any(_lower.startswith(f"{word}{sep}") for sep in (" ", ":", ",", "-")):
+        return _stripped[len(word):].lstrip(" :,-").strip(), True
+    return text, False
+
 def _pechi_strip(text: str):
     """PECHI trigger (admin-only, 2026-08-03 request): a message prefixed
     with "pechi" (any case, e.g. "Pechi generate a image of cow") always
     gets the best model for THAT message and tries the free Aerolink
-    gateway first, falling back automatically on any failure — see
-    _chat_pechi_text_reply. Returns (message_with_prefix_removed, True) if
-    detected, else (original_text, False)."""
-    _stripped = text.lstrip()
-    _lower = _stripped.lower()
-    if _lower == "pechi" or any(_lower.startswith(f"pechi{sep}") for sep in (" ", ":", ",", "-")):
-        return _stripped[len("pechi"):].lstrip(" :,-").strip(), True
-    return text, False
+    gateway first, falling back to Direct/Google automatically on any
+    failure — see _chat_pechi_text_reply. Returns (message_with_prefix_
+    removed, True) if detected, else (original_text, False)."""
+    return _strip_trigger_word(text, "pechi")
+
+def _boki_strip(text: str):
+    """BOKI trigger (admin-only, 2026-08-04 request): same standalone
+    pattern as PECHI, but NEVER falls back to the paid Direct API — only
+    ever uses free options (Aerolink or Google). See _chat_boki_text_reply."""
+    return _strip_trigger_word(text, "boki")
 
 def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") -> str:
     """Best-model-for-this-message, free-first-then-fallback text reply for
@@ -2323,15 +2336,27 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") 
             return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
-def _handle_pechi_standalone(cid, message: str):
-    """PECHI works on its own, without ever running /chat first (admin
-    request 2026-08-03) — no session, no history kept, just a single
-    question -> single answer. Called directly from the command listener
-    whenever an admin message starts with "pechi", regardless of whether a
-    /chat session exists or this is a private chat vs a group. Reuses the
-    same best-model/free-first-then-fallback logic as the in-session
-    version, just with a throwaway one-message "history" instead of a
-    real session's."""
+def _chat_boki_text_reply(history: list, message: str, extra_system: str = "") -> str:
+    """BOKI trigger (admin-only, standalone, 2026-08-04): same best-model
+    classification as PECHI, but ONLY ever uses free options (Aerolink or
+    Google Gemini) — never falls back to the paid Direct/Anthropic API,
+    even if the free Aerolink attempt fails. On failure it falls to Google
+    instead (still free, not Direct), rather than paying for a Direct call."""
+    _model = _chat_classify_model(message)
+    if _model == "google":
+        return _chat_call_gemini_text(history, extra_system=extra_system)
+    try:
+        return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
+    except Exception as e:
+        print(f"  [BOKI] free (Aerolink) attempt with {_model} failed ({e}) — falling back to Google (still free, never Direct)")
+        return _chat_call_gemini_text(history, extra_system=extra_system)
+
+def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str):
+    """Shared standalone (no /chat session) handler for PECHI/BOKI-style
+    trigger words — image path is identical for both (best image model
+    first, Pollinations fallback; Direct/Anthropic has no image generation
+    at all, so there's nothing gateway-specific to differ there). Only the
+    text-reply function differs between triggers (see text_reply_fn)."""
     _is_image = _chat_is_image_request(message)
     try:
         if _is_image:
@@ -2340,7 +2365,7 @@ def _handle_pechi_standalone(cid, message: str):
                 try:
                     reply_text, img_bytes = _chat_generate_image_aerolink(message, CHAT_IMAGE_MODEL)
                 except Exception as _aie:
-                    print(f"  [PECHI IMAGE] Aerolink model {CHAT_IMAGE_MODEL} failed ({_aie}) — falling back to Pollinations")
+                    print(f"  [{tag} IMAGE] Aerolink model {CHAT_IMAGE_MODEL} failed ({_aie}) — falling back to Pollinations")
                     reply_text, img_bytes = _chat_generate_image(message)
             else:
                 reply_text, img_bytes = _chat_generate_image(message)
@@ -2352,11 +2377,27 @@ def _handle_pechi_standalone(cid, message: str):
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.")
         else:
             _history = [{"role": "user", "parts": [{"text": message}]}]
-            reply_text = _chat_pechi_text_reply(_history, message, extra_system=_admin_chat_context())
+            reply_text = text_reply_fn(_history, message, extra_system=_admin_chat_context())
             send_reply(cid, reply_text)
     except Exception as e:
-        print(f"  [PECHI] {cid}: {e}")
-        send_reply(cid, "⚠️ Pechi had an error — try again.")
+        print(f"  [{tag}] {cid}: {e}")
+        send_reply(cid, f"⚠️ {tag.title()} had an error — try again.")
+
+def _handle_pechi_standalone(cid, message: str):
+    """PECHI works on its own, without ever running /chat first (admin
+    request 2026-08-03) — no session, no history kept, just a single
+    question -> single answer. Called directly from the command listener
+    whenever an admin message starts with "pechi", regardless of whether a
+    /chat session exists or this is a private chat vs a group. Best model
+    for the message, free (Aerolink) first, falls back to Direct/Google on
+    failure — see _chat_pechi_text_reply."""
+    _handle_standalone_trigger(cid, message, _chat_pechi_text_reply, "PECHI")
+
+def _handle_boki_standalone(cid, message: str):
+    """BOKI (admin-only, standalone, 2026-08-04): same standalone pattern as
+    PECHI, but NEVER uses the paid Direct/Anthropic API, even on failure —
+    only Aerolink or Google, both free. See _chat_boki_text_reply."""
+    _handle_standalone_trigger(cid, message, _chat_boki_text_reply, "BOKI")
 
 def _handle_chat_message(cid, text: str, sender_id=None):
     sess = _chat_sessions.get(str(cid))
@@ -14220,6 +14261,13 @@ def command_listener():
                         send_reply(cid, "🐾 Pechi's listening — ask me something after \"pechi\".")
                     else:
                         _handle_pechi_standalone(cid, _pechi_msg)
+                elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _boki_strip(text or "")[1]:
+                    # BOKI — same standalone pattern as PECHI, but free-only (never Direct).
+                    _boki_msg, _ = _boki_strip(text)
+                    if not _boki_msg:
+                        send_reply(cid, "🆓 Boki's listening (free-only) — ask me something after \"boki\".")
+                    else:
+                        _handle_boki_standalone(cid, _boki_msg)
                 elif (((ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) or is_co_admin(cid))
                         and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,14}", text or "")):
                     # Bare coin-name typing (e.g. just "eth") — /coin's own help
