@@ -2173,17 +2173,14 @@ def _admin_chat_context() -> str:
         "- AI Gateway (Direct vs Aerolink): /gateway direct | /gateway aerolink, or the "
         "'AI Gateway' button under Scan Control -> TV & Advanced\n"
         "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it, or "
-        "just tell PECHI/BOKI directly (e.g. \"unpause key2 and key3\") and it executes it live\n\n"
-        "IMPORTANT — you are NOT the thing that executes key pause/unpause actions. A separate "
-        "dedicated system checks every message for that BEFORE you are ever asked to reply, and "
-        "already ran (and either did the action, or decided this message isn't one) by the time "
-        "you're generating this response. So if the admin's message looks like a pause/unpause/"
-        "enable/disable-a-key request and you're the one answering it, that means it was NOT "
-        "recognized and NOTHING was changed — never say \"Done\", \"Unpaused\", or state new "
-        "active/paused counts as if you performed it, since that would be reporting a fake result "
-        "for a real control action. Instead say plainly that it wasn't recognized and ask them to "
-        "rephrase (e.g. \"pause key 4\" / \"unpause key 4\"), or point them to /aerolinkkeys to do "
-        "it with a button tap.\n"
+        "just tell PECHI/BOKI directly (e.g. \"unpause key2 and key3\") and it executes it live\n"
+        "- PECHI/BOKI can execute most other live settings directly too, the same way: scan "
+        "on/off & manual run, gateway + model picks (scan and /chat separately), the /aiconfig "
+        "grid (e.g. \"use aerolink opus5 for scan1 verified\"), channel pause/resume, free-channel "
+        "%, server switch, /syncup, trailing SL, win-rate targets, entry style, weekend sleep, "
+        "stats access, TP1 size, VIP price, and pausing/stopping/resuming the whole bot. Trade-"
+        "affecting actions (closing a trade, editing SL/TP, broadcasts, VIP/Free grants) still "
+        "need the real command or button -- those aren't auto-executed.\n"
         "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any of the text models "
         "listed under FULL MODEL CATALOG below\n"
         "- /chat's own AI model (text + image, separately): /chatmodel -- pick from Google "
@@ -2197,6 +2194,17 @@ def _admin_chat_context() -> str:
         "- Trade Control (close a coin, move SL to breakeven, set custom SL/TP): main menu "
         "-> 🛠 Trade Control\n"
         "- Copy Admin / user management, VIP-Free tier control: main menu -> Copy Admin\n\n"
+        "IMPORTANT — you are NOT the thing that executes any of the live actions described above. "
+        "A separate dedicated system checks every message for that BEFORE you are ever asked to "
+        "reply, and has already run (and either performed the action, or decided this message "
+        "isn't a clear enough match) by the time you're generating this response. So if the "
+        "admin's message looks like a request to change a live setting or trigger a live action "
+        "and you're the one answering it, that means it was NOT recognized and NOTHING was "
+        "changed — never say \"Done\", state a new value/count, or otherwise claim to have "
+        "performed a live control action, since that would be reporting a fake result for a real "
+        "action. Instead say plainly that it wasn't recognized clearly enough and ask them to "
+        "rephrase it more explicitly (name the exact setting and the exact value), or point them "
+        "to the matching command/button above to do it directly.\n\n"
         "FULL MODEL CATALOG (every model the bot currently supports via Aerolink, besides "
         "Google Gemini which is separate/free) — when asked \"which models do you support,\" "
         "list ALL of these by name, don't just say \"and other models\":\n"
@@ -2423,73 +2431,445 @@ def _chat_classify_trade_intent(own_message: str, reply_context: str):
         print(f"  [CHAT TRADE] classify failed: {e}")
         return False, None, None
 
-def _chat_classify_key_action(own_message: str, reply_context: str):
-    """Detects an Aerolink key pause/unpause CONTROL request via natural
-    language (admin request 2026-08-04, e.g. "Boki unpause the aerolink
-    key2 and key3") and extracts which keys + which action. Deliberately
-    scoped to just this one well-bounded, easily-reversible action (same
-    PAUSED_AEROLINK_KEYS set /aerolinkkeys itself uses) rather than a
-    general-purpose "let the AI do anything to the bot" system. Returns
-    (is_key_action: bool, action: "pause"|"unpause"|None, keys: [int, ...])."""
-    _prompt = (
-        "Read the message(s) below and decide if the user is asking to PAUSE or UNPAUSE "
-        "one or more specific numbered Aerolink API key slots (slots are numbered 1-20).\n\n"
-        f'Replied-to message (context, may be empty): "{reply_context}"\n'
-        f'User\'s actual message: "{own_message}"\n\n'
-        'Reply with ONLY this exact JSON, nothing else:\n'
-        '{"is_key_action": true or false, "action": "pause" or "unpause" or null, "keys": [2, 3]}\n\n'
-        "Rules:\n"
-        "- is_key_action is true ONLY for an explicit request to pause/unpause/enable/disable "
-        "one or more numbered Aerolink key slots — not a general question about keys.\n"
-        '- keys is the list of integer slot numbers mentioned (e.g. "key2 and key3" -> [2, 3]).\n'
-        "- If unclear, or no specific slot numbers are given, is_key_action must be false."
-    )
-    try:
-        client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=80,
-                                       messages=[{"role": "user", "content": _prompt}])
-        _raw = _claude_text(resp) or ""
-        _m = re.search(r'\{.*\}', _raw, re.DOTALL)
-        d = json.loads(_m.group()) if _m else {}
-        if not d.get("is_key_action"):
-            return False, None, []
-        _action = d.get("action")
-        _keys = [int(k) for k in (d.get("keys") or []) if str(k).strip().lstrip("-").isdigit()]
-        return bool(_action and _keys), _action, _keys
-    except Exception as e:
-        print(f"  [CHAT KEY ACTION] classify failed: {e}")
-        return False, None, []
+def _boki_run(cid, sender_id, command_text: str):
+    """Runs a REAL bot command exactly as if the admin had typed it — same
+    validation, same save_settings(), same confirmation reply already built
+    into that command's own handler. This is the reuse trick behind almost
+    every action in _ADMIN_ACTIONS below: there is no duplicate settings
+    logic here to drift out of sync with the real command over time — the
+    callback dispatcher itself already leans on this same trick for a
+    couple of buttons (e.g. directnu:, gateway:). sender_id must be the
+    REAL admin Telegram user id (not the chat id) so this still passes
+    handle_command's admin check when used from inside a group."""
+    handle_command(command_text, cid, {}, sender_id=sender_id)
 
-def _chat_try_key_action(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
-    """Admin-only: lets PECHI/BOKI actually pause/unpause specific Aerolink
-    key slots via natural language ("unpause key2 and key3"), instead of
-    only being able to talk about /aerolinkkeys. Executes directly against
-    the same PAUSED_AEROLINK_KEYS set the /aerolinkkeys screen uses, then
-    persists and confirms exactly what changed. Returns True if it handled
-    the message (caller should not also generate a normal chat reply)."""
-    if not is_admin:
-        return False
-    is_action, action, keys = _chat_classify_key_action(own_message, reply_context)
-    if not is_action:
-        return False
+def _boki_onoff(word: str):
+    w = (word or "").strip().lower()
+    if w in ("on", "true", "yes", "enable", "enabled"): return "on"
+    if w in ("off", "false", "no", "disable", "disabled"): return "off"
+    return None
+
+def _boki_norm_scankind(word: str):
+    """Maps loose scan-type words to the canonical key used across the
+    grid-style settings below (scan1/scan2/test1/test2/btc) — TS1/TS2 and
+    demo1/demo2 are the SAME slots under two different naming conventions
+    used in different corners of this bot (AICFG_GRID vs win-rate
+    thresholds), so both are accepted here."""
+    return {
+        "scan1": "scan1", "s1": "scan1",
+        "scan2": "scan2", "s2": "scan2",
+        "ts1": "test1", "test1": "test1", "demo1": "test1",
+        "ts2": "test2", "test2": "test2", "demo2": "test2",
+        "btc": "btc",
+    }.get((word or "").strip().lower())
+
+def _boki_norm_tier(word: str):
+    return {"verified": "verified", "unverified": "unverified",
+            "nonspecial": "nonspecial", "normal": "nonspecial"}.get((word or "").strip().lower())
+
+def _boki_norm_model_registry(word: str):
+    """Maps a loose model word to an actual MODEL_REGISTRY key — the small
+    admin-curated list /aiconfig's grid actually offers (default: Opus 5,
+    Fable 5, Opus 4.8, plus anything added via /addmodel), NOT the larger
+    _AEROLINK_MODEL_CATALOG used by /model and /chatmodel. Never trusts a
+    value it can't map to something real — returns None rather than
+    guessing, same principle as _bingx_symbol_for_base for coins."""
+    w = (word or "").strip().lower()
+    if not w:
+        return None
+    for mid in MODEL_REGISTRY:
+        if w == mid.lower():
+            return mid
+    for mid, tag in MODEL_REGISTRY.items():
+        if w == tag.lower() or w == f"opus{tag}".lower():
+            return mid
+    _aliases = {"opus": "claude-opus-5", "opus5": "claude-opus-5",
+                "fable": "claude-fable-5", "fable5": "claude-fable-5",
+                "4.8": "claude-opus-4-8", "48": "claude-opus-4-8", "4-8": "claude-opus-4-8"}
+    _mid = _aliases.get(w)
+    return _mid if _mid in MODEL_REGISTRY else None
+
+# ── Executors ────────────────────────────────────────────────────────────
+# Each takes (cid, sender_id, value) and either performs the real action
+# and returns None (it already sent its own confirmation), or returns a
+# short clarifying question STRING when the value couldn't be understood
+# confidently — never a guess (admin request 2026-08-04: "if anything new
+# or unable to understand ask admin").
+
+def _boki_exec_scan1_auto(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Should Scan1 auto-scan be ON or OFF?"
+    _boki_run(cid, sender_id, f"/scantoggle scan1{v}"); return None
+
+def _boki_exec_scan2_auto(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Should Scan2 auto-scan be ON or OFF?"
+    _boki_run(cid, sender_id, f"/scantoggle scan2{v}"); return None
+
+def _boki_exec_test_scan(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Should the TS1/TS2 demo-trade auto scan be ON or OFF?"
+    _boki_run(cid, sender_id, f"/scantoggle {'teston' if v == 'on' else 'testoff'}"); return None
+
+def _boki_exec_run_scan(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    _map = {"scan1": "/scan1", "s1": "/scan1", "1": "/scan1",
+            "scan2": "/scan2", "s2": "/scan2", "2": "/scan2",
+            "both": "/scan", "all": "/scan"}
+    if v not in _map: return "Run Scan1, Scan2, or both right now?"
+    _boki_run(cid, sender_id, _map[v]); return None
+
+def _boki_exec_gateway(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    gw = "aerolink" if v.startswith("aero") else ("direct" if v.startswith("dir") else None)
+    if gw is None: return "Direct or Aerolink for the main scan gateway?"
+    _boki_run(cid, sender_id, f"/gateway {gw}"); return None
+
+def _boki_exec_scan_model(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    if v in ("opus", "4.8", "4-8", "fable", "fable5", "5") or \
+       (v in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[v]["kind"] == "text"):
+        _boki_run(cid, sender_id, f"/model {v}"); return None
+    return ("Which model for scan analysis — \"opus\" (Opus 5), \"fable\" (Fable 5), or one of: " +
+            ", ".join(m for m, i in _AEROLINK_MODEL_CATALOG.items() if i["kind"] == "text") + "?")
+
+def _boki_exec_chat_gateway(cid, sender_id, value):
+    global CHAT_USE_AEROLINK
+    v = (value or "").strip().lower()
+    if v.startswith("aero"): gw = True
+    elif v.startswith("dir"): gw = False
+    else: return "Direct or Aerolink for /chat's own gateway?"
+    CHAT_USE_AEROLINK = gw; save_settings()
+    send_reply(cid, f"✅ <b>/chat gateway</b> → {'Aerolink (free)' if gw else 'Direct'}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_chat_model(cid, sender_id, value):
+    global CHAT_MODEL
+    v = (value or "").strip().lower()
+    if v in ("google", "auto") or (v in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[v]["kind"] == "text"):
+        CHAT_MODEL = v; save_settings()
+    else:
+        return ("Which /chat model — \"google\", \"auto\", or one of: " +
+                 ", ".join(m for m, i in _AEROLINK_MODEL_CATALOG.items() if i["kind"] == "text") + "?")
+    _label = {"google": "Google Gemini", "auto": "Auto (smart routing)"}.get(CHAT_MODEL) or _AEROLINK_MODEL_CATALOG[CHAT_MODEL]["label"]
+    send_reply(cid, f"✅ <b>/chat model</b> → {_label}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_chat_image_model(cid, sender_id, value):
+    global CHAT_IMAGE_MODEL
+    v = (value or "").strip().lower()
+    if v == "pollinations" or (v in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[v]["kind"] == "image"):
+        CHAT_IMAGE_MODEL = v; save_settings()
+    else:
+        return ("Which /chat image model — \"pollinations\" (free) or one of: " +
+                 ", ".join(m for m, i in _AEROLINK_MODEL_CATALOG.items() if i["kind"] == "image") + "?")
+    _label = "Pollinations (free)" if CHAT_IMAGE_MODEL == "pollinations" else _AEROLINK_MODEL_CATALOG[CHAT_IMAGE_MODEL]["label"]
+    send_reply(cid, f"✅ <b>/chat image model</b> → {_label}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_aicfg_grid(cid, sender_id, value):
+    global SCAN_MODEL, USE_AEROLINK
+    parts = (value or "").split()
+    if len(parts) < 4:
+        return "Tell me all four: scan type, tier, gateway, and model — e.g. \"scan1 verified aerolink opus5\"."
+    kind = _boki_norm_scankind(parts[0])
+    if kind is None: return "Which scan type — Scan1, Scan2, TS1, TS2, or BTC?"
+    tier = _boki_norm_tier(parts[1])
+    if kind != "btc" and tier is None: return "Which tier — Verified, Unverified, or Nonspecial?"
+    tier = tier or "verified"
+    gw = "aerolink" if parts[2].lower().startswith("aero") else ("direct" if parts[2].lower().startswith("dir") else None)
+    if gw is None: return "Direct or Aerolink gateway?"
+    model_id = _boki_norm_model_registry(parts[3])
+    if model_id is None:
+        return f"Which model? Available in /aiconfig's grid: {', '.join(MODEL_REGISTRY.keys())}."
+    if kind == "btc":
+        SCAN_MODEL = model_id; USE_AEROLINK = (gw == "aerolink")
+    else:
+        AICFG_GRID[kind][tier]["model"] = model_id
+        AICFG_GRID[kind][tier]["aerolink"] = (gw == "aerolink")
+    save_settings()
+    _klabel = "₿ BTC" if kind == "btc" else _AICFG_KIND_LABELS.get(kind, kind)
+    _tlabel = "" if kind == "btc" else f" · {_AICFG_TIER_LABELS.get(tier, tier)}"
+    _tag = MODEL_REGISTRY.get(model_id, model_id)
+    send_reply(cid, f"✅ <b>{_klabel}{_tlabel}</b> set to <b>{'Aerolink' if gw == 'aerolink' else 'Direct'} · {_tag}</b>.",
+               skip_smallcaps=True)
+    return None
+
+def _boki_channel_list_hint():
+    _opts = ["\"sig\" (main Signal Channel)"]
+    if TELEGRAM_CHANNEL_ID_2:
+        _opts.append("\"ch2\" (VIP Mirror)")
+    for i, c in enumerate(CHANNELS):
+        _opts.append(f"#{i} ({c.get('label') or c.get('id', '?')})")
+    return "Which channel — " + ", ".join(_opts) + " — and pause or resume?"
+
+def _boki_exec_channel_pause(cid, sender_id, value):
+    parts = (value or "").split()
+    if len(parts) < 2:
+        return _boki_channel_list_hint()
+    target, action = parts[0].lower(), parts[1].lower()
+    if action not in ("pause", "resume"):
+        return "Pause or resume — which one?"
+    _pause = (action == "pause")
+    if target in ("sig", "signal"):
+        channel_paused["1"] = _pause; _label = "Signal Channel"
+    elif target in ("ch2", "vip2", "vipmirror"):
+        if not TELEGRAM_CHANNEL_ID_2:
+            return "⚠️ VIP Mirror (Channel 2) isn't configured on this bot."
+        channel_paused["2"] = _pause; _label = "VIP Mirror (Channel 2)"
+    elif target.isdigit() and 0 <= int(target) < len(CHANNELS):
+        CHANNELS[int(target)]["paused"] = _pause
+        _label = CHANNELS[int(target)].get("label") or f"Channel {target}"
+    else:
+        return _boki_channel_list_hint()
+    save_settings()
+    send_reply(cid, f"{'⏸' if _pause else '▶️'} <b>{_label}</b> {'paused' if _pause else 'resumed'}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_charts(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Chart images ON or OFF?"
+    _boki_run(cid, sender_id, f"/images {v}"); return None
+
+def _boki_exec_news(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Crypto news feed ON or OFF?"
+    _boki_run(cid, sender_id, f"/news {v}"); return None
+
+def _boki_exec_weekend_sleep(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Weekend auto-pause ON or OFF?"
+    _boki_run(cid, sender_id, f"/ws {v}"); return None
+
+def _boki_exec_stats_access(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "User access to /stats — ON or OFF?"
+    _boki_run(cid, sender_id, f"/statsaccess {v}"); return None
+
+def _boki_exec_direct48_nu(cid, sender_id, value):
+    v = _boki_onoff(value)
+    if v is None: return "Force Direct 4.8 for normal + unverified — ON or OFF?"
+    _boki_run(cid, sender_id, f"/directnu {v}"); return None
+
+def _boki_exec_entry_style(cid, sender_id, value):
+    global ZONE_ENTRY_ENABLED
+    v = (value or "").strip().lower()
+    if v.startswith("zone"): ZONE_ENTRY_ENABLED = True
+    elif v.startswith("market"): ZONE_ENTRY_ENABLED = False
+    else: return "Market Entry or Zone Entry?"
+    save_settings()
+    send_reply(cid, f"✅ <b>Scan Entry Style</b> → {'📩 Zone Entry' if ZONE_ENTRY_ENABLED else '📍 Market Entry'}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_trail_sl(cid, sender_id, value):
+    global TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2
+    parts = (value or "").split()
+    if len(parts) < 2: return "Which one (BTC, Scan1, Scan2, TS1, TS2) and on or off?"
+    kind = _boki_norm_scankind(parts[0]); onoff = _boki_onoff(parts[1])
+    if kind is None: return "Which one — BTC, Scan1, Scan2, TS1, or TS2?"
+    if onoff is None: return "On or off?"
+    _val = (onoff == "on")
+    if kind == "btc": TRAIL_SL_BTC = _val
+    elif kind == "scan1": TRAIL_SL_SCAN1 = _val
+    elif kind == "scan2": TRAIL_SL_SCAN2 = _val
+    elif kind == "test1": TRAIL_SL_DEMO1 = _val
+    elif kind == "test2": TRAIL_SL_DEMO2 = _val
+    save_settings()
+    _label = {"btc": "₿ BTC", "scan1": "🔍 Scan1", "scan2": "🔍 Scan2", "test1": "🧪 TS1", "test2": "🧪 TS2"}[kind]
+    send_reply(cid, f"{'✅' if _val else '❌'} <b>{_label} Trailing SL</b> — {'ON' if _val else 'OFF'}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_winrate_target(cid, sender_id, value):
+    parts = (value or "").split()
+    if len(parts) < 2: return "Which scan type and what target %? e.g. \"scan1 70\"."
+    kind = _boki_norm_scankind(parts[0])
+    if kind is None or kind == "btc": return "Which scan type — Scan1, Scan2, TS1, or TS2?"
+    try:
+        n = int(parts[1])
+        if not (1 <= n <= 99): raise ValueError
+    except ValueError:
+        return "Win rate target must be a whole number 1-99."
+    _cmd = {"scan1": "/wrscan1", "scan2": "/wrscan2", "test1": "/wrts1", "test2": "/wrts2"}[kind]
+    _boki_run(cid, sender_id, f"{_cmd} {n}"); return None
+
+def _boki_exec_scan_interval(cid, sender_id, value):
+    try:
+        h = float(value)
+        if not (1 <= h <= 24): raise ValueError
+    except (TypeError, ValueError):
+        return "What scan interval, in hours (1-24)?"
+    _boki_run(cid, sender_id, f"/setinterval {h}"); return None
+
+def _boki_exec_free_limit(cid, sender_id, value):
+    try:
+        n = int(value)
+        if not (0 <= n <= 100): raise ValueError
+    except (TypeError, ValueError):
+        return "What Free-channel share percentage (0-100)?"
+    _boki_run(cid, sender_id, f"/freelimit {n}"); return None
+
+def _boki_exec_vip_price(cid, sender_id, value):
+    try:
+        n = float(value)
+        if n <= 0: raise ValueError
+    except (TypeError, ValueError):
+        return "What VIP monthly price (a dollar amount)?"
+    _boki_run(cid, sender_id, f"/setvipprice {n}"); return None
+
+def _boki_exec_tp1_size(cid, sender_id, value):
+    try:
+        n = float(value)
+        if not (1 <= n <= 99): raise ValueError
+    except (TypeError, ValueError):
+        return "What TP1 close percentage (1-99)?"
+    _boki_run(cid, sender_id, f"/tp1size {n}"); return None
+
+def _boki_exec_server_switch(cid, sender_id, value):
+    v = (value or "").strip()
+    if not v: return "Switch to which server name (e.g. \"co2\")?"
+    _boki_run(cid, sender_id, f"/server {v}"); return None
+
+def _boki_exec_syncup(cid, sender_id, value):
+    _boki_run(cid, sender_id, "/syncup"); return None
+
+def _boki_exec_bot_control(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    _map = {"pause": "/pause", "freeze": "/pause", "stop": "/stop",
+            "resume": "/go", "go": "/go", "unpause": "/go"}
+    if v not in _map: return "Pause everything, stop new scans only, or resume?"
+    _boki_run(cid, sender_id, _map[v]); return None
+
+def _boki_exec_aerolink_key(cid, sender_id, value):
+    parts = (value or "").split()
+    if len(parts) < 2: return "Pause or unpause which key number(s)?"
+    action = parts[0].lower()
+    if action not in ("pause", "unpause"): return "Pause or unpause — which one?"
+    keys = [int(p) for p in parts[1:] if p.isdigit()]
+    if not keys: return "Which key number(s)?"
     _configured = [i for i, k in enumerate(_aerolink_all_key_slots(), start=1) if k]
     _valid = [k for k in keys if k in _configured]
     _invalid = [k for k in keys if k not in _configured]
     for k in _valid:
-        if action == "unpause":
-            PAUSED_AEROLINK_KEYS.discard(k)
-        else:
-            PAUSED_AEROLINK_KEYS.add(k)
-    if _valid:
-        save_settings()
+        if action == "unpause": PAUSED_AEROLINK_KEYS.discard(k)
+        else: PAUSED_AEROLINK_KEYS.add(k)
+    if _valid: save_settings()
     _verb = "Unpaused" if action == "unpause" else "Paused"
-    _parts = []
+    _msg = []
     if _valid:
-        _parts.append(f"✅ {_verb} key{'s' if len(_valid) != 1 else ''} {', '.join(str(k) for k in _valid)}.")
+        _msg.append(f"✅ {_verb} key{'s' if len(_valid) != 1 else ''} {', '.join(str(k) for k in _valid)}.")
     if _invalid:
-        _parts.append(f"⚠️ Key{'s' if len(_invalid) != 1 else ''} {', '.join(str(k) for k in _invalid)} "
-                       f"{'are' if len(_invalid) != 1 else 'is'} not configured — nothing to do there.")
-    send_reply(cid, "\n".join(_parts) or "⚠️ Couldn't find any of those key slots configured.", skip_smallcaps=True)
+        _msg.append(f"⚠️ Key{'s' if len(_invalid) != 1 else ''} {', '.join(str(k) for k in _invalid)} "
+                     f"{'are' if len(_invalid) != 1 else 'is'} not configured — nothing to do there.")
+    send_reply(cid, "\n".join(_msg) or "⚠️ Couldn't find any of those key slots configured.", skip_smallcaps=True)
+    return None
+
+# ── The action catalog itself ───────────────────────────────────────────
+# Every live setting/action Boki & Pechi can actually execute (admin
+# request 2026-08-04: "train boki/pechi to execute every possible request
+# ... every code word every command ... if anything new or unable to
+# understand ask admin"). Deliberately covers the full settings surface —
+# NOT trade-affecting actions (closing trades, SL/TP edits, broadcasts,
+# VIP/Free grants) — those still require the real command/button; this
+# keeps every auto-executed action here reversible with a second message.
+_ADMIN_ACTIONS = {
+    "scan1_auto": {"desc": "Turn Scan1's automatic hourly scanning on or off. value: \"on\" or \"off\".", "exec": _boki_exec_scan1_auto},
+    "scan2_auto": {"desc": "Turn Scan2's automatic hourly scanning on or off. value: \"on\" or \"off\".", "exec": _boki_exec_scan2_auto},
+    "test_scan": {"desc": "Turn the TS1/TS2 demo-trade auto scan on or off. value: \"on\" or \"off\".", "exec": _boki_exec_test_scan},
+    "run_scan_now": {"desc": "Manually trigger a scan right now (not the auto schedule). value: \"scan1\", \"scan2\", or \"both\".", "exec": _boki_exec_run_scan},
+    "gateway": {"desc": "Switch the MAIN scan AI gateway (Scan1/Scan2/BTC's default) between Direct and Aerolink. value: \"direct\" or \"aerolink\".", "exec": _boki_exec_gateway},
+    "scan_model": {"desc": "Set the default scan AI model (/model). value: \"opus\"/\"opus5\" for Opus 5, \"fable\"/\"fable5\" for Fable 5, or another catalog model id the admin names specifically.", "exec": _boki_exec_scan_model},
+    "chat_gateway": {"desc": "Switch /chat's OWN AI gateway (separate from the scan gateway, Claude models only) between Direct and Aerolink. value: \"direct\" or \"aerolink\".", "exec": _boki_exec_chat_gateway},
+    "chat_model": {"desc": "Set which AI model /chat itself uses to answer. value: \"google\", \"auto\", or a specific catalog model id the admin names.", "exec": _boki_exec_chat_model},
+    "chat_image_model": {"desc": "Set which AI model /chat uses to generate images. value: \"pollinations\" (free default) or a specific catalog image-model id the admin names.", "exec": _boki_exec_chat_image_model},
+    "aicfg_grid": {"desc": ("Set the AI model + gateway combo for ONE cell of the /aiconfig grid — a specific scan type's specific tier (e.g. \"Scan1 Verified\"). "
+                             "value MUST be normalized to exactly 4 space-separated words in this order: "
+                             "<kind: scan1|scan2|test1|test2|btc> <tier: verified|unverified|nonspecial (use \"verified\" as a placeholder for btc — it's ignored)> "
+                             "<gateway: direct|aerolink> <model: opus5|fable5|4.8, or another exact model id/tag the admin names>. "
+                             "Interpret shorthand: \"a5\" or \"aerolink 5\" both mean \"aerolink opus5\"; \"d4.8\" means \"direct 4.8\"; "
+                             "\"s1\"/\"scan1\" both mean scan1; \"ts1\"/\"demo1\" both mean test1; \"ts2\"/\"demo2\" both mean test2. "
+                             "Example: \"use a5 for s1 verified\" -> value=\"scan1 verified aerolink opus5\"."), "exec": _boki_exec_aicfg_grid},
+    "aerolink_key": {"desc": "Pause or unpause specific numbered Aerolink API key slots (1-20). value normalized to \"pause 2 3\" or \"unpause 4\" style (action word, then the numbers).", "exec": _boki_exec_aerolink_key},
+    "channel_pause": {"desc": ("Pause or resume a broadcast channel (stops new signals going there, everything else keeps running). "
+                                "value normalized to \"<channel> <pause|resume>\" where channel is \"sig\" (main Signal Channel), "
+                                "\"ch2\" (VIP Mirror), or the numeric index of a Free/VIP broadcast channel if the admin names one by number."), "exec": _boki_exec_channel_pause},
+    "charts": {"desc": "Turn chart images on signal posts on or off. value: \"on\" or \"off\".", "exec": _boki_exec_charts},
+    "news": {"desc": "Turn the crypto news / liquidation feed on or off. value: \"on\" or \"off\".", "exec": _boki_exec_news},
+    "weekend_sleep": {"desc": "Turn the weekend auto-pause (Fri 10PM-Sun 11PM IST) on or off. value: \"on\" or \"off\".", "exec": _boki_exec_weekend_sleep},
+    "stats_access": {"desc": "Turn regular users' access to /stats on or off (admin/co-admin always keep access). value: \"on\" or \"off\".", "exec": _boki_exec_stats_access},
+    "direct48_nu": {"desc": "Toggle forcing Scan1/Scan2's nonspecial + unverified tiers onto Direct Claude 4.8 regardless of /aiconfig. value: \"on\" or \"off\".", "exec": _boki_exec_direct48_nu},
+    "entry_style": {"desc": "Switch Scan1/Scan2's entry style. value: \"market\" (instant entry) or \"zone\" (limit order at a price range).", "exec": _boki_exec_entry_style},
+    "trail_sl": {"desc": "Turn trailing stop-loss on or off for one trade type. value normalized to \"<type> <on|off>\" where type is btc/scan1/scan2/test1/test2 (ts1/ts2/demo1/demo2 all mean test1/test2).", "exec": _boki_exec_trail_sl},
+    "winrate_target": {"desc": "Set the win-rate target percentage a time slot needs to hit to promote/stay verified, for one scan type. value normalized to \"<type> <number>\" where type is scan1/scan2/test1/test2 (ts1/ts2/demo1/demo2 all mean test1/test2) and number is 1-99.", "exec": _boki_exec_winrate_target},
+    "scan_interval": {"desc": "Set the auto-scan interval in hours. value: a number 1-24.", "exec": _boki_exec_scan_interval},
+    "free_limit": {"desc": "Set the Free-channel daily share percentage of verified signals. value: a number 0-100.", "exec": _boki_exec_free_limit},
+    "vip_price": {"desc": "Set the VIP monthly subscription price in dollars. value: a number.", "exec": _boki_exec_vip_price},
+    "tp1_size": {"desc": "Set the TP1 close percentage (how much of a position closes at TP1 vs rides to TP2). value: a number 1-99.", "exec": _boki_exec_tp1_size},
+    "server_switch": {"desc": "Switch which server is the ACTIVE one in the multi-server rotation (the one placing real copytrade orders). value: the exact server name the admin names, e.g. \"co2\".", "exec": _boki_exec_server_switch},
+    "syncup": {"desc": "Force-push all of this server's local state to the shared central store (used right before switching servers). value not needed.", "exec": _boki_exec_syncup},
+    "bot_control": {"desc": "Freeze or unfreeze the WHOLE bot. value: \"pause\" (freeze everything — scans, monitoring, alerts), \"stop\" (block new scans only, keep monitoring/copytrade SL-TP running), or \"resume\" (undo pause/stop).", "exec": _boki_exec_bot_control},
+}
+
+def _chat_classify_admin_action(own_message: str, reply_context: str):
+    """Single unified classifier covering every live admin action Boki/Pechi
+    can actually execute (2026-08-04 — replaced the earlier key-only
+    classifier after the admin asked for full command/button coverage: "train
+    boki/pechi to execute every possible request ... if anything new or
+    unable to understand ask admin"). Reads the whole _ADMIN_ACTIONS catalog
+    as its menu and picks AT MOST ONE matching action, or none — never
+    invents an action id that isn't in the catalog. Returns (action_id: str
+    or None, value: str)."""
+    _catalog = "\n".join(f"- {aid}: {info['desc']}" for aid, info in _ADMIN_ACTIONS.items())
+    _prompt = (
+        "You are deciding whether an admin's message is a request to change a LIVE setting "
+        "or trigger a LIVE action on their trading bot, and if so, which ONE of the actions "
+        "below it matches.\n\n"
+        f'Replied-to message (context, may be empty): "{reply_context}"\n'
+        f'Admin\'s actual message: "{own_message}"\n\n'
+        "AVAILABLE ACTIONS:\n" + _catalog + "\n\n"
+        'Reply with ONLY this exact JSON, nothing else:\n'
+        '{"action": "<one of the action ids above>" or null, "value": "<the value string described for that action, or empty>"}\n\n'
+        "Rules:\n"
+        "- action must be null unless the message is CLEARLY asking to change one specific "
+        "live setting/action from the list — not a question about it, not a casual mention.\n"
+        "- Only ever use an action id that's actually in the list above.\n"
+        "- Follow each action's value format instructions exactly, including any shorthand "
+        "normalization it describes.\n"
+        "- If it's ambiguous which action is meant, or it could plausibly match more than one "
+        "action, action must be null — never guess between two real actions."
+    )
+    try:
+        client = _claude_client("chat", force_aerolink=True)
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=200,
+                                       messages=[{"role": "user", "content": _prompt}])
+        _raw = _claude_text(resp) or ""
+        _m = re.search(r'\{.*\}', _raw, re.DOTALL)
+        d = json.loads(_m.group()) if _m else {}
+        _action = d.get("action")
+        if _action not in _ADMIN_ACTIONS:
+            return None, ""
+        return _action, (d.get("value") or "").strip()
+    except Exception as e:
+        print(f"  [CHAT ADMIN ACTION] classify failed: {e}")
+        return None, ""
+
+def _chat_try_admin_action(cid, own_message: str, is_admin: bool, sender_id=None, reply_context: str = "") -> bool:
+    """Admin-only: lets PECHI/BOKI actually execute any of the live bot
+    actions in _ADMIN_ACTIONS via natural language, instead of only being
+    able to talk about them. Every executor either performs the REAL change
+    (reusing the exact same handle_command()/save_settings() path the real
+    command or button uses) and sends its own confirmation, or returns a
+    short clarifying question when it can't tell exactly what's meant —
+    never a guess, per the admin's explicit "if unable to understand, ask
+    admin" requirement (2026-08-04). Returns True if it handled the message
+    (caller should not also generate a normal chat reply)."""
+    if not is_admin:
+        return False
+    action_id, value = _chat_classify_admin_action(own_message, reply_context)
+    if action_id is None:
+        return False
+    _clarify = _ADMIN_ACTIONS[action_id]["exec"](cid, sender_id if sender_id is not None else cid, value)
+    if _clarify:
+        send_reply(cid, f"🤔 {_clarify}", skip_smallcaps=True)
     return True
 
 def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
@@ -2600,7 +2980,7 @@ def _chat_boki_text_reply(history: list, message: str, extra_system: str = "") -
         print(f"  [BOKI] free (Aerolink) attempt with {_model} failed ({e}) — falling back to Google (still free, never Direct)")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
-def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply_context: str = ""):
+def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply_context: str = "", sender_id=None):
     """Shared standalone (no /chat session) handler for PECHI/BOKI-style
     trigger words — image path is identical for both (best image model
     first, Pollinations fallback; Direct/Anthropic has no image generation
@@ -2610,7 +2990,12 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
     reply_context: text of the message being replied to, if any (see
     _extract_reply_context) — only folded into the TEXT path, not image
     prompts, so a reply's content can't accidentally pollute an image
-    generation prompt."""
+    generation prompt.
+
+    sender_id: the REAL admin Telegram user id, threaded through to
+    _chat_try_admin_action so executed commands pass handle_command's
+    admin check correctly even when PECHI/BOKI is used inside a group
+    (where cid is the group, not the admin's own id)."""
     _is_image = _chat_is_image_request(message)
     try:
         if _is_image:
@@ -2633,7 +3018,7 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
             # always the admin here.
-            if _chat_try_key_action(cid, message, True, reply_context=reply_context):
+            if _chat_try_admin_action(cid, message, True, sender_id=sender_id, reply_context=reply_context):
                 return
             if _chat_try_trade_analysis(cid, message, True, reply_context=reply_context):
                 return
@@ -2644,7 +3029,7 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
         print(f"  [{tag}] {cid}: {e}")
         send_reply(cid, f"⚠️ {tag.title()} had an error — try again.")
 
-def _handle_pechi_standalone(cid, message: str, reply_context: str = ""):
+def _handle_pechi_standalone(cid, message: str, reply_context: str = "", sender_id=None):
     """PECHI works on its own, without ever running /chat first (admin
     request 2026-08-03) — no session, no history kept, just a single
     question -> single answer. Called directly from the command listener
@@ -2652,13 +3037,13 @@ def _handle_pechi_standalone(cid, message: str, reply_context: str = ""):
     /chat session exists or this is a private chat vs a group. Best model
     for the message, free (Aerolink) first, falls back to Direct/Google on
     failure — see _chat_pechi_text_reply."""
-    _handle_standalone_trigger(cid, message, _chat_pechi_text_reply, "PECHI", reply_context=reply_context)
+    _handle_standalone_trigger(cid, message, _chat_pechi_text_reply, "PECHI", reply_context=reply_context, sender_id=sender_id)
 
-def _handle_boki_standalone(cid, message: str, reply_context: str = ""):
+def _handle_boki_standalone(cid, message: str, reply_context: str = "", sender_id=None):
     """BOKI (admin-only, standalone, 2026-08-04): same standalone pattern as
     PECHI, but NEVER uses the paid Direct/Anthropic API, even on failure —
     only Aerolink or Google, both free. See _chat_boki_text_reply."""
-    _handle_standalone_trigger(cid, message, _chat_boki_text_reply, "BOKI", reply_context=reply_context)
+    _handle_standalone_trigger(cid, message, _chat_boki_text_reply, "BOKI", reply_context=reply_context, sender_id=sender_id)
 
 def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""):
     sess = _chat_sessions.get(str(cid))
@@ -2709,9 +3094,9 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
-        elif _chat_try_key_action(cid, text, _is_admin_cid, reply_context=reply_context):
-            # Aerolink key pause/unpause control request (2026-08-04 request) —
-            # executed directly, not a normal conversational reply.
+        elif _chat_try_admin_action(cid, text, _is_admin_cid, sender_id=sender_id, reply_context=reply_context):
+            # Live admin control request (2026-08-04) — executed directly
+            # against the real bot action, not a normal conversational reply.
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": "[executed an Aerolink key pause/unpause]"}]})
         elif _chat_try_trade_analysis(cid, text, _is_admin_cid, reply_context=reply_context):
@@ -14706,7 +15091,8 @@ def command_listener():
                         # update, making every other command feel frozen until
                         # this one reply finishes (2026-08-04 fix).
                         threading.Thread(target=_handle_pechi_standalone,
-                            args=(cid, _pechi_msg), kwargs={"reply_context": _extract_reply_context(msg)},
+                            args=(cid, _pechi_msg),
+                            kwargs={"reply_context": _extract_reply_context(msg), "sender_id": sender_uid},
                             daemon=True).start()
                 elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _boki_strip(text or "")[1]:
                     # BOKI — same standalone pattern as PECHI, but free-only (never Direct).
@@ -14717,7 +15103,8 @@ def command_listener():
                         # Off the main polling thread — see the matching PECHI
                         # comment above for why.
                         threading.Thread(target=_handle_boki_standalone,
-                            args=(cid, _boki_msg), kwargs={"reply_context": _extract_reply_context(msg)},
+                            args=(cid, _boki_msg),
+                            kwargs={"reply_context": _extract_reply_context(msg), "sender_id": sender_uid},
                             daemon=True).start()
                 elif _pechi_strip(text or "")[1] or _boki_strip(text or "")[1]:
                     # Non-admin trying "pechi"/"boki" — PECHI/BOKI are admin-only (see
