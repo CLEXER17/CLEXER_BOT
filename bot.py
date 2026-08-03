@@ -2398,11 +2398,11 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str):
                     data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
                     files={"photo": ("image.png", img_bytes, "image/png")}, timeout=30)
             else:
-                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.")
+                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
         else:
             _history = [{"role": "user", "parts": [{"text": message}]}]
             reply_text = text_reply_fn(_history, message, extra_system=_admin_chat_context())
-            send_reply(cid, reply_text)
+            send_reply(cid, reply_text, skip_smallcaps=True)
     except Exception as e:
         print(f"  [{tag}] {cid}: {e}")
         send_reply(cid, f"⚠️ {tag.title()} had an error — try again.")
@@ -2469,7 +2469,7 @@ def _handle_chat_message(cid, text: str, sender_id=None):
                     data={"chat_id": cid, "caption": reply_text[:1024] if reply_text else ""},
                     files={"photo": ("image.png", img_bytes, "image/png")}, timeout=30)
             else:
-                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.")
+                send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
         else:
@@ -2490,7 +2490,7 @@ def _handle_chat_message(cid, text: str, sender_id=None):
                 else:
                     reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
-            send_reply(cid, reply_text)
+            send_reply(cid, reply_text, skip_smallcaps=True)
         # Trim history to bound token usage
         max_msgs = _CHAT_HISTORY_MAX_TURNS * 2
         if len(sess["history"]) > max_msgs:
@@ -5620,7 +5620,7 @@ def _smallcaps_body(text: str) -> str:
             out.append(part if skip > 0 else _smallcaps_title(part))
     return "".join(out)
 
-def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
+def _apply_premium_emojis(text: str, overrides: dict = None, skip_smallcaps: bool = False) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
     version; everyone else still sees the plain glyph (Telegram's own fallback).
     `overrides` lets a specific caller swap the emoji ID for one or more
@@ -5631,7 +5631,13 @@ def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
     a wider custom-emoji sticker would throw off manual padding. Also
     applies the bot-wide smallcaps text style (GLOBAL_SMALLCAPS_ENABLED) as
     the last step, after emoji glyphs are wrapped, so the "BingX" glyph-swap
-    match above always runs against unmangled text first."""
+    match above always runs against unmangled text first.
+
+    skip_smallcaps: bypasses the smallcaps step entirely regardless of the
+    global setting — used for /chat's AI-generated replies (2026-08-04 admin
+    request), which use their own real-casing HTML formatting (bold/code/
+    blockquote/spoiler/links) that smallcaps would otherwise flatten/mangle,
+    since smallcaps only skips <code>/<pre> content, not <b>/<blockquote>/etc."""
     if not text:
         return text
     if PREMIUM_EMOJIS_ENABLED:
@@ -5649,7 +5655,7 @@ def _apply_premium_emojis(text: str, overrides: dict = None) -> str:
                 # message (Bad Request: DOCUMENT_INVALID), silently killing
                 # unrelated sends like the startup deploy notice.
                 text = text.replace(_ex_name, f'{_ex_glyph} {_ex_name}')
-    if GLOBAL_SMALLCAPS_ENABLED:
+    if GLOBAL_SMALLCAPS_ENABLED and not skip_smallcaps:
         text = _smallcaps_body(text)
     return text
 
@@ -5776,7 +5782,7 @@ _scan_quiet = threading.local()  # per-thread flag — True only inside an auto-
                                   # never suppress the admin's own separate interactions
                                   # running in a different thread at the same time.
 
-def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important=False):
+def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important=False, skip_smallcaps=False):
     # Auto-scan progress noise suppression (2026-07-28, rate-limit fix) — only
     # applies to messages headed for the admin's own DM from inside a quiet
     # (auto-triggered) scan thread, and only when not explicitly marked
@@ -5799,7 +5805,7 @@ def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important
         if emoji_overrides:
             _reply_capture[cid_str].setdefault("emoji_overrides", {}).update(emoji_overrides)
         return
-    text = _apply_premium_emojis(text, overrides=emoji_overrides)
+    text = _apply_premium_emojis(text, overrides=emoji_overrides, skip_smallcaps=skip_smallcaps)
     reply_markup = _style_keyboard(reply_markup)
     try:
         payload = {"chat_id": chat_id, "text": text,
