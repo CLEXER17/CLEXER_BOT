@@ -14672,14 +14672,26 @@ def command_listener():
                     if not _pechi_msg:
                         send_reply(cid, "🐾 Pechi's listening — ask me something after \"pechi\".")
                     else:
-                        _handle_pechi_standalone(cid, _pechi_msg, reply_context=_extract_reply_context(msg))
+                        # Off the main polling thread — PECHI can chain several
+                        # sequential API calls (key-action check, trade-intent
+                        # classify, then the actual reply), which would otherwise
+                        # block the whole bot from reading its NEXT Telegram
+                        # update, making every other command feel frozen until
+                        # this one reply finishes (2026-08-04 fix).
+                        threading.Thread(target=_handle_pechi_standalone,
+                            args=(cid, _pechi_msg), kwargs={"reply_context": _extract_reply_context(msg)},
+                            daemon=True).start()
                 elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _boki_strip(text or "")[1]:
                     # BOKI — same standalone pattern as PECHI, but free-only (never Direct).
                     _boki_msg, _ = _boki_strip(text)
                     if not _boki_msg:
                         send_reply(cid, "🆓 Boki's listening (free-only) — ask me something after \"boki\".")
                     else:
-                        _handle_boki_standalone(cid, _boki_msg, reply_context=_extract_reply_context(msg))
+                        # Off the main polling thread — see the matching PECHI
+                        # comment above for why.
+                        threading.Thread(target=_handle_boki_standalone,
+                            args=(cid, _boki_msg), kwargs={"reply_context": _extract_reply_context(msg)},
+                            daemon=True).start()
                 elif _pechi_strip(text or "")[1] or _boki_strip(text or "")[1]:
                     # Non-admin trying "pechi"/"boki" — PECHI/BOKI are admin-only (see
                     # the two branches above), so anyone else gets this instead of
@@ -14712,7 +14724,11 @@ def command_listener():
                     _reply_to = msg.get("reply_to_message") or {}
                     _is_reply_to_bot = bool(_reply_to.get("from", {}).get("is_bot"))
                     if _is_admin_chat or _is_forward or _is_reply_to_bot:
-                        _handle_chat_message(cid, text, sender_id=sender_uid, reply_context=_extract_reply_context(msg))
+                        # Off the main polling thread — see the matching PECHI
+                        # comment above for why.
+                        threading.Thread(target=_handle_chat_message,
+                            args=(cid, text), kwargs={"sender_id": sender_uid, "reply_context": _extract_reply_context(msg)},
+                            daemon=True).start()
         except Exception as e:
             print(f"  [CMD] {e}")
             # Previously silent to the admin — a crash here (e.g. mid-callback,
