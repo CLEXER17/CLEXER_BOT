@@ -10286,6 +10286,44 @@ Reasoning: [one line]"""
                 _results.append("⏭️ API cost log CSV (none yet)")
         except Exception as e:
             _results.append(f"❌ API cost log CSV: {e}")
+        # The items below already auto-push to the central store on every
+        # change during normal operation (each has its own is_active_server()
+        # gate) — but /syncup's whole point is a guaranteed, forced snapshot
+        # right before a server migration, so they belong here too rather
+        # than trusting whatever they last managed to push live.
+        try:
+            _save_free_tracker()
+            _results.append("✅ Free-share quota tracker")
+        except Exception as e:
+            _results.append(f"❌ Free-share quota tracker: {e}")
+        try:
+            _save_daily_buckets()
+            _results.append("✅ Daily recap buckets")
+        except Exception as e:
+            _results.append(f"❌ Daily recap buckets: {e}")
+        try:
+            _save_scheduled_broadcasts()
+            _results.append("✅ Scheduled broadcasts")
+        except Exception as e:
+            _results.append(f"❌ Scheduled broadcasts: {e}")
+        try:
+            _save_slot_state()
+            _results.append("✅ Slot auto-verify state")
+        except Exception as e:
+            _results.append(f"❌ Slot auto-verify state: {e}")
+        try:
+            _save_free_sl_log()
+            _results.append("✅ Free SL log")
+        except Exception as e:
+            _results.append(f"❌ Free SL log: {e}")
+        try:
+            if os.path.exists(_SIG_SNAPSHOTS_FILE):
+                _kv_push("sig_snapshots", _sig_snapshots)
+                _results.append(f"✅ Signal snapshots ({len(_sig_snapshots)})")
+            else:
+                _results.append("⏭️ Signal snapshots (none yet)")
+        except Exception as e:
+            _results.append(f"❌ Signal snapshots: {e}")
         send_reply(chat_id,
             f"<b>Sync-up complete</b>\n\n<blockquote>" + "\n".join(_results) + "</blockquote>\n\n"
             f"Any co-server pointed at the same CLEXER_API_URL will now see this data on its next load.")
