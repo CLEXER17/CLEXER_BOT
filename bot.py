@@ -2701,6 +2701,12 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
         return True, False
     return False, tier_routed  # locked VIP tag only if it was ever routed to VIP
 
+def _locked_tp_line(tp1_hit: bool) -> str:
+    """SL/TP1/TP2 row for a locked VIP-exclusive placeholder — TP1 shows a
+    checkmark instead of a lock once it's genuinely hit (still no real
+    price), SL/TP2 stay locked."""
+    return f"SL:    🔒\nTP1:   {'✅ HIT' if tp1_hit else '🔒'}\nTP2:   🔒"
+
 def _reply_map_reached_tier(reply_map: dict) -> bool:
     """True if a trade's reply_map (send_entry_signal's return value) shows
     it actually landed in at least one VIP or Free channel — see
@@ -7852,7 +7858,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 ti = (f"{t['signal']} @ {t['entry']:,.0f}\nSL:{t['sl']:,.0f}  TP1:{t['tp1']:,.0f}  TP2:{t['tp2']:,.0f}\n"
                     f"Entry:{'OK' if t['entry_hit'] else 'pending'}  TP1:{'OK' if t['tp1_hit'] else 'no'}")
             elif _btc_locked:
-                ti = f"{SYMBOL}\nSL:🔒  TP1:🔒  TP2:🔒\n🔒 VIP-exclusive signal — upgrade to view"
+                ti = f"{SYMBOL}\n{_locked_tp_line(t.get('tp1_hit'))}\n🔒 VIP-exclusive signal — upgrade to view"
             else:
                 ti = None
         else:
@@ -7868,7 +7874,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                         f"Entry:{entry:,.4g} {'✅' if entry_hit else '⏳'}  "
                         f"SL:{sl:,.4g}  TP1:{tp1:,.4g} {'✔️' if tp1_hit else ''}{extra}")
             if _locked:
-                return f"\n\n<b>{label}:</b> {sym}\nSL:🔒  TP1:🔒  TP2:🔒\n🔒 VIP-exclusive signal — upgrade to view"
+                return f"\n\n<b>{label}:</b> {sym}\n{_locked_tp_line(tp1_hit)}\n🔒 VIP-exclusive signal — upgrade to view"
             return ""
         scan_lines = ""
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
@@ -8257,7 +8263,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     + (f"<i>{t['entry_note']}</i>" if t.get("entry_note") else "")
                 )
             elif _btc_locked:
-                parts_out.append(f"<b>BTC Trade</b>\n\n{SYMBOL}\nSL:    🔒\nTP1:   🔒\nTP2:   🔒\n\n🔒 VIP-exclusive signal — upgrade to view")
+                parts_out.append(f"<b>BTC Trade</b>\n\n{SYMBOL}\n{_locked_tp_line(t.get('tp1_hit'))}\n\n🔒 VIP-exclusive signal — upgrade to view")
         # Scan trades — all from both lists
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
             for sc in _lst:
@@ -8268,7 +8274,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                                                   actually_shared=_reply_map_reached_tier(sc.get('reply_map')))
                 if not _reveal:
                     if _locked:
-                        parts_out.append(f"<b>Scan{_ver} Trade</b>\n\n{sc.get('symbol','?')}\nSL:    🔒\nTP1:   🔒\nTP2:   🔒\n\n🔒 VIP-exclusive signal — upgrade to view")
+                        _locked_tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc.get('symbol',''))
+                        parts_out.append(f"<b>Scan{_ver} Trade</b>\n\n{sc.get('symbol','?')}\n{_locked_tp_line(_locked_tp1_hit)}\n\n🔒 VIP-exclusive signal — upgrade to view")
                     continue
                 try:
                     sp = get_bingx_price(sc["symbol"])
@@ -8296,7 +8303,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                                                   actually_shared=_reply_map_reached_tier(dc.get('reply_map')))
                 if not _reveal:
                     if _locked:
-                        parts_out.append(f"<b>TS{_dver} ALT SIGNAL</b>\n\n{dc.get('symbol','?')}\nSL:    🔒\nTP1:   🔒\nTP2:   🔒\n\n🔒 VIP-exclusive signal — upgrade to view")
+                        parts_out.append(f"<b>TS{_dver} ALT SIGNAL</b>\n\n{dc.get('symbol','?')}\n{_locked_tp_line(dc.get('tp1_hit'))}\n\n🔒 VIP-exclusive signal — upgrade to view")
                     continue
                 try: _dcp = get_bingx_price(dc.get("symbol","")); _dcpl = f"Current: <b>{_dcp:,.4g}</b>\n" if _dcp else ""
                 except: _dcp = 0; _dcpl = ""
