@@ -3017,23 +3017,22 @@ def _chat_classify_admin_action(own_message: str, reply_context: str):
         print(f"  [CHAT ADMIN ACTION] classify failed: {e}")
         return None, ""
 
-def _chat_try_admin_action(cid, own_message: str, is_admin: bool, sender_id=None, reply_context: str = "") -> bool:
-    """Admin-only: lets PECHI/BOKI actually execute any of the live bot
-    actions in _ADMIN_ACTIONS via natural language, instead of only being
-    able to talk about them. Every executor either performs the REAL change
-    (reusing the exact same handle_command()/save_settings() path the real
-    command or button uses) and sends its own confirmation, or returns a
-    short clarifying question when it can't tell exactly what's meant —
-    never a guess, per the admin's explicit "if unable to understand, ask
-    admin" requirement (2026-08-04). Actions in _ADMIN_RISKY_ACTIONS (real
-    trades/money/broadcasts) go through _boki_ask_confirm first instead of
-    firing immediately — see _boki_pending_confirm and the bokiconfirm_yes/
-    bokiconfirm_no callback handlers. Returns True if it handled the
-    message (caller should not also generate a normal chat reply)."""
-    if not is_admin:
-        return False
-    action_id, value = _chat_classify_admin_action(own_message, reply_context)
-    if action_id is None:
+def _chat_dispatch_admin_action(cid, sender_id, is_admin: bool, action_id, value: str) -> bool:
+    """Dispatch-only half of the admin-action flow — the classify step now
+    happens ONCE in _chat_classify_combined() (2026-08-04 perf fix: Pechi/
+    Boki/chat used to each run 3 separate sequential classifier calls
+    before generating any reply — admin-action, trade-intent, best-model
+    routing — which is what an admin reported as "boki... nothing
+    happening... taking some time to reply"; it was never actually stuck,
+    just paying for 3 round-trips in a row before replying at all).
+    Every executor either performs the REAL change (reusing the exact same
+    handle_command()/save_settings() path the real command or button uses)
+    and sends its own confirmation, or returns a short clarifying question
+    when it can't tell exactly what's meant — never a guess, per the
+    admin's "if unable to understand, ask admin" requirement. Actions in
+    _ADMIN_RISKY_ACTIONS go through _boki_ask_confirm first instead of
+    firing immediately. Returns True if action_id was handled."""
+    if not is_admin or action_id is None:
         return False
     _sid = sender_id if sender_id is not None else cid
     _fn = _ADMIN_ACTIONS[action_id]["exec"]
@@ -3042,32 +3041,30 @@ def _chat_try_admin_action(cid, own_message: str, is_admin: bool, sender_id=None
         send_reply(cid, f"🤔 {_clarify}", skip_smallcaps=True)
     return True
 
-def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
-    """Reads both the user's own message and whatever they replied to (via
-    _chat_classify_trade_intent) to decide if this is a genuine trade
-    question about a specific real coin — and whether a SPECIFIC trade idea
-    (direction/entry/target/SL) was already proposed in the conversation
-    that the user wants VALIDATED, vs. a request for a fresh new idea.
-
-    If a specific setup was proposed: evaluates THAT idea against real
-    current price/structure (_coin_validate_setup_data /
-    _chat_format_setup_validation) — e.g. "short 64-64.5k target 59.6k" gets
-    judged as still-pending/valid/invalidated based on where price actually
-    is, never answered with an unrelated fresh recommendation that could
-    flatly contradict the idea being asked about.
-
-    Otherwise: runs the SAME live-data pipeline /coin uses
-    (_coin_analysis_data: real BingX price/24h range/volume + SCAN_MODEL)
-    to propose a fresh idea, formatted for chat (_chat_format_trade_analysis)
-    rather than /coin's own boxed dashboard style.
-
-    Admin-only, matching /coin's own scanadmin gate and the cost of two
-    real API calls (classify + analyze). Returns True if it handled the
-    message (caller should not also generate a normal chat reply)."""
+def _chat_try_admin_action(cid, own_message: str, is_admin: bool, sender_id=None, reply_context: str = "") -> bool:
+    """Standalone classify+dispatch — kept for any caller that wants the
+    old one-shot behavior; the hot paths (PECHI/BOKI/chat) now call
+    _chat_classify_combined() once and use _chat_dispatch_admin_action
+    directly instead, to avoid paying for this classifier twice."""
     if not is_admin:
         return False
-    is_trade, sym, setup = _chat_classify_trade_intent(own_message, reply_context)
-    if not is_trade or not sym:
+    action_id, value = _chat_classify_admin_action(own_message, reply_context)
+    return _chat_dispatch_admin_action(cid, sender_id, is_admin, action_id, value)
+
+def _chat_dispatch_trade_analysis(cid, is_admin: bool, sym, setup) -> bool:
+    """Dispatch-only half of the trade-analysis flow — see
+    _chat_dispatch_admin_action's docstring for why classify and dispatch
+    are now split. If a specific setup was proposed: evaluates THAT idea
+    against real current price/structure (_coin_validate_setup_data /
+    _chat_format_setup_validation) — e.g. "short 64-64.5k target 59.6k"
+    gets judged as still-pending/valid/invalidated based on where price
+    actually is, never answered with an unrelated fresh recommendation
+    that could flatly contradict the idea being asked about. Otherwise:
+    runs the SAME live-data pipeline /coin uses (_coin_analysis_data: real
+    BingX price/24h range/volume + SCAN_MODEL) to propose a fresh idea,
+    formatted for chat (_chat_format_trade_analysis) rather than /coin's
+    own boxed dashboard style. Returns True if sym was handled."""
+    if not is_admin or not sym:
         return False
     send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
     def _run():
@@ -3083,6 +3080,85 @@ def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_contex
             send_reply(cid, f"⚠️ Couldn't analyze {sym.replace('-','/')} right now — try again.", skip_smallcaps=True)
     threading.Thread(target=_run, daemon=True).start()
     return True
+
+def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
+    """Standalone classify+dispatch — kept for any caller that wants the
+    old one-shot behavior; the hot paths now call _chat_classify_combined()
+    once and use _chat_dispatch_trade_analysis directly instead."""
+    if not is_admin:
+        return False
+    is_trade, sym, setup = _chat_classify_trade_intent(own_message, reply_context)
+    if not is_trade:
+        return False
+    return _chat_dispatch_trade_analysis(cid, is_admin, sym, setup)
+
+def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool):
+    """Single classifier call that replaces THREE separate sequential ones
+    (admin action, trade intent, best-model routing) for a single message —
+    was the real cause behind an admin report that read as "boki... nothing
+    happening" but turned out to just be slow: every Pechi/Boki/chat
+    message was paying for 3 full API round-trips back-to-back before even
+    starting to generate the actual reply (2026-08-04 perf fix). Skips the
+    admin-action catalog entirely in the prompt when is_admin is False, so
+    a regular user's prompt stays small. Returns a dict:
+    {"admin_action": id or None, "admin_value": str,
+     "is_trade_question": bool, "coin": verified symbol or None,
+     "setup": dict or None, "best_model": model id or "google"}"""
+    _catalog = ""
+    if is_admin:
+        _catalog = ("\n\nADMIN LIVE-ACTION CATALOG (only relevant if the message is CLEARLY asking to "
+                     "change a live setting or trigger a live action — not a question about one, not a "
+                     "casual mention):\n" + "\n".join(f"- {aid}: {info['desc']}" for aid, info in _ADMIN_ACTIONS.items()))
+    _model_catalog = "\n".join(f"- {mid}: {info['label']} ({info['tier']})"
+        for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "text")
+    _prompt = (
+        "Read both messages below and answer THREE independent questions about them in one JSON object.\n\n"
+        f'Replied-to message (context, may be empty): "{reply_context}"\n'
+        f'User\'s actual message: "{own_message}"'
+        + _catalog + "\n\n"
+        'Reply with ONLY this exact JSON, nothing else:\n'
+        '{"admin_action": "<action id>" or null, "admin_value": "<value string for that action, or empty>", '
+        '"is_trade_question": true or false, "coin": "BTC" or null, '
+        '"setup": {"direction": "LONG or SHORT", "entry": "e.g. 64000-64500 or 64200", '
+        '"target": "e.g. 59600 or null", "sl": "e.g. 65500 or null"} or null, '
+        '"best_model": "<a model id from the list below, or \\"google\\">"}\n\n'
+        "Rules:\n"
+        "1. admin_action must be null unless the message is CLEARLY asking to change one specific live "
+        "setting/action" + (" from the catalog above; only ever use an id that's actually listed" if is_admin else " (there is no catalog here, so this must always be null)") + ". "
+        "If ambiguous or it could match more than one action, null — never guess.\n"
+        "2. is_trade_question is true only for a genuine trade setup/entry/target/stop-loss/trade-validity/"
+        "technical-analysis question about a specific coin — not a casual mention. coin is the base ticker "
+        "(e.g. BTC, ETH, SOL), using context from BOTH messages together. If more than one coin is "
+        "mentioned, pick the one that's the actual subject. If no specific coin can be determined, null. "
+        "setup is filled in ONLY if a specific direction/entry/target was actually stated somewhere in the "
+        "conversation that the user wants evaluated — otherwise null.\n"
+        "3. best_model: pick the single best model to answer this message in general (used only when it's "
+        "neither an admin action nor a trade question) — crypto/trading talk suits a capable reasoning "
+        "model, coding suits a code-strong model, casual chat can use anything.\n"
+        f"Models available for best_model:\n- google: Google Gemini (general-purpose, free)\n{_model_catalog}"
+    )
+    try:
+        client = _claude_client("chat", force_aerolink=True)
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=280,
+                                       messages=[{"role": "user", "content": _prompt}])
+        _raw = _claude_text(resp) or ""
+        _m = re.search(r'\{.*\}', _raw, re.DOTALL)
+        d = json.loads(_m.group()) if _m else {}
+        _action = d.get("admin_action") if is_admin else None
+        if _action not in _ADMIN_ACTIONS:
+            _action = None
+        _is_trade = bool(d.get("is_trade_question"))
+        _coin = _bingx_symbol_for_base(d.get("coin")) if _is_trade else None
+        _model = (d.get("best_model") or "google").strip().lower()
+        if not (_model == "google" or (_model in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_model]["kind"] == "text")):
+            _model = "google"
+        return {"admin_action": _action, "admin_value": (d.get("admin_value") or "").strip() if _action else "",
+                "is_trade_question": _is_trade, "coin": _coin, "setup": d.get("setup") if (_is_trade and _coin) else None,
+                "best_model": _model}
+    except Exception as e:
+        print(f"  [CHAT COMBINED] classify failed: {e}")
+        return {"admin_action": None, "admin_value": "", "is_trade_question": False, "coin": None,
+                "setup": None, "best_model": "google"}
 
 def _strip_trigger_word(text: str, word: str):
     """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
@@ -3110,15 +3186,19 @@ def _boki_strip(text: str):
     ever uses free options (Aerolink or Google). See _chat_boki_text_reply."""
     return _strip_trigger_word(text, "boki")
 
-def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") -> str:
+def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "", precomputed_model: str = None) -> str:
     """Best-model-for-this-message, free-first-then-fallback text reply for
     a PECHI-tagged message. Classifies via the same router used for
     CHAT_MODEL=="auto", tries Aerolink first regardless of the session's own
     gateway setting. Full fallback chain so a single provider's outage or
     quota (Google's free tier is a famously tiny 5 RPM/20 RPD) can never be
     a dead end: Aerolink -> Direct (if Claude) -> Google -> Direct Claude as
-    a last resort. Only raises if every one of those genuinely fails."""
-    _model = _chat_classify_model(message)
+    a last resort. Only raises if every one of those genuinely fails.
+
+    precomputed_model: skips the classify call when the caller already got
+    a model pick from _chat_classify_combined() — avoids paying for the
+    same classification twice per message (2026-08-04 perf fix)."""
+    _model = precomputed_model or _chat_classify_model(message)
     if _model != "google":
         try:
             return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
@@ -3135,13 +3215,15 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "") 
         print(f"  [PECHI] Google also failed ({e3}) — final fallback to Direct Claude")
         return _chat_call_claude_text(history, "claude-sonnet-5", extra_system=extra_system, gateway_override="direct")
 
-def _chat_boki_text_reply(history: list, message: str, extra_system: str = "") -> str:
+def _chat_boki_text_reply(history: list, message: str, extra_system: str = "", precomputed_model: str = None) -> str:
     """BOKI trigger (admin-only, standalone, 2026-08-04): same best-model
     classification as PECHI, but ONLY ever uses free options (Aerolink or
     Google Gemini) — never falls back to the paid Direct/Anthropic API,
     even if the free Aerolink attempt fails. On failure it falls to Google
-    instead (still free, not Direct), rather than paying for a Direct call."""
-    _model = _chat_classify_model(message)
+    instead (still free, not Direct), rather than paying for a Direct call.
+
+    precomputed_model: see _chat_pechi_text_reply's docstring."""
+    _model = precomputed_model or _chat_classify_model(message)
     if _model == "google":
         return _chat_call_gemini_text(history, extra_system=extra_system)
     try:
@@ -3187,13 +3269,17 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
         else:
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
-            # always the admin here.
-            if _chat_try_admin_action(cid, message, True, sender_id=sender_id, reply_context=reply_context):
+            # always the admin here. ONE combined classify call instead of
+            # three separate ones (admin action + trade intent + best model)
+            # — see _chat_classify_combined's docstring.
+            _c = _chat_classify_combined(message, reply_context, is_admin=True)
+            if _chat_dispatch_admin_action(cid, sender_id, True, _c["admin_action"], _c["admin_value"]):
                 return
-            if _chat_try_trade_analysis(cid, message, True, reply_context=reply_context):
+            if _chat_dispatch_trade_analysis(cid, True, _c["coin"], _c["setup"]):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
-            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context())
+            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context(),
+                                        precomputed_model=_c["best_model"])
             send_reply(cid, reply_text, skip_smallcaps=True)
     except Exception as e:
         print(f"  [{tag}] {cid}: {e}")
@@ -3264,41 +3350,49 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
-        elif _chat_try_admin_action(cid, text, _is_admin_cid, sender_id=sender_id, reply_context=reply_context):
-            # Live admin control request (2026-08-04) — executed directly
-            # against the real bot action, not a normal conversational reply.
-            sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            sess["history"].append({"role": "model", "parts": [{"text": "[executed an Aerolink key pause/unpause]"}]})
-        elif _chat_try_trade_analysis(cid, text, _is_admin_cid, reply_context=reply_context):
-            # Real trade question about a specific coin (2026-08-04 request) —
-            # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
-            # not a normal conversational reply. Still logged into history so
-            # follow-up chat messages have some record this happened.
-            sess["history"].append({"role": "user", "parts": [{"text": text}]})
-            sess["history"].append({"role": "model", "parts": [{"text": "[ran a live BingX trade analysis]"}]})
         else:
-            # Folds in the replied-to message's text (if any — see
-            # _extract_reply_context), so "reply to a signal, then ask
-            # what's the SL on this" actually has something to answer from.
-            _ai_text = _combine_reply_context(text, reply_context)
-            sess["history"].append({"role": "user", "parts": [{"text": _ai_text}]})
-            # Admin-only personal-assistant context (2026-08-03 request) — never
-            # injected for a regular user's session.
-            _extra_ctx = _admin_chat_context() if _is_admin_cid else ""
-            if _is_pechi:
-                reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx)
+            # ONE combined classify call instead of up to three separate
+            # sequential ones (admin action + trade intent + best-model
+            # routing) — see _chat_classify_combined's docstring for why
+            # this matters (an admin report of "boki... nothing happening"
+            # that turned out to just be paying for 3 round-trips in a row).
+            _c = _chat_classify_combined(text, reply_context, is_admin=_is_admin_cid)
+            if _chat_dispatch_admin_action(cid, sender_id, _is_admin_cid, _c["admin_action"], _c["admin_value"]):
+                # Live admin control request — executed directly against the
+                # real bot action, not a normal conversational reply.
+                sess["history"].append({"role": "user", "parts": [{"text": text}]})
+                sess["history"].append({"role": "model", "parts": [{"text": "[executed a live admin action]"}]})
+            elif _chat_dispatch_trade_analysis(cid, _is_admin_cid, _c["coin"], _c["setup"]):
+                # Real trade question about a specific coin (2026-08-04 request) —
+                # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
+                # not a normal conversational reply. Still logged into history so
+                # follow-up chat messages have some record this happened.
+                sess["history"].append({"role": "user", "parts": [{"text": text}]})
+                sess["history"].append({"role": "model", "parts": [{"text": "[ran a live BingX trade analysis]"}]})
             else:
-                _active_model = CHAT_MODEL
-                if CHAT_MODEL == "auto":
-                    _active_model = _chat_classify_model(_ai_text)
-                    print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
-                if _active_model != "google":
-                    reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                         gateway_override=sess.get("gateway"))
+                # Folds in the replied-to message's text (if any — see
+                # _extract_reply_context), so "reply to a signal, then ask
+                # what's the SL on this" actually has something to answer from.
+                _ai_text = _combine_reply_context(text, reply_context)
+                sess["history"].append({"role": "user", "parts": [{"text": _ai_text}]})
+                # Admin-only personal-assistant context (2026-08-03 request) — never
+                # injected for a regular user's session.
+                _extra_ctx = _admin_chat_context() if _is_admin_cid else ""
+                if _is_pechi:
+                    reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx,
+                                                          precomputed_model=_c["best_model"])
                 else:
-                    reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
-            sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
-            send_reply(cid, reply_text, skip_smallcaps=True)
+                    _active_model = CHAT_MODEL
+                    if CHAT_MODEL == "auto":
+                        _active_model = _c["best_model"]  # reuse the combined classify's pick, don't re-classify
+                        print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
+                    if _active_model != "google":
+                        reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                             gateway_override=sess.get("gateway"))
+                    else:
+                        reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
+                sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
+                send_reply(cid, reply_text, skip_smallcaps=True)
         # Trim history to bound token usage
         max_msgs = _CHAT_HISTORY_MAX_TURNS * 2
         if len(sess["history"]) > max_msgs:
