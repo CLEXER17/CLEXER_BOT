@@ -8301,8 +8301,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         else:
             _is_admin_own_chat = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
             _reply_note = "" if _is_admin_own_chat else ("\n\n↪️ " + _math_sans(
-                "In a group: reply directly to one of my messages to get a response.\n"
-                "In a private chat: forward a message here instead — plain typed messages won't trigger a response."))
+                "Group: reply to one of my messages.\n"
+                "Private: forward a message to me.\n"
+                "(just typing won't work)"))
             send_reply(chat_id,
                 "𝐀𝐈 𝐀𝐒𝐒𝐈𝐒𝐓𝐀𝐍𝐓\n𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
                 + _math_sans(
