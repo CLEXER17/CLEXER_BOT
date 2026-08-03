@@ -2088,11 +2088,63 @@ _CHAT_SYSTEM_PROMPT = (
     "AI models, general knowledge, etc.), and never more than once every few messages in a row."
 )
 
-def _chat_call_gemini_text(history: list) -> str:
+def _admin_live_status() -> str:
+    """Live snapshot of the bot's own state, rebuilt fresh on every admin chat
+    message — feeds _admin_chat_context() so "what's S1 doing" type questions
+    get real current numbers, never a stale cached answer."""
+    _btc_line = f"{active_trade['signal']} @ {active_trade['entry']:,.0f}" if active_trade.get("signal") else "no active trade"
+    _s1_syms  = ", ".join(t.get("symbol", "?") for t in scan1_trades) or "none open"
+    _s2_syms  = ", ".join(t.get("symbol", "?") for t in scan2_trades) or "none open"
+    _ts1_syms = ", ".join(t.get("symbol", "?") for t in demo_scan1_trades) or "none open"
+    _ts2_syms = ", ".join(t.get("symbol", "?") for t in demo_scan2_trades) or "none open"
+    _total_keys  = len([k for k in _aerolink_all_key_slots() if k])
+    _active_keys = len(_aerolink_configured_keys())
+    return (
+        f"- Bot status: {'PAUSED' if bot_paused.is_set() else ('STOPPED' if bot_stopped.is_set() else 'RUNNING')}\n"
+        f"- Gateway: {'Aerolink' if USE_AEROLINK else 'Direct'} | Aerolink keys: {_active_keys}/{_total_keys} active ({_total_keys - _active_keys} paused)\n"
+        f"- Scan AI model: {SCAN_MODEL}\n"
+        f"- Chat AI model: {CHAT_MODEL} (image engine: {CHAT_IMAGE_MODEL})\n"
+        f"- Scan1 auto: {'ON' if SCAN1_AUTO_ENABLED else 'OFF'} | open trades: {_s1_syms}\n"
+        f"- Scan2 auto: {'ON' if SCAN2_AUTO_ENABLED else 'OFF'} | open trades: {_s2_syms}\n"
+        f"- TS1/TS2 auto: {'ON' if TEST_SCAN_ENABLED else 'OFF'} | TS1 open: {_ts1_syms} | TS2 open: {_ts2_syms}\n"
+        f"- BTC scan: {'ON' if btc_analysis_enabled else 'OFF'} | active trade: {_btc_line}\n"
+        f"- Free-channel share quota: {FREE_SIGNAL_DAILY_LIMIT}%\n"
+    )
+
+def _admin_chat_context() -> str:
+    """Extra system-prompt block injected ONLY into the ADMIN's own /chat
+    session (2026-08-03 admin request) — turns /chat into a personal
+    assistant that also knows this bot's own command/button layout and can
+    answer live "what's my bot doing right now" questions. Never injected
+    for a regular user's session — this is admin-only context by design."""
+    return (
+        "You ALSO act as the admin's personal assistant for the Telegram bot you're "
+        "running inside (CLEXER BOT) — answer meta-questions about the bot itself using "
+        "the reference and live status below. Be direct and specific (exact command "
+        "names, exact button/menu labels), not vague.\n\n"
+        "BOT COMMAND/BUTTON REFERENCE:\n"
+        "- Scan Control: main menu -> 🎯 Scan Control (or /scan1, /scan2 to run manually, "
+        "/scantoggle to turn auto-scanning on/off)\n"
+        "- AI Gateway (Direct vs Aerolink): /gateway direct | /gateway aerolink, or the "
+        "'AI Gateway' button under Scan Control -> TV & Advanced\n"
+        "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it\n"
+        "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any newer catalog model\n"
+        "- /chat's own AI model (text + image, separately): /chatmodel\n"
+        "- Free-channel share %: the Free-Limit setting under Broadcast & Channels\n"
+        "- Switch active server (multi-server rotation): /server <name>\n"
+        "- Force-push all local state to the shared store before migrating servers: /syncup\n"
+        "- Trade Control (close a coin, move SL to breakeven, set custom SL/TP): main menu "
+        "-> 🛠 Trade Control\n"
+        "- Copy Admin / user management, VIP-Free tier control: main menu -> Copy Admin\n\n"
+        f"LIVE STATUS (as of right now):\n{_admin_live_status()}"
+    )
+
+def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    _sys = _CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
     body = {
         "contents": history,
-        "systemInstruction": {"parts": [{"text": _CHAT_SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": _sys}]},
     }
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
     if not r.ok:
@@ -2101,7 +2153,7 @@ def _chat_call_gemini_text(history: list) -> str:
     parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
     return "".join(p.get("text","") for p in parts).strip() or "…"
 
-def _chat_call_claude_text(history: list, model_id: str) -> str:
+def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "") -> str:
     """Same conversation history format as Gemini (role 'user'/'model', one
     text part each) — translated to Claude's 'user'/'assistant' shape so
     /model can swap engines without touching how history is stored."""
@@ -2111,7 +2163,7 @@ def _chat_call_claude_text(history: list, model_id: str) -> str:
     resp = client.messages.create(
         model=model_id,
         max_tokens=2000,
-        system=_CHAT_SYSTEM_PROMPT,
+        system=_CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else ""),
         thinking={"type": "adaptive"},
         output_config={"effort": "medium"},
         messages=messages,
@@ -2228,10 +2280,13 @@ def _handle_chat_message(cid, text: str):
             if CHAT_MODEL == "auto":
                 _active_model = _chat_classify_model(text)
                 print(f"  [CHAT ROUTE] '{text[:60]}' -> {_active_model}")
+            # Admin-only personal-assistant context (2026-08-03 request) — never
+            # injected for a regular user's session.
+            _extra_ctx = _admin_chat_context() if (ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) else ""
             if _active_model != "google":
-                reply_text = _chat_call_claude_text(sess["history"], _active_model)
+                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx)
             else:
-                reply_text = _chat_call_gemini_text(sess["history"])
+                reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
             sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
             send_reply(cid, reply_text)
         # Trim history to bound token usage
