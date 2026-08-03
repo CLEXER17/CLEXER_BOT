@@ -2092,6 +2092,14 @@ _CHAT_SYSTEM_PROMPT = (
     "AI models, general knowledge, etc.), and never more than once every few messages in a row."
 )
 
+def _admin_model_catalog_list() -> str:
+    """Full enumerated model catalog for _admin_chat_context() — built from
+    _AEROLINK_MODEL_CATALOG directly so it can never drift out of sync with
+    what /model and /chatmodel actually offer as new models get added."""
+    _text  = [f"  - {mid} ({info['label']}, {info['tier']})" for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "text"]
+    _image = [f"  - {mid} ({info['label']})" for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "image"]
+    return "Text models:\n" + "\n".join(_text) + "\nImage models:\n" + "\n".join(_image)
+
 def _admin_live_status() -> str:
     """Live snapshot of the bot's own state, rebuilt fresh on every admin chat
     message — feeds _admin_chat_context() so "what's S1 doing" type questions
@@ -2132,8 +2140,10 @@ def _admin_chat_context() -> str:
         "- AI Gateway (Direct vs Aerolink): /gateway direct | /gateway aerolink, or the "
         "'AI Gateway' button under Scan Control -> TV & Advanced\n"
         "- Change/pause Aerolink keys: /aerolinkkeys -- tap any key slot to pause/resume it\n"
-        "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any newer catalog model\n"
-        "- /chat's own AI model (text + image, separately): /chatmodel\n"
+        "- Scan analysis AI model: /model -- Opus 5, Fable 5, or any of the text models "
+        "listed under FULL MODEL CATALOG below\n"
+        "- /chat's own AI model (text + image, separately): /chatmodel -- pick from Google "
+        "Gemini (free), Auto (smart routing), or any model in FULL MODEL CATALOG below\n"
         "- /chat's own gateway (Direct vs Aerolink, Claude models only): the Direct/Aerolink "
         "buttons at the top of /chatmodel, or say \"switch direct\" / \"switch free\" inside an "
         "active chat session to override it for just that session\n"
@@ -2143,6 +2153,10 @@ def _admin_chat_context() -> str:
         "- Trade Control (close a coin, move SL to breakeven, set custom SL/TP): main menu "
         "-> 🛠 Trade Control\n"
         "- Copy Admin / user management, VIP-Free tier control: main menu -> Copy Admin\n\n"
+        "FULL MODEL CATALOG (every model the bot currently supports via Aerolink, besides "
+        "Google Gemini which is separate/free) — when asked \"which models do you support,\" "
+        "list ALL of these by name, don't just say \"and other models\":\n"
+        f"{_admin_model_catalog_list()}\n\n"
         f"LIVE STATUS (as of right now):\n{_admin_live_status()}"
     )
 
