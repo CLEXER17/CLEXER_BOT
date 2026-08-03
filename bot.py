@@ -2324,75 +2324,86 @@ def _combine_reply_context(message: str, reply_context: str) -> str:
         return message
     return f'[Replying to this message: "{reply_context.strip()}"]\n\n{message}'
 
-_CHAT_TRADE_HINTS = ("trade", "entry", "target", "stop loss", " sl ", "sl?", "long", "short",
-                     "setup", "buy", "sell", "resistance", "support", "risk", "reward",
-                     "leverage", "position", "chart", "technical analysis", " ta ")
-
-def _chat_is_trade_question(text: str) -> bool:
-    """True if a /chat message reads like a genuine trade-setup question
-    (admin request 2026-08-04: "don't just reason from raw numbers I typed —
-    fetch real BingX data and analyze it properly"), not just casual chat
-    that happens to mention a coin name in passing."""
-    t = f" {text.lower()} "
-    return any(h in t for h in _CHAT_TRADE_HINTS)
-
-def _chat_resolve_coin_symbol(text: str, own_message: str = None):
-    """Best-effort coin-symbol extraction for a trade question, against
-    BingX's live perpetual contract list (same matching /coin itself uses).
-
-    Fixed 2026-08-04 after a real misfire: "reply to a BTC message" +
-    "...take-profit levels..." (from the replied-to text) resolved to TAKE
-    (a real, obscure listed token) instead of BTC, purely because "take" is
-    a longer string than "btc" and the old logic just picked the longest
-    match anywhere in the combined text, with no sense of what the user
-    actually meant. Now checked in priority order, each tier only consulted
-    if the one above found nothing:
-      1. ALL-CAPS token in the user's own current message (own_message) —
-         someone typing "BTC" in caps is the strongest possible signal.
-      2. ALL-CAPS token anywhere, including reply-context.
-      3. Any-case token in the user's own message.
-      4. Any-case token anywhere (weakest — last resort, matches old behavior).
-    Within each tier, longest match wins (still useful for e.g. "ETHEREUM"
-    vs a shorter coincidental match). Returns a BingX symbol (e.g.
-    "BTC-USDT") or None if nothing matches a real listed coin at any tier."""
+def _bingx_symbol_for_base(base: str):
+    """Verifies a coin base ticker (e.g. "BTC") against BingX's live
+    perpetual contract list, returning the real symbol (e.g. "BTC-USDT") or
+    None if it isn't actually listed — never trust a model's coin guess
+    without checking it against something real."""
+    if not base:
+        return None
     try:
         r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts", timeout=10).json()
         all_contracts = r.get("data", [])
     except Exception as e:
         print(f"  [CHAT TRADE] contracts fetch failed: {e}")
         return None
-    _bases = {c.get("symbol", "").replace("-USDT", ""): c.get("symbol", "") for c in all_contracts}
+    _bases = {c.get("symbol", "").replace("-USDT", "").upper(): c.get("symbol", "") for c in all_contracts}
+    return _bases.get(base.strip().upper())
 
-    def _search(haystack: str, caps_only: bool):
-        _words = re.findall(r"[A-Za-z]{2,10}", haystack)
-        _cands = [w for w in _words if not caps_only or w.isupper()]
-        for w in sorted(set(_cands), key=len, reverse=True):
-            if w.upper() in _bases:
-                return _bases[w.upper()]
-        return None
+def _chat_classify_trade_intent(own_message: str, reply_context: str):
+    """Reads BOTH the user's own message and whatever they replied to
+    TOGETHER (admin request 2026-08-04: "read both messages, then we know
+    what's being asked") to decide if this is a genuine trade question and,
+    if so, which specific coin — replacing the old keyword-list + longest-
+    string-match heuristic, which could misfire two ways: picking the wrong
+    one of several coins mentioned, or matching an incidental English word
+    that coincidentally happens to be a real obscure ticker (e.g.
+    "take-profit" containing "take", itself a listed token — the actual bug
+    that got reported). A model reading both messages in context doesn't
+    make either mistake. Uses the same fast/cheap Aerolink classifier as
+    CHAT_MODEL=="auto" routing. Returns (is_trade_question: bool, symbol:
+    str or None) — symbol is verified against BingX's real contract list
+    via _bingx_symbol_for_base before being trusted, so a hallucinated or
+    misspelled coin never gets treated as resolved."""
+    _prompt = (
+        "Read both messages below and decide if the user is asking for a trade/market "
+        "analysis on a specific cryptocurrency, and if so, which one.\n\n"
+        f'Replied-to message (context, may be empty): "{reply_context}"\n'
+        f'User\'s actual message: "{own_message}"\n\n'
+        'Reply with ONLY this exact JSON, nothing else:\n'
+        '{"is_trade_question": true or false, "coin": "BTC" or null}\n\n'
+        "Rules:\n"
+        "- is_trade_question is true only for a genuine trade setup / entry / target / "
+        "stop-loss / trade validity / technical-analysis question — not a casual mention.\n"
+        "- coin is the base ticker (e.g. BTC, ETH, SOL) of the SPECIFIC coin actually being "
+        "asked about, using context from BOTH messages together — a reply-thread quote often "
+        "clarifies which coin a short follow-up question is really about.\n"
+        "- If more than one coin is mentioned, pick the one that's the actual subject of the "
+        "question, not just any coin name that appears.\n"
+        "- If no specific coin can be determined, coin must be null."
+    )
+    try:
+        client = _claude_client("chat", force_aerolink=True)
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=60,
+                                       messages=[{"role": "user", "content": _prompt}])
+        _raw = _claude_text(resp) or ""
+        _m = re.search(r'\{.*\}', _raw, re.DOTALL)
+        d = json.loads(_m.group()) if _m else {}
+        is_trade = bool(d.get("is_trade_question"))
+        if not is_trade:
+            return False, None
+        return True, _bingx_symbol_for_base(d.get("coin"))
+    except Exception as e:
+        print(f"  [CHAT TRADE] classify failed: {e}")
+        return False, None
 
-    _own = own_message if own_message is not None else text
-    return (_search(_own, True) or _search(text, True)
-            or _search(_own, False) or _search(text, False))
-
-def _chat_try_trade_analysis(cid, text: str, is_admin: bool, own_message: str = None) -> bool:
-    """If this looks like a genuine trade question about a specific real
-    coin, runs it through the SAME live-data pipeline /coin uses
-    (_coin_analysis_data: real BingX price/24h range/volume + SCAN_MODEL, the
-    bot's own designated best/most-powerful model for real analysis) instead
-    of a plain conversational reply reasoning only off whatever numbers the
-    user happened to type — but formatted as a normal chat reply
-    (_chat_format_trade_analysis), not /coin's own boxed dashboard style.
-    Admin-only, matching /coin's own scanadmin gate and the cost of a real
-    analysis call. own_message (the user's own typed text, before any reply-
-    context is prepended) is passed through to _chat_resolve_coin_symbol so
-    it's prioritized over the replied-to message's own wording. Returns True
-    if it handled the message (caller should not also generate a normal
-    chat reply)."""
-    if not is_admin or not _chat_is_trade_question(text):
+def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
+    """Reads both the user's own message and whatever they replied to (via
+    _chat_classify_trade_intent) to decide if this is a genuine trade
+    question about a specific real coin. If so, runs it through the SAME
+    live-data pipeline /coin uses (_coin_analysis_data: real BingX price/24h
+    range/volume + SCAN_MODEL, the bot's own designated best/most-powerful
+    model for real analysis) instead of a plain conversational reply
+    reasoning only off whatever numbers the user happened to type — but
+    formatted as a normal chat reply (_chat_format_trade_analysis), not
+    /coin's own boxed dashboard style. Admin-only, matching /coin's own
+    scanadmin gate and the cost of two real API calls (classify + analyze).
+    Returns True if it handled the message (caller should not also generate
+    a normal chat reply)."""
+    if not is_admin:
         return False
-    sym = _chat_resolve_coin_symbol(text, own_message=own_message)
-    if not sym:
+    is_trade, sym = _chat_classify_trade_intent(own_message, reply_context)
+    if not is_trade or not sym:
         return False
     send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
     def _run():
@@ -2504,7 +2515,7 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
             # always the admin here — real trade question -> live BingX pipeline.
-            if _chat_try_trade_analysis(cid, _ai_message, True, own_message=message):
+            if _chat_try_trade_analysis(cid, message, True, reply_context=reply_context):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
             reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context())
@@ -2578,7 +2589,7 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
             sess["history"].append({"role": "user", "parts": [{"text": text}]})
             sess["history"].append({"role": "model", "parts": [{"text": reply_text or "[sent an image]"}]})
-        elif _chat_try_trade_analysis(cid, _combine_reply_context(text, reply_context), _is_admin_cid, own_message=text):
+        elif _chat_try_trade_analysis(cid, text, _is_admin_cid, reply_context=reply_context):
             # Real trade question about a specific coin (2026-08-04 request) —
             # handled entirely by _do_coin_analysis's live-BingX-data pipeline,
             # not a normal conversational reply. Still logged into history so
