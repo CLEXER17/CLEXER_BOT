@@ -53,7 +53,7 @@ AEROLINK_API_KEY_20 = os.getenv("AEROLINK_API_KEY_20", "")   # 20th Aerolink key
 AEROLINK_BASE_URL   = os.getenv("AEROLINK_BASE_URL",   "https://capi.aerolink.lat/")
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY",      "")   # free-tier key from aistudio.google.com — powers /chat
 CHAT_MODEL = "google"        # "google" (direct Gemini REST) or any text model id in _AEROLINK_MODEL_CATALOG — /chat's text engine, admin-only via /chatmodel, defaults to Gemini
-CHAT_IMAGE_MODEL = "pollinations"   # "pollinations" (free, no key) or any image model id in _AEROLINK_MODEL_CATALOG
+CHAT_IMAGE_MODEL = "gemini-3-pro-image"   # best-tier by default, auto-falls back to "pollinations" (free) on any failure — see _handle_chat_message's image branch. Admin-overridable via /chatmodel.
 
 # Full catalog of models reachable through the Aerolink gateway (2026-08-03 admin
 # request) — used by BOTH /chatmodel (chat's text+image engine picker) and /model
