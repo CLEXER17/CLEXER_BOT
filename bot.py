@@ -2359,19 +2359,28 @@ def _chat_resolve_coin_symbol(text: str):
 def _chat_try_trade_analysis(cid, text: str, is_admin: bool) -> bool:
     """If this looks like a genuine trade question about a specific real
     coin, runs it through the SAME live-data pipeline /coin uses
-    (_do_coin_analysis: real BingX price/24h range/volume + SCAN_MODEL, the
+    (_coin_analysis_data: real BingX price/24h range/volume + SCAN_MODEL, the
     bot's own designated best/most-powerful model for real analysis) instead
     of a plain conversational reply reasoning only off whatever numbers the
-    user happened to type. Admin-only, matching /coin's own scanadmin gate
-    and the cost of a real analysis call. Returns True if it handled the
-    message (caller should not also generate a normal chat reply)."""
+    user happened to type — but formatted as a normal chat reply
+    (_chat_format_trade_analysis), not /coin's own boxed dashboard style.
+    Admin-only, matching /coin's own scanadmin gate and the cost of a real
+    analysis call. Returns True if it handled the message (caller should
+    not also generate a normal chat reply)."""
     if not is_admin or not _chat_is_trade_question(text):
         return False
     sym = _chat_resolve_coin_symbol(text)
     if not sym:
         return False
     send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
-    threading.Thread(target=_do_coin_analysis, args=(cid, sym, "MARKET"), daemon=True).start()
+    def _run():
+        try:
+            a = _coin_analysis_data(sym, "MARKET")
+            send_reply(cid, _chat_format_trade_analysis(a), skip_smallcaps=True)
+        except Exception as e:
+            print(f"  [CHAT TRADE] {cid}: {e}")
+            send_reply(cid, f"⚠️ Couldn't analyze {sym.replace('-','/')} right now — try again.", skip_smallcaps=True)
+    threading.Thread(target=_run, daemon=True).start()
     return True
 
 def _strip_trigger_word(text: str, word: str):
@@ -8209,99 +8218,146 @@ def _dnav_send_file(chat_id, report_type, year, month, week=None, message_id=Non
         data={"chat_id": chat_id, "caption": f"{period_label} — {len(filtered)} rows"},
         files={"document": (fname, content, "text/csv")}, timeout=30)
 
+def _coin_analysis_data(sym: str, entry_type: str) -> dict:
+    """Core live-data + SCAN_MODEL analysis, shared by /coin's own boxed
+    output (_do_coin_analysis) and /chat's conversational trade-analysis
+    reply (_chat_format_trade_analysis) — fetches BingX ticker data and
+    calls SCAN_MODEL, same as before, just split apart from formatting so
+    the two callers can look completely different. Raises on any failure
+    (bad ticker fetch, etc.) so each caller formats its own error message."""
+    pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                      params={"symbol": sym}, timeout=10).json()
+    if pr.get("code") != 0:
+        raise Exception(f"Could not fetch ticker for {sym}: {pr.get('msg','?')}")
+    d      = pr.get("data", {})
+    price  = float(d.get("lastPrice", 0))
+    change = float(d.get("priceChangePercent", 0))
+    high24 = float(d.get("highPrice", 0))
+    low24  = float(d.get("lowPrice",  0))
+    vol    = float(d.get("volume", 0))
+
+    _is_market = entry_type == "MARKET"
+    _entry_json_field = ('"entry":"e.g. 1794.20 (at or very near current price)"' if _is_market
+                          else '"entry_zone":"e.g. 1791-1798"')
+    _entry_instr = ("Give a MARKET entry — a single price at or within ~0.2% of the current price, "
+                    "tradeable right now, not a zone to wait for."
+                    if _is_market else
+                    "Give a PULLBACK entry — a zone (low-high) the price should retrace to before entering, "
+                    "not the current price.")
+    resp = _claude_client().messages.create(
+        model=SCAN_MODEL, max_tokens=700,
+        system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
+        messages=[{"role": "user", "content":
+            f"Analyze {sym} for a short-term futures trade:\n"
+            f"Current Price: ${price:,.6g}\n"
+            f"24h Change: {change:+.2f}%\n"
+            f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
+            f"24h Volume: ${vol:,.0f}\n"
+            f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
+            f"{_entry_instr}\n\n"
+            f'Return this exact JSON shape:\n'
+            f'{{"bias":"LONG|SHORT|WAIT",{_entry_json_field},'
+            f'"sl":"e.g. 1846","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
+            f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
+            f'"practical_note":"1-2 sentences, the actual trade plan in plain words",'
+            f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
+            f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
+    _log_api_usage(f"coin_{sym}", SCAN_MODEL,
+                   resp.usage.input_tokens, resp.usage.output_tokens,
+                   gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
+    import json as _cjson, re as _cre
+    _raw = _claude_text(resp)
+    _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
+    a = _cjson.loads(_m.group()) if _m else {}
+    return {
+        "sym": sym, "entry_type": entry_type, "is_market": _is_market,
+        "price": price, "change": change, "high24": high24, "low24": low24, "vol": vol,
+        "bias": str(a.get("bias", "WAIT")).upper(),
+        "confidence": str(a.get("confidence", "LOW")).upper(),
+        "entry_val": (a.get("entry", "—") if _is_market else a.get("entry_zone", "—")),
+        "sl": a.get("sl", "—"), "tp1": a.get("tp1", "—"), "tp2": a.get("tp2", "—"),
+        "reasoning": a.get("reasoning") or [],
+        "practical_note": str(a.get("practical_note", "Size small — low-conviction setup.")),
+        "btc_watch": a.get("btc_watch") or [],
+    }
+
 def _do_coin_analysis(cid: str, sym: str, entry_type: str):
     """The actual /coin lookup analysis, run after the user picks Market or
     Pullback entry style. MARKET asks Claude for a single tradeable entry
     price near current market; PULLBACK asks for a zone to wait for, same as
     the original (and only) behavior before this choice existed."""
     try:
-        pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
-                          params={"symbol": sym}, timeout=10).json()
-        if pr.get("code") != 0:
-            send_reply(cid, f"❌ Could not fetch ticker for {sym}: {pr.get('msg','?')}"); return
-        d      = pr.get("data", {})
-        price  = float(d.get("lastPrice", 0))
-        change = float(d.get("priceChangePercent", 0))
-        high24 = float(d.get("highPrice", 0))
-        low24  = float(d.get("lowPrice",  0))
-        vol    = float(d.get("volume", 0))
-
-        _is_market = entry_type == "MARKET"
-        _entry_json_field = ('"entry":"e.g. 1794.20 (at or very near current price)"' if _is_market
-                              else '"entry_zone":"e.g. 1791-1798"')
-        _entry_instr = ("Give a MARKET entry — a single price at or within ~0.2% of the current price, "
-                        "tradeable right now, not a zone to wait for."
-                        if _is_market else
-                        "Give a PULLBACK entry — a zone (low-high) the price should retrace to before entering, "
-                        "not the current price.")
-        resp = _claude_client().messages.create(
-            model=SCAN_MODEL, max_tokens=700,
-            system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
-            messages=[{"role": "user", "content":
-                f"Analyze {sym} for a short-term futures trade:\n"
-                f"Current Price: ${price:,.6g}\n"
-                f"24h Change: {change:+.2f}%\n"
-                f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
-                f"24h Volume: ${vol:,.0f}\n"
-                f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
-                f"{_entry_instr}\n\n"
-                f'Return this exact JSON shape:\n'
-                f'{{"bias":"LONG|SHORT|WAIT",{_entry_json_field},'
-                f'"sl":"e.g. 1846","tp1":"e.g. 1778","tp2":"e.g. 1773.45",'
-                f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
-                f'"practical_note":"1-2 sentences, the actual trade plan in plain words",'
-                f'"btc_watch":["if BTC does X, then...","if BTC does Y, then..."]}}\n\n'
-                f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
-        _log_api_usage(f"coin_{sym}", SCAN_MODEL,
-                       resp.usage.input_tokens, resp.usage.output_tokens,
-                       gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
-        import json as _cjson, re as _cre
-        _raw = _claude_text(resp)
-        _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
-        a = _cjson.loads(_m.group()) if _m else {}
-        bias  = str(a.get("bias","WAIT")).upper()
-        conf  = str(a.get("confidence","LOW")).upper()
-        arrow = "🟢" if change >= 0 else "🔴"
-        bias_emoji = "🟢" if bias == "LONG" else ("🔴" if bias == "SHORT" else "🟡")
-        reasoning = a.get("reasoning") or []
-        btc_watch = a.get("btc_watch") or []
-        _reason_lines = "\n".join(f"• {_smallcaps_title(str(r))}" for r in reasoning) or f"• {_smallcaps_title('No clear structure yet')}"
-        _btc_lines = "\n".join(f"• {_smallcaps_title(str(b))}" for b in btc_watch)
-        coin_disp = sym.replace("-", "/")
-        _BORDER = "࿇═════════════════════════════════࿇"
-        _DIV    = "━━━━━━━━━━━━━━━━━━━━"
-        _entry_label = "Market Entry" if _is_market else "Entry Zone"
-        _entry_val   = a.get("entry", "—") if _is_market else a.get("entry_zone", "—")
-        text_out = (
-            f"{_BORDER}\n"
-            f"✦ {_smallcaps_title('Coin Analysis')} ✦\n"
-            f"{_BORDER}\n\n"
-            f"{arrow} {coin_disp}  {'📈' if _is_market else '⏳'} {entry_type.title()}\n"
-            f"📅 {ist_str()}\n\n"
-            f"{_DIV}\n\n"
-            f"💰 {_smallcaps_title('Price')}: ${price:,.6g} ({change:+.2f}%)\n"
-            f"📈 24ʜ {_smallcaps_title('High')}: ${high24:,.6g}\n"
-            f"📉 24ʜ {_smallcaps_title('Low')}: ${low24:,.6g}\n"
-            f"📦 {_smallcaps_title('Volume')}: ${vol/1e6:.1f}M\n\n"
-            f"{_DIV}\n\n"
-            f"🧠 {_smallcaps_title('AI Analysis')}\n\n"
-            f"📍 {_smallcaps_title('Bias')}: {bias_emoji} {bias}\n\n"
-            f"🎯 {_smallcaps_title(_entry_label)}:\n{_entry_val}\n\n"
-            f"🛑 {_smallcaps_title('Stop Loss')}:\n{a.get('sl','—')}\n\n"
-            f"🎯 {_smallcaps_title('Targets')}:\n"
-            f"• TP1: {a.get('tp1','—')}\n"
-            f"• TP2: {a.get('tp2','—')}\n\n"
-            f"📊 {_smallcaps_title('Confidence')}:\n{conf}\n\n"
-            f"{_DIV}\n\n"
-            f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
-            f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(str(a.get('practical_note','Size small — low-conviction setup.')))}</blockquote>\n\n"
-            + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
-            + f"{_DIV}"
-        )
-        send_reply(cid, text_out)
+        a = _coin_analysis_data(sym, entry_type)
     except Exception as e:
         send_reply(cid, f"❌ Error: {e}")
         import traceback; traceback.print_exc()
+        return
+    arrow = "🟢" if a["change"] >= 0 else "🔴"
+    bias_emoji = "🟢" if a["bias"] == "LONG" else ("🔴" if a["bias"] == "SHORT" else "🟡")
+    _reason_lines = "\n".join(f"• {_smallcaps_title(str(r))}" for r in a["reasoning"]) or f"• {_smallcaps_title('No clear structure yet')}"
+    _btc_lines = "\n".join(f"• {_smallcaps_title(str(b))}" for b in a["btc_watch"])
+    coin_disp = sym.replace("-", "/")
+    _BORDER = "࿇═════════════════════════════════࿇"
+    _DIV    = "━━━━━━━━━━━━━━━━━━━━"
+    _entry_label = "Market Entry" if a["is_market"] else "Entry Zone"
+    text_out = (
+        f"{_BORDER}\n"
+        f"✦ {_smallcaps_title('Coin Analysis')} ✦\n"
+        f"{_BORDER}\n\n"
+        f"{arrow} {coin_disp}  {'📈' if a['is_market'] else '⏳'} {entry_type.title()}\n"
+        f"📅 {ist_str()}\n\n"
+        f"{_DIV}\n\n"
+        f"💰 {_smallcaps_title('Price')}: ${a['price']:,.6g} ({a['change']:+.2f}%)\n"
+        f"📈 24ʜ {_smallcaps_title('High')}: ${a['high24']:,.6g}\n"
+        f"📉 24ʜ {_smallcaps_title('Low')}: ${a['low24']:,.6g}\n"
+        f"📦 {_smallcaps_title('Volume')}: ${a['vol']/1e6:.1f}M\n\n"
+        f"{_DIV}\n\n"
+        f"🧠 {_smallcaps_title('AI Analysis')}\n\n"
+        f"📍 {_smallcaps_title('Bias')}: {bias_emoji} {a['bias']}\n\n"
+        f"🎯 {_smallcaps_title(_entry_label)}:\n{a['entry_val']}\n\n"
+        f"🛑 {_smallcaps_title('Stop Loss')}:\n{a['sl']}\n\n"
+        f"🎯 {_smallcaps_title('Targets')}:\n"
+        f"• TP1: {a['tp1']}\n"
+        f"• TP2: {a['tp2']}\n\n"
+        f"📊 {_smallcaps_title('Confidence')}:\n{a['confidence']}\n\n"
+        f"{_DIV}\n\n"
+        f"📖 <blockquote>{_smallcaps_title('Reason')}\n\n{_reason_lines}</blockquote>\n\n"
+        f"⚠️ <blockquote>{_smallcaps_title('Practical Note')}\n\n{_smallcaps_title(a['practical_note'])}</blockquote>\n\n"
+        + (f"📌 {_smallcaps_title('Keep an Eye on BTC')}:\n{_btc_lines}\n\n" if _btc_lines else "")
+        + f"{_DIV}"
+    )
+    send_reply(cid, text_out)
+
+def _chat_format_trade_analysis(a: dict) -> str:
+    """Natural, conversational trade-analysis reply for /chat/PECHI/BOKI —
+    same underlying live-BingX-data + SCAN_MODEL analysis as /coin's own
+    output (_coin_analysis_data), just written as a normal chat message
+    instead of /coin's boxed/bordered dashboard style (admin: that look is
+    "too odd" for a conversational reply, wants something different)."""
+    coin_disp = a["sym"].replace("-", "/")
+    bias_word = {"LONG": "a <b>long</b>", "SHORT": "a <b>short</b>", "WAIT": "no clean setup"}[a["bias"]]
+    bias_emoji = {"LONG": "🟢", "SHORT": "🔴", "WAIT": "🟡"}[a["bias"]]
+    _entry_label = "Entry" if a["is_market"] else "Entry zone"
+    _reason = "\n".join(f"• {r}" for r in a["reasoning"]) or "• No clear structure yet"
+    lines = [
+        f"{bias_emoji} <b>{coin_disp}</b> is at <code>${a['price']:,.6g}</code> right now "
+        f"({a['change']:+.2f}% today) — I'd lean {bias_word} here.",
+        "",
+        f"{_entry_label}: <code>{a['entry_val']}</code>",
+        f"Stop loss: <code>{a['sl']}</code>",
+        f"Targets: <code>{a['tp1']}</code> / <code>{a['tp2']}</code>",
+        f"Confidence: <b>{a['confidence']}</b>",
+        "",
+        f"<blockquote>{_reason}</blockquote>",
+        "",
+        f"<i>{a['practical_note']}</i>",
+    ]
+    if a["btc_watch"]:
+        lines.append("")
+        lines.append("Worth watching BTC: " + "; ".join(str(b) for b in a["btc_watch"]))
+    lines.append("")
+    lines.append("<i>Educational only, not financial advice.</i>")
+    return "\n".join(lines)
 
 def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_special=False, _trigger_hm=None):
     # auto=True marks a command as scheduler-triggered (not a human typing it)
