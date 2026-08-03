@@ -1076,9 +1076,9 @@ def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwa
     SL-hit message_id + final result (SL/BE) so /clearslfree can later find and
     delete exactly this signal's messages — only if result is a real SL, never
     for BE. See _track_free_sl/_finalize_free_sl for the actual bookkeeping.
-    Always excludes Channel 2 (VIP Mirror) — admin request, mirror doesn't
-    want SL/BE notices in its feed."""
-    kwargs.setdefault("exclude_ch2", True)
+    Excludes Channel 2 (VIP Mirror) for a real SL only — admin request, BE
+    (breakeven, i.e. TP1 already hit) still posts there as normal."""
+    kwargs.setdefault("exclude_ch2", result == "SL")
     ids = send_lifecycle_reply(text, reply_map, **kwargs)
     for k, v in (ids or {}).items():
         if k.startswith("free:"):
