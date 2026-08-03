@@ -452,7 +452,7 @@ def _channels_by_tier(tier: str) -> list:
 
 def _in_free_window() -> bool:
     now = datetime.now(timezone.utc) + IST
-    return 6 <= now.hour < 19  # 06:00–19:00 IST
+    return 6 <= now.hour < 23  # 06:00–23:00 IST
 
 def _free_quota_available() -> bool:
     """FREE_SIGNAL_DAILY_LIMIT rule (now a %, not a raw count): out of every
