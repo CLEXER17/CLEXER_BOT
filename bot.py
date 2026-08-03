@@ -1373,10 +1373,10 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
             _send_plain_reply(cid, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
-def _build_recap_text(trades: list, date_str: str) -> str:
+def _build_recap_text(trades: list, date_str: str, include_sl: bool = True) -> str:
     tp2_list  = [t for t in trades if t["result"] == "TP2"]
     tp1_list  = [t for t in trades if t["result"] == "TP1"]
-    sl_list   = [t for t in trades if t["result"] == "SL"]
+    sl_list   = [t for t in trades if t["result"] == "SL"] if include_sl else []
     to_list   = [t for t in trades if t["result"] == "TIMEOUT"]
     lines = [f"📊 <b>Daily Recap — {date_str}</b>\n"]
     if tp2_list:
@@ -1414,12 +1414,16 @@ def _send_daily_summary(tracker: dict):
     if not all_trades:
         return
     vip_text = _apply_premium_emojis(_build_recap_text(all_trades, date_str))
+    # Channel 2 (VIP Mirror) gets its own SL-free variant — same reasoning as
+    # the live SL/no-signal exclusions above, admin request.
+    ch2_text = _apply_premium_emojis(_build_recap_text(all_trades, date_str, include_sl=False))
     for cid in _channels_by_tier("vip"):
-        _mid = _send_via_true_forward(vip_text, cid, "daily-summary-vip", protect=True)
+        _text = ch2_text if str(cid) == str(TELEGRAM_CHANNEL_ID_2) else vip_text
+        _mid = _send_via_true_forward(_text, cid, "daily-summary-vip", protect=True)
         if not _mid:
             try:
                 r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": cid, "text": vip_text, "parse_mode": "HTML", "protect_content": True}, timeout=10)
+                    json={"chat_id": cid, "text": _text, "parse_mode": "HTML", "protect_content": True}, timeout=10)
                 _mid = r.json().get("result", {}).get("message_id")
             except Exception as e: print(f"  [DAILY SUMMARY] vip {cid}: {e}")
         if isinstance(_mid, int):
