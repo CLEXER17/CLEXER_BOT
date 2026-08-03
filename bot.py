@@ -2343,25 +2343,30 @@ def _bingx_symbol_for_base(base: str):
 def _chat_classify_trade_intent(own_message: str, reply_context: str):
     """Reads BOTH the user's own message and whatever they replied to
     TOGETHER (admin request 2026-08-04: "read both messages, then we know
-    what's being asked") to decide if this is a genuine trade question and,
-    if so, which specific coin — replacing the old keyword-list + longest-
-    string-match heuristic, which could misfire two ways: picking the wrong
-    one of several coins mentioned, or matching an incidental English word
-    that coincidentally happens to be a real obscure ticker (e.g.
-    "take-profit" containing "take", itself a listed token — the actual bug
-    that got reported). A model reading both messages in context doesn't
-    make either mistake. Uses the same fast/cheap Aerolink classifier as
-    CHAT_MODEL=="auto" routing. Returns (is_trade_question: bool, symbol:
-    str or None) — symbol is verified against BingX's real contract list
+    what's being asked") to decide if this is a genuine trade question,
+    which specific coin, and — critically — whether a SPECIFIC trade idea
+    (direction/entry/target/SL) was actually proposed somewhere in the
+    conversation that the user wants VALIDATED, rather than a generic
+    "what's a good trade right now" request. Without this distinction, a
+    reply-thread setup like "short BTC 64-64.5k, target 59.6k" + "tell me
+    trade validity" got answered with a completely independent fresh
+    recommendation that could contradict the actual idea being asked about
+    (e.g. answering "long" when the question was about a proposed short).
+    Uses the same fast/cheap Aerolink classifier as CHAT_MODEL=="auto"
+    routing. Returns (is_trade_question: bool, symbol: str or None, setup:
+    dict or None) — symbol is verified against BingX's real contract list
     via _bingx_symbol_for_base before being trusted, so a hallucinated or
     misspelled coin never gets treated as resolved."""
     _prompt = (
         "Read both messages below and decide if the user is asking for a trade/market "
-        "analysis on a specific cryptocurrency, and if so, which one.\n\n"
+        "analysis on a specific cryptocurrency, which one, and whether a SPECIFIC trade idea "
+        "was proposed anywhere in this conversation that they want validated.\n\n"
         f'Replied-to message (context, may be empty): "{reply_context}"\n'
         f'User\'s actual message: "{own_message}"\n\n'
         'Reply with ONLY this exact JSON, nothing else:\n'
-        '{"is_trade_question": true or false, "coin": "BTC" or null}\n\n'
+        '{"is_trade_question": true or false, "coin": "BTC" or null, '
+        '"setup": {"direction": "LONG or SHORT", "entry": "e.g. 64000-64500 or 64200", '
+        '"target": "e.g. 59600 or null", "sl": "e.g. 65500 or null"} or null}\n\n'
         "Rules:\n"
         "- is_trade_question is true only for a genuine trade setup / entry / target / "
         "stop-loss / trade validity / technical-analysis question — not a casual mention.\n"
@@ -2370,46 +2375,63 @@ def _chat_classify_trade_intent(own_message: str, reply_context: str):
         "clarifies which coin a short follow-up question is really about.\n"
         "- If more than one coin is mentioned, pick the one that's the actual subject of the "
         "question, not just any coin name that appears.\n"
-        "- If no specific coin can be determined, coin must be null."
+        "- If no specific coin can be determined, coin must be null.\n"
+        "- setup: fill this in ONLY if a specific direction/entry/target was actually stated "
+        "somewhere in the conversation (either message) that the user wants evaluated — e.g. "
+        "\"short 64-64.5k target 59.6k\". If the user is just asking for a fresh/new trade idea "
+        "with no specific levels already proposed, setup must be null."
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=60,
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=180,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
         d = json.loads(_m.group()) if _m else {}
         is_trade = bool(d.get("is_trade_question"))
         if not is_trade:
-            return False, None
-        return True, _bingx_symbol_for_base(d.get("coin"))
+            return False, None, None
+        return True, _bingx_symbol_for_base(d.get("coin")), d.get("setup") or None
     except Exception as e:
         print(f"  [CHAT TRADE] classify failed: {e}")
-        return False, None
+        return False, None, None
 
 def _chat_try_trade_analysis(cid, own_message: str, is_admin: bool, reply_context: str = "") -> bool:
     """Reads both the user's own message and whatever they replied to (via
     _chat_classify_trade_intent) to decide if this is a genuine trade
-    question about a specific real coin. If so, runs it through the SAME
-    live-data pipeline /coin uses (_coin_analysis_data: real BingX price/24h
-    range/volume + SCAN_MODEL, the bot's own designated best/most-powerful
-    model for real analysis) instead of a plain conversational reply
-    reasoning only off whatever numbers the user happened to type — but
-    formatted as a normal chat reply (_chat_format_trade_analysis), not
-    /coin's own boxed dashboard style. Admin-only, matching /coin's own
-    scanadmin gate and the cost of two real API calls (classify + analyze).
-    Returns True if it handled the message (caller should not also generate
-    a normal chat reply)."""
+    question about a specific real coin — and whether a SPECIFIC trade idea
+    (direction/entry/target/SL) was already proposed in the conversation
+    that the user wants VALIDATED, vs. a request for a fresh new idea.
+
+    If a specific setup was proposed: evaluates THAT idea against real
+    current price/structure (_coin_validate_setup_data /
+    _chat_format_setup_validation) — e.g. "short 64-64.5k target 59.6k" gets
+    judged as still-pending/valid/invalidated based on where price actually
+    is, never answered with an unrelated fresh recommendation that could
+    flatly contradict the idea being asked about.
+
+    Otherwise: runs the SAME live-data pipeline /coin uses
+    (_coin_analysis_data: real BingX price/24h range/volume + SCAN_MODEL)
+    to propose a fresh idea, formatted for chat (_chat_format_trade_analysis)
+    rather than /coin's own boxed dashboard style.
+
+    Admin-only, matching /coin's own scanadmin gate and the cost of two
+    real API calls (classify + analyze). Returns True if it handled the
+    message (caller should not also generate a normal chat reply)."""
     if not is_admin:
         return False
-    is_trade, sym = _chat_classify_trade_intent(own_message, reply_context)
+    is_trade, sym, setup = _chat_classify_trade_intent(own_message, reply_context)
     if not is_trade or not sym:
         return False
     send_reply(cid, f"🧠 Fetching live <b>{sym.replace('-','/')}</b> data from BingX and analyzing...", skip_smallcaps=True)
     def _run():
         try:
-            a = _coin_analysis_data(sym, "MARKET")
-            send_reply(cid, _chat_format_trade_analysis(a), skip_smallcaps=True)
+            if setup:
+                v = _coin_validate_setup_data(sym, setup)
+                send_reply(cid, _chat_format_setup_validation(v), skip_smallcaps=True)
+            else:
+                a = _coin_analysis_data(sym, "MARKET")
+                send_reply(cid, _chat_format_trade_analysis(a), skip_smallcaps=True)
         except Exception as e:
             print(f"  [CHAT TRADE] {cid}: {e}")
             send_reply(cid, f"⚠️ Couldn't analyze {sym.replace('-','/')} right now — try again.", skip_smallcaps=True)
@@ -8314,6 +8336,73 @@ def _coin_analysis_data(sym: str, entry_type: str) -> dict:
         "btc_watch": a.get("btc_watch") or [],
     }
 
+def _coin_validate_setup_data(sym: str, setup: dict) -> dict:
+    """For /chat's "is this specific trade still valid" questions (admin
+    2026-08-04 request) — unlike _coin_analysis_data (which asks SCAN_MODEL
+    to propose a FRESH trade from scratch, and can end up contradicting
+    whatever setup the user was actually asking about), this fetches live
+    BingX data and explicitly asks SCAN_MODEL to evaluate the SPECIFIC
+    proposed direction/entry/target/SL against current real price and
+    structure — e.g. "short 64-64.5k target 59.6k" when price is currently
+    below that zone gets judged as pending/still-live/invalidated based on
+    where price actually is, not answered with an unrelated fresh idea."""
+    pr = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                      params={"symbol": sym}, timeout=10).json()
+    if pr.get("code") != 0:
+        raise Exception(f"Could not fetch ticker for {sym}: {pr.get('msg','?')}")
+    d      = pr.get("data", {})
+    price  = float(d.get("lastPrice", 0))
+    change = float(d.get("priceChangePercent", 0))
+    high24 = float(d.get("highPrice", 0))
+    low24  = float(d.get("lowPrice",  0))
+    vol    = float(d.get("volume", 0))
+    _direction = str(setup.get("direction", "")).upper() or "UNKNOWN"
+    _entry = setup.get("entry") or "not specified"
+    _target = setup.get("target") or "not specified"
+    _sl = setup.get("sl") or "not specified"
+    resp = _claude_client().messages.create(
+        model=SCAN_MODEL, max_tokens=700,
+        system="Respond with RAW JSON ONLY. No markdown, no code fences, no text before or after.",
+        messages=[{"role": "user", "content":
+            f"A trader proposed this {sym} futures trade idea — evaluate whether it's still valid "
+            f"given REAL current market data, do NOT just propose a different/fresh idea:\n\n"
+            f"Proposed direction: {_direction}\n"
+            f"Proposed entry: {_entry}\n"
+            f"Proposed target: {_target}\n"
+            f"Proposed stop loss: {_sl}\n\n"
+            f"REAL current price: ${price:,.6g}\n"
+            f"24h Change: {change:+.2f}%\n"
+            f"24h High: ${high24:,.6g}  |  24h Low: ${low24:,.6g}\n"
+            f"24h Volume: ${vol:,.0f}\n"
+            f"BTC: ${get_ticker()['price']:,.0f} ({get_session()} session)\n\n"
+            f"Explicitly account for where the CURRENT price sits relative to the proposed entry "
+            f"(already inside the zone? still pending above/below it? already blown through it?). "
+            f"If the proposed stop loss was 'not specified', suggest one that fits the setup.\n\n"
+            f'Return this exact JSON shape:\n'
+            f'{{"still_valid":"YES|NO|PENDING","current_bias":"LONG|SHORT|WAIT",'
+            f'"sl":"e.g. 65500","tp1":"e.g. 61800","tp2":"e.g. 59600",'
+            f'"confidence":"HIGH|MEDIUM|LOW","reasoning":["point 1","point 2","point 3"],'
+            f'"verdict_note":"1-2 sentences, the plain-language verdict and what to actually do"}}\n\n'
+            f"Be practical and concise. No fluff. 3-4 reasoning points max."}])
+    _log_api_usage(f"coin_validate_{sym}", SCAN_MODEL,
+                   resp.usage.input_tokens, resp.usage.output_tokens,
+                   gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
+    import json as _cjson, re as _cre
+    _raw = _claude_text(resp)
+    _m = _cre.search(r'\{.*\}', _raw, _cre.DOTALL)
+    a = _cjson.loads(_m.group()) if _m else {}
+    return {
+        "sym": sym, "price": price, "change": change,
+        "proposed_direction": _direction, "proposed_entry": _entry,
+        "proposed_target": _target, "proposed_sl": _sl,
+        "still_valid": str(a.get("still_valid", "PENDING")).upper(),
+        "current_bias": str(a.get("current_bias", "WAIT")).upper(),
+        "confidence": str(a.get("confidence", "LOW")).upper(),
+        "sl": a.get("sl", "—"), "tp1": a.get("tp1", "—"), "tp2": a.get("tp2", "—"),
+        "reasoning": a.get("reasoning") or [],
+        "verdict_note": str(a.get("verdict_note", "")),
+    }
+
 def _do_coin_analysis(cid: str, sym: str, entry_type: str):
     """The actual /coin lookup analysis, run after the user picks Market or
     Pullback entry style. MARKET asks Claude for a single tradeable entry
@@ -8368,8 +8457,8 @@ def _chat_format_trade_analysis(a: dict) -> str:
     instead of /coin's boxed/bordered dashboard style (admin: that look is
     "too odd" for a conversational reply, wants something different)."""
     coin_disp = a["sym"].replace("-", "/")
-    bias_word = {"LONG": "a <b>long</b>", "SHORT": "a <b>short</b>", "WAIT": "no clean setup"}[a["bias"]]
-    bias_emoji = {"LONG": "🟢", "SHORT": "🔴", "WAIT": "🟡"}[a["bias"]]
+    bias_word = {"LONG": "a <b>long</b>", "SHORT": "a <b>short</b>", "WAIT": "no clean setup"}.get(a["bias"], "no clean setup")
+    bias_emoji = {"LONG": "🟢", "SHORT": "🔴", "WAIT": "🟡"}.get(a["bias"], "🟡")
     _entry_label = "Entry" if a["is_market"] else "Entry zone"
     _reason = "\n".join(f"• {r}" for r in a["reasoning"]) or "• No clear structure yet"
     lines = [
@@ -8388,6 +8477,35 @@ def _chat_format_trade_analysis(a: dict) -> str:
     if a["btc_watch"]:
         lines.append("")
         lines.append("Worth watching BTC: " + "; ".join(str(b) for b in a["btc_watch"]))
+    lines.append("")
+    lines.append("<i>Educational only, not financial advice.</i>")
+    return "\n".join(lines)
+
+def _chat_format_setup_validation(v: dict) -> str:
+    """Conversational reply for "is this specific trade still valid"
+    questions (see _coin_validate_setup_data) — leads with a direct
+    yes/no/pending verdict on the ACTUAL proposed idea, not an unrelated
+    fresh recommendation."""
+    coin_disp = v["sym"].replace("-", "/")
+    _verdict_emoji = {"YES": "✅", "NO": "❌", "PENDING": "⏳"}.get(v["still_valid"], "⏳")
+    _verdict_word = {"YES": "still <b>valid</b>", "NO": "<b>no longer valid</b>",
+                      "PENDING": "<b>still pending</b> (not triggered yet)"}.get(v["still_valid"], "<b>unclear</b>")
+    _reason = "\n".join(f"• {r}" for r in v["reasoning"]) or "• No clear structure yet"
+    lines = [
+        f"{_verdict_emoji} Your {v['proposed_direction'].title()} <b>{coin_disp}</b> idea "
+        f"(entry <code>{v['proposed_entry']}</code>, target <code>{v['proposed_target']}</code>) "
+        f"looks {_verdict_word}.",
+        "",
+        f"<code>${v['price']:,.6g}</code> right now ({v['change']:+.2f}% today) — current bias: <b>{v['current_bias']}</b>",
+        f"Suggested stop loss: <code>{v['sl']}</code>",
+        f"Targets: <code>{v['tp1']}</code> / <code>{v['tp2']}</code>",
+        f"Confidence: <b>{v['confidence']}</b>",
+        "",
+        f"<blockquote>{_reason}</blockquote>",
+    ]
+    if v["verdict_note"]:
+        lines.append("")
+        lines.append(f"<i>{v['verdict_note']}</i>")
     lines.append("")
     lines.append("<i>Educational only, not financial advice.</i>")
     return "\n".join(lines)
