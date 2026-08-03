@@ -1179,6 +1179,8 @@ def _all_channel_ids() -> list:
 # retroactively edit an already-sent Telegram message). ────────────────────
 _daily_buckets: dict = {}   # entry_date str -> {"date","tp1","tp2","sl","free_tp1","tp1_promo_sent","trades"}
 _daily_summary_last_sent_date = ""
+_weekly_summary_last_sent = ""   # ISO date string of the Monday whose week was last recapped
+_monthly_summary_last_sent = ""  # "YYYY-MM" of the month last recapped
 
 def _save_daily_buckets():
     """Persists _daily_buckets both to local disk AND the central store — local
@@ -1189,7 +1191,8 @@ def _save_daily_buckets():
     and the slot-stats system use) makes this survive redeploys regardless of
     whether local disk does. Cheap to call on every _track_daily_result()
     update since the payload is tiny."""
-    _blob = {"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date}
+    _blob = {"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date,
+              "weekly_last_sent": _weekly_summary_last_sent, "monthly_last_sent": _monthly_summary_last_sent}
     try:
         with open(os.path.join(DATA_DIR, "daily_buckets.json"), "w") as f:
             json.dump(_blob, f)
@@ -1203,7 +1206,7 @@ def _save_daily_buckets():
             print(f"[DAILY BUCKETS] central push error: {e}")
 
 def _load_daily_buckets():
-    global _daily_buckets, _daily_summary_last_sent_date
+    global _daily_buckets, _daily_summary_last_sent_date, _weekly_summary_last_sent, _monthly_summary_last_sent
     try:
         d = None
         path = os.path.join(DATA_DIR, "daily_buckets.json")
@@ -1217,6 +1220,8 @@ def _load_daily_buckets():
         if d is not None:
             _daily_buckets = d.get("buckets", {})
             _daily_summary_last_sent_date = d.get("last_sent", "")
+            _weekly_summary_last_sent = d.get("weekly_last_sent", "")
+            _monthly_summary_last_sent = d.get("monthly_last_sent", "")
             print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s)")
     except Exception as e:
         print(f"[DAILY BUCKETS] load error: {e}")
@@ -1234,7 +1239,11 @@ def _get_daily_bucket(date_str: str) -> dict:
     if date_str not in _daily_buckets:
         _daily_buckets[date_str] = {"date": date_str, "tp1": 0, "tp2": 0, "sl": 0,
                                      "free_tp1": 0, "tp1_promo_sent": False, "trades": []}
-        for _old_date in sorted(_daily_buckets.keys())[:-7]:   # bound memory — keep last 7 days
+        # Bound memory — keep last 35 days. Was 7 (daily recap only needs
+        # yesterday), bumped to cover a full calendar month + a few days'
+        # buffer so the weekly/monthly recaps (added 2026-08-04) can still
+        # find every day's bucket when their own boundary check fires.
+        for _old_date in sorted(_daily_buckets.keys())[:-35]:
             del _daily_buckets[_old_date]
     return _daily_buckets[date_str]
 
@@ -1473,6 +1482,76 @@ def _send_daily_summary(tracker: dict):
             if isinstance(_mid, int):
                 _pin_message(cid, _mid)
 
+def _gather_period_trades(date_strs: list) -> list:
+    """Concatenates the tier_routed trades from every date in date_strs that
+    still has a bucket (older days may have already been pruned — see
+    _get_daily_bucket's 35-day retention). Used by the weekly/monthly recaps
+    to pull a whole period's worth of trades out of the same per-day buckets
+    the daily recap already tracks, instead of a separate data store."""
+    trades = []
+    for d in date_strs:
+        b = _daily_buckets.get(d)
+        if b:
+            trades += [t for t in b.get("trades", []) if t.get("tier_routed")]
+    return trades
+
+def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) -> str:
+    """Weekly/monthly recap text — summarized (counts + win rate) rather than
+    the daily recap's itemized per-trade list, since a week or month of
+    trades listed individually would make an unreadably long Telegram
+    message. Same TP2/TP1/SL/TIMEOUT split as _build_recap_text."""
+    tp2 = [t for t in trades if t["result"] == "TP2"]
+    tp1 = [t for t in trades if t["result"] == "TP1"]
+    sl  = [t for t in trades if t["result"] == "SL"] if include_sl else []
+    to  = [t for t in trades if t["result"] == "TIMEOUT"]
+    wins = len(tp1) + len(tp2)
+    decided = wins + len(sl)
+    lines = [f"📊 <b>{title}</b>\n"]
+    lines.append(f"🏆 TP2 Hit: <b>{len(tp2)}</b>")
+    lines.append(f"💰 TP1 Hit: <b>{len(tp1)}</b>")
+    if include_sl:
+        lines.append(f"🛑 SL Hit: <b>{len(sl)}</b>")
+    if to:
+        lines.append(f"⏰ Timeout: <b>{len(to)}</b>")
+    lines.append("")
+    lines.append(f"✅ Win Rate: <b>{wins / decided * 100:.0f}%</b> ({wins}/{decided})" if decided else "✅ Win Rate: —")
+    return "\n".join(lines)
+
+def _send_period_summary(trades: list, title: str, tag: str):
+    """Sends a weekly/monthly recap — same channel routing + pin behavior as
+    _send_daily_summary (VIP gets every tier-routed trade with SL, Channel 2/
+    VIP Mirror gets the SL-free variant, Free gets only the free_shown
+    subset), just built from _build_period_recap_text's summary instead of
+    an itemized list. No-ops if there's nothing tier_routed for the period."""
+    if not trades:
+        return
+    vip_text = _apply_premium_emojis(_build_period_recap_text(trades, title))
+    ch2_text = _apply_premium_emojis(_build_period_recap_text(trades, title, include_sl=False))
+    for cid in _channels_by_tier("vip"):
+        _text = ch2_text if str(cid) == str(TELEGRAM_CHANNEL_ID_2) else vip_text
+        _mid = _send_via_true_forward(_text, cid, f"{tag}-vip", protect=True)
+        if not _mid:
+            try:
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": cid, "text": _text, "parse_mode": "HTML", "protect_content": True}, timeout=10)
+                _mid = r.json().get("result", {}).get("message_id")
+            except Exception as e: print(f"  [{tag.upper()} SUMMARY] vip {cid}: {e}")
+        if isinstance(_mid, int):
+            _pin_message(cid, _mid)
+    free_trades = [t for t in trades if t.get("free_shown")]
+    if free_trades:
+        free_text = _apply_premium_emojis(_build_period_recap_text(free_trades, title))
+        for cid in _channels_by_tier("free"):
+            _mid = _send_via_true_forward(free_text, cid, f"{tag}-free")
+            if not _mid:
+                try:
+                    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={"chat_id": cid, "text": free_text, "parse_mode": "HTML"}, timeout=10)
+                    _mid = r.json().get("result", {}).get("message_id")
+                except Exception as e: print(f"  [{tag.upper()} SUMMARY] free {cid}: {e}")
+            if isinstance(_mid, int):
+                _pin_message(cid, _mid)
+
 def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
                          tp1_detail: dict = None, entry_date: str = None, sig_id: str = None, pnl: float = None):
     """Call this at every genuine TP1/TP2/SL close (result: 'TP1'/'TP2'/'SL').
@@ -1520,8 +1599,15 @@ def _daily_summary_loop():
     rollover boundary time to land in its bucket before the recap is sent.
     Whatever hasn't landed by then is simply not included — a trade opened on
     day D that resolves after D's recap has already gone out is not recapped
-    again on any later day."""
-    global _daily_summary_last_sent_date
+    again on any later day.
+
+    Also fires the WEEKLY recap (Monday, for the Mon-Sun week that just
+    ended) and MONTHLY recap (the 1st, for the calendar month that just
+    ended) — same midnight-window check, same _daily_buckets data, just
+    summarized instead of itemized (see _build_period_recap_text). Relies
+    on _get_daily_bucket's 35-day retention to still have every day's
+    bucket by the time these fire (2026-08-04 admin request)."""
+    global _daily_summary_last_sent_date, _weekly_summary_last_sent, _monthly_summary_last_sent
     while True:
         try:
             now = datetime.now(timezone.utc) + IST
@@ -1533,6 +1619,31 @@ def _daily_summary_loop():
                         _send_daily_summary(bucket)
                         _daily_summary_last_sent_date = yesterday_str  # only lock once actually sent
                         _save_daily_buckets()
+                if now.weekday() == 0:  # Monday
+                    _week_end = now.date() - timedelta(days=1)      # yesterday = Sunday
+                    _week_start = _week_end - timedelta(days=6)     # the Monday before
+                    _week_start_str = _week_start.strftime("%Y-%m-%d")
+                    if _weekly_summary_last_sent != _week_start_str:
+                        _week_dates = [(_week_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+                        _trades = _gather_period_trades(_week_dates)
+                        if _trades:
+                            _title = f"Weekly Recap — {_week_start.strftime('%b %d')} to {_week_end.strftime('%b %d')}"
+                            _send_period_summary(_trades, _title, "weekly-summary")
+                            _weekly_summary_last_sent = _week_start_str  # only lock once actually sent
+                            _save_daily_buckets()
+                if now.day == 1:
+                    _month_end = now.date() - timedelta(days=1)     # yesterday = last day of the month that just ended
+                    _month_key = _month_end.strftime("%Y-%m")
+                    if _monthly_summary_last_sent != _month_key:
+                        _month_start = _month_end.replace(day=1)
+                        _n_days = (_month_end - _month_start).days + 1
+                        _month_dates = [(_month_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_n_days)]
+                        _trades = _gather_period_trades(_month_dates)
+                        if _trades:
+                            _title = f"Monthly Recap — {_month_end.strftime('%B %Y')}"
+                            _send_period_summary(_trades, _title, "monthly-summary")
+                            _monthly_summary_last_sent = _month_key  # only lock once actually sent
+                            _save_daily_buckets()
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
         time.sleep(60)
