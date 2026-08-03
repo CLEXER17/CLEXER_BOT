@@ -14384,6 +14384,13 @@ def command_listener():
                         send_reply(cid, "🆓 Boki's listening (free-only) — ask me something after \"boki\".")
                     else:
                         _handle_boki_standalone(cid, _boki_msg, reply_context=_extract_reply_context(msg))
+                elif _pechi_strip(text or "")[1] or _boki_strip(text or "")[1]:
+                    # Non-admin trying "pechi"/"boki" — PECHI/BOKI are admin-only (see
+                    # the two branches above), so anyone else gets this instead of
+                    # silently falling through to nothing (admin request 2026-08-04).
+                    send_reply(cid,
+                        '<tg-emoji emoji-id="5364233059702937499">💕</tg-emoji> Mai sirf Clexer ki GF hu.',
+                        skip_smallcaps=True)
                 elif (((ADMIN_CHAT_ID and str(cid) == str(ADMIN_CHAT_ID)) or is_co_admin(cid))
                         and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,14}", text or "")):
                     # Bare coin-name typing (e.g. just "eth") — /coin's own help
