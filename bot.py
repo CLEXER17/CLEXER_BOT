@@ -2175,8 +2175,15 @@ def _gemini_headers():
     return {"Content-Type": "application/json"}
 
 def _chat_is_image_request(text: str) -> bool:
+    """Word-boundary match, not naive substring containment — plain "in"
+    checks let short hints like "draw"/"pic" false-positive on ordinary
+    words that happen to contain them as a substring (2026-08-04: "will
+    you help me... withdrawal telegram bot..." matched "draw" inside
+    "withdrawal" and sent Boki into image-generation mode instead of
+    answering the actual question). "topic"/"epic"/"typical" contain
+    "pic" the same way, "drawer"/"drawing" contain "draw", etc."""
     t = text.lower()
-    return any(h in t for h in _CHAT_IMAGE_HINTS)
+    return any(re.search(rf'\b{re.escape(h)}\b', t) for h in _CHAT_IMAGE_HINTS)
 
 _CHAT_TEXT_MODEL = "gemini-3.5-flash"  # newest/smartest model with free quota on this account — only 5 RPM / 20 RPD though (vs 3.1-flash-lite's 500 RPD)
 
