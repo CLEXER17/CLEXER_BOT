@@ -2171,6 +2171,20 @@ _CHAT_IMAGE_HINTS = ("generate an image","generate image","draw","create an imag
                      "make an image","make a picture","picture","pic","photo","pfp","image","img",
                      "wallpaper","artwork","drawing","paint","illustrate","sketch")
 
+# Screenshot demonstrating how to actually trigger a /chat reply (forward/reply
+# vs plain typing) — admin-provided file_id (2026-08-04), sent alongside the
+# session-start banner and the plain-typing nudge so non-admin users have a
+# visual example, not just text instructions.
+_CHAT_HOWTO_IMAGE_FILE_ID = "AgACAgUAAxkBAALAd2pyJcCHUsI8h3N3e3T1sLAY6iQPAAKPI2sbxQqQV8e9dQe3Qjj4AQADAgADeAADPQQ"
+
+def _send_chat_howto_image(chat_id, caption: str = ""):
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            json={"chat_id": chat_id, "photo": _CHAT_HOWTO_IMAGE_FILE_ID,
+                  "caption": caption, "parse_mode": "HTML"}, timeout=15)
+    except Exception as e:
+        print(f"  [CHAT HOWTO IMG] send to {chat_id} failed: {e}")
+
 def _gemini_headers():
     return {"Content-Type": "application/json"}
 
@@ -10133,6 +10147,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     "🎨 Need an image? Just describe what you want.\n\n"
                     "⏳ Session will automatically close after 5 minutes of inactivity, or end it anytime with ")
                 + "/endchat" + _math_sans(".") + _reply_note)
+            if not _is_admin_own_chat:
+                _send_chat_howto_image(chat_id)
 
     elif cmd == "/endchat":
         if _chat_sessions.pop(str(chat_id), None) is not None:
@@ -15881,6 +15897,7 @@ def command_listener():
                             ("Reply directly to one of my messages to chat with me."
                              if _is_group else "Forward a message to me to chat with me.")
                             + "\n(just typing won't trigger a reply)"))
+                        _send_chat_howto_image(cid)
         except Exception as e:
             print(f"  [CMD] {e}")
             # Previously silent to the admin — a crash here (e.g. mid-callback,
