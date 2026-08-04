@@ -2899,6 +2899,18 @@ def _boki_exec_server_switch(cid, sender_id, value):
 def _boki_exec_syncup(cid, sender_id, value):
     _boki_run(cid, sender_id, "/syncup"); return None
 
+def _boki_exec_show_special_times(cid, sender_id, value):
+    _boki_run(cid, sender_id, "/st"); return None
+
+def _boki_exec_show_regular_times(cid, sender_id, value):
+    _boki_run(cid, sender_id, "/nt"); return None
+
+def _boki_exec_show_status(cid, sender_id, value):
+    _boki_run(cid, sender_id, "/status"); return None
+
+def _boki_exec_show_stats(cid, sender_id, value):
+    _boki_run(cid, sender_id, "/stats"); return None
+
 def _boki_exec_bot_control(cid, sender_id, value):
     v = (value or "").strip().lower()
     _map = {"pause": "/pause", "freeze": "/pause", "stop": "/stop",
@@ -3174,6 +3186,10 @@ _ADMIN_ACTIONS = {
     "tp1_size": {"desc": "Set the TP1 close percentage (how much of a position closes at TP1 vs rides to TP2). value: a number 1-99.", "exec": _boki_exec_tp1_size},
     "server_switch": {"desc": "Switch which server is the ACTIVE one in the multi-server rotation (the one placing real copytrade orders). value: the exact server name the admin names, e.g. \"co2\".", "exec": _boki_exec_server_switch},
     "syncup": {"desc": "Force-push all of this server's local state to the shared central store (used right before switching servers). value not needed.", "exec": _boki_exec_syncup},
+    "show_special_times": {"desc": "Show the REAL current list of special (verified + unverified) time slots and their live win rates for each scan type — use this for \"what are my verified times\", \"show verified/unverified slots\", \"list my special times\", etc. value not needed.", "exec": _boki_exec_show_special_times},
+    "show_regular_times": {"desc": "Show the REAL current list of regular/nonspecial time slots that have tracked win-rate data (still proving themselves, not yet promoted to verified). value not needed.", "exec": _boki_exec_show_regular_times},
+    "show_status": {"desc": "Show the full live bot status dashboard right now (scan state, gateway, model, copy trade counts, etc.). value not needed.", "exec": _boki_exec_show_status},
+    "show_stats": {"desc": "Show the real live trade win-rate/stats summary right now. value not needed.", "exec": _boki_exec_show_stats},
     "bot_control": {"desc": "Freeze or unfreeze the WHOLE bot. value: \"pause\" (freeze everything — scans, monitoring, alerts), \"stop\" (block new scans only, keep monitoring/copytrade SL-TP running), or \"resume\" (undo pause/stop).", "exec": _boki_exec_bot_control},
     "close_btc_trade": {"desc": "Close the currently active BTC trade right now (a real position, real money). value not needed.", "exec": _boki_exec_close_btc_trade},
     "btc_sl_to_be": {"desc": "Move the active BTC trade's stop-loss to breakeven (its entry price). value not needed.", "exec": _boki_exec_btc_sl_to_be},
@@ -3524,8 +3540,9 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         '"best_model": "<a model id from the list below, or \\"google\\">", '
         '"topics": ["<topic id>", ...] or []}\n\n'
         "Rules:\n"
-        "1. admin_action must be null unless the message is CLEARLY asking to change one specific live "
-        "setting/action" + (" from the catalog above; only ever use an id that's actually listed" if is_admin else " (there is no catalog here, so this must always be null)") + ". "
+        "1. admin_action must be null unless the message is CLEARLY asking to change, run, or VIEW/SHOW "
+        "one specific live setting, action, or piece of real data (e.g. \"show my verified times\" is a "
+        "real request for live data, not a casual question)" + (" from the catalog above; only ever use an id that's actually listed" if is_admin else " (there is no catalog here, so this must always be null)") + ". "
         "If ambiguous or it could match more than one action, null — never guess.\n"
         "2. is_trade_question is true only for a genuine trade setup/entry/target/stop-loss/trade-validity/"
         "technical-analysis question about a specific coin — not a casual mention. coin is the base ticker "
