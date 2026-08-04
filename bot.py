@@ -15537,6 +15537,15 @@ def command_listener():
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
 
+                # Admin sends a photo directly to the bot — reply with its Telegram
+                # file_id, so a screenshot can be referenced later (e.g. embedded
+                # into a bot message via sendPhoto) without needing a local copy of
+                # the file at all. Debug utility, admin-only (2026-08-04).
+                if msg.get("photo") and ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID):
+                    _fid = msg["photo"][-1].get("file_id", "")
+                    send_reply(cid, f"🖼 <b>file_id:</b>\n<code>{_fid}</code>")
+                    continue
+
                 # Never respond to another bot, anywhere (2026-07-31, safety) — a
                 # command-like message from a bot account (accidental, malicious,
                 # or a bot-loop) never gets processed or replied to. Telegram
