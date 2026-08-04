@@ -2392,6 +2392,44 @@ def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "",
     resp = client.messages.create(**_kwargs)
     return _claude_text(resp) or "…"
 
+_LUMOSEL_OPENAI_URL = "https://api.lumosel.vip/v1/chat/completions"
+
+def _chat_call_openai_shape(history: list, model_id: str, extra_system: str = "", attempt: int = 0) -> str:
+    """Calls Aerolink/Lumosel's OpenAI-COMPATIBLE endpoint instead of the
+    Anthropic-shaped one _chat_call_claude_text uses — same account,
+    balance, rate limits, and model catalog (confirmed via
+    lumosel.vip/dashboard/documentation, 2026-08-04 admin request), just a
+    different request/response shape reached over plain HTTP (this file's
+    existing pattern for non-Anthropic-SDK providers, see
+    _chat_call_gemini_text) rather than the anthropic SDK. Model IDs are
+    Lumosel's own (e.g. "gpt-5.6", "glm-5.2") — real OpenAI model names
+    like "gpt-4o" are NOT aliased and would 404.
+
+    Not the default path — GPT/GLM/Kimi already work fine via the
+    Anthropic-shaped Aerolink call. This exists as an EXTRA fallback layer
+    for those same non-Claude models (their more native calling
+    convention, per Lumosel's own docs) rather than a replacement, so a
+    transient issue on the Anthropic-shape translation for one specific
+    model has somewhere else to try before falling through to Google.
+    Raises on failure, same as the other _chat_call_* helpers."""
+    messages = [{"role": "assistant" if h["role"] == "model" else "user",
+                 "content": h["parts"][0]["text"]} for h in history]
+    _sys = _CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
+    _keys = _aerolink_configured_keys() or [k for k in _aerolink_all_key_slots() if k]
+    if not _keys:
+        raise Exception("No Aerolink key configured")
+    key = _keys[attempt % len(_keys)]
+    r = requests.post(_LUMOSEL_OPENAI_URL,
+        headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+        json={"model": model_id, "messages": [{"role": "system", "content": _sys}] + messages},
+        timeout=60)
+    if not r.ok:
+        raise Exception(f"{r.status_code} {r.text[:300]}")
+    choices = r.json().get("choices") or []
+    if not choices:
+        raise Exception("Empty choices in OpenAI-shape response")
+    return choices[0].get("message", {}).get("content", "") or "…"
+
 _CHAT_ROUTER_MODEL = "kimi-k3"   # fast/cheap classifier for CHAT_MODEL == "auto" — via
 # Aerolink, not Gemini, so per-message routing calls don't eat into Gemini's tiny
 # 20-requests/day free quota on top of whatever "google" answers get picked too.
@@ -3235,7 +3273,12 @@ _KNOWLEDGE_BASE = {
         "Google on failure. BOKI does the same but NEVER falls back to the paid Direct API — only "
         "Aerolink or Google.\n"
         "- Direct = your own Anthropic API key, only works for real Claude model IDs. Aerolink = a "
-        "separate gateway (Lumosel) proxying many providers, required for any non-Claude model.\n\n"
+        "separate gateway (Lumosel) proxying many providers, required for any non-Claude model. "
+        "Aerolink itself is reachable in TWO shapes with the same account/balance/keys: the "
+        "Anthropic-shaped one bot.py normally uses, and an OpenAI-compatible one "
+        "(_chat_call_openai_shape, https://api.lumosel.vip/v1) — for non-Claude models (GPT/GLM/"
+        "Kimi), PECHI/BOKI try the OpenAI-shaped call as an extra fallback layer if the "
+        "Anthropic-shaped attempt fails, before giving up to Google.\n\n"
     ),
     "aerolink_keys": (
         "AEROLINK KEYS: up to 20 possible key slots (AEROLINK_API_KEY through _20), set via "
@@ -3553,7 +3596,8 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "", 
     CHAT_MODEL=="auto", tries Aerolink first regardless of the session's own
     gateway setting. Full fallback chain so a single provider's outage or
     quota (Google's free tier is a famously tiny 5 RPM/20 RPD) can never be
-    a dead end: Aerolink -> Direct (if Claude) -> Google -> Direct Claude as
+    a dead end: Aerolink (Anthropic-shape) -> Aerolink (OpenAI-shape, non-
+    Claude models only) -> Direct (if Claude) -> Google -> Direct Claude as
     a last resort. Only raises if every one of those genuinely fails.
 
     precomputed_model: skips the classify call when the caller already got
@@ -3565,6 +3609,11 @@ def _chat_pechi_text_reply(history: list, message: str, extra_system: str = "", 
             return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
         except Exception as e:
             print(f"  [PECHI] free (Aerolink) attempt with {_model} failed ({e}) — falling back")
+            if not _is_claude_model(_model):
+                try:
+                    return _chat_call_openai_shape(history, _model, extra_system=extra_system)
+                except Exception as e_oa:
+                    print(f"  [PECHI] Aerolink OpenAI-shape with {_model} also failed ({e_oa}) — trying Google")
             if _is_claude_model(_model):
                 try:
                     return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="direct")
@@ -3580,8 +3629,9 @@ def _chat_boki_text_reply(history: list, message: str, extra_system: str = "", p
     """BOKI trigger (admin-only, standalone, 2026-08-04): same best-model
     classification as PECHI, but ONLY ever uses free options (Aerolink or
     Google Gemini) — never falls back to the paid Direct/Anthropic API,
-    even if the free Aerolink attempt fails. On failure it falls to Google
-    instead (still free, not Direct), rather than paying for a Direct call.
+    even if the free Aerolink attempt fails. For non-Claude models, tries
+    Aerolink's OpenAI-compatible endpoint (still the same free Aerolink
+    account, just the other calling shape) before giving up to Google.
 
     precomputed_model: see _chat_pechi_text_reply's docstring."""
     _model = precomputed_model or _chat_classify_model(message)
@@ -3590,7 +3640,12 @@ def _chat_boki_text_reply(history: list, message: str, extra_system: str = "", p
     try:
         return _chat_call_claude_text(history, _model, extra_system=extra_system, gateway_override="aerolink")
     except Exception as e:
-        print(f"  [BOKI] free (Aerolink) attempt with {_model} failed ({e}) — falling back to Google (still free, never Direct)")
+        print(f"  [BOKI] free (Aerolink) attempt with {_model} failed ({e}) — falling back")
+        if not _is_claude_model(_model):
+            try:
+                return _chat_call_openai_shape(history, _model, extra_system=extra_system)
+            except Exception as e_oa:
+                print(f"  [BOKI] Aerolink OpenAI-shape with {_model} also failed ({e_oa}) — trying Google")
         return _chat_call_gemini_text(history, extra_system=extra_system)
 
 def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply_context: str = "", sender_id=None):
