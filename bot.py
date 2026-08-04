@@ -2267,12 +2267,22 @@ def _admin_live_status() -> str:
         f"- Free-channel share quota: {FREE_SIGNAL_DAILY_LIMIT}%\n"
     )
 
-def _admin_chat_context() -> str:
+def _admin_chat_context(topics: list = None) -> str:
     """Extra system-prompt block injected ONLY into the ADMIN's own /chat
     session (2026-08-03 admin request) — turns /chat into a personal
     assistant that also knows this bot's own command/button layout and can
     answer live "what's my bot doing right now" questions. Never injected
-    for a regular user's session — this is admin-only context by design."""
+    for a regular user's session — this is admin-only context by design.
+
+    topics: knowledge-base topic ids (from _KNOWLEDGE_BASE, picked by
+    _chat_classify_combined's classifier) whose DETAILED reference text
+    gets spliced in for just this reply — keeps the base context small and
+    every other message fast, while still giving deep, accurate answers
+    when the admin actually asks about a specific bot-internal mechanic
+    (2026-08-04, after Boki fabricated a wrong explanation of how verified/
+    unverified works instead of admitting she didn't know)."""
+    _knowledge = "".join((_v() if callable(_v := _KNOWLEDGE_BASE[t]) else _v)
+                          for t in (topics or []) if t in _KNOWLEDGE_BASE)
     return (
         "You ALSO act as the admin's personal assistant for the Telegram bot you're "
         "running inside (CLEXER BOT) — answer meta-questions about the bot itself using "
@@ -2308,33 +2318,11 @@ def _admin_chat_context() -> str:
         "- Trade Control (close a coin, move SL to breakeven, set custom SL/TP): main menu "
         "-> 🛠 Trade Control\n"
         "- Copy Admin / user management, VIP-Free tier control: main menu -> Copy Admin\n\n"
-        "VERIFIED/UNVERIFIED/NONSPECIAL SYSTEM (the real mechanic behind /st, /nt, and /winrate) "
-        "— this is about SCHEDULED TIME SLOTS proving themselves over time, NOT about whether a "
-        "trade got entered or is live on the exchange:\n"
-        "- Each scan type (Scan1, Scan2, TS1, TS2) runs its own grid of scheduled hour:minute "
-        "slots. A brand-new slot starts NONSPECIAL (regular, unproven yet — shown in /nt).\n"
-        "- A nonspecial slot auto-PROMOTES to SPECIAL + VERIFIED once it has banked at least 4 "
-        f"wins AND its win rate is at/above that kind's threshold (/winrate, set independently per "
-        f"kind — currently Scan1 {_SLOT_EVAL_THRESHOLD['scan1']}%, Scan2 {_SLOT_EVAL_THRESHOLD['scan2']}%, "
-        f"TS1 {_SLOT_EVAL_THRESHOLD['demo1']}%, TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Verified slots "
-        "are copytrade-enabled and shown in /st.\n"
-        "- A verified slot auto-DEMOTES to UNVERIFIED if its win rate later drops below "
-        "threshold — it stays special/tracked but copytrade pauses there until it recovers.\n"
-        "- An unverified slot auto-REVERIFIES back to verified once its win rate is back at/above "
-        "threshold AND it has strung together at least 2 wins in a row since its last loss (a "
-        "clean streak, not just an overall average).\n"
-        "- Win = TP2, breakeven after TP1 already hit, or a positive-P/L timeout. Loss = a real SL "
-        "that never hit TP1, a LOSS outcome, or a negative-P/L timeout. TP1 alone is never counted "
-        "on its own since the trade keeps riding toward TP2/BE/timeout.\n"
-        "- Separately: ANY slot (verified, unverified, or nonspecial) that racks up 3+ results "
-        "with win rate below threshold gets permanently BLACKLISTED — retired for good, not "
-        "relocated to a new time.\n"
-        "- \"Verified\" here is about the scheduled TIME's track record, not any single trade — a "
-        "trade is just tagged with whichever category its slot currently holds when it fires.\n\n"
-        "If asked about some OTHER bot-internal mechanic that isn't documented anywhere in this "
-        "context, say plainly that you're not certain rather than guessing from generic trading "
-        "vocabulary — a confident-sounding wrong explanation of how this specific bot works is "
-        "worse than admitting you don't have that detail grounded here.\n\n"
+        f"{_knowledge}"
+        "If asked about some bot-internal mechanic that isn't documented anywhere in this context "
+        "or in the knowledge section above, say plainly that you're not certain rather than "
+        "guessing from generic trading vocabulary — a confident-sounding wrong explanation of how "
+        "this specific bot works is worse than admitting you don't have that detail grounded here.\n\n"
         "IMPORTANT — you are NOT the thing that executes any of the live actions described above. "
         "A separate dedicated system checks every message for that BEFORE you are ever asked to "
         "reply, and has already run (and either performed the action, or decided this message "
@@ -3047,6 +3035,54 @@ def _boki_exec_free_downgrade(cid, sender_id, value, _confirmed=False):
     send_reply(cid, f"✅ @{uname} downgraded to Free.", skip_smallcaps=True)
     return None
 
+def _boki_exec_ct_toggle(cid, sender_id, value):
+    """Mirrors the /ctpause (aka /scancopy) button screen exactly — these
+    control whether FUTURE signals of that type get mirrored into copy
+    users' exchange accounts, not whether the scan itself runs, and don't
+    touch any already-open position, so this is a safe reversible toggle
+    like the others above, not a risky one."""
+    parts = (value or "").split()
+    if len(parts) < 2:
+        return "Which copytrade toggle (BTC, Scan1, Scan2, TS1, TS2, orphan-adopt, or auto-SLTP) and on or off?"
+    kind = parts[0].strip().lower()
+    onoff = _boki_onoff(parts[1])
+    if onoff is None: return "On or off?"
+    _val = (onoff == "on")
+    _map = {
+        "btc": (ct.set_btc_ct, "₿ BTC Copy Trade"),
+        "scan1": (ct.set_scan1_ct, "🔍 Scan1 Copy Trade"),
+        "scan2": (ct.set_scan2_ct, "🔍 Scan2 Copy Trade"),
+        "test1": (ct.set_demo1_ct, "🧪 TS1 Copy Trade"), "demo1": (ct.set_demo1_ct, "🧪 TS1 Copy Trade"), "ts1": (ct.set_demo1_ct, "🧪 TS1 Copy Trade"),
+        "test2": (ct.set_demo2_ct, "🧪 TS2 Copy Trade"), "demo2": (ct.set_demo2_ct, "🧪 TS2 Copy Trade"), "ts2": (ct.set_demo2_ct, "🧪 TS2 Copy Trade"),
+        "orphan": (ct.set_orphan_adopt, "🧩 Orphan Adopt"),
+        "sltp": (ct.set_auto_sltp_global, "🛡 Auto SL/TP (global)"), "autosltp": (ct.set_auto_sltp_global, "🛡 Auto SL/TP (global)"),
+    }
+    if kind not in _map:
+        return "Which one — BTC, Scan1, Scan2, TS1, TS2, orphan-adopt, or auto-SLTP?"
+    _fn, _label = _map[kind]
+    _fn(_val); save_settings()
+    send_reply(cid, f"{'✅' if _val else '❌'} <b>{_label}</b> — {'ON' if _val else 'OFF'}.", skip_smallcaps=True)
+    return None
+
+def _boki_exec_adminlinks(cid, sender_id, value):
+    global CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED
+    parts = (value or "").split()
+    if len(parts) < 2:
+        return "Which one (the Contact Admin button or the Signal Channel button) and on or off?"
+    kind = parts[0].strip().lower()
+    onoff = _boki_onoff(parts[1])
+    if onoff is None: return "On or off?"
+    _val = (onoff == "on")
+    if kind in ("contact", "contactadmin", "admin"):
+        CONTACT_ADMIN_ENABLED = _val; _label = "💬 Contact Admin button"
+    elif kind in ("signal", "signalchannel"):
+        SIGNAL_CHANNEL_ENABLED = _val; _label = "📡 Signal Channel button"
+    else:
+        return "Which one — the Contact Admin button or the Signal Channel button?"
+    save_settings()
+    send_reply(cid, f"{'✅' if _val else '❌'} <b>{_label}</b> — {'ON' if _val else 'OFF'} for users.", skip_smallcaps=True)
+    return None
+
 # Actions that require a Yes/Cancel confirm before they actually run — see
 # the wrapper block above. Every executor listed here accepts a
 # _confirmed kwarg; every other action in _ADMIN_ACTIONS does not.
@@ -3110,6 +3146,178 @@ _ADMIN_ACTIONS = {
     "broadcast": {"desc": "Send a broadcast message to users/channels right now (cannot be recalled once sent). value normalized to \"<all|vip|free|users> <message text>\" — audience word first, then the exact message to send.", "exec": _boki_exec_broadcast},
     "vip_grant": {"desc": "Grant a specific user VIP access for N days. value normalized to \"<username> <days>\" (days defaults to 30 if not stated).", "exec": _boki_exec_vip_grant},
     "free_downgrade": {"desc": "Downgrade a specific user from VIP back to Free tier (removes their VIP channel access immediately). value: their username.", "exec": _boki_exec_free_downgrade},
+    "ct_toggle": {"desc": ("Turn a copytrade type's mirroring on or off — whether FUTURE signals of that type get copied into users' exchange accounts (separate from whether the scan itself runs, doesn't touch open positions). "
+                            "value normalized to \"<type> <on|off>\" where type is btc/scan1/scan2/test1/test2 (ts1/ts2/demo1/demo2 all mean test1/test2), \"orphan\" (adopt a user's self-opened position into monitoring), "
+                            "or \"sltp\" (global auto SL/TP management master switch)."), "exec": _boki_exec_ct_toggle},
+    "adminlinks_toggle": {"desc": "Turn a user-facing help-menu button on or off. value normalized to \"<contact|signal> <on|off>\" — \"contact\" is the Contact Admin button, \"signal\" is the Signal Channel button.", "exec": _boki_exec_adminlinks},
+}
+
+# ── Deep-reference knowledge base ───────────────────────────────────────
+# Grounded, accurate explanations of specific bot-internal SYSTEMS (how
+# things actually work, not just where the button is) — NOT injected into
+# every message, since that would slow down every single reply and undo
+# the classifier-merge perf fix above. _chat_classify_combined() picks
+# 0-3 relevant topic ids per message from _KNOWLEDGE_TOPICS' descriptions;
+# only those get spliced into _admin_chat_context() for that one reply.
+# Added 2026-08-04 after Boki fabricated a plausible-sounding but WRONG
+# explanation of how verified/unverified promotion works instead of
+# admitting she didn't have it grounded, then the admin asked to "train
+# the ai with every single button every single command ... its relation
+# with other ... its rule its backend."
+_KNOWLEDGE_TOPICS = {
+    "verified_system": "How a scheduled scan time slot becomes verified/unverified/nonspecial (the /st, /nt, /winrate system) — promotion, demotion, reverification, blacklisting.",
+    "scan_scheduling": "How the scan schedule grid works — special vs regular times, the dense grid, manual scan triggers, scan interval, how a slot gets added to or dropped from the schedule.",
+    "ai_models_gateways": "The difference between the scan AI model/gateway, /chat's own model/gateway, the /aiconfig per-tier grid, and the model catalogs (MODEL_REGISTRY vs the larger Aerolink catalog).",
+    "aerolink_keys": "How Aerolink API key rotation, pausing, and testing works.",
+    "trade_control": "How closing/editing trades works — the single active BTC trade (/close /setsl /settp1 /settp2 /sltobe) vs copytrade positions per coin (/closetrade /closescan /ctclose), and force-close (/fc) for stuck trades.",
+    "broadcast_channels": "How the channel system works — Signal channel vs VIP Mirror (Channel 2) vs the CHANNELS list of Free/VIP broadcast channels, pausing a channel, and the different broadcast audience modes.",
+    "vip_free_copytrade": "How VIP/Free tiers, granting/revoking VIP, and copytrade actually work end to end — /connect and encryption, per-type copy toggles, TP1 split, auto SL/TP, orphan adopt, virtual (paper) trading.",
+    "server_rotation_sync": "How the multi-server active/standby rotation and state sync (/server, /syncup) works, and why only one server is ever active at a time.",
+    "recaps": "How the daily/weekly/monthly recap system works — what counts as a win/loss, which channels get which version, when each fires.",
+    "boki_pechi_system": "How PECHI/BOKI themselves work — the trigger words, the admin-action execution framework, confirm-gating on risky actions, and the free-vs-direct model fallback chains.",
+}
+
+def _kb_verified_system():
+    return (
+        "VERIFIED/UNVERIFIED/NONSPECIAL SYSTEM (the real mechanic behind /st, /nt, and /winrate) "
+        "— this is about SCHEDULED TIME SLOTS proving themselves over time, NOT about whether a "
+        "trade got entered or is live on the exchange:\n"
+        "- Each scan type (Scan1, Scan2, TS1, TS2) runs its own grid of scheduled hour:minute "
+        "slots. A brand-new slot starts NONSPECIAL (regular, unproven yet — shown in /nt).\n"
+        "- A nonspecial slot auto-PROMOTES to SPECIAL + VERIFIED once it has banked at least 4 "
+        f"wins AND its win rate is at/above that kind's threshold (/winrate, set independently per "
+        f"kind — currently Scan1 {_SLOT_EVAL_THRESHOLD['scan1']}%, Scan2 {_SLOT_EVAL_THRESHOLD['scan2']}%, "
+        f"TS1 {_SLOT_EVAL_THRESHOLD['demo1']}%, TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Verified slots "
+        "are copytrade-enabled and shown in /st.\n"
+        "- A verified slot auto-DEMOTES to UNVERIFIED if its win rate later drops below "
+        "threshold — it stays special/tracked but copytrade pauses there until it recovers.\n"
+        "- An unverified slot auto-REVERIFIES back to verified once its win rate is back at/above "
+        "threshold AND it has strung together at least 2 wins in a row since its last loss (a "
+        "clean streak, not just an overall average).\n"
+        "- Win = TP2, breakeven after TP1 already hit, or a positive-P/L timeout. Loss = a real SL "
+        "that never hit TP1, a LOSS outcome, or a negative-P/L timeout. TP1 alone is never counted "
+        "on its own since the trade keeps riding toward TP2/BE/timeout.\n"
+        "- Separately: ANY slot (verified, unverified, or nonspecial) that racks up 3+ results "
+        "with win rate below threshold gets permanently BLACKLISTED — retired for good, not "
+        "relocated to a new time.\n"
+        "- \"Verified\" here is about the scheduled TIME's track record, not any single trade — a "
+        "trade is just tagged with whichever category its slot currently holds when it fires.\n\n"
+    )
+
+_KNOWLEDGE_BASE = {
+    "verified_system": _kb_verified_system,
+    "scan_scheduling": (
+        "SCAN SCHEDULING GRID:\n"
+        "- Scan1/Scan2/TS1/TS2 each run on a grid of scheduled hour:minute times, checked "
+        "continuously. Manual runs (/scan1, /scan2, /scan for both) bypass the schedule and run "
+        "immediately regardless of it.\n"
+        "- Each type's live schedule is the UNION of: its promoted SPECIAL times (verified + "
+        "unverified, tracked by the win-rate system), a coarser regular grid, and a DENSE grid — "
+        "minus any permanently BLACKLISTED times for that kind.\n"
+        "- /scantoggle turns each type's AUTO scanning on/off independently; /setinterval sets the "
+        "scan interval in hours.\n"
+        "- Every kind (scan1/scan2/demo1/demo2) tracks its schedule, promotions, and blacklist "
+        "completely independently — the same clock time (e.g. 2:23) can be verified on one kind "
+        "and blacklisted on another.\n\n"
+    ),
+    "ai_models_gateways": (
+        "AI MODELS & GATEWAYS — several INDEPENDENT settings, easy to confuse:\n"
+        "- Scan analysis default (Scan1/Scan2/BTC): SCAN_MODEL + USE_AEROLINK, set via /model and "
+        "/gateway.\n"
+        "- Per-tier scan override: the /aiconfig grid — Scan1/Scan2/TS1/TS2 EACH pick their own "
+        "model+gateway independently per classification (Verified/Unverified/Nonspecial), 12 "
+        "combinations total, drawn from MODEL_REGISTRY (a SMALL admin-curated list, default Opus "
+        "5/Fable 5/Opus 4.8, extendable via /addmodel) — NOT the larger Aerolink catalog.\n"
+        "- /chat's OWN model + gateway (CHAT_MODEL/CHAT_USE_AEROLINK, via /chatmodel) are "
+        "completely separate — picks from Google Gemini, Auto (smart per-message routing), or the "
+        "FULL Aerolink model catalog (Claude/GPT/GLM/Kimi/Gemini-image models).\n"
+        "- PECHI always tries the best model via Aerolink first, falls back to Direct Claude then "
+        "Google on failure. BOKI does the same but NEVER falls back to the paid Direct API — only "
+        "Aerolink or Google.\n"
+        "- Direct = your own Anthropic API key, only works for real Claude model IDs. Aerolink = a "
+        "separate gateway (Lumosel) proxying many providers, required for any non-Claude model.\n\n"
+    ),
+    "aerolink_keys": (
+        "AEROLINK KEYS: up to 20 possible key slots (AEROLINK_API_KEY through _20), set via "
+        "Railway env vars. /aerolinkkeys shows every CONFIGURED (non-empty) slot with pause/resume "
+        "buttons. A paused key is skipped entirely everywhere key rotation happens — same as an "
+        "empty slot — useful for pulling a free-tier key that's hit its quota out of rotation "
+        "without deleting the env var. /aerolinktest pings every configured, non-paused key with a "
+        "tiny message to show which are actually responding right now.\n\n"
+    ),
+    "trade_control": (
+        "TRADE CONTROL — two SEPARATE systems:\n"
+        "- The single BTC \"active trade\": one at a time. /close closes it, /sltobe moves its SL "
+        "to breakeven, /setsl <price> and /settp1|/settp2 <price> edit its levels directly.\n"
+        "- Copytrade positions (Scan1/Scan2 signals mirrored into every connected user's exchange "
+        "account): /closetrade <coin|all> closes one coin's positions (or everything) across all "
+        "copy users; /closescan clears and closes ALL current Scan1+Scan2 trades; /ctclose <user "
+        "id> closes ONE specific user's position.\n"
+        "- /fc (force close) is for a trade the bot LOST TRACK of after a redeploy that already "
+        "closed on the exchange — replays the close path (channel announcement, recap, win-rate "
+        "tracking) WITHOUT touching the exchange, since it's already closed there. Usage: /fc "
+        "s1|s2|t1|t2 SYMBOL tp1|tp2|sl|be.\n\n"
+    ),
+    "broadcast_channels": (
+        "BROADCAST & CHANNELS:\n"
+        "- Signal Channel (legacy, channel 1) and VIP Mirror (Channel 2) are each one fixed "
+        "channel, paused independently. VIP Mirror automatically gets every VIP signal/update/the "
+        "pinned daily-weekly-monthly recap — separate from the VIP/Free channel LIST below.\n"
+        "- CHANNELS is a separate admin-managed list of Free and VIP broadcast destinations (under "
+        "/channelmgmt), each individually pausable.\n"
+        "- /broadcast sends a one-off message; audience modes are users only, channels only, all "
+        "(users+channels), free channels, vip channels, or one specific user. /schedulebroadcast "
+        "queues one for later; /scheduledbroadcasts lists/cancels/edits pending ones.\n\n"
+    ),
+    "vip_free_copytrade": (
+        "VIP/FREE TIERS & COPYTRADE:\n"
+        "- /setvip <id> <start DD.MM.YYYY> <end> and /setfree <id> set a user's tier directly — "
+        "handled by the copytrade module. VIP always gets every signal; Free only gets a signal if "
+        "it was ALSO shared to Free that day (the daily Free-channel quota).\n"
+        "- /connect <exchange> <api_key> <api_secret> links a user's real exchange account — "
+        "credentials are Fernet-encrypted (CT_ENCRYPT_KEY env var) before storage, falling back to "
+        "plain base64 (insecure) only if the encryption library is unavailable.\n"
+        "- Per-type copy toggles (whether NEW signals of that type get mirrored at all, separate "
+        "from whether the scan runs): BTC/Scan1/Scan2/TS1/TS2, plus Orphan Adopt (manage SL/TP on "
+        "a position the user opened themselves) and the global Auto SL/TP master switch — all "
+        "under /ctpause (aka /scancopy).\n"
+        "- On a real signal, each eligible connected user gets their own entry order sized from "
+        "their own settings (manual size, or auto-leverage from a risk amount), plus separate SL "
+        "and TP orders. TP1 closes TP1_CLOSE_PCT% of the position (default 50%, via /tp1size), the "
+        "rest rides toward TP2.\n"
+        "- \"Virtual\" trading is a separate PAPER-trading simulation per user — mirrors signals the "
+        "same way but never touches a real exchange.\n\n"
+    ),
+    "server_rotation_sync": (
+        "MULTI-SERVER ROTATION: only ONE server is ever \"active\" (placing real copytrade orders) "
+        "at a time — every other running server is standby (still scans/analyzes, never trades, "
+        "and doesn't even poll Telegram until it becomes active, so there's never a race). "
+        "/server <name> switches which one is active — run it FROM the server you're switching TO. "
+        "/syncup force-pushes this server's entire local state to the shared central store "
+        "immediately instead of waiting for it to happen naturally — used right before/after "
+        "migrating to a new server.\n\n"
+    ),
+    "recaps": (
+        "RECAPS: Daily fires just after midnight IST, itemizing every TP1/TP2/SL that closed that "
+        "calendar day (grouped by day OPENED, not closed). Weekly fires every Monday for the "
+        "Mon-Sun week that just ended; Monthly fires the 1st for the month that just ended — both "
+        "summarized as counts + win rate rather than itemized, to keep the message readable. All "
+        "three: VIP gets everything including SL, VIP Mirror gets an SL-free version, Free gets "
+        "only trades actually shown in Free — all pinned automatically. Win/loss definition is the "
+        "same as the verified/unverified system.\n\n"
+    ),
+    "boki_pechi_system": (
+        "HOW PECHI/BOKI THEMSELVES WORK: typing \"pechi ...\" or \"boki ...\" anywhere (private "
+        "chat or group, no /chat session needed) triggers a standalone reply — admin-only, checked "
+        "against the REAL sender id so it works the same in groups. Every message first goes "
+        "through ONE combined classifier that decides: (1) is this a live admin-action request — "
+        "if so, which known action, executed directly (plain settings fire immediately; trades/"
+        "money/broadcasts show a Yes/Cancel confirm first); (2) is this a real trade question about "
+        "a specific coin — if so, live BingX data + AI analysis, not just reasoning off raw numbers "
+        "typed in chat; (3) otherwise, which knowledge topics (if any) are relevant, and which AI "
+        "model best fits the question. PECHI tries the best model via Aerolink first, falls back to "
+        "Direct then Google. BOKI does the same but skips Direct entirely (free options only).\n\n"
+    ),
 }
 
 def _chat_classify_admin_action(own_message: str, reply_context: str):
@@ -3238,28 +3446,40 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
     message was paying for 3 full API round-trips back-to-back before even
     starting to generate the actual reply (2026-08-04 perf fix). Skips the
     admin-action catalog entirely in the prompt when is_admin is False, so
-    a regular user's prompt stays small. Returns a dict:
+    a regular user's prompt stays small. Also picks 0-3 relevant knowledge
+    topics (see _KNOWLEDGE_TOPICS) when the message is asking HOW some
+    bot-internal system works, so _admin_chat_context() can splice in real
+    grounded detail instead of the model guessing (2026-08-04, after Boki
+    fabricated a wrong explanation of verified/unverified). Returns a dict:
     {"admin_action": id or None, "admin_value": str,
      "is_trade_question": bool, "coin": verified symbol or None,
-     "setup": dict or None, "best_model": model id or "google"}"""
+     "setup": dict or None, "best_model": model id or "google",
+     "topics": [topic ids]}"""
     _catalog = ""
+    _topics_block = ""
     if is_admin:
         _catalog = ("\n\nADMIN LIVE-ACTION CATALOG (only relevant if the message is CLEARLY asking to "
                      "change a live setting or trigger a live action — not a question about one, not a "
                      "casual mention):\n" + "\n".join(f"- {aid}: {info['desc']}" for aid, info in _ADMIN_ACTIONS.items()))
+        _topics_block = ("\n\nKNOWLEDGE TOPICS (pick 0-3 that are relevant ONLY if the message is asking "
+                          "HOW some bot-internal system actually works, e.g. \"how does X become verified\", "
+                          "\"how does copytrade work\" — not for simple where-is-the-button questions, not "
+                          "for admin actions, not for trade questions):\n" +
+                          "\n".join(f"- {tid}: {desc}" for tid, desc in _KNOWLEDGE_TOPICS.items()))
     _model_catalog = "\n".join(f"- {mid}: {info['label']} ({info['tier']})"
         for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "text")
     _prompt = (
-        "Read both messages below and answer THREE independent questions about them in one JSON object.\n\n"
+        "Read both messages below and answer FOUR independent questions about them in one JSON object.\n\n"
         f'Replied-to message (context, may be empty): "{reply_context}"\n'
         f'User\'s actual message: "{own_message}"'
-        + _catalog + "\n\n"
+        + _catalog + _topics_block + "\n\n"
         'Reply with ONLY this exact JSON, nothing else:\n'
         '{"admin_action": "<action id>" or null, "admin_value": "<value string for that action, or empty>", '
         '"is_trade_question": true or false, "coin": "BTC" or null, '
         '"setup": {"direction": "LONG or SHORT", "entry": "e.g. 64000-64500 or 64200", '
         '"target": "e.g. 59600 or null", "sl": "e.g. 65500 or null"} or null, '
-        '"best_model": "<a model id from the list below, or \\"google\\">"}\n\n'
+        '"best_model": "<a model id from the list below, or \\"google\\">", '
+        '"topics": ["<topic id>", ...] or []}\n\n'
         "Rules:\n"
         "1. admin_action must be null unless the message is CLEARLY asking to change one specific live "
         "setting/action" + (" from the catalog above; only ever use an id that's actually listed" if is_admin else " (there is no catalog here, so this must always be null)") + ". "
@@ -3273,11 +3493,13 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         "3. best_model: pick the single best model to answer this message in general (used only when it's "
         "neither an admin action nor a trade question) — crypto/trading talk suits a capable reasoning "
         "model, coding suits a code-strong model, casual chat can use anything.\n"
+        "4. topics: only ever use ids actually listed above; empty list unless the message is genuinely "
+        "asking how something works.\n"
         f"Models available for best_model:\n- google: Google Gemini (general-purpose, free)\n{_model_catalog}"
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=280,
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=320,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
@@ -3290,13 +3512,14 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         _model = (d.get("best_model") or "google").strip().lower()
         if not (_model == "google" or (_model in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_model]["kind"] == "text")):
             _model = "google"
+        _topics = [t for t in (d.get("topics") or []) if is_admin and t in _KNOWLEDGE_TOPICS][:3]
         return {"admin_action": _action, "admin_value": (d.get("admin_value") or "").strip() if _action else "",
                 "is_trade_question": _is_trade, "coin": _coin, "setup": d.get("setup") if (_is_trade and _coin) else None,
-                "best_model": _model}
+                "best_model": _model, "topics": _topics}
     except Exception as e:
         print(f"  [CHAT COMBINED] classify failed: {e}")
         return {"admin_action": None, "admin_value": "", "is_trade_question": False, "coin": None,
-                "setup": None, "best_model": "google"}
+                "setup": None, "best_model": "google", "topics": []}
 
 def _strip_trigger_word(text: str, word: str):
     """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
@@ -3416,7 +3639,7 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             if _chat_dispatch_trade_analysis(cid, True, _c["coin"], _c["setup"]):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
-            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context(),
+            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context(topics=_c["topics"]),
                                         precomputed_model=_c["best_model"])
             send_reply(cid, reply_text, skip_smallcaps=True)
     except Exception as e:
@@ -3515,7 +3738,7 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 sess["history"].append({"role": "user", "parts": [{"text": _ai_text}]})
                 # Admin-only personal-assistant context (2026-08-03 request) — never
                 # injected for a regular user's session.
-                _extra_ctx = _admin_chat_context() if _is_admin_cid else ""
+                _extra_ctx = _admin_chat_context(topics=_c["topics"]) if _is_admin_cid else ""
                 if _is_pechi:
                     reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx,
                                                           precomputed_model=_c["best_model"])
