@@ -8156,7 +8156,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
             send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
-            ct.on_scan_sl(sym)
+            ct.on_scan_sl(sym, reason="TIMEOUT")
             ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
@@ -16272,7 +16272,7 @@ def _demo_monitor_loop():
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free)
-                        ct.on_scan_sl(sym)
+                        ct.on_scan_sl(sym, reason="TIMEOUT")
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _slot_hm_for_trade(t, created)

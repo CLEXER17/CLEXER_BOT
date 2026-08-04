@@ -2190,11 +2190,20 @@ def update_tp(which: str, new_price: float, full_remaining: bool = False) -> lis
             print(f"[CT] update_tp {cid}: {e}")
     return results or ["No users in position."]
 
-def on_scan_sl(symbol: str):
-    """Scan SL hit — cancel all orders, force-close position, clear scan state."""
+def on_scan_sl(symbol: str, reason: str = "SL"):
+    """Scan SL hit (or TIMEOUT close, same mechanics — market-close the
+    position) — cancel all orders, force-close position, clear scan state.
+
+    reason: "SL" (default, a real stop-loss price was hit) or "TIMEOUT" (the
+    1H/12H auto-cutoff closed the trade with no TP1/SL touched). Only
+    affects the recorded label — "BE" is still auto-detected below when
+    TP1 had already hit, regardless of reason, since a BE exit is a BE
+    exit either way. Added 2026-08-04 after a TIMEOUT close was recorded
+    to the Mini App as a plain "SL" with no way to tell the two apart."""
     for cid, user, api_key, api_secret in _users_with_copy():
         p = _pfx_for_symbol(user, symbol)
         if not p: continue
+        _close_started_ms = int(time.time() * 1000)
         try:
             if user.get("exchange", "bingx") != "bingx":
                 _ccxt_close_scan_slot(cid, user, p, symbol)
@@ -2222,8 +2231,16 @@ def on_scan_sl(symbol: str):
             close_qty   = float(user.get(f"{p}qty", 0))
             tp1_hit     = bool(user.get(f"{p}tp1_hit", False))
             if entry_price and sl_price and close_qty > 0:
-                pnl = _calc_pnl(user[f"{p}side"], entry_price, sl_price, close_qty)
-                _record_pnl(user, pnl, symbol, user[f"{p}side"], "BE" if tp1_hit else "SL", volume=close_qty * sl_price)
+                # A SL is placed as a STOP_MARKET (can slip) and a TIMEOUT is a
+                # plain market close (no target price at all) — neither is
+                # guaranteed to fill at sl_price, so ask BingX's own income
+                # history what actually happened before falling back to the
+                # old assumed-exact-SL-fill calculation.
+                real_pnl = _fetch_symbol_realized_pnl(api_key, api_secret, symbol, _close_started_ms) \
+                           if user.get("exchange", "bingx") == "bingx" else None
+                pnl = real_pnl if real_pnl is not None else _calc_pnl(user[f"{p}side"], entry_price, sl_price, close_qty)
+                _label = "BE" if tp1_hit else ("TIMEOUT" if reason == "TIMEOUT" else "SL")
+                _record_pnl(user, pnl, symbol, user[f"{p}side"], _label, volume=close_qty * sl_price)
                 if not tp1_hit:
                     user["history"]["total"] += 1
                     user["history"]["loss"] += 1
@@ -2410,6 +2427,34 @@ def _fetch_bingx_realized_pnl(api_key: str, api_secret: str, days: int = 90) -> 
     except Exception as e:
         print(f"[CT] _fetch_bingx_realized_pnl: {e}")
         return None
+
+def _fetch_symbol_realized_pnl(api_key: str, api_secret: str, symbol: str, since_ms: int,
+                                retries: int = 2, delay: float = 1.0):
+    """Real realized PnL for one symbol's close(s) since `since_ms`, straight from
+    BingX's own income history — the actual money moved, not an assumption of
+    what price a stop/market close filled at. Same principle as
+    _fetch_bingx_realized_pnl, scoped to one symbol/close event instead of a
+    full account sum (2026-08-04: added after a TIMEOUT close on BARDUSDT
+    showed a real -$0.11 loss on the exchange but a synthetic -$0.47 "SL" in
+    the Mini App, because on_scan_sl used to always assume the position
+    closed exactly at the stored target SL price regardless of what the
+    market-close order actually filled at). BingX can take a moment to post
+    an income row after a fill, so this retries a few times. Returns None if
+    nothing shows up in time — callers should fall back to the old
+    assumed-price calculation rather than record a fabricated $0."""
+    for attempt in range(retries):
+        try:
+            r = _bingx("GET", "/openApi/swap/v2/user/income", api_key, api_secret,
+                       {"symbol": symbol, "incomeType": "REALIZED_PNL", "startTime": since_ms, "limit": 50})
+            if r.get("code") == 0:
+                rows = [row for row in (r.get("data") or []) if row.get("symbol") == symbol]
+                if rows:
+                    return round(sum(float(row.get("income", 0)) for row in rows), 4)
+        except Exception as e:
+            print(f"[CT] _fetch_symbol_realized_pnl {symbol}: {e}")
+        if attempt < retries - 1:
+            time.sleep(delay)
+    return None
 
 def _get_open_orders(api_key: str, api_secret: str, symbol: str) -> list:
     """Fetch all open orders for a symbol."""
