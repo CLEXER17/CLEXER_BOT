@@ -15858,6 +15858,20 @@ def command_listener():
                         threading.Thread(target=_handle_chat_message,
                             args=(cid, text), kwargs={"sender_id": sender_uid, "reply_context": _extract_reply_context(msg)},
                             daemon=True).start()
+                    elif not _chat_sessions[str(cid)].get("_nudge_sent"):
+                        # A regular user who forgets/ignores the session-start banner
+                        # and just types plainly otherwise got total silence here —
+                        # no error, no hint, nothing — which reads as the bot being
+                        # broken rather than "you forgot to forward/reply" (2026-08-04
+                        # admin request: help users who don't already know how to use
+                        # /chat). Sent at most once per session so repeated plain
+                        # typing doesn't spam the same reminder every message.
+                        _chat_sessions[str(cid)]["_nudge_sent"] = True
+                        _is_group = msg.get("chat", {}).get("type") in ("group", "supergroup")
+                        send_reply(cid, "↪️ " + _math_sans(
+                            ("Reply directly to one of my messages to chat with me."
+                             if _is_group else "Forward a message to me to chat with me.")
+                            + "\n(just typing won't trigger a reply)"))
         except Exception as e:
             print(f"  [CMD] {e}")
             # Previously silent to the admin — a crash here (e.g. mid-callback,
