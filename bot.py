@@ -17054,6 +17054,21 @@ def main():
             if bot_paused.is_set():
                 time.sleep(MAIN_TICK); continue
 
+            # Standby server — sit completely idle until this server actually
+            # becomes active. This loop drives every real BTC/Scan1/Scan2
+            # scan trigger and SL/TP/TIMEOUT announcement; running it
+            # unconditionally on every server (like _demo_monitor_loop used
+            # to, before 2026-08-04's fix for the demo/TS1 duplicate-message
+            # bug) means two live servers both independently notice the same
+            # trade event and both announce it — duplicate channel messages
+            # on REAL paid signals, not just demo ones. Admin's explicit
+            # instruction (2026-08-04): "keep full power to one server, don't
+            # give any power to another until it fully active" — so a standby
+            # server does none of this, not even the warm-standby scanning it
+            # used to do, until /server switches it active.
+            if CLEXER_API_URL and not is_active_server():
+                time.sleep(MAIN_TICK); continue
+
             # ── Weekend sleep: Fri 22:00 IST → Sun 23:00 IST ──────────────────
             global _weekend_sleep_notified
             if is_weekend_sleep():
