@@ -4106,6 +4106,10 @@ trade_stats = {
 vip_trade_stats = {
     "scan1_sl": 0, "scan1_tp1": 0, "scan1_tp2": 0, "scan1_signals": 0,
     "scan2_sl": 0, "scan2_tp1": 0, "scan2_tp2": 0, "scan2_signals": 0,
+    # TS1/TS2 (demo) — same shape/tier_routed-only rule, added 2026-08-04
+    # admin request so /stats shows demo win rate alongside BTC/Scan1/Scan2.
+    "demo1_sl": 0, "demo1_tp1": 0, "demo1_tp2": 0, "demo1_signals": 0,
+    "demo2_sl": 0, "demo2_tp1": 0, "demo2_tp2": 0, "demo2_signals": 0,
 }
 
 STATE_FILE       = os.path.join(DATA_DIR, "clexer_state.json")
@@ -10603,11 +10607,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         s1_wr = (vs['scan1_tp1'] + vs['scan1_tp2']) / s1_total * 100
         s2_total = vs['scan2_tp1'] + vs['scan2_tp2'] + vs['scan2_sl'] or 1
         s2_wr = (vs['scan2_tp1'] + vs['scan2_tp2']) / s2_total * 100
+        d1_total = vs['demo1_tp1'] + vs['demo1_tp2'] + vs['demo1_sl'] or 1
+        d1_wr = (vs['demo1_tp1'] + vs['demo1_tp2']) / d1_total * 100
+        d2_total = vs['demo2_tp1'] + vs['demo2_tp2'] + vs['demo2_sl'] or 1
+        d2_wr = (vs['demo2_tp1'] + vs['demo2_tp2']) / d2_total * 100
         _stats_btns = {"inline_keyboard": [
             [{"text": "🔄 Refresh", "callback_data": "stats_win"}],
             [{"text": "🗑 Reset BTC",   "callback_data": "reset_btc_stats"},
              {"text": "🗑 Reset Scan1", "callback_data": "reset_scan1_stats"},
              {"text": "🗑 Reset Scan2", "callback_data": "reset_scan2_stats"}],
+            [{"text": "🗑 Reset TS1", "callback_data": "reset_demo1_stats"},
+             {"text": "🗑 Reset TS2", "callback_data": "reset_demo2_stats"}],
         ]} if is_admin else None
         send_reply(chat_id,
             f"<b>Statistics</b>\n\n"
@@ -10624,7 +10634,15 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"<b>Scan2 Trades</b> <i>(VIP-shown only)</i>\n"
             f"Signals: {vs['scan2_signals']}\n"
             f"TP1: {vs['scan2_tp1']} | TP2: {vs['scan2_tp2']} | SL: {vs['scan2_sl']}\n"
-            f"Win rate: <b>{s2_wr:.0f}%</b>", reply_markup=_stats_btns)
+            f"Win rate: <b>{s2_wr:.0f}%</b>\n\n"
+            f"<b>TS1 Trades</b> <i>(VIP-shown only)</i>\n"
+            f"Signals: {vs['demo1_signals']}\n"
+            f"TP1: {vs['demo1_tp1']} | TP2: {vs['demo1_tp2']} | SL: {vs['demo1_sl']}\n"
+            f"Win rate: <b>{d1_wr:.0f}%</b>\n\n"
+            f"<b>TS2 Trades</b> <i>(VIP-shown only)</i>\n"
+            f"Signals: {vs['demo2_signals']}\n"
+            f"TP1: {vs['demo2_tp1']} | TP2: {vs['demo2_tp2']} | SL: {vs['demo2_sl']}\n"
+            f"Win rate: <b>{d2_wr:.0f}%</b>", reply_markup=_stats_btns)
 
     elif cmd == "/session":
         s = get_session()
@@ -13482,6 +13500,16 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
             ts[k] = 0; vip_trade_stats[k] = 0
         save_state()
         result_text = "✅ <b>Scan2 stats reset.</b>"
+    elif action_id == "reset_demo1_stats":
+        for k in ("demo1_sl","demo1_tp1","demo1_tp2","demo1_signals"):
+            vip_trade_stats[k] = 0  # demo1/demo2 only ever tracked in vip_trade_stats, not trade_stats
+        save_state()
+        result_text = "✅ <b>TS1 stats reset.</b>"
+    elif action_id == "reset_demo2_stats":
+        for k in ("demo2_sl","demo2_tp1","demo2_tp2","demo2_signals"):
+            vip_trade_stats[k] = 0
+        save_state()
+        result_text = "✅ <b>TS2 stats reset.</b>"
     elif action_id == "reset_signal_history":
         signal_history.clear(); scan_history.clear(); save_state()
         result_text = "✅ <b>Signal history cleared.</b>\n\nCSV trade log untouched."
@@ -15075,10 +15103,12 @@ def command_listener():
                         _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_win":
                         _toggle_cmd("/stats", cb_chat_id, cb_cid, cb_msg_id, "monitor")
-                    elif cb_data in ("reset_btc_stats", "reset_scan1_stats", "reset_scan2_stats") and cb_is_admin:
+                    elif cb_data in ("reset_btc_stats", "reset_scan1_stats", "reset_scan2_stats", "reset_demo1_stats", "reset_demo2_stats") and cb_is_admin:
                         _labels = {"reset_btc_stats": "Reset all BTC trade statistics?",
                                    "reset_scan1_stats": "Reset all Scan1 trade statistics?",
-                                   "reset_scan2_stats": "Reset all Scan2 trade statistics?"}
+                                   "reset_scan2_stats": "Reset all Scan2 trade statistics?",
+                                   "reset_demo1_stats": "Reset all TS1 trade statistics?",
+                                   "reset_demo2_stats": "Reset all TS2 trade statistics?"}
                         _ask_confirm(cb_chat_id, cb_cid, cb_data, _labels[cb_data], "help_cat:monitor", message_id=cb_msg_id)
                     elif cb_data == "reset_signal_history" and cb_is_admin:
                         _ask_confirm(cb_chat_id, cb_cid, "reset_signal_history",
@@ -16313,6 +16343,9 @@ def _demo_monitor_loop():
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp2(sym)
                         ct.virtual_on_close(sym, cp, "TP2")
+                        if tier_routed:
+                            vip_trade_stats[f"demo{_dver}_tp2"] += 1
+                            vip_trade_stats[f"demo{_dver}_tp1"] += (0 if tp1hit else 1)
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _slot_hm_for_trade(t, created)
@@ -16339,6 +16372,8 @@ def _demo_monitor_loop():
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         ct.virtual_on_close(sym, cp, lbl)
+                        if tier_routed:
+                            vip_trade_stats[f"demo{_dver}_sl"] += 1
                         if lbl == "SL":
                             _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
                             _send_sl_reassurance(sym, f"TS{_dver}", sig, entry,
@@ -16366,6 +16401,8 @@ def _demo_monitor_loop():
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons())
                         ct.on_scan_tp1(sym)
                         ct.virtual_on_tp1(sym, tp1)
+                        if tier_routed:
+                            vip_trade_stats[f"demo{_dver}_tp1"] += 1
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
                             entry_date=_ist_date_str(created), sig_id=sig_id)
@@ -16794,6 +16831,8 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             }
             with _demo_monitor_lock:
                 demo_list.append(slot_data)
+            if _demo1_tier_routed:
+                vip_trade_stats[f"demo{scan_ver}_signals"] += 1
             save_state()  # mini app's /trades/active reads this — without it, demo trades never appeared there
             log_trade_event({"type":f"demo{scan_ver}","coin":chosen_sym,"direction":scan_signal_val,
                 "signal_time":_ist_str_now(),"entry_price":scan_entry,
