@@ -2451,9 +2451,17 @@ def _chat_call_openai_shape(history: list, model_id: str, extra_system: str = ""
         raise Exception("Empty choices in OpenAI-shape response")
     return choices[0].get("message", {}).get("content", "") or "…"
 
-_CHAT_ROUTER_MODEL = "kimi-k3"   # fast/cheap classifier for CHAT_MODEL == "auto" — via
-# Aerolink, not Gemini, so per-message routing calls don't eat into Gemini's tiny
-# 20-requests/day free quota on top of whatever "google" answers get picked too.
+_CHAT_ROUTER_MODEL = "claude-opus-5"   # classifier for admin-action/trade-question/
+# knowledge-topic/model routing (_chat_classify_combined) — via Aerolink, not
+# Gemini, so per-message routing calls don't eat into Gemini's tiny 20-requests/day
+# free quota on top of whatever "google" answers get picked too.
+# Was "kimi-k3" (fast/cheap) until 2026-08-04 — admin explicitly chose accuracy
+# over speed after repeated real misclassifications (a salary/tax question read
+# as a BTC trade question, "draw" inside "withdrawal" as an image request, etc.):
+# a single classifier call juggling 4 judgment calls at once is where a cheap/
+# fast model's shallow pattern-matching shows up most. Replies will be a bit
+# slower than the kimi-k3 era, but still just ONE classifier call (not the 3
+# sequential ones from before that fix), so nowhere near as slow as that was.
 
 def _chat_classify_model(message: str) -> str:
     """CHAT_MODEL == "auto": asks a fast/cheap model to pick which text model in
