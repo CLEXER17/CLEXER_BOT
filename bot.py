@@ -3270,16 +3270,16 @@ def _kb_verified_system():
         "trade got entered or is live on the exchange:\n"
         "- Each scan type (Scan1, Scan2, TS1, TS2) runs its own grid of scheduled hour:minute "
         "slots. A brand-new slot starts NONSPECIAL (regular, unproven yet — shown in /nt).\n"
-        "- A nonspecial slot auto-PROMOTES to SPECIAL + VERIFIED once it has banked at least 4 "
-        f"wins AND its win rate is at/above that kind's threshold (/winrate, set independently per "
-        f"kind — currently Scan1 {_SLOT_EVAL_THRESHOLD['scan1']}%, Scan2 {_SLOT_EVAL_THRESHOLD['scan2']}%, "
-        f"TS1 {_SLOT_EVAL_THRESHOLD['demo1']}%, TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Verified slots "
-        "are copytrade-enabled and shown in /st.\n"
+        f"- A nonspecial slot auto-PROMOTES to SPECIAL + VERIFIED once it has banked at least "
+        f"{_SLOT_MIN_WINS_FOR_NEW_PROMOTION} wins AND its win rate is at/above that kind's threshold "
+        f"(/winrate, set independently per kind — currently Scan1 {_SLOT_EVAL_THRESHOLD['scan1']}%, "
+        f"Scan2 {_SLOT_EVAL_THRESHOLD['scan2']}%, TS1 {_SLOT_EVAL_THRESHOLD['demo1']}%, "
+        f"TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Verified slots are copytrade-enabled and shown in /st.\n"
         "- A verified slot auto-DEMOTES to UNVERIFIED if its win rate later drops below "
         "threshold — it stays special/tracked but copytrade pauses there until it recovers.\n"
-        "- An unverified slot auto-REVERIFIES back to verified once its win rate is back at/above "
-        "threshold AND it has strung together at least 2 wins in a row since its last loss (a "
-        "clean streak, not just an overall average).\n"
+        f"- An unverified slot auto-REVERIFIES back to verified once its win rate is back at/above "
+        f"threshold AND it has strung together at least {_SLOT_MIN_STREAK_FOR_REVERIFY} wins in a row "
+        f"since its last loss (a clean streak, not just an overall average).\n"
         "- Win = TP2, breakeven after TP1 already hit, or a positive-P/L timeout. Loss = a real SL "
         "that never hit TP1, a LOSS outcome, or a negative-P/L timeout. TP1 alone is never counted "
         "on its own since the trade keeps riding toward TP2/BE/timeout.\n"
@@ -4259,8 +4259,9 @@ _demo_tried_lock = __import__("threading").Lock()  # check-and-claim atomic step
 #   2. Demotes a VERIFIED special time to unverified (no-copy) if its win%
 #      drops below threshold — protects real copytrade money automatically.
 #   3. Re-promotes an UNVERIFIED special time back to verified once win% is
-#      back above threshold AND it has strung together >=2 wins in a row
-#      since its last real SL (a "clean streak", not just an overall average).
+#      back above threshold AND it has strung together >=3 wins in a row
+#      (was 2, bumped 2026-08-04) since its last real SL (a "clean streak",
+#      not just an overall average).
 # Thresholds: 41% for scan1/scan2, 35% for demo1/demo2. TS1 and TS2 now run
 # fully independent schedules and win-rate tracking — a promotion/demotion on
 # one never affects the other (see _SLOT_SCHEDULE_KIND below).
@@ -4271,7 +4272,7 @@ _demo_tried_lock = __import__("threading").Lock()  # check-and-claim atomic step
 # it's not tracked as its own event — only these 4 terminal outcomes are.
 _SLOT_EVAL_THRESHOLD = {"scan1": 55, "scan2": 55, "demo1": 50, "demo2": 50}
 _SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
-_SLOT_MIN_STREAK_FOR_REVERIFY = 2
+_SLOT_MIN_STREAK_FOR_REVERIFY = 3  # was 2 (admin request 2026-08-04)
 # demo1/demo2 each map to their own independent schedule kind (test1/test2).
 _SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
 _SLOT_STATE_FILE = os.path.join(DATA_DIR, "slot_auto_state.json")
