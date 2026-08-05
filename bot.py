@@ -16185,12 +16185,25 @@ def _demo_monitor_loop():
     """Background thread: monitors demo trades every 30s. Sends TG alerts and,
     when Demo1/Demo2 copy trade is turned ON, closes matching real copy-user
     positions on TP1/TP2/SL/timeout via ct.on_scan_tp1/tp2/sl (symbol-based lookup —
-    safe no-op if no copy user has that symbol open in a demo slot)."""
+    safe no-op if no copy user has that symbol open in a demo slot).
+
+    This thread is started unconditionally on EVERY server (unlike
+    command_listener, which a standby server waits to start until it's
+    active) — was sending every TP1/TP2/SL/TIMEOUT announcement TWICE
+    whenever more than one server was actually alive at once (2026-08-04
+    real report: one HOME-USDT TS1 SL produced 4 sends in VIP, 2 in
+    Channel 2 — both messages, each doubled), since a standby server
+    independently detects the exact same condition from the same shared
+    trade state and has nothing stopping it from announcing it too, same
+    as save_settings()'s "only the active server's writes are trustworthy"
+    principle. Skips the whole cycle on a standby server rather than
+    picking apart which specific sends to suppress."""
     import re as _re
     while True:
         try:
             time.sleep(30)
             if bot_paused.is_set(): continue
+            if CLEXER_API_URL and not is_active_server(): continue
             now = time.time()
             for _dver, demo_list in ((1, demo_scan1_trades), (2, demo_scan2_trades)):
                 _dtype = f"demo{_dver}"
