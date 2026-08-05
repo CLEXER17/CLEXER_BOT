@@ -10278,18 +10278,24 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 else:
                     _wr = "—%"; _cnt = "0/0"; _streak = "0"
                 _icon = "🔒" if _unverified else "✅"
-                # Compact single-unit entry (not a padded column row) — packed
-                # two per line below instead of one per line, so the list reads
-                # horizontally rather than as a long vertical scroll (admin
-                # request 2026-08-04). Icon lives inside the shared <pre> block
-                # (can't sit outside per-entry once packed) — excluded from
-                # premium-emoji wrapping via emoji_overrides below, since a
-                # <tg-emoji> tag nested inside <pre> is invalid.
-                _rows.append(f"{_icon}{_hm_str} {_wr}({_cnt})s{_streak}")
-            # Pack 2 entries per line — manually chunked (not relying on
-            # client-side <pre> wrapping, which varies) so the pairing is
-            # predictable everywhere.
-            _packed = ["  ".join(_rows[_i:_i + 2]) for _i in range(0, len(_rows), 2)]
+                # Fixed-width columns (not just a compact string) so two
+                # entries packed per line actually line up as a grid instead
+                # of drifting per-row — each field padded WIDER than today's
+                # real max value (e.g. count fits "(12/9)", streak fits
+                # "s10") so future double-digit data doesn't break the
+                # alignment (admin request 2026-08-04). Icon lives inside the
+                # shared <pre> block (can't sit outside per-entry once
+                # packed) — excluded from premium-emoji wrapping via
+                # emoji_overrides below, since a <tg-emoji> tag nested inside
+                # <pre> is invalid.
+                _cnt_paren = f"({_cnt})"
+                _rows.append(f"{_icon} {_hm_str:<6}{_wr:<6}{_cnt_paren:<7}s{_streak:<2}")
+            # Pack 2 entries per line, explicit single-space separator (not
+            # relying on padding alone, since a 2-digit streak like "s10"
+            # would otherwise touch the next entry's icon) — manually
+            # chunked rather than relying on client-side <pre> wrapping.
+            _packed = [f"{_rows[_i]} {_rows[_i + 1]}" if _i + 1 < len(_rows) else _rows[_i]
+                       for _i in range(0, len(_rows), 2)]
             _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_packed) + "</pre>")
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
@@ -10326,15 +10332,24 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _cnt = f"{_stat['tp']}/{_stat['sl']}"
                 _streak = str(_stat.get("streak", 0))
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
-                _rows.append(f"{_hm_str} {_wr}({_cnt})s{_streak}")
+                _cnt_paren = f"({_cnt})"
+                # Same fixed-width columns as /st (minus the icon), padded
+                # wider than today's real max value so future double-digit
+                # counts/streaks don't break the alignment (admin request
+                # 2026-08-04).
+                _rows.append(f"{_hm_str:<6}{_wr:<6}{_cnt_paren:<7}s{_streak:<2}")
             if _rows:
                 # Pack 2 entries per line so the list reads horizontally rather
-                # than one-per-line vertical scroll (admin request 2026-08-04),
-                # then chunk the PACKED lines to stay under Telegram's 4096-char
-                # limit (2026-07-28 — the dense grid means far more tracked
-                # slots now, and a single kind alone can grow past it over
-                # time, same failure as the whole-command message used to hit).
-                _packed = ["  ".join(_rows[_i:_i + 2]) for _i in range(0, len(_rows), 2)]
+                # than one-per-line vertical scroll, then chunk the PACKED
+                # lines to stay under Telegram's 4096-char limit (2026-07-28
+                # — the dense grid means far more tracked slots now, and a
+                # single kind alone can grow past it over time, same failure
+                # as the whole-command message used to hit). Explicit
+                # single-space separator (not relying on padding alone) since
+                # a 2-digit streak like "s10" would otherwise touch the next
+                # entry.
+                _packed = [f"{_rows[_i]} {_rows[_i + 1]}" if _i + 1 < len(_rows) else _rows[_i]
+                           for _i in range(0, len(_rows), 2)]
                 _hdr = f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)"
                 _chunk, _chunk_len = [], len(_hdr) + 20
                 for _row in _packed:
