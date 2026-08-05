@@ -3541,11 +3541,21 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
     topics (see _KNOWLEDGE_TOPICS) when the message is asking HOW some
     bot-internal system works, so _admin_chat_context() can splice in real
     grounded detail instead of the model guessing (2026-08-04, after Boki
-    fabricated a wrong explanation of verified/unverified). Returns a dict:
+    fabricated a wrong explanation of verified/unverified). Also writes a
+    short context_note — this classifier already runs on the strongest
+    model (claude-opus-5) and already reads both messages together, so
+    rather than spend that understanding on just a handful of terse labels,
+    it also hands whichever model ends up answering (which might be a
+    cheaper/faster one) a 1-2 sentence briefing on what's actually being
+    asked, accounting for the reply-thread context. Admin's own idea
+    (2026-08-04): "take everything... use most powerful model then analyze
+    it, make prompt, then top model for it then answer" — one call instead
+    of two, since the classifier already has to read everything anyway.
+    Returns a dict:
     {"admin_action": id or None, "admin_value": str,
      "is_trade_question": bool, "coin": verified symbol or None,
      "setup": dict or None, "best_model": model id or "google",
-     "topics": [topic ids]}"""
+     "topics": [topic ids], "context_note": str}"""
     _catalog = ""
     _topics_block = ""
     if is_admin:
@@ -3560,7 +3570,7 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
     _model_catalog = "\n".join(f"- {mid}: {info['label']} ({info['tier']})"
         for mid, info in _AEROLINK_MODEL_CATALOG.items() if info["kind"] == "text")
     _prompt = (
-        "Read both messages below and answer FOUR independent questions about them in one JSON object.\n\n"
+        "Read both messages below and answer FIVE independent questions about them in one JSON object.\n\n"
         f'Replied-to message (context, may be empty): "{reply_context}"\n'
         f'User\'s actual message: "{own_message}"'
         + _catalog + _topics_block + "\n\n"
@@ -3570,7 +3580,11 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         '"setup": {"direction": "LONG or SHORT", "entry": "e.g. 64000-64500 or 64200", '
         '"target": "e.g. 59600 or null", "sl": "e.g. 65500 or null"} or null, '
         '"best_model": "<a model id from the list below, or \\"google\\">", '
-        '"topics": ["<topic id>", ...] or []}\n\n'
+        '"topics": ["<topic id>", ...] or [], '
+        '"context_note": "<1-2 plain sentences: what is this person ACTUALLY asking, once you account for '
+        'the reply-thread context and any ambiguity in the wording — written as a briefing for another AI '
+        'that will write the actual reply, or empty string if it is a simple/obvious message needing no '
+        'extra framing>"}\n\n'
         "Rules:\n"
         "1. admin_action must be null unless the message is CLEARLY asking to change, run, or VIEW/SHOW "
         "one specific live setting, action, or piece of real data (e.g. \"show my verified times\" is a "
@@ -3592,11 +3606,16 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         "model, coding suits a code-strong model, casual chat can use anything.\n"
         "4. topics: only ever use ids actually listed above; empty list unless the message is genuinely "
         "asking how something works.\n"
+        "5. context_note: only fill this in when reading BOTH messages together actually clarifies "
+        "something a second AI, seeing only the raw text, could otherwise misread (a short/ambiguous "
+        "follow-up whose real subject is in the reply-thread, a message that could look like it's about "
+        "one topic but is actually about another, slang/shorthand worth spelling out). Leave it empty for "
+        "a plain, self-contained message — don't manufacture a summary just to fill the field.\n"
         f"Models available for best_model:\n- google: Google Gemini (general-purpose, free)\n{_model_catalog}"
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=320,
+        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=400,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
@@ -3612,11 +3631,11 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
         _topics = [t for t in (d.get("topics") or []) if is_admin and t in _KNOWLEDGE_TOPICS][:3]
         return {"admin_action": _action, "admin_value": (d.get("admin_value") or "").strip() if _action else "",
                 "is_trade_question": _is_trade, "coin": _coin, "setup": d.get("setup") if (_is_trade and _coin) else None,
-                "best_model": _model, "topics": _topics}
+                "best_model": _model, "topics": _topics, "context_note": (d.get("context_note") or "").strip()}
     except Exception as e:
         print(f"  [CHAT COMBINED] classify failed: {e}")
         return {"admin_action": None, "admin_value": "", "is_trade_question": False, "coin": None,
-                "setup": None, "best_model": "google", "topics": []}
+                "setup": None, "best_model": "google", "topics": [], "context_note": ""}
 
 def _strip_trigger_word(text: str, word: str):
     """Shared prefix-detector for PECHI/BOKI-style trigger words — a message
@@ -3748,7 +3767,11 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             if _chat_dispatch_trade_analysis(cid, True, _c["coin"], _c["setup"]):
                 return
             _history = [{"role": "user", "parts": [{"text": _ai_message}]}]
-            reply_text = text_reply_fn(_history, _ai_message, extra_system=_admin_chat_context(topics=_c["topics"]),
+            # context_note: a briefing from the (stronger) classifier model on
+            # what's actually being asked, handed to whichever model answers —
+            # see _chat_classify_combined's docstring for why.
+            _note = f"WHAT THEY'RE ACTUALLY ASKING (from message analysis): {_c['context_note']}\n\n" if _c["context_note"] else ""
+            reply_text = text_reply_fn(_history, _ai_message, extra_system=_note + _admin_chat_context(topics=_c["topics"]),
                                         precomputed_model=_c["best_model"])
             send_reply(cid, reply_text, skip_smallcaps=True)
     except Exception as e:
@@ -3846,8 +3869,11 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                 _ai_text = _combine_reply_context(text, reply_context)
                 sess["history"].append({"role": "user", "parts": [{"text": _ai_text}]})
                 # Admin-only personal-assistant context (2026-08-03 request) — never
-                # injected for a regular user's session.
-                _extra_ctx = _admin_chat_context(topics=_c["topics"]) if _is_admin_cid else ""
+                # injected for a regular user's session. context_note (a briefing
+                # from the classifier model on what's actually being asked) applies
+                # to everyone, admin or not — see _chat_classify_combined's docstring.
+                _note = f"WHAT THEY'RE ACTUALLY ASKING (from message analysis): {_c['context_note']}\n\n" if _c["context_note"] else ""
+                _extra_ctx = _note + (_admin_chat_context(topics=_c["topics"]) if _is_admin_cid else "")
                 if _is_pechi:
                     reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx,
                                                           precomputed_model=_c["best_model"])
