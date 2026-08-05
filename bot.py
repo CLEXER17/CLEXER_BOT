@@ -10278,21 +10278,19 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 else:
                     _wr = "—%"; _cnt = "0/0"; _streak = "0"
                 _icon = "🔒" if _unverified else "✅"
-                # One shared <pre> per KIND block (not per row) — a separate <pre>
-                # on every single line makes Telegram render each row as its own
-                # standalone copyable code card instead of a compact table. <pre>
-                # (vs <code>) genuinely preserves whitespace exactly, like a
-                # terminal — <code> silently collapses repeated spaces, breaking
-                # padding-based column alignment even when the underlying text is
-                # correct. The icon has to live INSIDE the shared <pre> now (can't
-                # sit outside per-row anymore since the block spans many lines) —
-                # excluded from premium-emoji wrapping via emoji_overrides below,
-                # since a <tg-emoji> tag nested inside <pre> is invalid.
-                # Kept short (no "streak" word, tight spacing) — a wider row wraps
-                # on phone screens in monospace, dropping the tail onto its own
-                # line and creating a big visual gap between rows.
-                _rows.append(f"{_icon} {_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}")
-            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_rows) + "</pre>")
+                # Compact single-unit entry (not a padded column row) — packed
+                # two per line below instead of one per line, so the list reads
+                # horizontally rather than as a long vertical scroll (admin
+                # request 2026-08-04). Icon lives inside the shared <pre> block
+                # (can't sit outside per-entry once packed) — excluded from
+                # premium-emoji wrapping via emoji_overrides below, since a
+                # <tg-emoji> tag nested inside <pre> is invalid.
+                _rows.append(f"{_icon}{_hm_str} {_wr}({_cnt})s{_streak}")
+            # Pack 2 entries per line — manually chunked (not relying on
+            # client-side <pre> wrapping, which varies) so the pairing is
+            # predictable everywhere.
+            _packed = ["  ".join(_rows[_i:_i + 2]) for _i in range(0, len(_rows), 2)]
+            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_packed) + "</pre>")
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
         send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
@@ -10328,18 +10326,18 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _cnt = f"{_stat['tp']}/{_stat['sl']}"
                 _streak = str(_stat.get("streak", 0))
                 _hm_str = f"{_hm[0]}:{_hm[1]:02d}"
-                _rows.append(f"{_hm_str:<6} {_wr:<4} {_cnt:<4} s{_streak}")
+                _rows.append(f"{_hm_str} {_wr}({_cnt})s{_streak}")
             if _rows:
-                # One shared <pre> per KIND block, not one per row — a separate
-                # <pre> on every line makes Telegram render each row as its own
-                # standalone copyable code card instead of a compact table.
-                # Chunked to stay under Telegram's 4096-char limit (2026-07-28
-                # — the dense grid means far more tracked slots now, and a
-                # single kind alone can grow past it over time, same failure
-                # as the whole-command message used to hit).
+                # Pack 2 entries per line so the list reads horizontally rather
+                # than one-per-line vertical scroll (admin request 2026-08-04),
+                # then chunk the PACKED lines to stay under Telegram's 4096-char
+                # limit (2026-07-28 — the dense grid means far more tracked
+                # slots now, and a single kind alone can grow past it over
+                # time, same failure as the whole-command message used to hit).
+                _packed = ["  ".join(_rows[_i:_i + 2]) for _i in range(0, len(_rows), 2)]
                 _hdr = f"<b>{_nt_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)"
                 _chunk, _chunk_len = [], len(_hdr) + 20
-                for _row in _rows:
+                for _row in _packed:
                     if _chunk_len + len(_row) + 1 > 3500 and _chunk:
                         _nt_blocks.append(f"{_hdr}\n<pre>" + "\n".join(_chunk) + "</pre>")
                         _chunk, _chunk_len = [], len(_hdr) + 20
@@ -10364,8 +10362,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _bl_times = sorted(_SLOT_BLACKLIST.get(_kind, set()))
             if not _bl_times:
                 continue
-            _bl_rows = [f"<code>{_bh}:{_bm:02d}</code>" for _bh, _bm in _bl_times]
-            _bl_blocks.append(f"<b>{_bl_labels[_kind]}</b> ({len(_bl_times)})\n" + "\n".join(_bl_rows))
+            # Comma-separated on one flowing line rather than one time per line
+            # (admin request 2026-08-04) — a single <code> span wraps naturally
+            # in the message bubble, no manual chunking needed.
+            _bl_rows = [f"{_bh}:{_bm:02d}" for _bh, _bm in _bl_times]
+            _bl_blocks.append(f"<b>{_bl_labels[_kind]}</b> ({len(_bl_times)})\n<code>" + ", ".join(_bl_rows) + "</code>")
         if not _bl_blocks:
             send_reply(chat_id, "No blacklisted times — nothing has hit a 1:3 ratio yet."); return
         send_reply(chat_id, "🚫 <b>Blacklisted Times</b>\n\n" + "\n\n".join(_bl_blocks) +
