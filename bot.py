@@ -12358,10 +12358,14 @@ Reasoning: [one line]"""
                                   f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
                             )
                         else:
-                            _no_sig_msg = _scan_box(
-                                f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
-                                [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
-                                  f"{_smallcaps_title('Clex analyzed but no clean setup at this slot')}."]],
+                            # New minimal style (admin request 2026-08-04) — replaces
+                            # the old boxed template for the "genuinely no clean setup"
+                            # case specifically (the gateway/API-failure box above is
+                            # untouched, that's a different situation).
+                            _no_sig_msg = (
+                                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                                "📈 <b>Market Status</b>\n\n"
+                                "<blockquote>No valid setup detected.</blockquote>"
                             )
                         # Signal channel always gets it. VERIFIED slots ALSO post to
                         # VIP (2026-07-28 request) — VIP users are specifically primed
