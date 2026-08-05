@@ -10278,25 +10278,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 else:
                     _wr = "—%"; _cnt = "0/0"; _streak = "0"
                 _icon = "🔒" if _unverified else "✅"
-                # Fixed-width columns (not just a compact string) so two
-                # entries packed per line actually line up as a grid instead
-                # of drifting per-row — each field padded WIDER than today's
-                # real max value (e.g. count fits "(12/9)", streak fits
-                # "s10") so future double-digit data doesn't break the
-                # alignment (admin request 2026-08-04). Icon lives inside the
-                # shared <pre> block (can't sit outside per-entry once
-                # packed) — excluded from premium-emoji wrapping via
-                # emoji_overrides below, since a <tg-emoji> tag nested inside
-                # <pre> is invalid.
+                # /st stays ONE entry per line (admin request 2026-08-04: "keep
+                # /st vertical") — /nt still packs 2 per line. Fixed-width
+                # columns kept regardless, padded WIDER than today's real max
+                # value (count fits "(12/9)", streak fits "s10") so future
+                # double-digit data doesn't break alignment. Icon lives inside
+                # the shared <pre> block (can't sit outside per-entry) —
+                # excluded from premium-emoji wrapping via emoji_overrides
+                # below, since a <tg-emoji> tag nested inside <pre> is invalid.
                 _cnt_paren = f"({_cnt})"
                 _rows.append(f"{_icon} {_hm_str:<6}{_wr:<6}{_cnt_paren:<7}s{_streak:<2}")
-            # Pack 2 entries per line, explicit single-space separator (not
-            # relying on padding alone, since a 2-digit streak like "s10"
-            # would otherwise touch the next entry's icon) — manually
-            # chunked rather than relying on client-side <pre> wrapping.
-            _packed = [f"{_rows[_i]} {_rows[_i + 1]}" if _i + 1 < len(_rows) else _rows[_i]
-                       for _i in range(0, len(_rows), 2)]
-            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_packed) + "</pre>")
+            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_rows) + "</pre>")
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
         send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
