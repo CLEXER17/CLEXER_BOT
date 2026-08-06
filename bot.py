@@ -12550,13 +12550,22 @@ Reasoning: [one line]"""
                     if api_fail_count > 0 and api_fail_count >= len(tried):
                         # Every single candidate failed at the API call — this is NOT
                         # "no clean setup", it's Claude/the gateway not responding at all.
+                        # Gateway-aware advice line (admin request 2026-08-06) — the old
+                        # text always said "Aerolink may be blocked, switch to Direct"
+                        # even when Direct itself was what just failed (e.g. the
+                        # thinking-budget-exhaustion cause, unrelated to Aerolink at
+                        # all) — nonsense advice to someone already on Direct.
+                        _fail_gw = "Aerolink" if _using_aero else "Direct"
+                        _gw_advice = ("switch to Direct if this keeps happening."
+                                      if _using_aero else
+                                      "this run used Direct, not Aerolink — if it keeps happening on Direct, "
+                                      "it's likely a model/token-budget issue, not a gateway block. Contact admin.")
                         send_reply(cid,
                             f"🔴 <b>[Scan{scan_ver}] Claude API failed — no analysis ran</b>  {ist_str()}\n\n"
                             f"Tried {len(tried)} coin(s): <b>{tried_str}</b> — every one failed 3 retry "
                             f"attempts at the Claude API call itself. <b>No chart was actually analyzed.</b>\n\n"
                             + "\n".join(skip_log[-len(tried):]) +
-                            f"\n\n⚠️ Check your AI Model / Gateway settings (Aerolink may be blocked) — "
-                            f"switch to Direct if this keeps happening.\n"
+                            f"\n\n⚠️ Gateway used: <b>{_fail_gw}</b> — {_gw_advice}\n"
                             f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.", important=True)
                     else:
                         send_reply(cid,
