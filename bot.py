@@ -1,4 +1,4 @@
-﻿"""
+"""
 CLEXER Signal Bot V17.8.5
 """
 
@@ -595,12 +595,38 @@ def _react_to_message(chat_id, message_id, emoji: str = "🔥"):
     except Exception as e:
         print(f"  [REACT] {chat_id} msg {message_id}: {e}")
 
-def _react_to_ids(ids: dict, emoji: str = "🔥"):
+# Each channel type only accepts a fixed, admin-configured set of reactions —
+# Telegram silently rejects any emoji outside it (admin request 2026-08-06,
+# after every auto-react since the TP2-only days turned out to be silently
+# failing on Signal/Free because 🔥 was the only one of our old picks that
+# happened to be in ANY of these lists). One emoji per lifecycle event per
+# channel type, drawn only from what that channel actually allows:
+#   Signal: 🔥 🙏 🍾 🤗      VIP: ❤️‍🔥 🔥 💔 😎      Free: 🔥 ❤️‍🔥 💔 🏆
+_REACT_EMOJI_MAP = {
+    "entry":        {"ch1": "🙏", "vip": "😎", "free": "❤️‍🔥"},
+    "tp1":          {"ch1": "🍾", "vip": "🔥", "free": "🔥"},
+    "tp2":          {"ch1": "🔥", "vip": "🔥", "free": "🏆"},
+    "sl":           {"ch1": "🙏", "vip": "💔", "free": "💔"},
+    "be":           {"ch1": "🤗", "vip": "😎", "free": "❤️‍🔥"},
+    "timeout_win":  {"ch1": "🔥", "vip": "🔥", "free": "🏆"},
+    "timeout_loss": {"ch1": "🙏", "vip": "💔", "free": "💔"},
+}
+
+def _react_to_ids(ids: dict, category: str = "tp2"):
     """Reacts to every destination message_id in a send_lifecycle_reply-style
-    ids dict (e.g. {"ch1": mid, "vip:123": mid, "free:456": mid})."""
+    ids dict (e.g. {"ch1": mid, "vip:123": mid, "free:456": mid}) — using the
+    emoji that specific channel TYPE actually allows for this event category,
+    since Signal/VIP/Free each have their own separate allowed-reaction list."""
+    _emap = _REACT_EMOJI_MAP.get(category, {})
     for key, mid in (ids or {}).items():
-        cid = key.split(":", 1)[1] if ":" in key else (TELEGRAM_CHANNEL_ID if key == "ch1" else TELEGRAM_CHANNEL_ID_2)
-        if cid and mid:
+        if key.startswith("vip:"):
+            cid, _kind = key.split(":", 1)[1], "vip"
+        elif key.startswith("free:"):
+            cid, _kind = key.split(":", 1)[1], "free"
+        else:  # "ch1" (or any legacy ch2 key) — Signal channel
+            cid, _kind = (TELEGRAM_CHANNEL_ID if key == "ch1" else TELEGRAM_CHANNEL_ID_2), "ch1"
+        emoji = _emap.get(_kind)
+        if cid and mid and emoji:
             _react_to_message(cid, mid, emoji)
 
 # Reply keyboard button label -> command it triggers when tapped. Reply-
@@ -1006,7 +1032,7 @@ def _attach_chart_image_async(coin: str, reply_map: dict):
     threading.Thread(target=_run, daemon=True).start()
 
 def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True,
-                       locked_text: str = None, sig_id: str = None, react_emoji: str = None) -> dict:
+                       locked_text: str = None, sig_id: str = None, react_category: str = None) -> dict:
     """Sends a trade's entry signal via plain sendMessage (confirmed via /testreply
     to render premium emoji correctly — the old forward-relay trick actually LOSES
     them despite the original assumption it preserved them), and captures each
@@ -1051,8 +1077,8 @@ def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = F
             for cid in _channels_by_tier("free"):
                 mid = _send_plain_reply(cid, locked_text, reply_markup=_free_markup)
                 if mid: ids[f"free:{cid}"] = mid
-    if react_emoji:
-        _react_to_ids(ids, react_emoji)
+    if react_category:
+        _react_to_ids(ids, react_category)
     return ids
 
 def _tp_buttons():
@@ -1068,7 +1094,7 @@ def _tp_buttons():
     return {"inline_keyboard": [row]} if row else None
 
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None,
-                          locked_text: str = None, exclude_ch2: bool = False, react_emoji: str = None):
+                          locked_text: str = None, exclude_ch2: bool = False, react_category: str = None):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
     to that trade's entry-signal message in every destination it has a stored
     message_id for (reply_map, from send_entry_signal). Uses plain sendMessage —
@@ -1111,8 +1137,8 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
             for cid in _channels_by_tier("free"):
                 mid = _send_plain_reply(cid, locked_text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
                 if mid: ids[f"free:{cid}"] = mid
-    if react_emoji:
-        _react_to_ids(ids, react_emoji)
+    if react_category:
+        _react_to_ids(ids, react_category)
     return ids
 
 def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwargs) -> dict:
@@ -1123,10 +1149,10 @@ def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwa
     Excludes Channel 2 (VIP Mirror) for a real SL only — admin request, BE
     (breakeven, i.e. TP1 already hit) still posts there as normal.
 
-    Auto-reacts 😢 on a real SL loss, 👍 on a BE (no-loss) exit — caller can
-    still override via react_emoji= in kwargs."""
+    Auto-reacts with the "sl" category on a real loss, "be" on a no-loss
+    exit — caller can still override via react_category= in kwargs."""
     kwargs.setdefault("exclude_ch2", result == "SL")
-    kwargs.setdefault("react_emoji", "😢" if result == "SL" else "👍")
+    kwargs.setdefault("react_category", "sl" if result == "SL" else "be")
     ids = send_lifecycle_reply(text, reply_map, **kwargs)
     for k, v in (ids or {}).items():
         if k.startswith("free:"):
@@ -7517,7 +7543,7 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
     _save_sig_snapshot(signal["sig_id"], SYMBOL, signal["signal"], signal["entry"], signal["sl"], signal["tp1"], signal["tp2"], "btc")
     _ids = send_entry_signal(fmt_signal(signal), include_ch2=False, tier_routed=True,
         share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"],
-        react_emoji="👀")
+        react_category="entry")
     for k, v in (_ids or {}).items():
         if k.startswith("free:"): _track_free_sl(signal["sig_id"], k.split(":", 1)[1], "entry_mid", v)
     _attach_chart_image_async(SYMBOL.replace("USDT", ""), _ids)
@@ -7642,7 +7668,7 @@ def run_tick_check():
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>")
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
-                react_emoji="🔥")
+                react_category="tp2")
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
@@ -7664,7 +7690,7 @@ def run_tick_check():
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...")
                 send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
-                    react_emoji="💰")
+                    react_category="tp1")
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
                     entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
@@ -7829,7 +7855,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _log_scan_history(t, "TP2", price)
         _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
-        _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
+        _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
         ct.on_scan_tp2(sym)
         ct.virtual_on_close(sym, price, "TP2")
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -7853,7 +7879,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_tp1"] += 1
         send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
-            react_emoji="💰")
+            react_category="tp1")
         ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -8266,7 +8292,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
             send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True),
-                react_emoji="🔥" if pnl >= 0 else "😢")
+                react_category="timeout_win" if pnl >= 0 else "timeout_loss")
             ct.on_scan_sl(sym, reason="TIMEOUT")
             ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -8333,7 +8359,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
             _tp2_ids = send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
-            _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
+            _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
             ct.on_scan_tp2(sym)
             ct.virtual_on_close(sym, price, "TP2")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -8361,7 +8387,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
                 send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
-                    react_emoji="💰")
+                    react_category="tp1")
                 ct.on_scan_tp1(sym)
                 ct.virtual_on_tp1(sym, tp1)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -8478,7 +8504,7 @@ def run_price_check():
             ct.virtual_on_close(SYMBOL, active_trade.get("tp2",0), "TP2")
             _tp2_msg = fmt_update("TP2_HIT")
             _tp2_ids = send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
-            _react_to_ids(_tp2_ids)  # 🔥 auto-react to a full win
+            _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
             _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             reset_trade(); return True
@@ -8525,7 +8551,7 @@ def run_price_check():
             ct.virtual_on_tp1(SYMBOL, active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
             send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
-                react_emoji="💰")
+                react_category="tp1")
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
@@ -12454,7 +12480,7 @@ Reasoning: [one line]"""
                         slot_data["reply_map"] = send_entry_signal(fmt_scan_signal(slot_data),
                             include_ch2=False, tier_routed=_tier_routed, share_free=_effective_share_free,
                             locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
-                            sig_id=slot_data["sig_id"], react_emoji="👀")
+                            sig_id=slot_data["sig_id"], react_category="entry")
                         for _k, _v in (slot_data["reply_map"] or {}).items():
                             if _k.startswith("free:"): _track_free_sl(slot_data["sig_id"], _k.split(":", 1)[1], "entry_mid", _v)
                         _attach_chart_image_async(chosen_sym.replace("-USDT", "").replace("USDT", ""), slot_data["reply_map"])
@@ -16292,7 +16318,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
-            react_emoji="🔥")
+            react_category="tp2")
         ct.on_scan_tp2(sym)
         ct.virtual_on_close(sym, cp, "TP2")
         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
@@ -16321,7 +16347,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
-            react_emoji="💰")
+            react_category="tp1")
         ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
@@ -16435,7 +16461,7 @@ def _demo_monitor_loop():
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
-                            react_emoji="🔥")
+                            react_category="tp2")
                         ct.on_scan_tp2(sym)
                         ct.virtual_on_close(sym, cp, "TP2")
                         if tier_routed:
@@ -16499,7 +16525,7 @@ def _demo_monitor_loop():
                               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
-                            react_emoji="💰")
+                            react_category="tp1")
                         ct.on_scan_tp1(sym)
                         ct.virtual_on_tp1(sym, tp1)
                         if tier_routed:
@@ -16525,7 +16551,7 @@ def _demo_monitor_loop():
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
-                            react_emoji="🔥" if pnl >= 0 else "😢")
+                            react_category="timeout_win" if pnl >= 0 else "timeout_loss")
                         ct.on_scan_sl(sym, reason="TIMEOUT")
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
@@ -16945,7 +16971,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             if _demo_share_free: _consume_free_quota()
             _save_sig_snapshot(_demo_sig_id, chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, f"demo{scan_ver}")
             _demo_reply_map = send_entry_signal(demo_msg, include_ch2=False, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
-                locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id, react_emoji="👀")
+                locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id, react_category="entry")
             for _k, _v in (_demo_reply_map or {}).items():
                 if _k.startswith("free:"): _track_free_sl(_demo_sig_id, _k.split(":", 1)[1], "entry_mid", _v)
             _attach_chart_image_async(coin, _demo_reply_map)
