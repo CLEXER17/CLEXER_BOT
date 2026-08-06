@@ -12277,6 +12277,13 @@ Reasoning: [one line]"""
                                            r2.usage.input_tokens, r2.usage.output_tokens,
                                            gateway="Aerolink" if _using_aero else "Direct")
                             analysis = _claude_text(r2)
+                            if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE):
+                                # Empty/incomplete response — e.g. the model got cut off
+                                # mid-thinking before ever writing the output block. This
+                                # is NOT a real WAIT — treat it exactly like an API failure
+                                # (admin request 2026-08-06: was silently defaulting to WAIT,
+                                # masking that the coin was never actually analyzed).
+                                raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line)")
                             _claude_ok = True
                             break
                         except Exception as _ce:
@@ -16771,6 +16778,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
                     analysis = _claude_text(r2)
+                    if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE):
+                        # Empty/incomplete response — treat like an API failure instead
+                        # of silently defaulting to WAIT (admin request 2026-08-06, see
+                        # the live scan loop's identical check).
+                        raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line)")
                     _claude_ok = True; break
                 except Exception as _ce:
                     print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
