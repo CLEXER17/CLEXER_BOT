@@ -2382,17 +2382,22 @@ def _admin_chat_context(topics: list = None) -> str:
 def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     _sys = _CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
-    body = {
+    _base_body = {
         "contents": history,
         "systemInstruction": {"parts": [{"text": _sys}]},
-        # Google Search grounding (admin request 2026-08-06) — without this, a
-        # question needing current info (prices, sale dates, news) was answered
-        # purely from training data with NO real citations, and telling the
-        # model to "attach links" without grounding would just make it invent
-        # plausible-looking URLs. Real grounding gives real source URLs instead.
-        "tools": [{"google_search": {}}],
     }
-    r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
+    # Google Search grounding (admin request 2026-08-06) — real source links
+    # instead of the model inventing URLs. Fail-soft (2026-08-06 follow-up):
+    # this free-tier key may not have grounding enabled (often needs billing
+    # linked even on an otherwise-free key) — a hard 400 there was breaking
+    # EVERY Boki/Pechi reply, not just search-worthy ones. Try grounded first,
+    # silently fall back to a plain call (no links, but Boki still works) if
+    # the grounded request itself fails.
+    r = requests.post(url, headers=_gemini_headers(),
+        json={**_base_body, "tools": [{"google_search": {}}]}, timeout=30)
+    if not r.ok:
+        print(f"  [GEMINI GROUNDING] {r.status_code} {r.reason} — falling back to ungrounded call: {r.text[:300]}")
+        r = requests.post(url, headers=_gemini_headers(), json=_base_body, timeout=30)
     if not r.ok:
         raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
