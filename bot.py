@@ -12289,15 +12289,18 @@ Reasoning: [one line]"""
                     sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
                     scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
 
-                    emoji = "🟢" if candidate["change"] >= 0 else "🔴"
-                    tv_src = "TV" if tv_switched else "BingX"
                     # important=True (admin request 2026-08-06) — this raw per-candidate
-                    # analysis preview must reach admin DM on every attempt, special or
-                    # not, instead of being dropped by _scan_quiet's auto-run noise filter.
-                    send_reply(cid,
-                        f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
-                        f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
-                        f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
+                    # analysis preview must reach admin DM on every SPECIAL-slot attempt,
+                    # instead of being dropped by _scan_quiet's auto-run noise filter.
+                    # Nonspecial/regular-grid runs stay silent (2026-08-06 follow-up —
+                    # admin only wants this for special times, not the whole dense grid).
+                    if _is_special:
+                        emoji = "🟢" if candidate["change"] >= 0 else "🔴"
+                        tv_src = "TV" if tv_switched else "BingX"
+                        send_reply(cid,
+                            f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
+                            f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
+                            f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
                     if scan_signal_val == "WAIT":
                         # Extract reasoning from Claude's analysis for the skip log
@@ -16775,13 +16778,15 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
 
             # Per-candidate raw analysis preview DM — removed 2026-07-28 for
             # rate-limit reasons, restored 2026-08-06 (admin request) with
-            # important=True so it survives _scan_quiet, on every attempt,
-            # special or not — same format as the live Scan1/Scan2 preview.
-            _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
-            send_reply(cid,
-                f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver}</b>  {ist_str()}\n\n"
-                f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | 🔀 BingX\n\n"
-                f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
+            # important=True so it survives _scan_quiet. SPECIAL-slot attempts
+            # only (2026-08-06 follow-up) — nonspecial/dense-grid runs stay
+            # silent, same as the live Scan1/Scan2 preview.
+            if _demo_is_special_now:
+                _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
+                send_reply(cid,
+                    f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver}</b>  {ist_str()}\n\n"
+                    f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | 🔀 BingX\n\n"
+                    f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
             if scan_signal_val == "WAIT":
                 print(f"  [TEST] {chosen_sym} → WAIT")
