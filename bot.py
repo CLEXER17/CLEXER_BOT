@@ -12356,7 +12356,16 @@ BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {_price:,.6g}
 
 You are CLEXER. Analyze {chosen_sym} for MARKET entry at current price {_price:,.6g}.
 Entry is ALWAYS market price — no pullback, no limit orders.
-Reply ONLY with the output block below. No steps, no working, no extra text.
+Apply every rule below internally, in your head — never write out your reasoning,
+never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
+Go directly from reading this prompt to the OUTPUT block at the end, no preamble.
+Do NOT write "Position 0", "Position 1", etc. — do not list, number, or walk
+through individual candles at all, for ANY timeframe or ANY check below. Do NOT
+use markdown headers or bold section titles ("**4H Structure:**" etc.) — that
+formatting is what starts the narration. If you notice yourself starting to
+explain, compare, or list candles, stop immediately and skip straight to the
+OUTPUT block — a wrong-looking but complete answer is far better than a
+correct answer that gets cut off before it's written.
 
 RULES (apply internally, do not output):
 - 4H: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
@@ -12382,6 +12391,15 @@ BTC: ${btc_price:,.0f} | Session: {get_session()} | Current price: {_price:,.6g}
 
 You are CLEXER. Analyze {chosen_sym}. Decide: is this coin ready for MARKET entry RIGHT NOW?
 If not → WAIT. Do not force. Another coin will be tried. Go directly to output.
+Apply every rule below internally, in your head — never write out your reasoning,
+never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
+Do NOT write "Position 0", "Position 1", etc. — do not list, number, or walk
+through individual candles at all, for ANY timeframe or ANY check below. Do NOT
+use markdown headers or bold section titles ("**4H Structure:**" etc.) — that
+formatting is what starts the narration. If you notice yourself starting to
+explain, compare, or list candles, stop immediately and skip straight to the
+OUTPUT block — a wrong-looking but complete answer is far better than a
+correct answer that gets cut off before it's written.
 
 RULES:
 1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
