@@ -240,6 +240,17 @@ SCAN1_AUTO_ENABLED = True
 VERIFIED_SPECIAL_ENABLED = True
 UNVERIFIED_SPECIAL_ENABLED = True
 NONSPECIAL_SCAN_ENABLED = True
+# Independent admin toggles for the prompt-echo + raw-analysis-response debug
+# DMs (admin request 2026-08-06) — separate axis from the kill switches above:
+# these never stop a scan from running, they only control whether the admin
+# gets sent the full prompt text + raw response for that category. Nonspecial
+# defaults OFF since that grid fires far more often than special slots and
+# would otherwise flood the DM the moment it's turned on for the first time.
+# Toggled via /promptvst (verified), /promptunst (unverified), /promptnt
+# (nonspecial).
+PROMPT_DM_VERIFIED = True
+PROMPT_DM_UNVERIFIED = True
+PROMPT_DM_NONSPECIAL = False
 TEST_SCAN_ENABLED = False
 TEST_SCAN_MINUTE  = 5
 _test_scan1_last_hour = -1
@@ -4250,22 +4261,6 @@ def _sig_round(x, sig: int = 8) -> float:
         return 0.0
     return float(f"{x:.{sig}g}")
 
-def _scan_thinking_kwarg(model_id: str) -> dict:
-    """Root-cause fix for the empty-response failures (admin request 2026-08-06):
-    Claude Opus 5 runs adaptive thinking ON BY DEFAULT when the `thinking` param
-    is omitted (unlike Opus 4.8/4.7, where omitting it meant no thinking) — the
-    scan prompts' tight token budgets (200 for Direct BTC/Scan1/Scan2) were sized
-    for the OLD no-thinking-by-default behavior. With thinking silently eating
-    the whole budget, the model can emit ZERO visible text, which the retry
-    logic above was seeing as "0 chars, Entry=0.0". Explicitly disabling
-    thinking restores the original fast/deterministic short-output behavior
-    these prompts were designed around.
-
-    Fable 5 / Mythos 5 REJECT an explicit thinking:disabled with a 400 (thinking
-    is mandatory on those) — return {} for them so the call doesn't break."""
-    if model_id.startswith("claude-fable") or model_id.startswith("claude-mythos"):
-        return {}
-    return {"thinking": {"type": "disabled"}}
 
 # Specific scheduled slots that always run on Direct + Opus 5 and post to
 # VIP/Free ("special"); every other auto-scheduled slot ("regular") still forces
@@ -4809,6 +4804,17 @@ def _ai_category(kind: str = "btc", scan_ver: int = None) -> str:
     if _hm and _hm in _SCAN_SPECIAL_NO_COPY.get(sched_kind, set()):
         return "unverified"
     return "verified"
+
+def _prompt_dm_allowed(kind: str = "btc", scan_ver: int = None) -> bool:
+    """Per-category admin toggle for the prompt-echo + raw-analysis-response
+    debug DMs (admin request 2026-08-06) — independent from the
+    VERIFIED_SPECIAL_ENABLED/etc kill switches, which control whether the
+    scan RUNS at all. This only controls whether the admin gets sent the
+    debug DM for whichever category this run falls into. Toggled via
+    /promptvst, /promptunst, /promptnt."""
+    _cat = _ai_category(kind, scan_ver)
+    return {"verified": PROMPT_DM_VERIFIED, "unverified": PROMPT_DM_UNVERIFIED,
+            "nonspecial": PROMPT_DM_NONSPECIAL}.get(_cat, False)
 
 def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
     """Which Claude model to use — driven by (scan type x classification),
@@ -6577,8 +6583,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         try:
             msg = _claude_client(attempt=attempt).messages.create(
                 model=SCAN_MODEL, max_tokens=1200,
-                messages=[{"role": "user", "content": content}],
-                **_scan_thinking_kwarg(SCAN_MODEL))
+                messages=[{"role": "user", "content": content}])
             _log_api_usage("btc_analysis", SCAN_MODEL,
                            msg.usage.input_tokens, msg.usage.output_tokens,
                            gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -6593,8 +6598,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 try:
                     msg = _claude_client(attempt=1).messages.create(
                         model=SCAN_MODEL, max_tokens=1200,
-                        messages=[{"role": "user", "content": content_text}],
-                        **_scan_thinking_kwarg(SCAN_MODEL))
+                        messages=[{"role": "user", "content": content_text}])
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens,
                                    gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -6840,7 +6844,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -6903,6 +6907,9 @@ def load_settings():
             VERIFIED_SPECIAL_ENABLED = d.get("verified_special_enabled", True)
             UNVERIFIED_SPECIAL_ENABLED = d.get("unverified_special_enabled", True)
             NONSPECIAL_SCAN_ENABLED = d.get("nonspecial_scan_enabled", True)
+            PROMPT_DM_VERIFIED = d.get("prompt_dm_verified", True)
+            PROMPT_DM_UNVERIFIED = d.get("prompt_dm_unverified", True)
+            PROMPT_DM_NONSPECIAL = d.get("prompt_dm_nonspecial", False)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -6963,6 +6970,9 @@ def save_settings():
             "verified_special_enabled": VERIFIED_SPECIAL_ENABLED,
             "unverified_special_enabled": UNVERIFIED_SPECIAL_ENABLED,
             "nonspecial_scan_enabled": NONSPECIAL_SCAN_ENABLED,
+            "prompt_dm_verified": PROMPT_DM_VERIFIED,
+            "prompt_dm_unverified": PROMPT_DM_UNVERIFIED,
+            "prompt_dm_nonspecial": PROMPT_DM_NONSPECIAL,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -9885,7 +9895,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -11579,6 +11589,26 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         state = "✅ ON" if NONSPECIAL_SCAN_ENABLED else "❌ OFF"
         send_reply(chat_id, f"📋 <b>Nonspecial (regular-grid) auto-scans: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Manual runs still always work.")
 
+    elif cmd == "/promptvst" and is_scanadmin:
+        # DM toggle (not a kill switch) for VERIFIED special-time prompt-echo +
+        # raw-analysis-response debug DMs, across all of Scan1/Scan2/TS1/TS2.
+        PROMPT_DM_VERIFIED = not PROMPT_DM_VERIFIED
+        save_settings()
+        state = "✅ ON" if PROMPT_DM_VERIFIED else "❌ OFF"
+        send_reply(chat_id, f"📝 <b>Verified special-time prompt/response DMs: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Doesn't affect whether the scan runs — only whether you get sent the debug DM.")
+
+    elif cmd == "/promptunst" and is_scanadmin:
+        PROMPT_DM_UNVERIFIED = not PROMPT_DM_UNVERIFIED
+        save_settings()
+        state = "✅ ON" if PROMPT_DM_UNVERIFIED else "❌ OFF"
+        send_reply(chat_id, f"📝 <b>Unverified special-time prompt/response DMs: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Doesn't affect whether the scan runs — only whether you get sent the debug DM.")
+
+    elif cmd == "/promptnt" and is_scanadmin:
+        PROMPT_DM_NONSPECIAL = not PROMPT_DM_NONSPECIAL
+        save_settings()
+        state = "✅ ON" if PROMPT_DM_NONSPECIAL else "❌ OFF"
+        send_reply(chat_id, f"📝 <b>Nonspecial (regular-grid) prompt/response DMs: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Fires far more often than special slots — leave off unless you specifically need it.")
+
     elif cmd in ("/scancopy", "/ctpause") and is_scanadmin:
         send_ctpause_screen(chat_id)
 
@@ -12302,6 +12332,14 @@ Reasoning: [one line]"""
                         return _prompt, 200
 
                     analysis_prompt, _max_tokens = _build_analysis_prompt(cp)
+                    if _prompt_dm_allowed(_kind):
+                        # Admin request 2026-08-06 — send the exact prompt text too, not
+                        # just the response, so failures/narration can be debugged against
+                        # what the model was actually asked. Gated by /promptvst /promptunst
+                        # /promptnt.
+                        send_reply(cid,
+                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} PROMPT</b>\n\n"
+                            f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
 
                     def _build_content(_prompt):
                         _c = []
@@ -12337,19 +12375,15 @@ Reasoning: [one line]"""
                             _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
                             print(f"  [SCAN] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model(_kind)}")
                             _client, _used_key = _claude_client_skip(_kind, _attempt, _aero_bad_keys)
-                            # Direct/real Claude reliably follows "no steps, no working" and
-                            # fits the clean output block in 200 tokens. Whatever's actually
-                            # behind the current Aerolink gateway does NOT respect that
-                            # instruction — it narrates full step-by-step reasoning first,
-                            # which blows past 200 tokens and gets cut off before ever
-                            # reaching Signal/Entry/SL (same failure TS1/TS2 hit, fixed by
-                            # the same kind of bump). Only widen the budget for Aerolink
-                            # calls — Direct stays at the normal 200 for speed/cost.
-                            _call_max_tokens = max(_max_tokens, 2500) if _using_aero else _max_tokens
+                            # Admin request 2026-08-06: keep thinking ON (do not disable it) and
+                            # instead give it enough room that it can never eat the whole budget —
+                            # 2500 for Direct (was 200), 5000 for Aerolink (was 2500, since
+                            # whatever's behind Aerolink also tends to narrate step-by-step on
+                            # top of thinking, needing extra headroom).
+                            _call_max_tokens = 5000 if _using_aero else 2500
                             r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
-                                messages=[{"role":"user","content":content}],
-                                **_scan_thinking_kwarg(_ai_model(_kind)))
+                                messages=[{"role":"user","content":content}])
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
                                            r2.usage.input_tokens, r2.usage.output_tokens,
                                            gateway="Aerolink" if _using_aero else "Direct")
@@ -12401,11 +12435,10 @@ Reasoning: [one line]"""
                     scan_signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
 
                     # important=True (admin request 2026-08-06) — this raw per-candidate
-                    # analysis preview must reach admin DM on every SPECIAL-slot attempt,
-                    # instead of being dropped by _scan_quiet's auto-run noise filter.
-                    # Nonspecial/regular-grid runs stay silent (2026-08-06 follow-up —
-                    # admin only wants this for special times, not the whole dense grid).
-                    if _is_special:
+                    # analysis preview must reach admin DM whenever this category's
+                    # toggle is on, instead of being dropped by _scan_quiet's auto-run
+                    # noise filter. Gated by /promptvst /promptunst /promptnt.
+                    if _prompt_dm_allowed(_kind):
                         emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                         tv_src = "TV" if tv_switched else "BingX"
                         send_reply(cid,
@@ -16862,6 +16895,13 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
 
             analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"],
                                                      struct=struct, age=age, age_4h=age_4h)
+            if _prompt_dm_allowed("test", scan_ver):
+                # Admin request 2026-08-06 — send the exact prompt text too, not just
+                # the response, so failures/narration can be debugged against what the
+                # model was actually asked. Gated by /promptvst /promptunst /promptnt.
+                send_reply(cid,
+                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} PROMPT</b>\n\n"
+                    f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
 
             # Claude analysis
             analysis = ""; _claude_ok = False; _last_claude_err = ""
@@ -16885,8 +16925,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     # rewrite above, so it has room to reach the real output block anyway.
                     r2 = _client.messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=4000,
-                        messages=[{"role":"user","content":analysis_prompt}],
-                        **_scan_thinking_kwarg(_ai_model("test", scan_ver)))
+                        messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
@@ -16934,7 +16973,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # important=True so it survives _scan_quiet. SPECIAL-slot attempts
             # only (2026-08-06 follow-up) — nonspecial/dense-grid runs stay
             # silent, same as the live Scan1/Scan2 preview.
-            if _demo_is_special_now:
+            if _prompt_dm_allowed("test", scan_ver):
                 _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                 send_reply(cid,
                     f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver}</b>  {ist_str()}\n\n"
