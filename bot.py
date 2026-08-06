@@ -16871,10 +16871,12 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                           f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
                     )
                 else:
-                    _no_sig_msg = _scan_box(
-                        f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
-                        [[f"🔍 {_smallcaps_title('No Clear Trade Found')}",
-                          f"{_smallcaps_title('Clex analyzed but no clean setup at this slot')}."]],
+                    # New minimal style (admin request 2026-08-04) — same as the
+                    # Scan1/Scan2 no-signal fix, applied here too so TS1/TS2 match.
+                    _no_sig_msg = (
+                        "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                        "📈 <b>Market Status</b>\n\n"
+                        "<blockquote>No valid setup detected.</blockquote>"
                     )
                 # Signal channel always gets it; VERIFIED slots also post to VIP —
                 # same reasoning as the live scan path.
