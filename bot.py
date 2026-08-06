@@ -12286,7 +12286,15 @@ Reasoning: [one line]"""
                                            r2.usage.input_tokens, r2.usage.output_tokens,
                                            gateway="Aerolink" if _using_aero else "Direct")
                             analysis = _claude_text(r2)
-                            if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE):
+                            # Entry is always pre-filled with the real current price in the
+                            # prompt template — the model only has to echo it back. "Entry: 0."
+                            # (or missing) means generation got cut off right after "Signal:
+                            # WAIT" and never actually completed, same failure as a fully
+                            # empty response just caught differently by the Signal: regex —
+                            # a bare Signal-line match isn't proof the response is complete.
+                            _entry_check_m = re.search(r"Entry[:\s]+([0-9.]+)", analysis.replace(",", ""), re.IGNORECASE)
+                            _entry_check_val = float(_entry_check_m.group(1)) if _entry_check_m else 0.0
+                            if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE) or _entry_check_val <= 0:
                                 # Empty/incomplete response — e.g. the model got cut off
                                 # mid-thinking before ever writing the output block. This
                                 # is NOT a real WAIT — treat it exactly like an API failure
@@ -12296,7 +12304,7 @@ Reasoning: [one line]"""
                                 # model was doing when it cut off (e.g. still narrating
                                 # analysis instead of emitting the output block).
                                 _snippet = f" — got: {analysis[:80]!r}" if analysis else ""
-                                raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line){_snippet}")
+                                raise ValueError(f"empty/incomplete response ({len(analysis)} chars, Entry={_entry_check_val}){_snippet}")
                             _claude_ok = True
                             break
                         except Exception as _ce:
@@ -16791,12 +16799,18 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
                     analysis = _claude_text(r2)
-                    if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE):
+                    # Entry is pre-filled with the real current price in the prompt
+                    # template — "Entry: 0." (or missing) means generation got cut off
+                    # right after "Signal: WAIT" before completing, same as an empty
+                    # response — a bare Signal: match alone isn't proof of completeness.
+                    _entry_check_m = re.search(r"Entry[:\s]+([0-9.]+)", analysis.replace(",", ""), re.IGNORECASE)
+                    _entry_check_val = float(_entry_check_m.group(1)) if _entry_check_m else 0.0
+                    if not analysis or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, re.IGNORECASE) or _entry_check_val <= 0:
                         # Empty/incomplete response — treat like an API failure instead
                         # of silently defaulting to WAIT (admin request 2026-08-06, see
                         # the live scan loop's identical check).
                         _snippet = f" — got: {analysis[:80]!r}" if analysis else ""
-                        raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line){_snippet}")
+                        raise ValueError(f"empty/incomplete response ({len(analysis)} chars, Entry={_entry_check_val}){_snippet}")
                     _claude_ok = True; break
                 except Exception as _ce:
                     _last_claude_err = str(_ce)
