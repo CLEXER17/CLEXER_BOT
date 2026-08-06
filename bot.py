@@ -4235,6 +4235,23 @@ def _claude_text(msg):
             return block.text.strip()
     return ""
 
+def _scan_thinking_kwarg(model_id: str) -> dict:
+    """Root-cause fix for the empty-response failures (admin request 2026-08-06):
+    Claude Opus 5 runs adaptive thinking ON BY DEFAULT when the `thinking` param
+    is omitted (unlike Opus 4.8/4.7, where omitting it meant no thinking) — the
+    scan prompts' tight token budgets (200 for Direct BTC/Scan1/Scan2) were sized
+    for the OLD no-thinking-by-default behavior. With thinking silently eating
+    the whole budget, the model can emit ZERO visible text, which the retry
+    logic above was seeing as "0 chars, Entry=0.0". Explicitly disabling
+    thinking restores the original fast/deterministic short-output behavior
+    these prompts were designed around.
+
+    Fable 5 / Mythos 5 REJECT an explicit thinking:disabled with a 400 (thinking
+    is mandatory on those) — return {} for them so the call doesn't break."""
+    if model_id.startswith("claude-fable") or model_id.startswith("claude-mythos"):
+        return {}
+    return {"thinking": {"type": "disabled"}}
+
 # Specific scheduled slots that always run on Direct + Opus 5 and post to
 # VIP/Free ("special"); every other auto-scheduled slot ("regular") still forces
 # Opus 5 but routes through Aerolink instead, and stays Signal-channel only.
@@ -6545,7 +6562,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         try:
             msg = _claude_client(attempt=attempt).messages.create(
                 model=SCAN_MODEL, max_tokens=1200,
-                messages=[{"role": "user", "content": content}])
+                messages=[{"role": "user", "content": content}],
+                **_scan_thinking_kwarg(SCAN_MODEL))
             _log_api_usage("btc_analysis", SCAN_MODEL,
                            msg.usage.input_tokens, msg.usage.output_tokens,
                            gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -6560,7 +6578,8 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 try:
                     msg = _claude_client(attempt=1).messages.create(
                         model=SCAN_MODEL, max_tokens=1200,
-                        messages=[{"role": "user", "content": content_text}])
+                        messages=[{"role": "user", "content": content_text}],
+                        **_scan_thinking_kwarg(SCAN_MODEL))
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens,
                                    gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -12314,7 +12333,8 @@ Reasoning: [one line]"""
                             _call_max_tokens = max(_max_tokens, 2500) if _using_aero else _max_tokens
                             r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
-                                messages=[{"role":"user","content":content}])
+                                messages=[{"role":"user","content":content}],
+                                **_scan_thinking_kwarg(_ai_model(_kind)))
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
                                            r2.usage.input_tokens, r2.usage.output_tokens,
                                            gateway="Aerolink" if _using_aero else "Direct")
@@ -16833,7 +16853,8 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     # rewrite above, so it has room to reach the real output block anyway.
                     r2 = _client.messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=4000,
-                        messages=[{"role":"user","content":analysis_prompt}])
+                        messages=[{"role":"user","content":analysis_prompt}],
+                        **_scan_thinking_kwarg(_ai_model("test", scan_ver)))
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
