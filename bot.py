@@ -2421,8 +2421,17 @@ def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "",
     else:
         _want_aero = CHAT_USE_AEROLINK
     client = _claude_client("chat", use_aerolink=_want_aero)
+    # Split system into a cached static block (_CHAT_SYSTEM_PROMPT, byte-identical
+    # on every single chat call) + an uncached dynamic block (extra_system, varies
+    # per admin-topic/session) — admin request 2026-08-06. Prompt caching is a
+    # prefix match, so the static part must come first and stay untouched;
+    # cache_control on it lets every subsequent Boki/Pechi call in the same
+    # ~5min window read it at ~0.1x cost instead of paying full price every time.
+    _system_blocks = [{"type": "text", "text": _CHAT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+    if extra_system:
+        _system_blocks.append({"type": "text", "text": extra_system})
     _kwargs = dict(model=model_id, max_tokens=2000,
-                   system=_CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else ""),
+                   system=_system_blocks,
                    messages=messages)
     if _is_claude:
         _kwargs["thinking"] = {"type": "adaptive"}
