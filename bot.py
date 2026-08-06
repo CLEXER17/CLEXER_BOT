@@ -4816,6 +4816,13 @@ def _prompt_dm_allowed(kind: str = "btc", scan_ver: int = None) -> bool:
     return {"verified": PROMPT_DM_VERIFIED, "unverified": PROMPT_DM_UNVERIFIED,
             "nonspecial": PROMPT_DM_NONSPECIAL}.get(_cat, False)
 
+def _category_tag(kind: str = "btc", scan_ver: int = None) -> str:
+    """Short tag matching the /promptvst /promptunst /promptnt command names,
+    for labeling the prompt-echo/raw-analysis-response DMs so the admin can
+    tell at a glance which category triggered each one (admin request
+    2026-08-06)."""
+    return {"verified": "VST", "unverified": "UNST", "nonspecial": "NT"}.get(_ai_category(kind, scan_ver), "?")
+
 def _ai_model(kind: str = "btc", scan_ver: int = None) -> str:
     """Which Claude model to use — driven by (scan type x classification),
     the full AICFG_GRID set via /aiconfig. BTC always uses SCAN_MODEL.
@@ -12338,7 +12345,7 @@ Reasoning: [one line]"""
                         # what the model was actually asked. Gated by /promptvst /promptunst
                         # /promptnt.
                         send_reply(cid,
-                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} PROMPT</b>\n\n"
+                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] PROMPT</b>\n\n"
                             f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
 
                     def _build_content(_prompt):
@@ -12442,7 +12449,7 @@ Reasoning: [one line]"""
                         emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                         tv_src = "TV" if tv_switched else "BingX"
                         send_reply(cid,
-                            f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
+                            f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}]</b>  {ist_str()}\n\n"
                             f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
                             f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
@@ -16900,7 +16907,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 # the response, so failures/narration can be debugged against what the
                 # model was actually asked. Gated by /promptvst /promptunst /promptnt.
                 send_reply(cid,
-                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} PROMPT</b>\n\n"
+                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] PROMPT</b>\n\n"
                     f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
 
             # Claude analysis
@@ -16976,7 +16983,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             if _prompt_dm_allowed("test", scan_ver):
                 _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                 send_reply(cid,
-                    f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver}</b>  {ist_str()}\n\n"
+                    f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}]</b>  {ist_str()}\n\n"
                     f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | 🔀 BingX\n\n"
                     f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
