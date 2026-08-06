@@ -16277,6 +16277,13 @@ You are CLEXER SCALP V1. Analyze {symbol} for a short-term scalp trade.
 Apply every rule below internally, in your head — never write out your reasoning,
 never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
 Go directly from reading this prompt to the OUTPUT block at the end, no preamble.
+Do NOT write "Position 0", "Position 1", etc. — do not list, number, or walk
+through individual candles at all, for ANY timeframe or ANY check in this
+prompt. Do NOT use markdown headers or bold section titles ("**...ANALYSIS:**")
+— that formatting is what starts the narration. If you notice yourself
+starting to explain, compare, or list candles, stop immediately and skip
+straight to the OUTPUT block — a wrong-looking but complete answer is far
+better than a correct answer that gets cut off before it's written.
 
 HARD GATES — already pre-filtered before this prompt (do not recheck):
 1. 4H structure: BULLISH→LONG only, BEARISH→SHORT only (already confirmed: {struct.upper()})
@@ -16287,7 +16294,8 @@ Remaining gate to check: RR >= 2.0 after computing SL
 
 ENTRY: MARKET at current price {cp:,.6g}
 
-STOP LOSS RULE (apply internally, do not narrate):
+STOP LOSS RULE (compute silently — do NOT list or number individual candles,
+do NOT write "Position N", do NOT explain which neighbor you compared to):
 Rule 1: Try 15M candles first. Find the most recent swing LOW (LONG) or swing HIGH (SHORT).
         A swing low = a 15M candle whose low is lower than both its left and right neighbor.
         A swing high = a 15M candle whose high is higher than both its left and right neighbor.
