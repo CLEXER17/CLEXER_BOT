@@ -1364,7 +1364,7 @@ def _sl_reassurance_channels(tier_routed: bool, share_free: bool) -> list:
     _chans = _free_and_vip_channel_ids() if share_free else [("vip", cid) for cid in _channels_by_tier("vip")]
     return [(t, cid) for t, cid in _chans if str(cid) != str(TELEGRAM_CHANNEL_ID_2)]
 
-def _send_sl_reassurance(channels: list, reply_map: dict = None, sig_id: str = ""):
+def _send_sl_reassurance(symbol: str, channels: list, reply_map: dict = None, sig_id: str = ""):
     """Sent every real SL loss (not breakeven) — only to the tiers that actually
     received this trade's entry (Signal-only entries get nothing here; the
     Signal channel keeps its own separate SL message, unchanged).
@@ -1374,15 +1374,14 @@ def _send_sl_reassurance(channels: list, reply_map: dict = None, sig_id: str = "
     if not channels:
         return
     reply_map = reply_map or {}
-    # New minimal SL style (admin request 2026-08-06) — this is a SEPARATE
-    # message from the main SL-hit message (which already went minimal
-    # earlier), sent right after it for the same event. Was still the old
-    # 5-line essay, undercutting the whole point of shortening SL messages.
-    _sid_line = f"\n🪪 {sig_id}" if sig_id else ""
+    # Exact same minimal SL style as the main SL-hit message (admin request
+    # 2026-08-06) — not a distinct "reassurance" wording, identical template.
+    coin = symbol.replace("-USDT", "").replace("USDT", "")
     text = _apply_premium_emojis(
         "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
-        "<blockquote>Not every trade wins — we manage risk and move to the next setup.</blockquote>"
-        f"{_sid_line}"
+        f"⛔ <b>Position Closed</b>  ${coin}\n"
+        "<blockquote>SL executed.</blockquote>\n"
+        f"🪪 {sig_id}"
     )
     for _tag, cid in channels:
         _send_plain_reply(cid, text, reply_to=reply_map.get(f"{_tag}:{cid}"))
@@ -7777,7 +7776,7 @@ def run_tick_check():
                 _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
-                _send_sl_reassurance(
+                _send_sl_reassurance(SYMBOL,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
             ct.on_sl(entry, sl, tp1_hit=active_trade.get("tp1_hit", False))
@@ -7959,7 +7958,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         "entry_price": entry, "sl_price": t.get("sl", 0)})
     if close_result == "SL":
         _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
-        _send_sl_reassurance(
+        _send_sl_reassurance(sym,
             _sl_reassurance_channels(bool(t.get("tier_routed")), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id", ""))
     _slot_hm = _slot_hm_for_trade(t)
     if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
@@ -8466,7 +8465,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
-                _send_sl_reassurance(
+                _send_sl_reassurance(sym,
                     _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
             _slot_hm = _slot_hm_for_trade(t)
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
@@ -8582,7 +8581,7 @@ def run_price_check():
                 _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
-                _send_sl_reassurance(
+                _send_sl_reassurance(SYMBOL,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
             ct.on_sl(active_trade.get("entry",0), active_trade.get("sl",0), tp1_hit=active_trade.get("tp1_hit", False))
@@ -16464,7 +16463,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
         _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
-        _send_sl_reassurance(
+        _send_sl_reassurance(sym,
             _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
     _slot_hm = _slot_hm_for_trade(t, created)
     if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
@@ -16589,7 +16588,7 @@ def _demo_monitor_loop():
                             vip_trade_stats[f"demo{_dver}_sl"] += 1
                         if lbl == "SL":
                             _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
-                            _send_sl_reassurance(
+                            _send_sl_reassurance(sym,
                                 _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
                         _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
