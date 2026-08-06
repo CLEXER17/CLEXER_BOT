@@ -2380,45 +2380,25 @@ def _admin_chat_context(topics: list = None) -> str:
     )
 
 def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
+    # Google Search grounding was tried here (2026-08-06) and reverted the same
+    # day — this account's free-tier Gemini quota is only 5 RPM / 20 RPD (see
+    # _CHAT_TEXT_MODEL comment), and confirmed via a real 429 in production,
+    # a "try grounded, fall back on failure" pattern DOUBLES API calls per
+    # reply whenever grounding doesn't go through, burning the already-scarce
+    # daily quota twice as fast. Not worth it on this account — back to one
+    # plain call, no source links, same as before grounding was ever added.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     _sys = _CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
-    _base_body = {
+    body = {
         "contents": history,
         "systemInstruction": {"parts": [{"text": _sys}]},
     }
-    # Google Search grounding (admin request 2026-08-06) — real source links
-    # instead of the model inventing URLs. Fail-soft (2026-08-06 follow-up):
-    # this free-tier key may not have grounding enabled (often needs billing
-    # linked even on an otherwise-free key) — a hard 400 there was breaking
-    # EVERY Boki/Pechi reply, not just search-worthy ones. Try grounded first,
-    # silently fall back to a plain call (no links, but Boki still works) if
-    # the grounded request itself fails.
-    r = requests.post(url, headers=_gemini_headers(),
-        json={**_base_body, "tools": [{"google_search": {}}]}, timeout=30)
-    if not r.ok:
-        print(f"  [GEMINI GROUNDING] {r.status_code} {r.reason} — falling back to ungrounded call: {r.text[:300]}")
-        r = requests.post(url, headers=_gemini_headers(), json=_base_body, timeout=30)
+    r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
     if not r.ok:
         raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
-    _candidate = d.get("candidates", [{}])[0]
-    parts = _candidate.get("content", {}).get("parts", [])
-    text = "".join(p.get("text","") for p in parts).strip()
-    # Attach real grounding source links, if the model actually searched for
-    # this reply — most casual/opinion/small-talk turns won't have any.
-    _chunks = (_candidate.get("groundingMetadata") or {}).get("groundingChunks") or []
-    _links, _seen = [], set()
-    for _c in _chunks:
-        _web = _c.get("web") or {}
-        _uri, _title = _web.get("uri"), _web.get("title")
-        if _uri and _uri not in _seen:
-            _seen.add(_uri)
-            _links.append(f'🔗 <a href="{_html.escape(_uri)}">{_html.escape(_title or _uri)}</a>')
-        if len(_links) >= 5:
-            break
-    if _links:
-        text += "\n\n" + "\n".join(_links)
-    return text or "…"
+    parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    return "".join(p.get("text","") for p in parts).strip() or "…"
 
 def _is_claude_model(model_id: str) -> bool:
     return model_id.startswith("claude-")
