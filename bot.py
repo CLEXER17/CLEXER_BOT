@@ -1351,12 +1351,18 @@ def _free_and_vip_channel_ids() -> list:
 
 def _sl_reassurance_channels(tier_routed: bool, share_free: bool) -> list:
     """Which channels should get the SL reassurance post, mirroring exactly
-    where this trade's entry was shown. Signal-only entries get none."""
+    where this trade's entry was shown. Signal-only entries get none.
+
+    Always excludes Channel 2 (VIP Mirror) — admin instruction: never send
+    SL messages there. The main SL message already follows this via
+    exclude_ch2 in _send_sl_and_log, but this SEPARATE reassurance message
+    never had the same exclusion — since Channel 2 is now just another
+    VIP-tier channel (no longer hardcoded/special-cased), it was silently
+    included in every VIP-tier channel list here (admin request 2026-08-06)."""
     if not tier_routed:
         return []
-    if share_free:
-        return _free_and_vip_channel_ids()
-    return [("vip", cid) for cid in _channels_by_tier("vip")]
+    _chans = _free_and_vip_channel_ids() if share_free else [("vip", cid) for cid in _channels_by_tier("vip")]
+    return [(t, cid) for t, cid in _chans if str(cid) != str(TELEGRAM_CHANNEL_ID_2)]
 
 def _send_sl_reassurance(symbol: str, tag: str, side: str, entry_price, channels: list, reply_map: dict = None, sig_id: str = ""):
     """Sent every real SL loss (not breakeven) — only to the tiers that actually
