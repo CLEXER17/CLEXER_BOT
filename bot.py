@@ -231,6 +231,15 @@ scan2_trades = []   # list of active scan2 trade dicts (unlimited slots)
 demo_scan1_trades = []   # DEMO trades — test strategy only, no copytrade
 demo_scan2_trades = []
 SCAN1_AUTO_ENABLED = True
+# Per-category auto-scan kill switches (admin request 2026-08-06) — independent
+# ON/OFF for the 3 slot classifications every scan kind falls into (verified
+# special, unverified special, nonspecial/regular-grid), so any one category
+# can be paused without touching the others. Only gates the AUTO scheduler —
+# a manual /scan1, /scan2, or /test always runs regardless of these. Toggled
+# via /vst (verified), /unst (unverified), /stopnt (nonspecial).
+VERIFIED_SPECIAL_ENABLED = True
+UNVERIFIED_SPECIAL_ENABLED = True
+NONSPECIAL_SCAN_ENABLED = True
 TEST_SCAN_ENABLED = False
 TEST_SCAN_MINUTE  = 5
 _test_scan1_last_hour = -1
@@ -6747,7 +6756,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -6807,6 +6816,9 @@ def load_settings():
             _group_seen_users.update(d.get("group_seen_users", {}))
             PAUSED_AEROLINK_KEYS.clear()
             PAUSED_AEROLINK_KEYS.update(d.get("paused_aerolink_keys", []))
+            VERIFIED_SPECIAL_ENABLED = d.get("verified_special_enabled", True)
+            UNVERIFIED_SPECIAL_ENABLED = d.get("unverified_special_enabled", True)
+            NONSPECIAL_SCAN_ENABLED = d.get("nonspecial_scan_enabled", True)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -6864,6 +6876,9 @@ def save_settings():
             "auto_sltp_global_enabled": ct.AUTO_SLTP_GLOBAL_ENABLED,
             "group_seen_users": _group_seen_users,
             "paused_aerolink_keys": list(PAUSED_AEROLINK_KEYS),
+            "verified_special_enabled": VERIFIED_SPECIAL_ENABLED,
+            "unverified_special_enabled": UNVERIFIED_SPECIAL_ENABLED,
+            "nonspecial_scan_enabled": NONSPECIAL_SCAN_ENABLED,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -9779,7 +9794,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -11449,6 +11464,30 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"<pre>{trades_str}</pre>\n\n"
                 f"<i>- CLEXER SCALP V1 TEST -</i>", reply_markup=_test_btns); return
 
+    elif cmd == "/vst" and is_scanadmin:
+        # Kill switch for VERIFIED special-time auto-scans, across all of
+        # Scan1/Scan2/TS1/TS2 — only the auto scheduler, manual runs unaffected.
+        VERIFIED_SPECIAL_ENABLED = not VERIFIED_SPECIAL_ENABLED
+        save_settings()
+        state = "✅ ON" if VERIFIED_SPECIAL_ENABLED else "❌ OFF"
+        send_reply(chat_id, f"⭐ <b>Verified special-time auto-scans: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Manual runs still always work.")
+
+    elif cmd == "/unst" and is_scanadmin:
+        # Kill switch for UNVERIFIED special-time auto-scans, across all of
+        # Scan1/Scan2/TS1/TS2.
+        UNVERIFIED_SPECIAL_ENABLED = not UNVERIFIED_SPECIAL_ENABLED
+        save_settings()
+        state = "✅ ON" if UNVERIFIED_SPECIAL_ENABLED else "❌ OFF"
+        send_reply(chat_id, f"🔒 <b>Unverified special-time auto-scans: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Manual runs still always work.")
+
+    elif cmd == "/stopnt" and is_scanadmin:
+        # Kill switch for NONSPECIAL (regular/dense-grid) auto-scans, across
+        # all of Scan1/Scan2/TS1/TS2.
+        NONSPECIAL_SCAN_ENABLED = not NONSPECIAL_SCAN_ENABLED
+        save_settings()
+        state = "✅ ON" if NONSPECIAL_SCAN_ENABLED else "❌ OFF"
+        send_reply(chat_id, f"📋 <b>Nonspecial (regular-grid) auto-scans: {state}</b>\n\nApplies to Scan1/Scan2/TS1/TS2. Manual runs still always work.")
+
     elif cmd in ("/scancopy", "/ctpause") and is_scanadmin:
         send_ctpause_screen(chat_id)
 
@@ -11765,6 +11804,19 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 # into the admin's own separate interactions (different thread).
                 _scan_quiet.on = True
             try:
+                if _auto:
+                    # Per-category kill switch (admin request 2026-08-06) — only
+                    # gates the AUTO scheduler, a manual /scan1 or /scan2 always
+                    # runs regardless. See VERIFIED_SPECIAL_ENABLED docstring.
+                    # Inside try/finally so the running-track entry the main
+                    # loop already added still gets cleaned up on skip.
+                    _sched_kind_ = "scan1" if scan_ver == 1 else "scan2"
+                    if not _is_special:
+                        if not NONSPECIAL_SCAN_ENABLED: return
+                    elif _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_sched_kind_, set()):
+                        if not UNVERIFIED_SPECIAL_ENABLED: return
+                    else:
+                        if not VERIFIED_SPECIAL_ENABLED: return
                 import traceback as _tb, pandas as _pd
 
                 # ── helpers ────────────────────────────────────────────────────
@@ -16440,7 +16492,18 @@ def _run_test_scan_and_clear_flag(cid, scan_ver: int, is_special: bool = False, 
     only remove THIS execution's own entry, not the whole track."""
     _kind = f"test{scan_ver}"
     try:
-        _run_test_scan(cid, scan_ver, is_special=is_special, trigger_hm=trigger_hm)
+        # Per-category kill switch (admin request 2026-08-06) — only gates the
+        # AUTO scheduler; manual /test always runs (calls _run_test_scan
+        # directly, never through this wrapper). See VERIFIED_SPECIAL_ENABLED
+        # docstring near TEST_SCAN_ENABLED.
+        if not is_special:
+            _run_ok = NONSPECIAL_SCAN_ENABLED
+        elif trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set()):
+            _run_ok = UNVERIFIED_SPECIAL_ENABLED
+        else:
+            _run_ok = VERIFIED_SPECIAL_ENABLED
+        if _run_ok:
+            _run_test_scan(cid, scan_ver, is_special=is_special, trigger_hm=trigger_hm)
     finally:
         # Only ever auto-triggered (see this wrapper's callers) — safe to
         # clear unconditionally, unlike Scan1/Scan2 where manual /scan1 runs
