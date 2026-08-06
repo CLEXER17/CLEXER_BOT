@@ -4235,6 +4235,21 @@ def _claude_text(msg):
             return block.text.strip()
     return ""
 
+def _sig_round(x, sig: int = 8) -> float:
+    """Round to N SIGNIFICANT figures instead of N decimal places — found via
+    a real BOME-USDT failure (2026-08-06): round(x, 4) on a sub-cent coin
+    like BOME ($0.0005932) rounds every candle's high/low down to the same
+    0.0006 regardless of real movement, since all the actual price action
+    happens in the 5th/6th decimal. That erased every genuine swing high/low
+    for cheap coins, making the data look identical/broken — which is
+    exactly what the model was narrating about instead of answering.
+    Significant-figure rounding scales with price magnitude the same way
+    the rest of this file's `:,.6g`/`:,.4g` display formatting already
+    does, so cheap and expensive coins both keep their real variation."""
+    if x == 0:
+        return 0.0
+    return float(f"{x:.{sig}g}")
+
 def _scan_thinking_kwarg(model_id: str) -> dict:
     """Root-cause fix for the empty-response failures (admin request 2026-08-06):
     Claude Opus 5 runs adaptive thinking ON BY DEFAULT when the `thinking` param
@@ -12183,9 +12198,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                         bdir="GREEN" if cls4[-10+bidx]>ops4[-10+bidx] else "RED"
                         last2=[f"{i}: open={ops4[i]:,.4g} close={cls4[i]:,.4g} high={highs4[i]:,.4g} low={lows4[i]:,.4g} move={abs(cls4[i]-ops4[i])/ops4[i]*100:.2f}%" for i in [-2,-1]]
                         smc+=(f"\n--- 4H CANDLES ---\nLast 2:\n  {last2[0]}\n  {last2[1]}\n"
-                              f"4H ATR: {atr4:,.4g}\nSwing highs: {[round(x,4) for x in sh[-4:]]}\n"
-                              f"Swing lows: {[round(x,4) for x in sl_p[-4:]]}\n"
-                              f"Last 5 closes: {[round(x,4) for x in cls4[-5:].tolist()]}\n"
+                              f"4H ATR: {atr4:,.4g}\nSwing highs: {[_sig_round(x) for x in sh[-4:]]}\n"
+                              f"Swing lows: {[_sig_round(x) for x in sl_p[-4:]]}\n"
+                              f"Last 5 closes: {[_sig_round(x) for x in cls4[-5:].tolist()]}\n"
                               f"Big vol candle: {bdir} ({10-bidx} bars ago)\n")
 
                     if df_1h is not None and len(df_1h) >= 5:
@@ -12197,9 +12212,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                             if h1_h[i]>h1_h[i-1] and h1_h[i]>h1_h[i+1]: sh1.append(h1_h[i])
                             if h1_l[i]<h1_l[i-1] and h1_l[i]<h1_l[i+1]: sl1.append(h1_l[i])
                         smc+=(f"\n--- 1H CANDLES ---\nATR_1H: {atr1v:,.4g}\n"
-                              f"1H swing highs: {[round(x,4) for x in sh1[-4:]]}\n"
-                              f"1H swing lows: {[round(x,4) for x in sl1[-4:]]}\n"
-                              f"Last 5 closes: {[round(x,4) for x in c1[-5:].tolist()]}\n")
+                              f"1H swing highs: {[_sig_round(x) for x in sh1[-4:]]}\n"
+                              f"1H swing lows: {[_sig_round(x) for x in sl1[-4:]]}\n"
+                              f"Last 5 closes: {[_sig_round(x) for x in c1[-5:].tolist()]}\n")
 
                     if df_5m is not None and len(df_5m) >= 5:
                         c5=df_5m["close"].values; h5=df_5m["high"].values; l5=df_5m["low"].values
@@ -16818,8 +16833,8 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 for i in range(1, len(highs4)-1):
                     if highs4[i]>highs4[i-1] and highs4[i]>highs4[i+1]: sh.append(highs4[i])
                     if lows4[i]<lows4[i-1] and lows4[i]<lows4[i+1]: sl_p.append(lows4[i])
-                smc += (f"4H Swing highs: {[round(x,4) for x in sh[-4:]]}\n"
-                        f"4H Swing lows: {[round(x,4) for x in sl_p[-4:]]}\n")
+                smc += (f"4H Swing highs: {[_sig_round(x) for x in sh[-4:]]}\n"
+                        f"4H Swing lows: {[_sig_round(x) for x in sl_p[-4:]]}\n")
 
             if df_1h is not None and len(df_1h) >= 5:
                 h1 = df_1h; cls1 = h1["close"].values; ops1 = h1["open"].values
@@ -16828,13 +16843,13 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
 
             if df_15m is not None and len(df_15m) >= 5:
                 h15 = df_15m; lows15 = h15["low"].values; highs15 = h15["high"].values
-                smc += (f"15M last 10 lows:  {[round(x,4) for x in lows15[-10:]]}\n"
-                        f"15M last 10 highs: {[round(x,4) for x in highs15[-10:]]}\n")
+                smc += (f"15M last 10 lows:  {[_sig_round(x) for x in lows15[-10:]]}\n"
+                        f"15M last 10 highs: {[_sig_round(x) for x in highs15[-10:]]}\n")
 
             if df_5m is not None and len(df_5m) >= 5:
                 h5 = df_5m; cls5 = h5["close"].values; lows5 = h5["low"].values; highs5 = h5["high"].values
-                smc += (f"5M last 10 lows:  {[round(x,4) for x in lows5[-10:]]}\n"
-                        f"5M last 10 highs: {[round(x,4) for x in highs5[-10:]]}\n"
+                smc += (f"5M last 10 lows:  {[_sig_round(x) for x in lows5[-10:]]}\n"
+                        f"5M last 10 highs: {[_sig_round(x) for x in highs5[-10:]]}\n"
                         f"5M last close: {cls5[-1]:,.6g}\n")
 
             analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"],
