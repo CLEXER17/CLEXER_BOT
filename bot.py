@@ -2385,13 +2385,35 @@ def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
     body = {
         "contents": history,
         "systemInstruction": {"parts": [{"text": _sys}]},
+        # Google Search grounding (admin request 2026-08-06) — without this, a
+        # question needing current info (prices, sale dates, news) was answered
+        # purely from training data with NO real citations, and telling the
+        # model to "attach links" without grounding would just make it invent
+        # plausible-looking URLs. Real grounding gives real source URLs instead.
+        "tools": [{"google_search": {}}],
     }
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
     if not r.ok:
         raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
     d = r.json()
-    parts = d.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text","") for p in parts).strip() or "…"
+    _candidate = d.get("candidates", [{}])[0]
+    parts = _candidate.get("content", {}).get("parts", [])
+    text = "".join(p.get("text","") for p in parts).strip()
+    # Attach real grounding source links, if the model actually searched for
+    # this reply — most casual/opinion/small-talk turns won't have any.
+    _chunks = (_candidate.get("groundingMetadata") or {}).get("groundingChunks") or []
+    _links, _seen = [], set()
+    for _c in _chunks:
+        _web = _c.get("web") or {}
+        _uri, _title = _web.get("uri"), _web.get("title")
+        if _uri and _uri not in _seen:
+            _seen.add(_uri)
+            _links.append(f'🔗 <a href="{_html.escape(_uri)}">{_html.escape(_title or _uri)}</a>')
+        if len(_links) >= 5:
+            break
+    if _links:
+        text += "\n\n" + "\n".join(_links)
+    return text or "…"
 
 def _is_claude_model(model_id: str) -> bool:
     return model_id.startswith("claude-")
