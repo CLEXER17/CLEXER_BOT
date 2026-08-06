@@ -4328,6 +4328,12 @@ _scan_tried_lock = __import__("threading").Lock()  # makes "check other's list, 
                                                      # both see the other's list as still empty and both slip
                                                      # through before either had appended anything.
 
+_scan_tried_verified_now = {1: set(), 2: set()}  # subset of _scan_tried_now's symbols that are being
+                                                   # tried by a VERIFIED (VST) attempt specifically — admin
+                                                   # rule (2026-08-06): only another VST in flight may block
+                                                   # a VST candidate from starting; an NT/UNST attempt already
+                                                   # analyzing a coin must never hold up a VST attempt on it.
+
 _demo_tried_now = {1: [], 2: []}  # same idea as _scan_tried_now but for TS1/TS2 — lets each
                                    # demo scan see what the other is mid-analysis on RIGHT NOW,
                                    # so they don't both burn a full Claude analysis on the same
@@ -7821,6 +7827,13 @@ def _scan_list(ver: int) -> list:
 def _all_active_scan_syms() -> set:
     """Return set of all symbols currently active across both scan lists."""
     return {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol")}
+
+def _active_verified_scan_syms() -> set:
+    """Same as _all_active_scan_syms but VST (verified) trades only — admin rule
+    (2026-08-06): a VST candidate may only be blocked by an already-active VST
+    trade on that coin, never by an NT (regular grid) or UNST (unverified
+    special-time) trade."""
+    return {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol") and t.get("tier_routed")}
 
 def _log_scan_history(t: dict, result: str, close_price: float):
     """Append closed scan trade to scan_history (max 30)."""
@@ -12094,6 +12107,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 signal_placed = False
                 tried = []
                 _scan_tried_now[scan_ver] = tried  # same list object — see _scan_tried_now docstring
+                _scan_tried_verified_now[scan_ver] = set()  # fresh each cycle — see its docstring
                 _other_scan_ver = 2 if scan_ver == 1 else 1
                 skip_log = []   # tracks why each coin was skipped
                 api_fail_count = 0  # coins skipped because Claude itself failed 3x — not a real "no signal"
@@ -12110,6 +12124,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     chosen_sym  = candidate["sym"]
                     cp          = candidate["price"]
 
+                    # Verified (VST) priority (admin rule, 2026-08-06): a VST candidate
+                    # may only ever be blocked by ANOTHER VST — never by an NT (regular
+                    # grid) or UNST (unverified special-time) collision. Computed once
+                    # here (thread-local scan context, not per-candidate) and reused by
+                    # every guard below, including the placement dedup further down.
+                    _is_verified_now = _is_special_now and _ai_category(_kind) == "verified"
+
                     # Skip if already in active trade — ONLY enforced for special
                     # (verified/unverified) attempts. Nonspecial/regular-grid attempts
                     # (including the dense grid, 2026-07-27) are explicitly allowed to
@@ -12117,25 +12138,35 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     # entry/SL/TP with no relation to earlier ones on that coin, since
                     # nonspecial never places real money anyway (see _tier_routed gate).
                     # Once a slot is promoted to verified, this guard applies normally.
-                    if _is_special_now and chosen_sym in _all_active_scan_syms():
-                        skip_log.append(f"⏭ {chosen_sym}: already in active trade")
-                        print(f"  [SCAN] Skip {chosen_sym} — already active")
-                        continue
+                    # A VST candidate checks only against other ACTIVE VST trades on that
+                    # coin (never NT/UNST); a UNST candidate still checks against everything.
+                    if _is_special_now:
+                        _active_hit = chosen_sym in (_active_verified_scan_syms() if _is_verified_now else _all_active_scan_syms())
+                        if _active_hit:
+                            skip_log.append(f"⏭ {chosen_sym}: already in active trade")
+                            print(f"  [SCAN] Skip {chosen_sym} — already active")
+                            continue
 
                     # Skip if Scan{other} is ALREADY mid-analysis on this same coin THIS
                     # cycle — both scans can independently pick the same top-mover/structured
                     # coin, and without this check both burn a full Claude analysis on it
                     # before either has placed a trade (the active-trade check above only
                     # catches it after the fact). See _scan_tried_now / _scan_tried_lock docstrings.
+                    # Same VST-priority rule as above: a VST candidate is only blocked by
+                    # another VST already mid-analysis, never by an in-flight NT/UNST one.
                     # Check-and-claim happens under one lock so two threads landing on the
                     # exact same coin at the exact same instant can't both slip through.
                     # Same nonspecial bypass as above — only enforced for special attempts.
                     with _scan_tried_lock:
-                        if _is_special_now and chosen_sym in _scan_tried_now.get(_other_scan_ver, []):
+                        _other_analyzing = chosen_sym in (_scan_tried_verified_now.get(_other_scan_ver, set()) if _is_verified_now
+                                                            else _scan_tried_now.get(_other_scan_ver, []))
+                        if _is_special_now and _other_analyzing:
                             skip_log.append(f"⏭ {chosen_sym}: Scan{_other_scan_ver} already analyzing this coin")
                             print(f"  [SCAN] Skip {chosen_sym} — Scan{_other_scan_ver} already on it this cycle")
                             continue
                         tried.append(chosen_sym)
+                        if _is_verified_now:
+                            _scan_tried_verified_now[scan_ver].add(chosen_sym)
                     # candidate["price"] is a snapshot from the ticker fetch at the very
                     # START of this scan cycle — fine for coin #1, but #2/#3 only get
                     # tried after #1's full Claude analysis (real wall-clock minutes),
@@ -12465,7 +12496,7 @@ Reasoning: [one line]"""
                     # which fell through to TAKE instead. Only skip here if the earlier
                     # placement was ITSELF verified (avoid a genuine double-VST on one coin);
                     # a verified candidate always overrides a prior non-verified placement.
-                    _is_verified_now = _is_special_now and _ai_category(_kind) == "verified"
+                    # (_is_verified_now computed once above, near the top of this candidate loop.)
                     with _scan_cycle_lock:
                         _placed_at, _placed_verified = _scan_cycle_placed.get(chosen_sym, (None, False))
                         if _placed_at is not None and (time.time() - _placed_at) < _SCAN_CYCLE_DEDUP_TTL \
