@@ -12457,13 +12457,23 @@ Reasoning: [one line]"""
                         continue   # try next candidate
 
                     # ── Dedup: skip if other scan version already signaled this coin recently ──
+                    # Verified special-time (VST) signals must NEVER be silently skipped just
+                    # because a lower-priority NT (regular grid) run already placed the same
+                    # coin — VST is what actually reaches VIP/Free and copytrade, so losing it
+                    # to a dedup collision with an NT trade is a real miss, not protection.
+                    # Admin report 2026-08-06: COOKIE's NT trade blocked its own VST attempt,
+                    # which fell through to TAKE instead. Only skip here if the earlier
+                    # placement was ITSELF verified (avoid a genuine double-VST on one coin);
+                    # a verified candidate always overrides a prior non-verified placement.
+                    _is_verified_now = _is_special_now and _ai_category(_kind) == "verified"
                     with _scan_cycle_lock:
-                        _placed_at = _scan_cycle_placed.get(chosen_sym)
-                        if _placed_at is not None and (time.time() - _placed_at) < _SCAN_CYCLE_DEDUP_TTL:
+                        _placed_at, _placed_verified = _scan_cycle_placed.get(chosen_sym, (None, False))
+                        if _placed_at is not None and (time.time() - _placed_at) < _SCAN_CYCLE_DEDUP_TTL \
+                                and (_placed_verified or not _is_verified_now):
                             skip_log.append(f"⏭ {chosen_sym}: already signaled by another scan recently")
                             print(f"  [SCAN] {chosen_sym} already signaled by another scan recently — skipping")
                             continue
-                        _scan_cycle_placed[chosen_sym] = time.time()
+                        _scan_cycle_placed[chosen_sym] = (time.time(), _is_verified_now)
 
                     # ── BUY or SELL — place trade ──────────────────────────────
                     # `cp` was captured when this candidate was first picked, BEFORE
@@ -16250,7 +16260,7 @@ ALT_SCAN_MINUTE  = 2        # kept for /alt command reference — not used for a
 ALT_SCAN2_MINUTE = 24       # scan2 — disabled for auto-trigger (SCAN2_AUTO_ENABLED=False)
 SCAN2_AUTO_ENABLED = False   # set True to re-enable scan2 auto
 _auto_scan_last_hour  = -1  # legacy
-_scan_cycle_placed = {}  # {symbol: epoch_placed} — coins signaled recently, so Scan1
+_scan_cycle_placed = {}  # {symbol: (epoch_placed, was_verified)} — coins signaled recently, so Scan1
 # and Scan2 don't both pick the same coin. Was a plain set cleared whenever Scan1
 # started — fine when only one Scan1 cycle could ever be in flight, but with bounded
 # multi-concurrency (2026-07-30) a NEW Scan1 cycle starting while an earlier one (or
@@ -16272,7 +16282,7 @@ def _run_auto_scan(cid, scan_ver=2, is_special=False, trigger_hm=None):
     if scan_ver == 1:
         with _scan_cycle_lock:
             _now = time.time()
-            for _sym in [s for s, t0 in _scan_cycle_placed.items() if _now - t0 >= _SCAN_CYCLE_DEDUP_TTL]:
+            for _sym in [s for s, (t0, _v) in _scan_cycle_placed.items() if _now - t0 >= _SCAN_CYCLE_DEDUP_TTL]:
                 del _scan_cycle_placed[_sym]
     cmd = "/scan1" if scan_ver == 1 else "/scan2"
     # Note: /scan2's actual work runs in its own background thread (_do_scan) that
