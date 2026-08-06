@@ -2831,31 +2831,58 @@ def _boki_exec_chat_image_model(cid, sender_id, value):
     return None
 
 def _boki_exec_aicfg_grid(cid, sender_id, value):
+    """Sets one or more /aiconfig grid cells at once (admin rule, 2026-08-06:
+    "change ALL verified slot" / "change S2 TS1 AND TS2 too" must actually
+    apply to every named target, not silently collapse to just one — the
+    original version only ever read parts[0] as a single kind, so a
+    multi-target request quietly changed one cell and dropped the rest)."""
     global SCAN_MODEL, USE_AEROLINK
     parts = (value or "").split()
     if len(parts) < 4:
-        return "Tell me all four: scan type, tier, gateway, and model — e.g. \"scan1 verified aerolink opus5\"."
-    kind = _boki_norm_scankind(parts[0])
-    if kind is None: return "Which scan type — Scan1, Scan2, TS1, TS2, or BTC?"
-    tier = _boki_norm_tier(parts[1])
-    if kind != "btc" and tier is None: return "Which tier — Verified, Unverified, or Nonspecial?"
-    tier = tier or "verified"
-    gw = "aerolink" if parts[2].lower().startswith("aero") else ("direct" if parts[2].lower().startswith("dir") else None)
+        return "Tell me the scan type(s), tier, gateway, and model — e.g. \"scan1 verified aerolink opus5\" or \"all verified aerolink opus5\"."
+    # Last 3 tokens are always tier/gateway/model; everything before that is
+    # the kind spec — a single kind, several space-separated, or "all".
+    *kind_tokens, tier_tok, gw_tok, model_tok = parts
+    tier = _boki_norm_tier(tier_tok)
+    gw = "aerolink" if gw_tok.lower().startswith("aero") else ("direct" if gw_tok.lower().startswith("dir") else None)
     if gw is None: return "Direct or Aerolink gateway?"
-    model_id = _boki_norm_model_registry(parts[3])
+    model_id = _boki_norm_model_registry(model_tok)
     if model_id is None:
         return f"Which model? Available in /aiconfig's grid: {', '.join(MODEL_REGISTRY.keys())}."
-    if kind == "btc":
-        SCAN_MODEL = model_id; USE_AEROLINK = (gw == "aerolink")
+
+    _spec = " ".join(kind_tokens).lower()
+    if "all" in _spec.split():
+        kinds = ["scan1", "scan2", "test1", "test2"]  # never btc — no tier concept
     else:
-        AICFG_GRID[kind][tier]["model"] = model_id
-        AICFG_GRID[kind][tier]["aerolink"] = (gw == "aerolink")
+        kinds = []
+        for tok in _spec.split():
+            k = _boki_norm_scankind(tok)
+            if k and k not in kinds: kinds.append(k)
+        if not kinds:
+            return "Which scan type — Scan1, Scan2, TS1, TS2, BTC, or \"all\"?"
+
+    if any(k != "btc" for k in kinds) and tier is None:
+        return "Which tier — Verified, Unverified, or Nonspecial?"
+    tier = tier or "verified"
+
+    _changed = []
+    for kind in kinds:
+        if kind == "btc":
+            SCAN_MODEL = model_id; USE_AEROLINK = (gw == "aerolink")
+        else:
+            AICFG_GRID[kind][tier]["model"] = model_id
+            AICFG_GRID[kind][tier]["aerolink"] = (gw == "aerolink")
+        _klabel = "₿ BTC" if kind == "btc" else _AICFG_KIND_LABELS.get(kind, kind)
+        _tlabel = "" if kind == "btc" else f" · {_AICFG_TIER_LABELS.get(tier, tier)}"
+        _changed.append(f"{_klabel}{_tlabel}")
     save_settings()
-    _klabel = "₿ BTC" if kind == "btc" else _AICFG_KIND_LABELS.get(kind, kind)
-    _tlabel = "" if kind == "btc" else f" · {_AICFG_TIER_LABELS.get(tier, tier)}"
     _tag = MODEL_REGISTRY.get(model_id, model_id)
-    send_reply(cid, f"✅ <b>{_klabel}{_tlabel}</b> set to <b>{'Aerolink' if gw == 'aerolink' else 'Direct'} · {_tag}</b>.",
-               skip_smallcaps=True)
+    _dest = f"<b>{'Aerolink' if gw == 'aerolink' else 'Direct'} · {_tag}</b>"
+    if len(_changed) == 1:
+        send_reply(cid, f"✅ <b>{_changed[0]}</b> set to {_dest}.", skip_smallcaps=True)
+    else:
+        _lines = "\n".join(f"• <b>{c}</b>" for c in _changed)
+        send_reply(cid, f"✅ Set to {_dest}:\n{_lines}", skip_smallcaps=True)
     return None
 
 def _boki_channel_list_hint():
@@ -3257,13 +3284,24 @@ _ADMIN_ACTIONS = {
     "chat_gateway": {"desc": "Switch /chat's OWN AI gateway (separate from the scan gateway, Claude models only) between Direct and Aerolink. value: \"direct\" or \"aerolink\".", "exec": _boki_exec_chat_gateway},
     "chat_model": {"desc": "Set which AI model /chat itself uses to answer. value: \"google\", \"auto\", or a specific catalog model id the admin names.", "exec": _boki_exec_chat_model},
     "chat_image_model": {"desc": "Set which AI model /chat uses to generate images. value: \"pollinations\" (free default) or a specific catalog image-model id the admin names.", "exec": _boki_exec_chat_image_model},
-    "aicfg_grid": {"desc": ("Set the AI model + gateway combo for ONE cell of the /aiconfig grid — a specific scan type's specific tier (e.g. \"Scan1 Verified\"). "
-                             "value MUST be normalized to exactly 4 space-separated words in this order: "
-                             "<kind: scan1|scan2|test1|test2|btc> <tier: verified|unverified|nonspecial (use \"verified\" as a placeholder for btc — it's ignored)> "
+    "aicfg_grid": {"desc": ("Set the AI model + gateway combo for one OR MORE cells of the /aiconfig grid — one or several scan "
+                             "types, all sharing the SAME tier/gateway/model (e.g. \"Scan1 Verified\", or \"all verified slots\", "
+                             "or \"Scan2, TS1 and TS2\"). "
+                             "value MUST be normalized to space-separated words in this order: "
+                             "<kind: one or more of scan1|scan2|test1|test2|btc, space-separated, OR the single word \"all\" meaning "
+                             "all four of scan1/scan2/test1/test2 (never include btc in \"all\" — btc has no tiers)> "
+                             "<tier: verified|unverified|nonspecial (use \"verified\" as a placeholder for btc — it's ignored)> "
                              "<gateway: direct|aerolink> <model: opus5|fable5|4.8, or another exact model id/tag the admin names>. "
                              "Interpret shorthand: \"a5\" or \"aerolink 5\" both mean \"aerolink opus5\"; \"d4.8\" means \"direct 4.8\"; "
                              "\"s1\"/\"scan1\" both mean scan1; \"ts1\"/\"demo1\" both mean test1; \"ts2\"/\"demo2\" both mean test2. "
-                             "Example: \"use a5 for s1 verified\" -> value=\"scan1 verified aerolink opus5\"."), "exec": _boki_exec_aicfg_grid},
+                             "If the admin says \"all\", \"every scan\", or names 2+ scan types (with \"and\"/commas/etc — drop the "
+                             "connector words), put ALL of them as separate words before the tier, don't collapse to just one. "
+                             "Example: \"use a5 for s1 verified\" -> value=\"scan1 verified aerolink opus5\". "
+                             "Example: \"change all verified slots to a5\" -> value=\"all verified aerolink opus5\". "
+                             "Example: \"change s2 ts1 and ts2 to a5 too\" (tier/gateway/model from the replied-to "
+                             "message's context) -> value=\"scan2 test1 test2 verified aerolink opus5\". If the tier "
+                             "genuinely can't be determined from either this message or the reply context, still emit "
+                             "the action with tier left as the literal word \"?\" rather than guessing."), "exec": _boki_exec_aicfg_grid},
     "aerolink_key": {"desc": "Pause or unpause specific numbered Aerolink API key slots (1-20). value normalized to \"pause 2 3\" or \"unpause 4\" style (action word, then the numbers).", "exec": _boki_exec_aerolink_key},
     "channel_pause": {"desc": ("Pause or resume a broadcast channel (stops new signals going there, everything else keeps running). "
                                 "value normalized to \"<channel> <pause|resume>\" where channel is \"sig\" (main Signal Channel), "
