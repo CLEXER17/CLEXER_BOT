@@ -7487,12 +7487,10 @@ def fmt_update(status, price=None):
     _hdr = lambda emj, title: f"{emj} #{SYMBOL}"
     _sid = t.get("sig_id","")
     msgs = {
-        "SL_HIT": _scan_box(
-            "SL Hit", _hdr("🚨", "SL Hit"),
-            [[f"❌ {_smallcaps_title('Loss taken on')} {t.get('signal','?')} @ <code>{t.get('entry',0):,.0f}</code>"],
-             [f"⛔ {_smallcaps_title('Do not open any trade now')}",
-              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
-            tag=_sid,
+        "SL_HIT": (
+            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+            "🛑 <b>Position Closed</b>\n\n"
+            "<blockquote>SL executed.</blockquote>"
         ),
         "TP1_HIT": _scan_box(
             f"TP1 Hit — {ct.TP1_CLOSE_PCT}% Closed", _hdr("💰", "TP1 Hit"),
@@ -8151,18 +8149,14 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
             tag=_sid,
         ),
         "SL_HIT": (
-            _scan_box(
-                "BE Exit", _hdr_notime("🛡️", "BE Exit"),
-                [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
-                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
-                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"]],
-                tag=_sid,
-            ) if t.get("tp1_hit") else
-            _scan_box(
-                "SL Hit", _hdr_notime("🚨", "SL Hit"),
-                [[f"❌ {_smallcaps_title('Loss on')} {sig} @ <code>{entry:,.4g}</code>"],
-                 [f"⛔ {_smallcaps_title('Do not open any trade now')}"]],
-                tag=_sid,
+            (
+                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                f"🛡️ <b>Position Closed</b>  <code>{ver_lbl} {coin}</code>\n\n"
+                "<blockquote>Closed at breakeven — no loss.</blockquote>"
+            ) if t.get("tp1_hit") else (
+                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                f"🛑 <b>Position Closed</b>  <code>{ver_lbl} {coin}</code>\n\n"
+                "<blockquote>SL executed.</blockquote>"
             )
         ),
         "ENTRY_MISSED": _scan_box(
@@ -12411,41 +12405,23 @@ Reasoning: [one line]"""
                             f"Tried {len(tried)} coin(s): <b>{tried_str}</b>\n\n"
                             f"None had clear 4H+1H+5M alignment for MARKET entry right now.\n"
                             f"Next auto-scan runs at :{ALT_SCAN_MINUTE:02d} IST.")
-                    # Special-time slots matter for tracking — let VIP know this specific
-                    # slot didn't fire, and clearly say why (gateway/API error vs Claude
-                    # genuinely finding no clean setup) instead of silently skipping it.
-                    if _is_special_now:
+                    # Special-time slots matter for tracking, but per admin request
+                    # (2026-08-06) this no longer posts to ANY public channel (Signal
+                    # or VIP) — it's admin-only info now, sent as a DM. Genuine API/
+                    # gateway failures are already DM'd via the send_reply(cid,...)
+                    # above (cid==ADMIN_CHAT_ID on auto-runs), so only the "genuinely
+                    # no clean setup" case sends anything here, to avoid a duplicate DM.
+                    if _is_special_now and not (api_fail_count > 0 and api_fail_count >= len(tried)):
                         _trig_hm = _trigger_hm
                         _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                         _label = f"S{scan_ver}"
                         _gw = _gw_model_tag(_kind)
-                        if api_fail_count > 0 and api_fail_count >= len(tried):
-                            _no_sig_msg = _scan_box(
-                                f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
-                                [[f"🔴 {_smallcaps_title(f'{_gw} Error')}",
-                                  f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
-                            )
-                        else:
-                            # New minimal style (admin request 2026-08-04) — replaces
-                            # the old boxed template for the "genuinely no clean setup"
-                            # case specifically (the gateway/API-failure box above is
-                            # untouched, that's a different situation).
-                            _no_sig_msg = (
-                                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                                "📈 <b>Market Status</b>\n\n"
-                                "<blockquote>No valid setup detected.</blockquote>"
-                            )
-                        # Signal channel always gets it. VERIFIED slots ALSO post to
-                        # VIP (2026-07-28 request) — VIP users are specifically primed
-                        # for a verified slot's outcome, so silence there when nothing
-                        # fires reads as the bot having missed it, not "no clean setup."
-                        # Unverified-special and nonspecial slots stay Signal-only, as
-                        # before — only a proven, verified slot's no-trade result is
-                        # worth VIP's attention.
-                        if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
-                            _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
-                        if _ai_category(_kind) == "verified":
-                            send_to_tier_channels(_no_sig_msg, share_free=False, exclude_ch2=True)
+                        _no_sig_msg = (
+                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                            f"📈 <b>Market Status</b>  <code>{_label} {_gw}</code>\n\n"
+                            "<blockquote>No valid setup detected.</blockquote>"
+                        )
+                        send_admin(_no_sig_msg)
 
             except Exception as e:
                 send_reply(cid, f"❌ Scan error: {e}")
@@ -16362,13 +16338,15 @@ def _demo_monitor_loop():
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
-                        _msg = _scan_box(
-                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} {coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
-                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-                              f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
-                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
-                            tag=sig_id)
+                        _msg = (
+                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                            f"🛡️ <b>Position Closed</b>  <code>TS{_dver} {coin}</code>\n\n"
+                            "<blockquote>Closed at breakeven — no loss.</blockquote>"
+                        ) if lbl == "BE" else (
+                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                            f"🛑 <b>Position Closed</b>  <code>TS{_dver} {coin}</code>\n\n"
+                            "<blockquote>SL executed.</blockquote>"
+                        )
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
                         ct.virtual_on_close(sym, cp, lbl)
@@ -16859,37 +16837,26 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
         if not signal_placed:
             tried_str = ", ".join(tried) if tried else "none"
             _test_is_special_now = is_special
-            if _test_is_special_now:
+            # Per admin request (2026-08-06): no more public-channel posting for
+            # "no signal" at all (Signal or VIP) — admin-only, DM'd instead. The
+            # genuine API/gateway-failure case is already DM'd in detail below,
+            # so this only fires for the "genuinely no clean setup" case, to
+            # avoid sending the admin two DMs for the same event.
+            if _test_is_special_now and not (_demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried)):
                 _trig_hm = trigger_hm
                 _trig_str = f"{_trig_hm[0]}:{_trig_hm[1]:02d}" if _trig_hm else "?"
                 _label = f"TS{scan_ver}"
                 _gw = _gw_model_tag("test", scan_ver)
-                if _demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried):
-                    _no_sig_msg = _scan_box(
-                        f"{_label} No Signal", f"⏸ {_label} {_gw}  |  {_trig_str} IST",
-                        [[f"🔴 {_smallcaps_title(f'{_gw} Error')}",
-                          f"{_smallcaps_title('Gateway/API failed — no chart was analyzed')}."]],
-                    )
-                else:
-                    # New minimal style (admin request 2026-08-04) — same as the
-                    # Scan1/Scan2 no-signal fix, applied here too so TS1/TS2 match.
-                    _no_sig_msg = (
-                        "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                        "📈 <b>Market Status</b>\n\n"
-                        "<blockquote>No valid setup detected.</blockquote>"
-                    )
-                # Signal channel always gets it; VERIFIED slots also post to VIP —
-                # same reasoning as the live scan path.
-                if TELEGRAM_CHANNEL_ID and not channel_paused.get("1"):
-                    _send_plain_reply(TELEGRAM_CHANNEL_ID, _no_sig_msg)
-                if _ai_category("test", scan_ver) == "verified":
-                    send_to_tier_channels(_no_sig_msg, share_free=False, exclude_ch2=True)
-            # Admin DM removed for the routine "no clean setup" case (2026-07-28)
-            # — that's not an error, and the special-slot version above already
-            # goes to the Signal channel. Only a genuine API/gateway failure
-            # (every candidate failed at the Claude call itself, not just found
-            # no clean setup) still DMs the admin — that's worth knowing about
-            # immediately regardless of whether this particular slot was special.
+                _no_sig_msg = (
+                    "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
+                    f"📈 <b>Market Status</b>  <code>{_label} {_gw}</code>\n\n"
+                    "<blockquote>No valid setup detected.</blockquote>"
+                )
+                send_admin(_no_sig_msg)
+            # Only a genuine API/gateway failure (every candidate failed at the
+            # Claude call itself, not just found no clean setup) DMs the admin —
+            # that's worth knowing about immediately regardless of whether this
+            # particular slot was special.
             if _demo_api_fail_count > 0 and _demo_api_fail_count >= len(tried):
                 _reason_lines = "\n".join(skip_log) if skip_log else "No candidates had usable structure/candle data this cycle."
                 send_admin(
