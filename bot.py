@@ -16197,6 +16197,9 @@ Volume 24h: ${vol_24h/1e6:.1f}M
 Change 24h: {change_24h:+.2f}%
 
 You are CLEXER SCALP V1. Analyze {symbol} for a short-term scalp trade.
+Apply every rule below internally, in your head — never write out your reasoning,
+never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
+Go directly from reading this prompt to the OUTPUT block at the end, no preamble.
 
 HARD GATES — already pre-filtered before this prompt (do not recheck):
 1. 4H structure: BULLISH→LONG only, BEARISH→SHORT only (already confirmed: {struct.upper()})
@@ -16207,14 +16210,14 @@ Remaining gate to check: RR >= 2.0 after computing SL
 
 ENTRY: MARKET at current price {cp:,.6g}
 
-STOP LOSS RULE (critical — read carefully):
-Step 1: Try 15M candles first. Find the most recent swing LOW (LONG) or swing HIGH (SHORT).
+STOP LOSS RULE (apply internally, do not narrate):
+Rule 1: Try 15M candles first. Find the most recent swing LOW (LONG) or swing HIGH (SHORT).
         A swing low = a 15M candle whose low is lower than both its left and right neighbor.
         A swing high = a 15M candle whose high is higher than both its left and right neighbor.
         Check last 10 candles. Needs 1 confirmed left and 1 confirmed right neighbor — edge candles don't count.
-Step 2: If no valid 15M swing → try 5M candles. Same fractal rule, last 10 candles.
-Step 3: If NO swing found in either timeframe → Signal: WAIT. Never invent a percentage.
-Step 4: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
+Rule 2: If no valid 15M swing → try 5M candles. Same fractal rule, last 10 candles.
+Rule 3: If NO swing found in either timeframe → Signal: WAIT. Never invent a percentage.
+Rule 4: If swing found → sl_dist_pct = abs(entry - swing_level) / entry × 100
         If sl_dist_pct < 1.0% → Signal: WAIT (structure too tight)
         If sl_dist_pct > 3.0% → Signal: WAIT (structure too loose)
         Otherwise → SL = swing_level. Valid trade.
@@ -16792,8 +16795,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     _gw_dbg = _aerolink_gw_debug_tag(_using_aero, _attempt, _aero_bad_keys)
                     print(f"  [TEST] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model('test', scan_ver)} special={getattr(_scan_ctx, 'special', False)}")
                     _client, _used_key = _claude_client_skip("test", _attempt, _aero_bad_keys, scan_ver=scan_ver)
+                    # Bumped 2500 -> 4000 (admin request 2026-08-06) — extra headroom in
+                    # case a model still narrates some despite the anti-narration prompt
+                    # rewrite above, so it has room to reach the real output block anyway.
                     r2 = _client.messages.create(
-                        model=_ai_model("test", scan_ver), max_tokens=2500,
+                        model=_ai_model("test", scan_ver), max_tokens=4000,
                         messages=[{"role":"user","content":analysis_prompt}])
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
