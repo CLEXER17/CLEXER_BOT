@@ -4342,6 +4342,10 @@ _demo_tried_now = {1: [], 2: []}  # same idea as _scan_tried_now but for TS1/TS2
 _demo_tried_lock = __import__("threading").Lock()  # check-and-claim atomic step, same reasoning
                                                      # as _scan_tried_lock.
 
+_demo_tried_verified_now = {1: set(), 2: set()}  # same idea as _scan_tried_verified_now but for
+                                                   # TS1/TS2 — a VST demo candidate is only blocked by
+                                                   # another VST already mid-analysis, never NT/UNST.
+
 # ─── Auto promote/demote special times by live win rate ────────────────────
 # Per-slot (kind, hour:minute) outcome tracker that automatically:
 #   1. Promotes a REGULAR (non-special) time to special+verified once it has
@@ -16744,6 +16748,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
     # Slot cap removed 2026-07-27 — unlimited concurrent slots per kind now,
     # needed for the dense-grid same-coin stacking test.
     _demo_is_special_now = is_special
+    # VST priority (admin rule, 2026-08-06, same as the live Scan1/Scan2 fix):
+    # a VST candidate may only ever be blocked by another VST, never NT/UNST.
+    # Computed once here (thread-local scan context) and reused by every
+    # collision guard below.
+    _demo_is_verified_now = _demo_is_special_now and _ai_category(_kind) == "verified"
 
     try:
         # Fetch BingX ticker
@@ -16775,10 +16784,18 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # comment on the real Scan1/Scan2 collision check for why this is
             # safe (nonspecial never places real money).
             if _demo_is_special_now:
-                existing_syms = (
-                    [t2.get("symbol","") for t2 in scan1_trades + scan2_trades] +
-                    [t2.get("symbol","") for t2 in demo_scan1_trades + demo_scan2_trades]
-                )
+                # VST candidates only exclude coins already held by another VST
+                # (real or demo); NT/UNST candidates keep the old full exclusion.
+                if _demo_is_verified_now:
+                    existing_syms = (
+                        [t2.get("symbol","") for t2 in scan1_trades + scan2_trades if t2.get("tier_routed")] +
+                        [t2.get("symbol","") for t2 in demo_scan1_trades + demo_scan2_trades if t2.get("tier_routed")]
+                    )
+                else:
+                    existing_syms = (
+                        [t2.get("symbol","") for t2 in scan1_trades + scan2_trades] +
+                        [t2.get("symbol","") for t2 in demo_scan1_trades + demo_scan2_trades]
+                    )
                 if sym in existing_syms: continue
             if scan_ver == 1:
                 score = (abs(chg) ** 1.5) * (_math.sqrt(vol / 1e6))
@@ -16828,6 +16845,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
         signal_placed = False
         tried = []
         _demo_tried_now[scan_ver] = tried  # same list object — see _demo_tried_now docstring
+        _demo_tried_verified_now[scan_ver] = set()  # fresh each cycle — see its docstring
         _other_demo_ver = 2 if scan_ver == 1 else 1
         skip_log = []   # tracks WHY each coin was skipped — shown in the final no-signal
                          # message instead of a generic "all WAIT or failed gates" catch-all
@@ -16847,12 +16865,18 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # independently pick the same top-mover and both burn a full Claude
             # analysis on it before either has placed a trade. Only enforced for
             # special runs — nonspecial/dense-grid runs allow it (2026-07-27).
+            # VST priority: a VST candidate is only blocked by another in-flight
+            # VST, never an in-flight NT/UNST one (admin rule, 2026-08-06).
             with _demo_tried_lock:
-                if _demo_is_special_now and chosen_sym in _demo_tried_now.get(_other_demo_ver, []):
+                _demo_other_analyzing = chosen_sym in (_demo_tried_verified_now.get(_other_demo_ver, set()) if _demo_is_verified_now
+                                                         else _demo_tried_now.get(_other_demo_ver, []))
+                if _demo_is_special_now and _demo_other_analyzing:
                     skip_log.append(f"⏭ {chosen_sym}: TS{_other_demo_ver} already analyzing this coin")
                     print(f"  [TEST] Skip {chosen_sym} — TS{_other_demo_ver} already on it this cycle")
                     continue
                 tried.append(chosen_sym)
+                if _demo_is_verified_now:
+                    _demo_tried_verified_now[scan_ver].add(chosen_sym)
             # Same staleness fix as the live scan loop — candidate["price"] is a
             # snapshot from this cycle's initial ticker fetch, stale by the time
             # coin #2/#3 gets its turn after #1's full Claude analysis. Refetch here.
@@ -17069,9 +17093,13 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # duplicate position and sending its own separate set of updates.
             # Only enforced for special runs — nonspecial/dense-grid runs
             # (2026-07-27) explicitly allow independent stacked trades.
+            # VST priority: a VST candidate is only blocked here by an already-
+            # opened VST on the other demo, never NT/UNST (admin rule, 2026-08-06).
             _other_demo_list = demo_scan2_trades if scan_ver == 1 else demo_scan1_trades
             with _demo_monitor_lock:
-                if _demo_is_special_now and any(t2.get("symbol") == chosen_sym for t2 in _other_demo_list):
+                _demo_collision = any(t2.get("symbol") == chosen_sym and (not _demo_is_verified_now or t2.get("tier_routed"))
+                                       for t2 in _other_demo_list)
+                if _demo_is_special_now and _demo_collision:
                     print(f"  [TEST] {chosen_sym}: TS{2 if scan_ver==1 else 1} already opened this coin — skipping to avoid a duplicate")
                     skip_log.append(f"⏭ {chosen_sym}: TS{2 if scan_ver==1 else 1} already opened this coin")
                     continue
