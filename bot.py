@@ -12283,7 +12283,11 @@ Reasoning: [one line]"""
                                 # is NOT a real WAIT — treat it exactly like an API failure
                                 # (admin request 2026-08-06: was silently defaulting to WAIT,
                                 # masking that the coin was never actually analyzed).
-                                raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line)")
+                                # Snippet of whatever WAS returned shows exactly what the
+                                # model was doing when it cut off (e.g. still narrating
+                                # analysis instead of emitting the output block).
+                                _snippet = f" — got: {analysis[:80]!r}" if analysis else ""
+                                raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line){_snippet}")
                             _claude_ok = True
                             break
                         except Exception as _ce:
@@ -16755,7 +16759,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                                                      struct=struct, age=age, age_4h=age_4h)
 
             # Claude analysis
-            analysis = ""; _claude_ok = False
+            analysis = ""; _claude_ok = False; _last_claude_err = ""
             _using_aero = _ai_aerolink("test", scan_ver)
             _retry_budget = _claude_retry_budget(_using_aero)
             for _attempt in range(_retry_budget):
@@ -16782,16 +16786,18 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                         # Empty/incomplete response — treat like an API failure instead
                         # of silently defaulting to WAIT (admin request 2026-08-06, see
                         # the live scan loop's identical check).
-                        raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line)")
+                        _snippet = f" — got: {analysis[:80]!r}" if analysis else ""
+                        raise ValueError(f"empty/incomplete response ({len(analysis)} chars, no Signal: line){_snippet}")
                     _claude_ok = True; break
                 except Exception as _ce:
-                    print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_ce}")
+                    _last_claude_err = str(_ce)
+                    print(f"  [TEST] Claude attempt {_attempt+1} FAIL (gateway={_gw_dbg}): {_last_claude_err}")
                     if _using_aero and _used_key:
                         _aero_bad_keys.add(_used_key)
                     if _attempt < _retry_budget - 1: time.sleep(10)
             if not _claude_ok:
                 print(f"  [TEST] {chosen_sym}: Claude failed {_retry_budget} times — skipping"); _demo_api_fail_count += 1
-                skip_log.append(f"🔴 {chosen_sym}: Claude/gateway API failed {_retry_budget}x — not analyzed")
+                skip_log.append(f"🔴 {chosen_sym}: Claude/gateway API failed {_retry_budget}x — not analyzed (last error: {_last_claude_err[:120]})")
                 if _all_aero_keys_dead(_using_aero, _aero_bad_keys):
                     skip_log.append("🛑 Every configured Aerolink key has failed this cycle — "
                                     "stopping early instead of retrying more coins against the same broken keys.")
