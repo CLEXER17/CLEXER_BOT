@@ -6895,6 +6895,7 @@ channel_paused = {"1": False, "2": False}  # per-channel pause state
 # HTML tag so they coexist with existing parse_mode="HTML" formatting. Falls back to
 # the plain emoji glyph automatically for non-Premium viewers.
 PREMIUM_EMOJI_MAP = {
+    "⛔": "5363925144907554991",  # SL "Position Closed" icon, minimal SL-hit message (admin request 2026-08-06)
     "🟢": "5215685881989442149", "🔴": "4926956800005112527",
     "🟩": "5262747715552438702", "🟥": "5809816842713174497",  # BUY/SELL-only direction icon on signal cards (distinct from the generic 🟢/🔴 used for toggles/checks elsewhere)
     "🛑": "5366040905927113475", "🎯": "5461009483314517035",
@@ -7488,9 +7489,10 @@ def fmt_update(status, price=None):
     _sid = t.get("sig_id","")
     msgs = {
         "SL_HIT": (
-            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-            "🛑 <b>Position Closed</b>\n\n"
-            "<blockquote>SL executed.</blockquote>"
+            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
+            "⛔ <b>Position Closed</b>\n"
+            "<blockquote>SL executed.</blockquote>\n"
+            f"🪪 {_sid}"
         ),
         "TP1_HIT": _scan_box(
             f"TP1 Hit — {ct.TP1_CLOSE_PCT}% Closed", _hdr("💰", "TP1 Hit"),
@@ -8149,14 +8151,17 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
             tag=_sid,
         ),
         "SL_HIT": (
-            (
-                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                f"🛡️ <b>Position Closed</b>  <code>{ver_lbl} {coin}</code>\n\n"
-                "<blockquote>Closed at breakeven — no loss.</blockquote>"
+            _scan_box(
+                "BE Exit", _hdr_notime("🛡️", "BE Exit"),
+                [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
+                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
+                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"]],
+                tag=_sid,
             ) if t.get("tp1_hit") else (
-                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                f"🛑 <b>Position Closed</b>  <code>{ver_lbl} {coin}</code>\n\n"
-                "<blockquote>SL executed.</blockquote>"
+                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
+                f"⛔ <b>Position Closed</b>  ${coin}\n"
+                "<blockquote>SL executed.</blockquote>\n"
+                f"🪪 {_sid}"
             )
         ),
         "ENTRY_MISSED": _scan_box(
@@ -12234,10 +12239,13 @@ Reasoning: [one line]"""
 
                     emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                     tv_src = "TV" if tv_switched else "BingX"
+                    # important=True (admin request 2026-08-06) — this raw per-candidate
+                    # analysis preview must reach admin DM on every attempt, special or
+                    # not, instead of being dropped by _scan_quiet's auto-run noise filter.
                     send_reply(cid,
                         f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver}</b>  {ist_str()}\n\n"
                         f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
-                        f"<pre>{_html.escape(analysis[:900])}</pre>")
+                        f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
                     if scan_signal_val == "WAIT":
                         # Extract reasoning from Claude's analysis for the skip log
@@ -16338,14 +16346,17 @@ def _demo_monitor_loop():
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
-                        _msg = (
-                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                            f"🛡️ <b>Position Closed</b>  <code>TS{_dver} {coin}</code>\n\n"
-                            "<blockquote>Closed at breakeven — no loss.</blockquote>"
-                        ) if lbl == "BE" else (
-                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n\n"
-                            f"🛑 <b>Position Closed</b>  <code>TS{_dver} {coin}</code>\n\n"
-                            "<blockquote>SL executed.</blockquote>"
+                        _msg = _scan_box(
+                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} {coin}-USDT",
+                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
+                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
+                              f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
+                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
+                            tag=sig_id) if lbl == "BE" else (
+                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
+                            f"⛔ <b>Position Closed</b>  ${coin}\n"
+                            "<blockquote>SL executed.</blockquote>\n"
+                            f"🪪 {sig_id}"
                         )
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         ct.on_scan_sl(sym)
@@ -16699,11 +16710,15 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             else:
                 scan_signal_val = _all_sigs[-1]  # take last non-WAIT signal
 
-            # Per-candidate raw analysis preview DM removed 2026-07-28 — pure
-            # progress noise (not an error), one of the biggest contributors
-            # to the DM volume that tripped Telegram's rate limit given the
-            # dense grid runs this many times an hour. Final result still
-            # reaches the right channel via the signal/VIP posts below.
+            # Per-candidate raw analysis preview DM — removed 2026-07-28 for
+            # rate-limit reasons, restored 2026-08-06 (admin request) with
+            # important=True so it survives _scan_quiet, on every attempt,
+            # special or not — same format as the live Scan1/Scan2 preview.
+            _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
+            send_reply(cid,
+                f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver}</b>  {ist_str()}\n\n"
+                f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | 🔀 BingX\n\n"
+                f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
             if scan_signal_val == "WAIT":
                 print(f"  [TEST] {chosen_sym} → WAIT")
