@@ -420,8 +420,12 @@ def _apply_trail_sl_btc(price: float):
     else:
         if active_trade.get("trail_sl2_moved"):
             return
-        be_sl = active_trade["sl"]; tp2 = active_trade["tp2"]
-        midpoint2 = (be_sl + tp2) / 2
+        be_sl = active_trade["sl"]; tp1 = active_trade["tp1"]; tp2 = active_trade["tp2"]
+        # Halfway between TP1 and TP2 — NOT between breakeven-SL and TP2 (same
+        # bug as _apply_trail_sl, fixed 2026-08-07 — see that function's
+        # comment for the full explanation of why (be_sl+tp2)/2 can collapse
+        # onto tp1 itself and fire this phase instantly on the TP1 hit).
+        midpoint2 = (tp1 + tp2) / 2
         hit2 = (sig == "BUY" and price >= midpoint2) or (sig == "SELL" and price <= midpoint2)
         if not hit2:
             return
