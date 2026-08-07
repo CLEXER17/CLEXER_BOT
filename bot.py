@@ -8499,6 +8499,16 @@ def _tick_one(ver: int, t: dict) -> bool:
                     entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
                 _notify_free_late(sym, t, "TP1")
                 save_state()  # persist tp1_hit + breakeven SL immediately — a restart before final close must not revert to the pre-TP1 SL
+                # Don't fall through to the SL/BE check below on THIS same tick —
+                # check_low/check_high above was built from a lookback window
+                # (last up to 3min of 1m candles, sometimes a since-entry wick
+                # recheck too) that can span BEFORE price actually reached TP1.
+                # Comparing that stale pre-TP1 window against the brand-new
+                # breakeven `sl` just set above caused an instant false "BE"
+                # close right after TP1 (admin report, 2026-08-07). The next
+                # tick gets a fresh window that only reflects price AFTER this
+                # moment, so the real breakeven check is safe to run there.
+                return False
 
         sl_margin = sl * 0.002
         sl_hit = (sig == "BUY"  and check_low  < sl - sl_margin) or \
