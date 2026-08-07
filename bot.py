@@ -13013,7 +13013,7 @@ Reasoning: [one line]"""
         threading.Thread(target=_do_coin_resolve, daemon=True).start()
 
     else:
-        send_reply(chat_id, f"Unknown: {cmd}\n/help")
+        pass  # unknown command — silently ignore, no reply (admin request 2026-08-07)
 
 _bc_picker_state: dict = {}  # chat_id str -> {"text","file_id","file_type","mode","selected": set()}
 _BC_MODE_LABELS = {"users": "Users Only", "channels": "Channels Only", "all": "All (Users + Channels)",
