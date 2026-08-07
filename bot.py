@@ -1326,6 +1326,8 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
     coin = symbol.replace("-USDT", "").replace("USDT", "")
     tag = detail.get("tag", "?"); side = detail.get("side", "?")
     tp1 = detail.get("tp1", 0); sl_be = detail.get("sl_be", 0); tp2 = detail.get("tp2", 0)
+    sig_id = detail.get("sig_id", "")
+    _sid_line = f"🪪 {sig_id}\n" if sig_id else ""
     arrow = "🟩" if side == "BUY" else "🟥"
     text = (
         f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>\n"
@@ -1333,6 +1335,7 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
         f"✅ TP1: <b>{tp1:,.4g}</b>\n"
         f"🛡 SL moved to BE: <b>{sl_be:,.4g}</b>\n"
         f"🚀 Riding TP2: <b>{tp2:,.4g}</b>...\n"
+        f"{_sid_line}"
         "Another TAKE PROFIT closed successfully. Congratulations to everyone who followed the setup! 🔥\n\n"
         "This is just a glimpse of what our community receives.\n\n"
         "👑 Crypto Clexer VIP members get:\n"
@@ -7795,7 +7798,7 @@ def run_tick_check():
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
                 _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
-                    tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+                    tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": active_trade.get("sig_id","")},
                     entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
                 _notify_free_late(SYMBOL, active_trade, "TP1")
 
@@ -7997,7 +8000,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
             "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
         _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
         _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
-            tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+            tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": t.get("sig_id", "")},
             entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
         _notify_free_late(sym, t, "TP1")
         save_state()
@@ -8505,7 +8508,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
                 _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
                 _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
-                    tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2},
+                    tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": t.get("sig_id","")},
                     entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
                 _notify_free_late(sym, t, "TP1")
                 save_state()  # persist tp1_hit + breakeven SL immediately — a restart before final close must not revert to the pre-TP1 SL
@@ -8675,7 +8678,7 @@ def run_price_check():
             _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
-                    "tp2": active_trade.get("tp2",0)},
+                    "tp2": active_trade.get("tp2",0), "sig_id": active_trade.get("sig_id","")},
                 entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP1")
         elif status in ("STOP_HUNT",):      send_lifecycle_reply(fmt_update("STOP_HUNT"), _rmap, include_ch2=False)
@@ -16558,7 +16561,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
-            tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
+            tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
             entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP1")
         save_state()
@@ -16738,7 +16741,7 @@ def _demo_monitor_loop():
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp1"] += 1
                         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
-                            tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2},
+                            tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
                             entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP1")
                         save_state()  # persist tp1_hit + BE SL immediately — trade stays open (no to_remove append) so the loop's own save_state() below wouldn't otherwise run for this branch
