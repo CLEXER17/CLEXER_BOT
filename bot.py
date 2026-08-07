@@ -4556,10 +4556,18 @@ def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     from special/unverified if it was there. No relocation/hop to a new
     minute (2026-07-30 admin rule: once blocked, stay blocked, don't go
     looking for a replacement time) — the slot just stops being used.
-    UNVERIFIED slots are exempt (admin rule, 2026-08-07) — they never get
-    permanently blacklisted no matter how poorly they perform; they just
-    stay unverified (no copytrade) and remain eligible to re-verify later.
-    Only VERIFIED and NONSPECIAL/regular-grid slots can still be blacklisted.
+    ANY special slot — VERIFIED or UNVERIFIED — is exempt (admin rule,
+    2026-08-07). This function used to run BEFORE the normal promote/demote
+    evaluation on every single trade result, so a VERIFIED slot's 3rd bad
+    trade blacklisted it permanently on the spot — completely bypassing the
+    intended "demote to UNVERIFIED first" safety step below in
+    _evaluate_slot, since blacklist's own trigger condition (3+ trades,
+    win% under threshold) is a strict subset of the demote condition and
+    always fires first. Now ONLY plain NONSPECIAL/regular-grid slots (never
+    promoted to special at all) can still be permanently blacklisted;
+    verified slots properly demote to unverified instead, and unverified
+    slots just stay unverified — neither ever gets removed from the
+    schedule for poor performance anymore.
     Returns True if it fired, so the caller skips the normal promote/demote
     check for this (now-retired) time this cycle."""
     key = _slot_key(kind, hm)
@@ -4567,8 +4575,8 @@ def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     if not st or not _slot_underperforming(kind, st.get("tp", 0), st.get("sl", 0)):
         return False
     sched_kind = _SLOT_SCHEDULE_KIND[kind]
-    if hm in _SCAN_SPECIAL_NO_COPY.get(sched_kind, set()):
-        return False  # unverified — exempt from blacklisting
+    if hm in _SCAN_SPECIAL.get(sched_kind, set()):
+        return False  # verified or unverified special slot — exempt from blacklisting
     if hm in _SLOT_BLACKLIST.get(kind, set()):
         return False  # already retired earlier — nothing new to do
     _SLOT_BLACKLIST.setdefault(kind, set()).add(hm)
