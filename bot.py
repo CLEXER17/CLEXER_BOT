@@ -356,8 +356,18 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     else:
         if t.get("trail_sl2_moved"):
             return
-        be_sl = t["sl"]; tp2 = t["tp2"]
-        midpoint2 = (be_sl + tp2) / 2
+        be_sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
+        # Halfway between TP1 and TP2 — NOT between breakeven-SL and TP2 (the
+        # bug, found 2026-08-07 from a real SKYAI-USDT instant-BE report). For
+        # Scan1/Scan2's standard TP1=1.5x/TP2=3x SL-distance formula,
+        # (be_sl+tp2)/2 works out to be mathematically IDENTICAL to tp1 itself
+        # (be_sl==entry, tp2==2×tp1_dist, so their midpoint==tp1_dist==tp1).
+        # That made this phase fire the instant TP1 hit — on the very next
+        # tick it yanked SL up from breakeven to ~tp1's own price with only a
+        # 0.2% margin, so any normal small pullback after tagging TP1 (which
+        # is completely ordinary price action) got misreported as an "instant
+        # BE" close instead of ever giving the trade room to run toward TP2.
+        midpoint2 = (tp1 + tp2) / 2
         hit2 = (sig == "BUY" and price >= midpoint2) or (sig == "SELL" and price <= midpoint2)
         if not hit2:
             return
