@@ -4002,8 +4002,27 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                         _active_model = _c["best_model"]  # reuse the combined classify's pick, don't re-classify
                         print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
                     if _active_model != "google":
-                        reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                             gateway_override=sess.get("gateway"))
+                        _gw_override = sess.get("gateway")
+                        if _gw_override is not None:
+                            # Admin explicitly typed "switch direct"/"switch free" this
+                            # session — that single, explicit choice always wins, no
+                            # auto-fallback (they asked for exactly this one).
+                            reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                 gateway_override=_gw_override)
+                        else:
+                            # No explicit override: always try Aerolink (free) first,
+                            # fall back to Direct only if that fails (admin request,
+                            # 2026-08-07) — the MODEL itself (_active_model, picked via
+                            # /chatmodel) is completely untouched by this, still fully
+                            # admin-controlled; this only changes which gateway that
+                            # model runs on by default.
+                            try:
+                                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                     gateway_override="aerolink")
+                            except Exception as _gwe:
+                                print(f"  [CHAT] free (Aerolink) attempt with {_active_model} failed ({_gwe}) — falling back to Direct")
+                                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                     gateway_override="direct")
                     else:
                         reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
                 sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
