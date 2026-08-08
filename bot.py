@@ -13020,7 +13020,8 @@ Reasoning: [one line]"""
             f"{_known_block}\n\n"
             f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
             f"a STANDBY server never polls Telegram (see _wait_then_poll), so this only actually "
-            f"works run from whichever server is CURRENTLY ACTIVE.", reply_markup=_mkp)
+            f"works run from whichever server is CURRENTLY ACTIVE.\n\n"
+            f"🧪 <b>BUILD MARKER: DEPLOY-TEST-01</b>", reply_markup=_mkp)
         return
 
     elif cmd == "/model" and is_admin:
