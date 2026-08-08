@@ -13029,11 +13029,30 @@ Reasoning: [one line]"""
         _mkp = {"inline_keyboard": [
             [{"text": f"✅ Make \"{SERVER_NAME}\" active", "callback_data": f"srvset:{SERVER_NAME}"}],
         ]}
+        # Known servers this CENTRAL STORE has ever seen (admin request 2026-08-07 —
+        # confusion when a genuinely new server, e.g. co3, doesn't show up here at
+        # all: usually means THIS server's CLEXER_API_URL still points at a different
+        # central store than the new one, so they've simply never registered with
+        # each other — this list makes that visible instead of silent).
+        _known_lines = []
+        try:
+            r = _central_get("/kv/server_registry")
+            reg = ((r.json().get("data") if r is not None and r.ok and r.json().get("found") else {}) or {})
+            _now = time.time()
+            for _name, _e in sorted(reg.items(), key=lambda kv: kv[1].get("last_seen", 0), reverse=True):
+                _age = _now - _e.get("last_seen", 0)
+                _age_str = f"{int(_age)}s ago" if _age < 120 else (f"{int(_age//60)}m ago" if _age < 7200 else f"{int(_age//3600)}h ago")
+                _known_lines.append(f"• <b>{_name}</b> — seen {_age_str}")
+        except Exception:
+            pass
+        _known_block = ("\n\n<b>Known servers (this store):</b>\n" + "\n".join(_known_lines)) if _known_lines else \
+                        "\n\n<i>No other servers registered with this store yet.</i>"
         send_reply(chat_id,
             f"🖥️ <b>Server Status</b>\n\n"
             f"<blockquote>This server's name: <b>{SERVER_NAME}</b>\n"
             f"Currently active server: <b>{_active_now}</b>\n"
-            f"Status here: {_status}</blockquote>\n\n"
+            f"Status here: {_status}</blockquote>"
+            f"{_known_block}\n\n"
             f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
             f"a STANDBY server never polls Telegram (see _wait_then_poll), so this only actually "
             f"works run from whichever server is CURRENTLY ACTIVE.", reply_markup=_mkp)
