@@ -1975,13 +1975,18 @@ def _register_this_server():
     except Exception as e:
         print(f"[SERVER] registry push error: {e}")
 
-def _find_new_server(active_since: float):
+def _find_new_server(active_since: float, min_age_days: float = 0):
     """A server counts as "newly added" for rotation purposes only if it (a)
     isn't this active server, (b) first registered AFTER the active server's
     own start time (so an old abandoned server, e.g. the original "main",
     never counts as new), and (c) has checked in within the last 3 days (so
     a candidate that itself died in the meantime isn't picked). Returns the
-    most-recently-registered qualifying name, or None."""
+    most-recently-registered qualifying name, or None.
+
+    min_age_days: also requires the candidate to have been registered at
+    least this many days ago (default 0 = no extra wait) — used by the
+    fast-track scheduled switch below, independent of how long THIS server
+    has been active."""
     if not CLEXER_API_URL:
         return None
     try:
@@ -1992,11 +1997,19 @@ def _find_new_server(active_since: float):
     now = time.time()
     candidates = [(name, e) for name, e in reg.items()
                   if name != SERVER_NAME and e.get("first_seen", 0) > active_since
-                  and (now - e.get("last_seen", 0)) < 3 * 86400]
+                  and (now - e.get("last_seen", 0)) < 3 * 86400
+                  and (now - e.get("first_seen", 0)) >= min_age_days * 86400]
     if not candidates:
         return None
     candidates.sort(key=lambda t: t[1].get("first_seen", 0), reverse=True)
     return candidates[0][0]
+
+_NEW_SERVER_FAST_SWITCH_DAYS = 3  # admin request 2026-08-07: a freshly-added server (e.g. co3)
+# auto-takes-over this many days after IT first registered, fully independent of how long
+# the current server has already been active — separate from, and checked before, the
+# general 24/27-day reminder/switch cadence below (which is about nudging the admin to
+# deploy a replacement once THIS server has been running a long time; this one is about
+# a specific new server that already exists and just needs its wait period to elapse).
 
 def _server_rotation_loop():
     """Runs on every server. Only the currently-ACTIVE one actually reminds or
@@ -2012,6 +2025,21 @@ def _server_rotation_loop():
             _register_this_server()
             if is_active_server() and CLEXER_API_URL:
                 info = _get_active_server_info()
+                # Fast-track: any qualifying new server that's now at least
+                # _NEW_SERVER_FAST_SWITCH_DAYS old switches immediately, no
+                # need to wait for THIS server's own 24/27-day cycle.
+                _fast_name = _find_new_server(info["since"], min_age_days=_NEW_SERVER_FAST_SWITCH_DAYS)
+                if _fast_name:
+                    old_name = SERVER_NAME
+                    set_active_server(_fast_name)
+                    send_admin(
+                        f"🔄 <b>Server Auto-Switched</b>\n\n{old_name} → {_fast_name}\n"
+                        f"{_fast_name} has been online for {_NEW_SERVER_FAST_SWITCH_DAYS}+ days — "
+                        f"scheduled handoff completed automatically. This server will stop polling "
+                        f"Telegram within ~20s; {_fast_name} takes over from here."
+                    )
+                    time.sleep(6 * 3600)
+                    continue
                 days = int((time.time() - info["since"]) // 86400)
                 today = _ist_date_str()
                 if days >= _SERVER_ROTATION_REMINDER_DAY and info["last_reminder_date"] != today:
@@ -3499,10 +3527,17 @@ _KNOWLEDGE_BASE = {
         "same way but never touches a real exchange.\n\n"
     ),
     "server_rotation_sync": (
-        "MULTI-SERVER ROTATION: only ONE server is ever \"active\" (placing real copytrade orders) "
-        "at a time — every other running server is standby (still scans/analyzes, never trades, "
-        "and doesn't even poll Telegram until it becomes active, so there's never a race). "
-        "/server <name> switches which one is active — run it FROM the server you're switching TO. "
+        "MULTI-SERVER ROTATION: only ONE server is ever \"active\" (scanning, trading, placing real "
+        "copytrade orders) at a time — every other running server sits fully idle in standby (no "
+        "scanning, no analysis, and it never even polls Telegram until it becomes active, so there's "
+        "never a race — admin rule 2026-08-04, \"keep full power to one server, don't give any power "
+        "to another until it fully active\"). "
+        "/server <name> switches which one is active — since a standby server never polls Telegram, "
+        "it can't receive this command itself, so it MUST be run FROM the currently ACTIVE server, "
+        "not from the one you're switching TO. A brand-new server registered for 3+ days also "
+        "auto-switches on its own with zero manual command needed (see _server_rotation_loop, "
+        "_NEW_SERVER_FAST_SWITCH_DAYS) — and the just-demoted server auto-stops its own Telegram "
+        "polling within ~20s once that happens, so there's no lingering collision either. "
         "/syncup force-pushes this server's entire local state to the shared central store "
         "immediately instead of waiting for it to happen naturally — used right before/after "
         "migrating to a new server.\n\n"
@@ -12937,7 +12972,8 @@ Reasoning: [one line]"""
             f"Currently active server: <b>{_active_now}</b>\n"
             f"Status here: {_status}</blockquote>\n\n"
             f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
-            f"run it from whichever server you're switching TO.", reply_markup=_mkp)
+            f"a STANDBY server never polls Telegram (see _wait_then_poll), so this only actually "
+            f"works run from whichever server is CURRENTLY ACTIVE.", reply_markup=_mkp)
         return
 
     elif cmd == "/model" and is_admin:
@@ -14756,7 +14792,26 @@ def command_listener():
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
+    _standby_warned = False
     while True:
+        # Stop polling the instant this server is no longer the active one —
+        # e.g. right after an auto-rotation switch to a new server (admin
+        # request 2026-08-07: fully automatic handoff, no manual Railway stop
+        # needed). Telegram only allows ONE process to poll getUpdates per bot
+        # token; before this, a demoted server kept polling forever (nothing
+        # here ever re-checked is_active_server() once started), colliding
+        # with whichever server just took over. Mirrors _wait_then_poll's
+        # startup gate, but re-checked every loop tick so it also reacts
+        # mid-flight, not just before the very first call. is_active_server()
+        # is cached at most 20s (see _get_active_server_info), so this reacts
+        # about as fast as the rest of the rotation system already does.
+        if CLEXER_API_URL and not is_active_server():
+            if not _standby_warned:
+                print(f"[CMD] '{SERVER_NAME}' is no longer active — pausing Telegram polling.")
+                _standby_warned = True
+            time.sleep(20)
+            continue
+        _standby_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
                 params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query"]}, timeout=25)
