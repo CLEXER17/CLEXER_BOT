@@ -2068,6 +2068,69 @@ def _server_rotation_loop():
             print(f"[SERVER ROTATION] error: {e}")
         time.sleep(6 * 3600)
 
+# ─── Dead-man's-switch failover (admin request, 2026-08-07) ─────────────────
+# The fast-switch/rotation logic above only ever hands off gracefully (the
+# active server itself decides to switch). But the whole point of this
+# multi-server setup is free-credit rotation — a server's entire Railway
+# PROJECT (not just the bot) can simply run out of credit and disappear with
+# no graceful handoff at all. Without this, that would mean total downtime
+# from the moment credit runs out until the next scheduled rotation check —
+# up to days. This makes a STANDBY server self-promote the moment it notices
+# the active one has gone silent, instead of waiting for anything scheduled.
+_FAILOVER_CHECK_INTERVAL = 60   # how often a standby re-checks (seconds) — cheap, avoids hammering the store every 5s main-loop tick
+_FAILOVER_TIMEOUT = 5 * 60      # active server presumed dead if its heartbeat is older than this
+_last_failover_check = 0.0
+_last_self_heartbeat = 0.0
+
+def _get_registry_last_seen(name: str):
+    """One server's last-seen heartbeat from the shared registry, or None if it's never registered."""
+    if not CLEXER_API_URL:
+        return None
+    try:
+        r = _central_get("/kv/server_registry")
+        reg = ((r.json().get("data") if r is not None and r.ok and r.json().get("found") else {}) or {})
+        return reg.get(name, {}).get("last_seen")
+    except Exception:
+        return None
+
+def _check_active_server_failover():
+    """Call from a STANDBY server's main loop, every tick — internally
+    rate-limited to _FAILOVER_CHECK_INTERVAL. If the currently active
+    server's heartbeat is older than _FAILOVER_TIMEOUT, assume it's
+    genuinely gone (crashed, or its whole Railway project ran out of
+    credit) rather than waiting for a graceful /server handoff that will
+    never come, and self-promote."""
+    global _last_failover_check
+    now = time.time()
+    if now - _last_failover_check < _FAILOVER_CHECK_INTERVAL:
+        return
+    _last_failover_check = now
+    active_name = get_active_server_name()
+    if active_name == SERVER_NAME:
+        return  # already active somehow — nothing to do
+    last_seen = _get_registry_last_seen(active_name)
+    if last_seen is None:
+        return  # active server has never registered at all — don't self-promote against an unknown name
+    if now - last_seen >= _FAILOVER_TIMEOUT:
+        set_active_server(SERVER_NAME)
+        send_admin(
+            f"🚨 <b>Failover Auto-Switch</b>\n\n'{active_name}' hasn't checked in for "
+            f"{int((now - last_seen) // 60)}+ minutes — assuming it's down (crashed, or ran out "
+            f"of Railway credit) and taking over as '{SERVER_NAME}' automatically.", pin=True)
+
+def _self_heartbeat_if_due():
+    """Call from an ACTIVE server's main loop, every tick — internally
+    rate-limited to _FAILOVER_CHECK_INTERVAL. Separate from the slow 6-hour
+    heartbeat _server_rotation_loop already does — without this frequent
+    one, a standby server would only ever see a stale (up to 6-hour-old)
+    timestamp for the active server and constantly false-trigger failover."""
+    global _last_self_heartbeat
+    now = time.time()
+    if now - _last_self_heartbeat < _FAILOVER_CHECK_INTERVAL:
+        return
+    _last_self_heartbeat = now
+    _register_this_server()
+
 # ═════════════════════ TEMPORARY — admin asked to delete this whole block ═════
 # (this function + its threading.Thread(...).start() call in main()) once past
 # 2026-08-05. One-off request (2026-08-03), separate from the permanent
@@ -17646,7 +17709,10 @@ def main():
             # server does none of this, not even the warm-standby scanning it
             # used to do, until /server switches it active.
             if CLEXER_API_URL and not is_active_server():
+                _check_active_server_failover()
                 time.sleep(MAIN_TICK); continue
+            if CLEXER_API_URL:
+                _self_heartbeat_if_due()
 
             # ── Weekend sleep: Fri 22:00 IST → Sun 23:00 IST ──────────────────
             global _weekend_sleep_notified
