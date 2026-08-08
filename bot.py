@@ -877,6 +877,16 @@ def _start_userbot():
         import asyncio
         from telethon import TelegramClient, events
         from telethon.sessions import StringSession
+        # Same standby-collision class of bug as the main Telegram bot polling
+        # (see _wait_then_poll) — this user SESSION (not a bot token) flatly
+        # refuses to be used from two IPs at once ("authorization key... used
+        # under two different IP addresses simultaneously"), so a standby
+        # server logging in here at all (even read-only) kicks out whichever
+        # server was using it first. Wait for active status first, exactly
+        # like the main bot's Telegram polling does (admin report, 2026-08-08).
+        if CLEXER_API_URL:
+            while not is_active_server():
+                time.sleep(20)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _userbot_loop = loop
