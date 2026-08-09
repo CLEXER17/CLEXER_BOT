@@ -3512,7 +3512,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         """
         if len(parts) < 2:
             failed = [(uid, u) for uid, u in _db.items() if u.get("failed_copy")]
-            rows = [[{"text": f"🔄 @{u.get('username',uid)}", "callback_data": f"ctretry:{uid}"}] for uid, u in (failed or list(_db.items())[:10])]
+            rows = [[{"text": f"🔄 {_display_uname(uid, u)}", "callback_data": f"ctretry:{uid}"}] for uid, u in (failed or list(_db.items())[:10])]
             send_reply_fn(chat_id, "🔄 <b>Select user to retry:</b>", reply_markup={"inline_keyboard": rows} if rows else None); return
 
         target = str(parts[1])
@@ -3696,7 +3696,7 @@ def handle(cmd: str, parts: list, chat_id, username: str,
 
     elif cmd == "/ctclose" and is_admin:
         if len(parts) < 2:
-            rows = [[{"text": f"❌ Close @{u.get('username',uid)}", "callback_data": f"ctclose:{uid}"}] for uid, u in _db.items() if u.get("in_position") or u.get("copy_on")]
+            rows = [[{"text": f"❌ Close {_display_uname(uid, u)}", "callback_data": f"ctclose:{uid}"}] for uid, u in _db.items() if u.get("in_position") or u.get("copy_on")]
             rows.append([{"text": "❌ Close ALL users", "callback_data": "ctclose:all"}])
             send_reply_fn(chat_id, "⚠️ <b>Select user to close:</b>", reply_markup={"inline_keyboard": rows}); return
         if len(parts) >= 2 and parts[1].lower() != "all":
