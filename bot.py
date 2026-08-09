@@ -17687,9 +17687,6 @@ def main():
 
     while True:
         try:
-            if bot_paused.is_set():
-                time.sleep(MAIN_TICK); continue
-
             # Standby server — sit completely idle until this server actually
             # becomes active. This loop drives every real BTC/Scan1/Scan2
             # scan trigger and SL/TP/TIMEOUT announcement; running it
@@ -17702,11 +17699,26 @@ def main():
             # give any power to another until it fully active" — so a standby
             # server does none of this, not even the warm-standby scanning it
             # used to do, until /server switches it active.
+            #
+            # This block (and the heartbeat right after it) runs BEFORE the
+            # bot_paused check below — real bug found 2026-08-08: it used to
+            # sit AFTER that check, so while the bot was paused (the default
+            # state on every fresh deploy — "Starting PAUSED, send /go"),
+            # this never ran at all. That silently starved the fast (60s)
+            # heartbeat, leaving a genuinely healthy-but-paused active server
+            # looking "dead" to a standby's failover check (which only saw
+            # the sparse 6-hour _server_rotation_loop heartbeat instead) —
+            # exactly what caused a false failover switch. Server
+            # coordination must work independent of whether scanning itself
+            # is paused, so it's unconditional here now.
             if CLEXER_API_URL and not is_active_server():
                 _check_active_server_failover()
                 time.sleep(MAIN_TICK); continue
             if CLEXER_API_URL:
                 _self_heartbeat_if_due()
+
+            if bot_paused.is_set():
+                time.sleep(MAIN_TICK); continue
 
             # ── Weekend sleep: Fri 22:00 IST → Sun 23:00 IST ──────────────────
             global _weekend_sleep_notified
