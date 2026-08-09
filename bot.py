@@ -16101,8 +16101,30 @@ def command_listener():
                                 handle_command(f"/setvip {st['uid']} {st['start']} {date_str} {_tgt_uname}", cb_chat_id, {}, sender_id=cb_cid)
                                 _navigate_to("help_cat:copyadmin", cb_chat_id, cb_cid, cb_msg_id, cb_is_admin)
                     elif cb_data.startswith("ctretry:"):
+                        # Admin request 2026-08-09: the button used to always
+                        # default to BTC mode (handle_command(f"/ctretry {uid}"))
+                        # with no way to pick a scan trade instead — "why to
+                        # choose id i have buttons" (i.e. the button flow gave
+                        # no choice at all, silently assuming BTC). Now shows
+                        # every actually-available option — BTC (if there's a
+                        # live signal), each active scan symbol, and "all" —
+                        # instead of guessing.
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctretry {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                        _rt_opts = []
+                        if active_trade.get("signal"):
+                            _rt_opts.append([{"text": "₿ BTC", "callback_data": f"ctretrymode:{uid}:BTC"}])
+                        _rt_syms = sorted({t["symbol"] for t in scan1_trades + scan2_trades})
+                        for _s in _rt_syms:
+                            _rt_opts.append([{"text": f"📈 {_s}", "callback_data": f"ctretrymode:{uid}:{_s.replace('-USDT','')}"}])
+                        if _rt_syms:
+                            _rt_opts.append([{"text": "🔁 All scan trades", "callback_data": f"ctretrymode:{uid}:all"}])
+                        if not _rt_opts:
+                            send_reply(cb_chat_id, "No active BTC or scan trades to retry right now.")
+                        else:
+                            send_reply(cb_chat_id, "🔄 <b>Which trade to retry?</b>", reply_markup={"inline_keyboard": _rt_opts})
+                    elif cb_data.startswith("ctretrymode:"):
+                        _, uid, mode = cb_data.split(":", 2)
+                        handle_command(f"/ctretry {uid} {mode}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("ctclose:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
