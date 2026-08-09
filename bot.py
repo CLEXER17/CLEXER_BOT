@@ -956,6 +956,30 @@ def _start_userbot():
             print(f"[USERBOT] connect error: {e}")
     threading.Thread(target=_run, daemon=True).start()
 
+def _stop_userbot_if_running():
+    """Gracefully disconnects this server's userbot session the moment it's
+    no longer the active server. Without this, a demoted server's userbot
+    thread just keeps running forever (its own always-on asyncio loop,
+    completely unaffected by the main loop's active/standby transitions),
+    so the NEWLY active server's own userbot login collides with it —
+    'used under two different IP addresses simultaneously' (admin report,
+    2026-08-08, recurred even after gating the initial connect behind
+    is_active_server() — that only stopped standby servers from ever
+    connecting in the first place, not a previously-active one from
+    disconnecting on demotion). Self-guarding: sets _userbot_client back to
+    None so repeated calls on later ticks are harmless no-ops."""
+    global _userbot_client, _userbot_loop
+    if _userbot_client is not None and _userbot_loop is not None:
+        try:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(_userbot_client.disconnect(), _userbot_loop)
+            print("[USERBOT] Disconnected — no longer the active server.")
+        except Exception as e:
+            print(f"[USERBOT] disconnect error: {e}")
+        _userbot_client = None
+        _userbot_loop = None
+        _userbot_ready.clear()
+
 def _send_via_userbot(chat_id, text: str, timeout: float = 10.0):
     """Sends `text` into `chat_id` as the real user account. Synchronous
     wrapper around the async Telethon client running in its own loop/thread —
@@ -17713,6 +17737,7 @@ def main():
             # is paused, so it's unconditional here now.
             if CLEXER_API_URL and not is_active_server():
                 _check_active_server_failover()
+                _stop_userbot_if_running()
                 time.sleep(MAIN_TICK); continue
             if CLEXER_API_URL:
                 _self_heartbeat_if_due()
