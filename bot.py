@@ -2197,6 +2197,31 @@ def _maintenance_live_if_due():
     except Exception as e:
         print(f"[MAINTENANCE] periodic re-assert failed: {e}")
 
+def _server_heartbeat_loop():
+    """Dedicated always-on background thread for server coordination — admin
+    report 2026-08-09: co2 was genuinely active and healthy but still went
+    stale for 12+ minutes, falsely triggering failover to co3. Root cause:
+    the heartbeat/failover/maintenance calls used to live INSIDE the main
+    scan loop, tied to its tick — but a single real scan cycle can take
+    several minutes (documented elsewhere as "3-6+ min" with slow/retried
+    AI calls), during which the loop never returns to the heartbeat line at
+    all. Server coordination must never depend on how long scanning takes,
+    so it now runs on its own independent 20s cycle, completely decoupled
+    from the main loop's pace — active or standby, paused or scanning,
+    fast scan or slow one, this always ticks on time."""
+    while True:
+        try:
+            if CLEXER_API_URL:
+                if not is_active_server():
+                    _check_active_server_failover()
+                    _stop_userbot_if_running()
+                else:
+                    _self_heartbeat_if_due()
+                    _maintenance_live_if_due()
+        except Exception as e:
+            print(f"[SERVER HEARTBEAT] error: {e}")
+        time.sleep(20)
+
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
 ACTIVE_TRADE_FILE  = os.path.join(DATA_DIR, "active_trade.json")
@@ -17679,6 +17704,7 @@ def main():
             time.sleep(15)
     threading.Thread(target=_active_server_loop, daemon=True).start()
     threading.Thread(target=_server_rotation_loop, daemon=True).start()
+    threading.Thread(target=_server_heartbeat_loop, daemon=True).start()
 
     def _wait_then_poll():
         """Telegram only allows ONE process to poll getUpdates for a given bot
@@ -17776,24 +17802,16 @@ def main():
             # server does none of this, not even the warm-standby scanning it
             # used to do, until /server switches it active.
             #
-            # This block (and the heartbeat right after it) runs BEFORE the
-            # bot_paused check below — real bug found 2026-08-08: it used to
-            # sit AFTER that check, so while the bot was paused (the default
-            # state on every fresh deploy — "Starting PAUSED, send /go"),
-            # this never ran at all. That silently starved the fast (60s)
-            # heartbeat, leaving a genuinely healthy-but-paused active server
-            # looking "dead" to a standby's failover check (which only saw
-            # the sparse 6-hour _server_rotation_loop heartbeat instead) —
-            # exactly what caused a false failover switch. Server
-            # coordination must work independent of whether scanning itself
-            # is paused, so it's unconditional here now.
+            # Heartbeat/failover/maintenance/userbot-stop moved OUT of this
+            # loop entirely (2026-08-09) into their own dedicated always-on
+            # thread (_server_heartbeat_loop) — they used to live right here,
+            # but a single real scan cycle can take several minutes, during
+            # which this loop never reaches this point at all, starving
+            # server coordination and causing a genuinely healthy active
+            # server to falsely fail over. See _server_heartbeat_loop's
+            # docstring for the full story.
             if CLEXER_API_URL and not is_active_server():
-                _check_active_server_failover()
-                _stop_userbot_if_running()
                 time.sleep(MAIN_TICK); continue
-            if CLEXER_API_URL:
-                _self_heartbeat_if_due()
-                _maintenance_live_if_due()
 
             if bot_paused.is_set():
                 time.sleep(MAIN_TICK); continue
