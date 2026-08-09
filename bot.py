@@ -266,6 +266,11 @@ bot_stopped           = threading.Event()  # STOP: blocks new scans only, monito
 btc_analysis_enabled  = False  # OFF by default — /btcanalysis on to enable
 SCAN_MODEL             = "claude-opus-5"  # BTC's model — switch via /model button or /gateway (BTC has no special/unverified/nonspecial split, always verified)
 USE_AEROLINK           = False  # BTC's gateway — switch via /gateway button
+MINIAPP_MAINTENANCE_ON  = False    # Admin's INTENDED mini-app maintenance state, set via /miniapp pause/resume.
+MINIAPP_MAINTENANCE_MSG = "Live"   # Tracked separately from central-api's own in-memory copy (which resets to
+# ON every time central-api itself restarts, independent of bot.py) so both the boot-time force-live push AND
+# the periodic re-push (_maintenance_live_if_due) know what the admin ACTUALLY wants, instead of blindly
+# forcing "live" and stomping an intentional pause within a minute (admin report, 2026-08-08).
 CHAT_USE_AEROLINK      = False  # /chat's OWN gateway for Claude models — decoupled from USE_AEROLINK above,
 # switch via /chatmodel's toggle or in-session by typing "switch direct"/"switch free" (admin only, that
 # session only — see _CHAT_GATEWAY_SWITCH_CMDS). Non-Claude catalog models always force Aerolink regardless
@@ -2164,6 +2169,33 @@ def _self_heartbeat_if_due():
         return
     _last_self_heartbeat = now
     _register_this_server()
+
+_last_maintenance_push = 0.0
+
+def _maintenance_live_if_due():
+    """Call from an ACTIVE server's main loop, every tick — internally
+    rate-limited to _FAILOVER_CHECK_INTERVAL. central-api's maintenance
+    flag is just in-memory on ITS side, resetting to ON every time IT
+    restarts — independent of bot.py's own uptime. bot.py used to only
+    push its state once, at its own boot, so if central-api redeployed on
+    its own afterward (common while troubleshooting it separately — admin
+    report, 2026-08-08) the mini app got stuck showing "Under Maintenance"
+    (or, worse, an intentional pause got silently reverted to live) until
+    bot.py ALSO happened to restart. Now periodically re-asserts whatever
+    the admin's actual intended state is (MINIAPP_MAINTENANCE_ON/MSG, set
+    via /miniapp) instead of blindly forcing live and only doing it once."""
+    global _last_maintenance_push
+    now = time.time()
+    if now - _last_maintenance_push < _FAILOVER_CHECK_INTERVAL:
+        return
+    _last_maintenance_push = now
+    if not CLEXER_API_URL:
+        return
+    try:
+        _hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
+        requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": MINIAPP_MAINTENANCE_ON, "msg": MINIAPP_MAINTENANCE_MSG}, headers=_hdrs, timeout=5)
+    except Exception as e:
+        print(f"[MAINTENANCE] periodic re-assert failed: {e}")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_DB_FILE       = os.path.join(DATA_DIR, "users.json")
@@ -7045,7 +7077,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -7091,6 +7123,8 @@ def load_settings():
             CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
             CHAT_IMAGE_MODEL = d.get("chat_image_model", CHAT_IMAGE_MODEL)
             CHAT_USE_AEROLINK = d.get("chat_use_aerolink", CHAT_USE_AEROLINK)
+            MINIAPP_MAINTENANCE_ON  = d.get("miniapp_maintenance_on",  MINIAPP_MAINTENANCE_ON)
+            MINIAPP_MAINTENANCE_MSG = d.get("miniapp_maintenance_msg", MINIAPP_MAINTENANCE_MSG)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
             SIGNAL_CHANNEL_ENABLED = d.get("signal_channel_enabled", True)
@@ -7155,6 +7189,8 @@ def save_settings():
             "chat_model": CHAT_MODEL,
             "chat_image_model": CHAT_IMAGE_MODEL,
             "chat_use_aerolink": CHAT_USE_AEROLINK,
+            "miniapp_maintenance_on": MINIAPP_MAINTENANCE_ON,
+            "miniapp_maintenance_msg": MINIAPP_MAINTENANCE_MSG,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
             "signal_channel_enabled": SIGNAL_CHANNEL_ENABLED,
@@ -10988,6 +11024,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/miniapp":
         if not is_admin: return
+        global MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG
         _mini_btns = {"inline_keyboard": [[
             {"text": "▶️  Resume (Live)",       "callback_data": "miniapp_resume"},
             {"text": "⏸  Pause (Maintenance)", "callback_data": "miniapp_pause"}]]}
@@ -11010,6 +11047,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             try:
                 hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
                 requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": on, "msg": msg}, headers=hdrs, timeout=5)
+                # Track the admin's INTENDED state so the boot-time force-live
+                # push and the periodic re-push (_maintenance_live_if_due)
+                # both know what to re-assert, instead of always forcing
+                # "live" and stomping an intentional pause (2026-08-08 fix).
+                MINIAPP_MAINTENANCE_ON = on
+                MINIAPP_MAINTENANCE_MSG = msg
+                save_settings()
                 if not on:
                     # Resuming — force a fresh state push so the mini app can't show a stale/ghost trade
                     save_state()
@@ -17563,17 +17607,20 @@ def main():
     # Start PAUSED - user must send /go
     bot_paused.set()
 
-    # Force the mini app live on every boot — the backend that serves it
-    # (CLEXER_API_URL) resets to maintenance-on with its own default message
-    # on every restart, so we override that here instead of waiting for
-    # an admin to manually send /miniapp resume after each deploy.
+    # Re-assert the admin's INTENDED mini-app state on every boot — the
+    # backend that serves it (CLEXER_API_URL) resets its own in-memory
+    # maintenance flag to ON on every restart, independent of bot.py's own
+    # uptime, so this pushes whatever the admin last actually set via
+    # /miniapp instead of blindly forcing "live" (that used to stomp an
+    # intentional /miniapp pause on every bot.py restart too — fixed
+    # 2026-08-08 alongside the periodic re-push in _maintenance_live_if_due).
     if CLEXER_API_URL:
         try:
             _hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
-            requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": False, "msg": "Live"}, headers=_hdrs, timeout=5)
-            print("  Mini app: forced LIVE on startup")
+            requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": MINIAPP_MAINTENANCE_ON, "msg": MINIAPP_MAINTENANCE_MSG}, headers=_hdrs, timeout=5)
+            print(f"  Mini app: re-asserted intended state on startup ({'PAUSED' if MINIAPP_MAINTENANCE_ON else 'LIVE'})")
         except Exception as e:
-            print(f"  Mini app: could not force live on startup — {e}")
+            print(f"  Mini app: could not re-assert state on startup — {e}")
 
     if TV_BRIDGE_URL:
         print("  Checking TV bridge...")
@@ -17746,6 +17793,7 @@ def main():
                 time.sleep(MAIN_TICK); continue
             if CLEXER_API_URL:
                 _self_heartbeat_if_due()
+                _maintenance_live_if_due()
 
             if bot_paused.is_set():
                 time.sleep(MAIN_TICK); continue
