@@ -3193,6 +3193,22 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         # (a target chat id) instead of "on"/"off" — only takes this path
         # when is_admin, otherwise falls through to the normal self-service
         # flow unchanged.
+        if is_admin and len(parts) >= 2 and parts[1].lower() == "all":
+            # Universal bulk on/off for EVERY connected user's per-user
+            # auto_manage_sltp flag (admin request 2026-08-09) — distinct
+            # from the separate GLOBAL AUTO_SLTP_GLOBAL_ENABLED kill-switch
+            # (set via ct_toggle "sltp"), which stops monitor_sl_tp entirely
+            # rather than setting each user's own opt-out flag.
+            if len(parts) < 3 or parts[2].lower() not in ("on", "off"):
+                send_reply_fn(chat_id, "Usage: /autosltp all on  |  /autosltp all off"); return
+            _bulk_on = parts[2].lower() == "on"
+            _n = 0
+            for _uid, _u in _db.items():
+                if not _u.get("connected"): continue
+                _u["auto_manage_sltp"] = _bulk_on
+                _set(_uid, _u); _n += 1
+            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP {'ON ✅' if _bulk_on else 'OFF ❌'} — ALL ({_n} users)</b>\n\n"
+                          f"<blockquote>{_sc('Applied to every connected user.')}</blockquote>"); return
         if is_admin and len(parts) < 2:
             # Admin with no args at all — show a user picker instead of
             # silently checking the ADMIN'S OWN account (which usually isn't
@@ -3202,6 +3218,10 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                     for uid, u in _db.items() if u.get("connected")]
             if not rows:
                 send_reply_fn(chat_id, "No connected users."); return
+            rows.append([
+                {"text": "🟢 ALL ON",  "callback_data": "autosltp_all_on",  "style": "success"},
+                {"text": "🔴 ALL OFF", "callback_data": "autosltp_all_off", "style": "danger"},
+            ])
             send_reply_fn(chat_id, "⚙️ <b>Select user — Auto-Manage SL/TP:</b>", reply_markup={"inline_keyboard": rows}); return
         target_cid = cid
         _admin_override = False

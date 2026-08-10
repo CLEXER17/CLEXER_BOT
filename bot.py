@@ -15290,6 +15290,8 @@ def command_listener():
                     elif cb_data.startswith("autosltp_pick:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/autosltp {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                    elif cb_data in ("autosltp_all_on", "autosltp_all_off"):
+                        handle_command(f"/autosltp all {'on' if cb_data=='autosltp_all_on' else 'off'}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data in ("autosltp_on", "autosltp_off") or cb_data.startswith(("autosltp_on:", "autosltp_off:")):
                         _as_on = cb_data.startswith("autosltp_on")
                         _as_target = cb_data.split(":", 1)[1] if ":" in cb_data else None
