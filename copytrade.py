@@ -3125,27 +3125,46 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, "Tap a button below to turn Copy Trade on or off:", reply_markup=_ct_btns)
 
     elif cmd == "/autosltp":
-        user = _get(cid)
+        # Admin override (2026-08-09): "/autosltp <user_id> on|off" lets the
+        # admin flip this for a SPECIFIC user directly — previously this was
+        # self-service only (a user had to run it on themselves), with no
+        # way for the admin to stop the bot touching a user's manually-taken
+        # trade's SL/TP on their behalf. Detected by parts[1] being numeric
+        # (a target chat id) instead of "on"/"off" — only takes this path
+        # when is_admin, otherwise falls through to the normal self-service
+        # flow unchanged.
+        target_cid = cid
+        _admin_override = False
+        if is_admin and len(parts) >= 2 and parts[1].lstrip("-").isdigit():
+            target_cid = str(parts[1])
+            parts = [parts[0]] + parts[2:]  # reindex so parts[1] is now the on/off state, same as self-service
+            _admin_override = True
+        user = _get(target_cid)
         if not user or not user.get("connected"):
+            if _admin_override:
+                send_reply_fn(chat_id, f"User <code>{target_cid}</code> not found or has no exchange connected."); return
             send_reply_fn(chat_id, f"{_sc('Connect your account first')}: /connect"); return
+        _uname_disp = _display_uname(target_cid, user) if _admin_override else ""
         _as_btns = {"inline_keyboard": [[
-            {"text": "🟢  Turn ON",  "callback_data": "autosltp_on",  "style": "success"},
-            {"text": "🔴  Turn OFF", "callback_data": "autosltp_off", "style": "danger"}]]}
+            {"text": "🟢  Turn ON",  "callback_data": f"autosltp_on:{target_cid}" if _admin_override else "autosltp_on",  "style": "success"},
+            {"text": "🔴  Turn OFF", "callback_data": f"autosltp_off:{target_cid}" if _admin_override else "autosltp_off", "style": "danger"}]]}
         if len(parts) < 2:
             st = "✅ ON" if user.get("auto_manage_sltp", True) else "❌ OFF"
+            _who = f"{_uname_disp}'s " if _admin_override else "Your "
             send_reply_fn(chat_id,
-                f"<b>Auto-Manage SL/TP</b>\n\n<blockquote>{_sc('Status')}: <b>{st}</b>\n\n"
-                f"{_sc('When ON, the bot watches your connected account and automatically')}: "
+                f"<b>Auto-Manage SL/TP{f' — {_uname_disp}' if _admin_override else ''}</b>\n\n<blockquote>{_sc('Status')}: <b>{st}</b>\n\n"
+                f"{_sc('When ON, the bot watches')} {_who}{_sc('connected account and automatically')}: "
                 f"{_sc('adopts positions it did not open itself (with an emergency SL), restores a missing SL/TP on a position it recognizes, and clears its own state if a position closed outside the bot.')}\n\n"
-                f"{_sc('Turn this OFF if you trade manually on the same account and don' + chr(39) + 't want the bot touching those positions.')}</blockquote>",
+                f"{_sc('Turn this OFF if')} {_who.lower()}{_sc('trades manually on the same account and')} {_sc('shouldn' + chr(39) + 't have the bot touching those positions.')}</blockquote>",
                 reply_markup=_as_btns); return
         state = parts[1].lower()
+        _who_line = f" for {_uname_disp}" if _admin_override else ""
         if state == "on":
-            user["auto_manage_sltp"] = True; _set(cid, user)
-            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP ON ✅</b>\n\n<blockquote>{_sc('The bot will adopt/reconcile positions on your account again.')}</blockquote>", reply_markup=_as_btns)
+            user["auto_manage_sltp"] = True; _set(target_cid, user)
+            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP ON ✅{_who_line}</b>\n\n<blockquote>{_sc('The bot will adopt/reconcile positions on')} {_uname_disp or 'your'}{_sc(' account again.') if _admin_override else _sc(' account again.')}</blockquote>", reply_markup=_as_btns)
         elif state == "off":
-            user["auto_manage_sltp"] = False; _set(cid, user)
-            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP OFF ❌</b>\n\n<blockquote>{_sc('The bot will not touch, adopt, or reconcile any position on your account. Manage everything yourself.')}</blockquote>", reply_markup=_as_btns)
+            user["auto_manage_sltp"] = False; _set(target_cid, user)
+            send_reply_fn(chat_id, f"<b>Auto-Manage SL/TP OFF ❌{_who_line}</b>\n\n<blockquote>{_sc('The bot will not touch, adopt, or reconcile any position on')} {_uname_disp or 'your'}{_sc(' account. Manage everything yourself.')}</blockquote>", reply_markup=_as_btns)
         else:
             send_reply_fn(chat_id, "Tap a button below:", reply_markup=_as_btns)
 

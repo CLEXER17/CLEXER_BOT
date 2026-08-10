@@ -15285,9 +15285,13 @@ def command_listener():
                     elif cb_data in ("copytrade_on", "copytrade_off"):
                         _toggle_cmd(f"/copytrade {'on' if cb_data=='copytrade_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "copyuser")
 
-                    # ── Auto-Manage SL/TP ON/OFF (per-user) ───────────────────
-                    elif cb_data in ("autosltp_on", "autosltp_off"):
-                        _toggle_cmd(f"/autosltp {'on' if cb_data=='autosltp_on' else 'off'}", cb_chat_id, cb_cid, cb_msg_id, "copyuser")
+                    # ── Auto-Manage SL/TP ON/OFF (per-user, or admin targeting
+                    # another user via "autosltp_on:<uid>" — 2026-08-09) ──────
+                    elif cb_data in ("autosltp_on", "autosltp_off") or cb_data.startswith(("autosltp_on:", "autosltp_off:")):
+                        _as_on = cb_data.startswith("autosltp_on")
+                        _as_target = cb_data.split(":", 1)[1] if ":" in cb_data else None
+                        _as_cmd = f"/autosltp {_as_target + ' ' if _as_target else ''}{'on' if _as_on else 'off'}"
+                        _toggle_cmd(_as_cmd, cb_chat_id, cb_cid, cb_msg_id, "copyuser")
 
                     # ── Mysize quick-set buttons ──────────────────────────────
                     elif cb_data in ("mysize_setsize", "mysize_setlev", "mysize_setrisk"):
