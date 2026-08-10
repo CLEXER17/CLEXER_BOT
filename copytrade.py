@@ -1621,31 +1621,51 @@ def adopt_orphan_btc(cid: str) -> tuple[bool, str]:
         return False, str(e)
 
 def on_close_user(cid: str) -> tuple[bool, str]:
-    """Close position + cancel orders for one specific user."""
+    """Close EVERY real open position + cancel EVERY real open order for one
+    specific user, across ALL symbols — not just BTC.
+
+    Real bug found 2026-08-09: this used to be hardcoded to BTC only
+    (_close_position/_cancel_all_orders both always used BINGX_SYMBOL, i.e.
+    BTC-USDT specifically), and only acted on user["in_position"]/["pos_side"]
+    (the bot's own possibly-stale/wrong state) rather than the real exchange
+    position. So for a user whose actual open trade was a SCAN coin (e.g.
+    BLUAI-USDT, MUBARAK-USDT) — not BTC — /ctclose reported "✅ closed"
+    without touching anything on the exchange at all: no BTC position
+    existed to close, no BTC orders existed to cancel, so both calls were
+    silent no-ops, and the function still returned success. Now fetches
+    every real position/order across every symbol and closes/cancels each
+    one individually."""
     user = _db.get(str(cid))
     if not user or not user.get("connected"):
         return False, "not connected"
     try:
         ak = _decrypt(user["api_key_enc"]); ask = _decrypt(user["api_secret_enc"])
-        # Close whatever is ACTUALLY open on the exchange, not just what the
-        # bot's own state thinks is open. A genuinely orphan position (bot
-        # state says NO TRADE but BingX shows one) previously got reported
-        # as "closed" without ever actually closing anything on the exchange
-        # — this used to only act on user["in_position"]/["pos_side"] (the
-        # bot's own possibly-stale/wrong state), never checked the real
-        # position first (admin report, 2026-08-09 — false-success "Close
-        # BTC" button on an orphan position).
-        real_pos = _get_position(ak, ask)
-        if real_pos:
-            real_side = "BUY" if real_pos.get("positionSide") == "LONG" else "SELL"
-            _close_position(ak, ask, real_side)
-        elif user.get("in_position") and user.get("pos_side"):
-            _close_position(ak, ask, user["pos_side"])
-        _cancel_all_orders(ak, ask)
+        real_positions = _get_all_positions(ak, ask)
+        closed_syms = []
+        for pos in real_positions:
+            sym = pos.get("symbol", "")
+            if not sym: continue
+            pos_side = pos.get("positionSide", "")
+            _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
+                   {"symbol": sym, "positionSide": pos_side})
+            _bingx("DELETE", "/openApi/swap/v2/trade/allOpenOrders", ak, ask, {"symbol": sym})
+            closed_syms.append(sym)
+        # Also cancel any dangling orders on symbols the bot itself knows
+        # about even if BingX no longer shows a live position for them
+        # (e.g. a limit entry order that never filled).
+        for sym in {user.get(f"{p}symbol", "") for p in _ALL_SLOT_PREFIXES if user.get(f"{p}symbol")}:
+            if sym and sym not in closed_syms:
+                _bingx("DELETE", "/openApi/swap/v2/trade/allOpenOrders", ak, ask, {"symbol": sym})
+        if BINGX_SYMBOL not in closed_syms:
+            _cancel_all_orders(ak, ask)  # BTC-specific cleanup, harmless no-op if nothing there
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
+        for p in _ALL_SLOT_PREFIXES:
+            user[f"{p}symbol"] = ""
+        user["adopted_symbols"] = {}
         _set(str(cid), user)
-        return True, f"{_display_uname(cid, user)} closed"
+        _sym_note = f" ({', '.join(closed_syms)})" if closed_syms else " (nothing was actually open)"
+        return True, f"{_display_uname(cid, user)} closed{_sym_note}"
     except Exception as e:
         return False, str(e)
 
