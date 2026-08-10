@@ -11482,6 +11482,56 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         except ValueError:
             send_reply(chat_id, "Please enter a valid number 1–99.")
 
+    elif cmd == "/settime" and is_scanadmin:
+        # Short manual override (admin request 2026-08-09) — force a specific
+        # schedule slot to VERIFIED, UNVERIFIED, or back to NORMAL (regular
+        # grid), independent of the auto promote/demote win-rate logic.
+        # Usage: /settime <scan1|scan2|ts1|ts2> <H:MM> <verified|unverified|normal>
+        if len(parts) < 4:
+            send_reply(chat_id, "Usage: <code>/settime scan1 23:23 verified</code>\n"
+                                 "Scan type: scan1, scan2, ts1, ts2\n"
+                                 "Status: verified, unverified, normal"); return
+        _st_sched_map = {"scan1":"scan1","s1":"scan1","scan2":"scan2","s2":"scan2",
+                          "ts1":"test1","test1":"test1","demo1":"test1",
+                          "ts2":"test2","test2":"test2","demo2":"test2"}
+        _st_orig_map  = {"scan1":"scan1","s1":"scan1","scan2":"scan2","s2":"scan2",
+                          "ts1":"demo1","test1":"demo1","demo1":"demo1",
+                          "ts2":"demo2","test2":"demo2","demo2":"demo2"}
+        _st_kind_raw = parts[1].lower()
+        _st_sched = _st_sched_map.get(_st_kind_raw)
+        _st_orig  = _st_orig_map.get(_st_kind_raw)
+        if not _st_sched:
+            send_reply(chat_id, "Scan type must be scan1, scan2, ts1, or ts2."); return
+        try:
+            _st_h, _st_m = parts[2].split(":")
+            _st_hm = (int(_st_h), int(_st_m))
+            if not (0 <= _st_hm[0] <= 23 and 0 <= _st_hm[1] <= 59): raise ValueError
+        except Exception:
+            send_reply(chat_id, "Time must be H:MM (24-hour, IST) — e.g. 23:23 or 9:05."); return
+        _st_status = parts[3].lower()
+        if _st_status not in ("verified", "unverified", "normal", "nonspecial"):
+            send_reply(chat_id, "Status must be verified, unverified, or normal."); return
+        _st_hm_str = f"{_st_hm[0]}:{_st_hm[1]:02d}"
+        _st_was_blacklisted = _st_hm in _SLOT_BLACKLIST.get(_st_orig, set())
+        if _st_status == "verified":
+            _SCAN_SPECIAL.setdefault(_st_sched, set()).add(_st_hm)
+            _SCAN_SPECIAL_NO_COPY.get(_st_sched, set()).discard(_st_hm)
+            _SLOT_BLACKLIST.get(_st_orig, set()).discard(_st_hm)
+            _st_label = "⭐ VERIFIED (copytrade enabled)"
+        elif _st_status == "unverified":
+            _SCAN_SPECIAL.setdefault(_st_sched, set()).add(_st_hm)
+            _SCAN_SPECIAL_NO_COPY.setdefault(_st_sched, set()).add(_st_hm)
+            _SLOT_BLACKLIST.get(_st_orig, set()).discard(_st_hm)
+            _st_label = "⚠️ UNVERIFIED (no copytrade)"
+        else:
+            _SCAN_SPECIAL.get(_st_sched, set()).discard(_st_hm)
+            _SCAN_SPECIAL_NO_COPY.get(_st_sched, set()).discard(_st_hm)
+            _st_label = "NORMAL (regular grid)"
+        _rebuild_schedules()
+        _save_slot_state()
+        send_reply(chat_id, f"✅ <b>{_st_kind_raw.upper()} {_st_hm_str}</b> set to <b>{_st_label}</b>."
+                             + ("\n<i>(un-blacklisted — it had been permanently retired)</i>" if _st_was_blacklisted else ""))
+
     elif cmd == "/winrate" and is_scanadmin:
         send_winrate_screen(chat_id)
 
