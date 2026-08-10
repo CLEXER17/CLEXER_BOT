@@ -15287,6 +15287,9 @@ def command_listener():
 
                     # ── Auto-Manage SL/TP ON/OFF (per-user, or admin targeting
                     # another user via "autosltp_on:<uid>" — 2026-08-09) ──────
+                    elif cb_data.startswith("autosltp_pick:"):
+                        uid = cb_data.split(":")[1]
+                        handle_command(f"/autosltp {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data in ("autosltp_on", "autosltp_off") or cb_data.startswith(("autosltp_on:", "autosltp_off:")):
                         _as_on = cb_data.startswith("autosltp_on")
                         _as_target = cb_data.split(":", 1)[1] if ":" in cb_data else None
@@ -15921,8 +15924,15 @@ def command_listener():
                         uid = cb_data.split(":")[1]
                         handle_command(f"/ctclose {uid}", cb_chat_id, {}, sender_id=cb_cid)
                     elif cb_data.startswith("sync_adopt_btc:"):
+                        # Was routed through /ctretry (BTC mode), which needs a
+                        # known _last_signal to retry INTO — a genuinely orphan
+                        # position has none, so this always hit "Retry Blocked"
+                        # instead of adopting anything (admin report,
+                        # 2026-08-09). ct.adopt_orphan_btc() adopts whatever's
+                        # actually on the exchange directly, no signal needed.
                         uid = cb_data.split(":")[1]
-                        handle_command(f"/ctretry {uid}", cb_chat_id, {}, sender_id=cb_cid)
+                        ok, msg = ct.adopt_orphan_btc(uid)
+                        send_reply(cb_chat_id, f"<b>Adopt BTC</b>\n\n<blockquote>{'✅' if ok else '❌'} {msg}\n\n<i>🛡️ Capital protected</i></blockquote>")
                     elif cb_data.startswith("sync_reset_ghost:"):
                         uid = cb_data.split(":")[1]
                         send_reply(cb_chat_id, ct.reset_ghost_state(uid, "btc"))

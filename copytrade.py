@@ -1572,6 +1572,54 @@ def close_coin_all(coin: str) -> list[str]:
     return results or [f"No users found"]
 
 
+def adopt_orphan_btc(cid: str) -> tuple[bool, str]:
+    """Manually adopt a real BTC position the bot currently has no record
+    of (sync_check's "ORPHAN BTC POSITION" case). The "Adopt BTC" button
+    used to route through /ctretry, which requires a known _last_signal to
+    retry INTO — but a genuinely orphan position (opened before/outside any
+    signal the bot knows about) has none, so it always hit "Retry Blocked"
+    instead of actually adopting anything (admin report, 2026-08-09).
+
+    monitor_sl_tp's own background orphan-handling never actually sets
+    user["in_position"]/pos_side/pos_qty for BTC either (it only ensures SL/
+    TP orders exist on the exchange, order-ID based) — so sync_check, which
+    reads user["in_position"], would keep reporting "orphan" forever even
+    after the background monitor added protection. This does both pieces at
+    once: marks the position as tracked AND ensures an emergency SL exists."""
+    user = _db.get(str(cid))
+    if not user or not user.get("connected"):
+        return False, "not connected"
+    try:
+        ak = _decrypt(user["api_key_enc"]); ask = _decrypt(user["api_secret_enc"])
+        pos = _get_position(ak, ask)
+        if not pos:
+            return False, "no open BTC position found on the exchange"
+        pos_side  = pos.get("positionSide", "")
+        pos_amt   = abs(float(pos.get("positionAmt", 0)))
+        avg_price = float(pos.get("avgPrice", 0))
+        trade_side = "BUY" if pos_side == "LONG" else "SELL"
+        close_side = "SELL" if pos_side == "LONG" else "BUY"
+
+        open_orders = _get_open_orders(ak, ask, BINGX_SYMBOL)
+        has_sl = any(o.get("type") == "STOP_MARKET" and o.get("positionSide") == pos_side for o in open_orders)
+        sl_note = ""
+        if not has_sl and avg_price:
+            emergency_sl = round(avg_price * (0.98 if pos_side == "LONG" else 1.02), 2)
+            r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
+                "symbol": BINGX_SYMBOL, "side": close_side, "positionSide": pos_side,
+                "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
+                "stopPrice": emergency_sl,
+            })
+            sl_note = f" — 2% emergency SL {'placed @'+str(emergency_sl) if r.get('code')==0 else 'FAILED: '+r.get('msg','')[:40]}"
+
+        user["in_position"] = True
+        user["pos_side"] = trade_side
+        user["pos_qty"] = pos_amt
+        _set(str(cid), user)
+        return True, f"{_display_uname(cid, user)} adopted {trade_side} {pos_amt} BTC @ {avg_price}{sl_note}"
+    except Exception as e:
+        return False, str(e)
+
 def on_close_user(cid: str) -> tuple[bool, str]:
     """Close position + cancel orders for one specific user."""
     user = _db.get(str(cid))
@@ -1579,13 +1627,25 @@ def on_close_user(cid: str) -> tuple[bool, str]:
         return False, "not connected"
     try:
         ak = _decrypt(user["api_key_enc"]); ask = _decrypt(user["api_secret_enc"])
-        if user.get("in_position") and user.get("pos_side"):
+        # Close whatever is ACTUALLY open on the exchange, not just what the
+        # bot's own state thinks is open. A genuinely orphan position (bot
+        # state says NO TRADE but BingX shows one) previously got reported
+        # as "closed" without ever actually closing anything on the exchange
+        # — this used to only act on user["in_position"]/["pos_side"] (the
+        # bot's own possibly-stale/wrong state), never checked the real
+        # position first (admin report, 2026-08-09 — false-success "Close
+        # BTC" button on an orphan position).
+        real_pos = _get_position(ak, ask)
+        if real_pos:
+            real_side = "BUY" if real_pos.get("positionSide") == "LONG" else "SELL"
+            _close_position(ak, ask, real_side)
+        elif user.get("in_position") and user.get("pos_side"):
             _close_position(ak, ask, user["pos_side"])
         _cancel_all_orders(ak, ask)
         user["in_position"] = False; user["pos_side"] = ""; user["pos_qty"] = 0.0
         user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
         _set(str(cid), user)
-        return True, f"@{user.get('username','?')} closed"
+        return True, f"{_display_uname(cid, user)} closed"
     except Exception as e:
         return False, str(e)
 
@@ -2765,12 +2825,12 @@ def sync_check() -> list[str]:
     for cid, user in list(_db.items()):
         if not user.get("connected"): continue
         if user.get("exchange", "bingx") != "bingx":
-            lines.append(f"ℹ️ @{user.get('username', cid)}: sync audit not built for {user.get('exchange')} yet — skipped")
+            lines.append(f"ℹ️ {_display_uname(cid, user)}: sync audit not built for {user.get('exchange')} yet — skipped")
             continue
         try:
             ak   = _decrypt(user["api_key_enc"])
             ask  = _decrypt(user["api_secret_enc"])
-            uname = user.get("username", cid)
+            uname = _display_uname(cid, user).lstrip("@")
             positions = _get_all_positions(ak, ask)
             pos_symbols = {p.get("symbol","") for p in positions}
 
@@ -3133,6 +3193,16 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         # (a target chat id) instead of "on"/"off" — only takes this path
         # when is_admin, otherwise falls through to the normal self-service
         # flow unchanged.
+        if is_admin and len(parts) < 2:
+            # Admin with no args at all — show a user picker instead of
+            # silently checking the ADMIN'S OWN account (which usually isn't
+            # a connected copy-trade user at all, causing a confusing
+            # "connect your account first" — admin report, 2026-08-09).
+            rows = [[{"text": f"⚙️ {_display_uname(uid, u)}", "callback_data": f"autosltp_pick:{uid}"}]
+                    for uid, u in _db.items() if u.get("connected")]
+            if not rows:
+                send_reply_fn(chat_id, "No connected users."); return
+            send_reply_fn(chat_id, "⚙️ <b>Select user — Auto-Manage SL/TP:</b>", reply_markup={"inline_keyboard": rows}); return
         target_cid = cid
         _admin_override = False
         if is_admin and len(parts) >= 2 and parts[1].lstrip("-").isdigit():
