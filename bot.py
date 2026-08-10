@@ -11532,6 +11532,64 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         send_reply(chat_id, f"✅ <b>{_st_kind_raw.upper()} {_st_hm_str}</b> set to <b>{_st_label}</b>."
                              + ("\n<i>(un-blacklisted — it had been permanently retired)</i>" if _st_was_blacklisted else ""))
 
+    elif cmd == "/timepanel" and is_scanadmin:
+        # Admin-defined ad-hoc time tracking, paper-only (2026-08-09) — see
+        # the TIME PANEL section near _build_scalp_v1_prompt for full design.
+        global _TP_MODEL, _TP_AEROLINK, _TP_ENABLED
+        _tp_sub = parts[1].lower() if len(parts) > 1 else ""
+        if _tp_sub in ("add", "remove"):
+            if len(parts) < 4:
+                send_reply(chat_id, f"Usage: <code>/timepanel {_tp_sub} S1 14.15-14.17</code>\nSource: S1, S2, TS1, TS2"); return
+            _tp_source = parts[2].upper()
+            if _tp_source not in _TP_ENTRIES:
+                send_reply(chat_id, "Source must be S1, S2, TS1, or TS2."); return
+            _tp_times = _tp_parse_times(parts[3])
+            if not _tp_times:
+                send_reply(chat_id, "Time must be H.MM (e.g. 14.16) or a same-hour range H.MM-H.MM (e.g. 14.15-14.17)."); return
+            if _tp_sub == "add":
+                _TP_ENTRIES[_tp_source] |= _tp_times
+                _tp_verb = "Added"
+            else:
+                _TP_ENTRIES[_tp_source] -= _tp_times
+                _tp_verb = "Removed"
+            _save_time_panel()
+            _tp_times_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_tp_times))
+            send_reply(chat_id, f"✅ <b>{_tp_verb}</b> {_tp_source}: {_tp_times_str}")
+        elif _tp_sub == "on":
+            _TP_ENABLED = True; _save_time_panel()
+            send_reply(chat_id, "✅ Time Panel scanning: <b>ON</b> (covers uncovered configured times with paper-only scans).")
+        elif _tp_sub == "off":
+            _TP_ENABLED = False; _save_time_panel()
+            send_reply(chat_id, "❌ Time Panel scanning: <b>OFF</b> (report still shows existing data, but no new paper scans fire).")
+        elif _tp_sub == "model":
+            if len(parts) < 4:
+                send_reply(chat_id, "Usage: <code>/timepanel model aerolink opus5</code>"); return
+            _tp_gw = parts[2].lower()
+            if _tp_gw.startswith("aero"): _TP_AEROLINK = True
+            elif _tp_gw.startswith("dir"): _TP_AEROLINK = False
+            else: send_reply(chat_id, "Gateway must be direct or aerolink."); return
+            _tp_model_id = _boki_norm_model_registry(parts[3])
+            if not _tp_model_id:
+                send_reply(chat_id, f"Which model? Available: {', '.join(MODEL_REGISTRY.keys())}."); return
+            _TP_MODEL = _tp_model_id
+            _save_time_panel()
+            send_reply(chat_id, f"✅ Time Panel model set to <b>{'Aerolink' if _TP_AEROLINK else 'Direct'} · {MODEL_REGISTRY.get(_TP_MODEL, _TP_MODEL)}</b>.")
+        else:
+            _tp_lines = []
+            for _src in ("S1", "S2", "TS1", "TS2"):
+                for _hm in sorted(_TP_ENTRIES.get(_src, set())):
+                    _tp_lines.append(_tp_report_line(_src, _hm))
+            _tp_body = "\n".join(_tp_lines) if _tp_lines else "<i>No times configured yet.</i>"
+            send_reply(chat_id,
+                f"🕐 <b>Time Panel</b>\n\n"
+                f"<blockquote>Status: <b>{'✅ ON' if _TP_ENABLED else '❌ OFF'}</b>\n"
+                f"Model: <b>{'Aerolink' if _TP_AEROLINK else 'Direct'} · {MODEL_REGISTRY.get(_TP_MODEL, _TP_MODEL)}</b></blockquote>\n\n"
+                f"{_tp_body}\n\n"
+                f"<i>Add: /timepanel add S1 14.15-14.17\n"
+                f"Remove: /timepanel remove S1 14.16\n"
+                f"On/Off: /timepanel on | /timepanel off\n"
+                f"Model: /timepanel model aerolink opus5</i>")
+
     elif cmd == "/winrate" and is_scanadmin:
         send_winrate_screen(chat_id)
 
@@ -16828,6 +16886,269 @@ RR: [e.g. 2.0 / 3.75 for both legs, or — if WAIT]
 SL_pct: [SL distance as % of entry, or — if WAIT]
 Reasoning: [one line — name the exact swing candle level used]"""
 
+# ══════════════════════════════════════════════════════════
+# TIME PANEL — admin-defined ad-hoc time slots, paper-only (admin request, 2026-08-09)
+# ══════════════════════════════════════════════════════════
+# /timepanel add <S1|S2|TS1|TS2> <H.MM[-H.MM]> registers specific times against a
+# named source scan. For each configured (source, time): if that exact minute is
+# ALREADY part of the source's own live schedule, this panel just reads that
+# source's own tracked win-rate/streak (_slot_stats) — no new scan, no extra cost.
+# If it ISN'T covered anywhere, this panel runs its OWN scan at that time — same
+# CLEXER SCALP V1 style as TS1/TS2 — but NEVER places a real order and NEVER
+# touches copytrade. Purely for building a win-rate track record on candidate
+# times before the admin manually decides whether to add them to a real schedule.
+_TP_ENTRIES: dict = {"S1": set(), "S2": set(), "TS1": set(), "TS2": set()}  # {source: {(h,m), ...}}
+_TP_MODEL = "claude-opus-5"
+_TP_AEROLINK = False
+_TP_ENABLED = True
+_TP_TRADES: list = []        # open paper trades — in-memory only, not persisted (low-stakes tracking feature)
+_TP_FIRED_TODAY: set = set()  # (source, hm, date) — one fire per configured minute per day
+_TP_FILE = os.path.join(DATA_DIR, "time_panel.json")
+
+def _tp_source_info():
+    """Built lazily (not at module load) since SCAN*_SCHEDULE globals don't exist yet at import time."""
+    return {
+        "S1":  {"sched": SCAN1_SCHEDULE,      "slot_kind": "scan1"},
+        "S2":  {"sched": SCAN2_SCHEDULE,      "slot_kind": "scan2"},
+        "TS1": {"sched": SCAN1_TEST_SCHEDULE, "slot_kind": "demo1"},
+        "TS2": {"sched": SCAN2_TEST_SCHEDULE, "slot_kind": "demo2"},
+    }
+
+def _tp_parse_times(text: str):
+    """Parses 'H.MM' / 'H:MM' or a same-hour range 'H.MM-H.MM' into a set of
+    (h,m) tuples — e.g. "14.15-14.17" -> {(14,15),(14,16),(14,17)}. Comma-
+    separated for multiple entries/ranges in one command. Returns None on
+    any parse failure (caller shows a usage message)."""
+    out = set()
+    try:
+        for chunk in text.replace(" ", "").split(","):
+            if "-" in chunk:
+                a, b = chunk.split("-", 1)
+                ah, am = (int(x) for x in a.replace(":", ".").split("."))
+                bh, bm = (int(x) for x in b.replace(":", ".").split("."))
+                if ah != bh or bm < am or not (0<=ah<=23 and 0<=am<=59 and 0<=bm<=59):
+                    return None
+                for m in range(am, bm + 1):
+                    out.add((ah, m))
+            else:
+                h, m = (int(x) for x in chunk.replace(":", ".").split("."))
+                if not (0 <= h <= 23 and 0 <= m <= 59): return None
+                out.add((h, m))
+    except Exception:
+        return None
+    return out or None
+
+def _save_time_panel():
+    d = {"entries": {k: sorted(list(v)) for k, v in _TP_ENTRIES.items()},
+         "model": _TP_MODEL, "aerolink": _TP_AEROLINK, "enabled": _TP_ENABLED}
+    try:
+        with open(_TP_FILE, "w") as f: json.dump(d, f)
+    except Exception as e: print(f"[TIME PANEL] local save error: {e}")
+    if CLEXER_API_URL and is_active_server():
+        try: _kv_push("time_panel", d)
+        except Exception as e: print(f"[TIME PANEL] central push error: {e}")
+
+def _load_time_panel():
+    global _TP_ENTRIES, _TP_MODEL, _TP_AEROLINK, _TP_ENABLED
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/time_panel")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_TP_FILE, r.json(), "TIME PANEL")
+        if d is None and os.path.exists(_TP_FILE):
+            with open(_TP_FILE) as f: d = json.load(f)
+        if d is None: return
+        _TP_ENTRIES = {k: set(tuple(hm) for hm in v) for k, v in d.get("entries", {}).items()}
+        for k in ("S1", "S2", "TS1", "TS2"): _TP_ENTRIES.setdefault(k, set())
+        _TP_MODEL = d.get("model", _TP_MODEL)
+        _TP_AEROLINK = d.get("aerolink", _TP_AEROLINK)
+        _TP_ENABLED = d.get("enabled", _TP_ENABLED)
+    except Exception as e:
+        print(f"[TIME PANEL] load error: {e}")
+
+def _tp_check_4h_struct(df):
+    """Same fractal-swing + close-trend structure check TS1/TS2 uses internally
+    (that copy is a local closure, not importable — this is a standalone
+    equivalent for the time panel's own paper scans)."""
+    if df is None or len(df) < 8: return "NEUTRAL"
+    h = df["high"].values[-15:]; l = df["low"].values[-15:]; cls = df["close"].values[-15:]
+    sh = []; sl_s = []
+    for i in range(1, len(h) - 1):
+        if h[i] > h[i-1] and h[i] > h[i+1]: sh.append(h[i])
+        if l[i] < l[i-1] and l[i] < l[i+1]: sl_s.append(l[i])
+    swing = "NEUTRAL"
+    if len(sh) >= 2 and len(sl_s) >= 2:
+        if sh[-1] > sh[-2] and sl_s[-1] > sl_s[-2]: swing = "BULLISH"
+        if sh[-1] < sh[-2] and sl_s[-1] < sl_s[-2]: swing = "BEARISH"
+    mid = cls[len(cls) // 2]
+    trend = "NEUTRAL"
+    if mid > 0:
+        tp = (cls[-1] - mid) / mid * 100
+        if tp < -5: trend = "BEARISH"
+        elif tp > 5: trend = "BULLISH"
+    if swing == trend: return swing
+    if swing == "BULLISH" and trend == "BEARISH": return "BEARISH"
+    if swing == "BEARISH" and trend == "BULLISH": return "BULLISH"
+    return swing if swing != "NEUTRAL" else trend
+
+def _tp_pick_candidate():
+    """Simplified single-best-mover pick — same BingX all-tickers source and
+    scoring shape as the real scans (|change| weighted by sqrt(volume)), but
+    no multi-candidate retry chain. This is a paper-only exploratory feature,
+    not the real-money pipeline, so a simpler picker is an intentional,
+    proportionate tradeoff."""
+    import re as _re
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker", timeout=15).json()
+        tickers = r.get("data", []) or []
+    except Exception:
+        return None
+    best = None; best_score = -1
+    for t in tickers:
+        try:
+            sym = t.get("symbol", "")
+            if not sym.endswith("-USDT"): continue
+            base = sym.replace("-USDT", "")
+            if _re.search(r'\d', base) or len(base) > 10 or "USD" in base: continue
+            if not _re.match(r'^[A-Z]+$', base): continue
+            chg = float(t.get("priceChangePercent", 0)) * 100 if abs(float(t.get("priceChangePercent", 0))) < 1 else float(t.get("priceChangePercent", 0))
+            vol = float(t.get("quoteVolume", 0))
+            px = float(t.get("lastPrice", 0))
+            if vol < 5_000_000 or px <= 0 or abs(chg) > 40 or abs(chg) < 1.5: continue
+            score = (vol / 1e6) ** 0.5 * (abs(chg) ** 0.8)
+            if score > best_score:
+                best_score = score; best = {"sym": sym, "base": base, "price": px, "change": chg, "vol": vol}
+        except Exception:
+            continue
+    return best
+
+def _tp_run_scan(source: str, hm: tuple):
+    """One paper-only analysis for a configured time not covered by any real
+    schedule. Never places a real order, never touches copytrade — only ever
+    records win/loss into _slot_stats under this panel's own "panel_<SOURCE>"
+    namespace once the paper trade resolves (see _time_panel_monitor_loop)."""
+    hm_str = f"{hm[0]}:{hm[1]:02d}"
+    cand = _tp_pick_candidate()
+    if not cand:
+        print(f"[TIME PANEL] {source} {hm_str} — no candidate found this cycle"); return
+    sym = cand["sym"]
+    df_4h = bingx_klines(sym, "4h", 30)
+    df_1h = bingx_klines(sym, "1h", 40)
+    df_5m = bingx_klines(sym, "5m", 30)
+    if df_4h is None or df_1h is None or df_5m is None:
+        print(f"[TIME PANEL] {source} {hm_str} — candle fetch failed for {sym}"); return
+    struct = _tp_check_4h_struct(df_4h)
+    if struct == "NEUTRAL":
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} 4H structure neutral, skipping"); return
+    direction = "long" if struct == "BULLISH" else "short"
+    age = _move_age_1h(df_1h.to_dict("records"), direction)
+    if age > 5:
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} move_age too old ({age})"); return
+    smc = (f"=== {sym} DATA SUMMARY ===\nPrice: {cand['price']:,.6g}\n"
+           f"24h Change: {cand['change']:+.2f}%\nVolume (24h): ${cand['vol']/1e6:.1f}M\n"
+           f"4H Structure: {struct}\n")
+    prompt = _build_scalp_v1_prompt(sym, cand["price"], smc, cand["vol"], cand["change"], struct=struct, age=age)
+    try:
+        client = _claude_client("chat", force_aerolink=_TP_AEROLINK)
+        resp = client.messages.create(model=_TP_MODEL, max_tokens=1500, messages=[{"role": "user", "content": prompt}])
+        analysis = _claude_text(resp) or ""
+    except Exception as e:
+        print(f"[TIME PANEL] {source} {hm_str} — AI call failed: {e}"); return
+    import re as _re
+    sig_m = _re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", analysis, _re.IGNORECASE)
+    signal_val = sig_m.group(1).upper() if sig_m else "WAIT"
+    if signal_val == "WAIT":
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} WAIT"); return
+    _clean = analysis.replace(",", "")
+    def _parse(label):
+        m = _re.search(rf"{label}[:\s]+([0-9.]+)", _clean, _re.IGNORECASE)
+        return float(m.group(1)) if m else 0.0
+    entry = cand["price"]; sl = _parse("SL")
+    if sl <= 0:
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} {signal_val} but no valid SL parsed"); return
+    sl_dist = abs(entry - sl)
+    sl_pct = sl_dist / entry * 100
+    if sl_pct < 1.0 or sl_pct > 3.0:
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} SL {sl_pct:.2f}% outside 1-3% band, skipping"); return
+    tp1 = round(entry + sl_dist * 2.0 if signal_val == "BUY" else entry - sl_dist * 2.0, 6)
+    tp2 = round(entry + sl_dist * 3.75 if signal_val == "BUY" else entry - sl_dist * 3.75, 6)
+    _TP_TRADES.append({"symbol": sym, "signal": signal_val, "entry": entry, "sl": sl,
+                        "tp1": tp1, "tp2": tp2, "tp1_hit": False,
+                        "created_at": time.time(), "source": source, "hm": hm})
+    print(f"[TIME PANEL] {source} {hm_str} — paper trade opened {sym} {signal_val} @ {entry:,.6g} (PAPER ONLY)")
+
+def _time_panel_trigger_loop():
+    """Checks every 30s whether the current IST minute matches a configured
+    /timepanel entry that ISN'T already covered by its source's own live
+    schedule — if so and the panel is on, fires one paper-only scan for it.
+    Standby servers never act (same reasoning as every other scan trigger)."""
+    global _TP_FIRED_TODAY
+    while True:
+        try:
+            if CLEXER_API_URL and not is_active_server():
+                time.sleep(30); continue
+            if _TP_ENABLED:
+                now = now_ist()
+                hm_now = (now.hour, now.minute)
+                today = now.strftime("%Y-%m-%d")
+                info = _tp_source_info()
+                for source, times in _TP_ENTRIES.items():
+                    if hm_now not in times: continue
+                    src = info.get(source)
+                    if not src or hm_now in src["sched"]: continue  # covered elsewhere — nothing to run
+                    key = (source, hm_now, today)
+                    if key in _TP_FIRED_TODAY: continue
+                    _TP_FIRED_TODAY.add(key)
+                    threading.Thread(target=_tp_run_scan, args=(source, hm_now), daemon=True).start()
+                _TP_FIRED_TODAY = {k for k in _TP_FIRED_TODAY if k[2] >= (now - timedelta(days=1)).strftime("%Y-%m-%d")}
+        except Exception as e:
+            print(f"[TIME PANEL] trigger loop error: {e}")
+        time.sleep(30)
+
+def _time_panel_monitor_loop():
+    """Checks open paper trades against live price every 30s, resolves
+    TP1(->BE)/TP2/SL, and records the win/loss into _slot_stats under this
+    panel's own "panel_<SOURCE>" namespace — never posts anywhere, never
+    touches copytrade, purely internal win-rate/streak bookkeeping."""
+    while True:
+        try:
+            for t in list(_TP_TRADES):
+                cp = get_bingx_price(t["symbol"])
+                if not cp or cp <= 0: continue
+                sig = t["signal"]
+                if sig == "BUY":
+                    tp2_hit = cp >= t["tp2"]; tp1_hit = cp >= t["tp1"]
+                    sl_hit = cp <= (t["entry"] if t["tp1_hit"] else t["sl"])
+                else:
+                    tp2_hit = cp <= t["tp2"]; tp1_hit = cp <= t["tp1"]
+                    sl_hit = cp >= (t["entry"] if t["tp1_hit"] else t["sl"])
+                if tp2_hit:
+                    _slot_track(f"panel_{t['source']}", t["hm"], True)
+                    _TP_TRADES.remove(t)
+                elif sl_hit:
+                    _slot_track(f"panel_{t['source']}", t["hm"], t["tp1_hit"])
+                    _TP_TRADES.remove(t)
+                elif tp1_hit and not t["tp1_hit"]:
+                    t["tp1_hit"] = True
+        except Exception as e:
+            print(f"[TIME PANEL] monitor loop error: {e}")
+        time.sleep(30)
+
+def _tp_report_line(source: str, hm: tuple) -> str:
+    info = _tp_source_info()[source]
+    hm_str = f"{hm[0]}:{hm[1]:02d}"
+    covered = hm in info["sched"]
+    key = _slot_key(info["slot_kind"], hm) if covered else _slot_key(f"panel_{source}", hm)
+    st = _slot_stats.get(key)
+    origin = f"live in {source}'s schedule" if covered else f"this panel's own paper runs"
+    if not st or (st.get("tp", 0) + st.get("sl", 0)) == 0:
+        return f"• <b>{source} {hm_str}</b> — no data yet <i>({origin})</i>"
+    tp, sl, streak = st.get("tp", 0), st.get("sl", 0), st.get("streak", 0)
+    total = tp + sl
+    wr = tp / total * 100 if total else 0
+    return f"• <b>{source} {hm_str}</b> — {wr:.0f}% ({tp}W/{sl}L), streak {streak} <i>({origin})</i>"
+
 _demo_monitor_lock = __import__("threading").Lock()
 
 def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
@@ -17816,6 +18137,10 @@ def main():
     threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
     threading.Thread(target=_chat_session_sweep_loop, daemon=True).start()
+
+    _load_time_panel()
+    threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
+    threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, ghost_close_fn=_ghost_confirm_close, interval_hours=1)
