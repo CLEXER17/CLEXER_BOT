@@ -13666,9 +13666,14 @@ _SCAN_SUBCATS = {
         ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
         ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
         ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals."),
+        ("/vst",    "⭐", "Verified Auto-Scans",   "Turn VERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2. Manual runs always still work."),
+        ("/unst",   "🔒", "Unverified Auto-Scans", "Turn UNVERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
+        ("/stopnt", "📋", "Regular-Grid Auto-Scans", "Turn NONSPECIAL (regular-grid) auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
     ]),
     "system": ("🧠 AI & Gateway", [
         ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
+        ("/model",   "🤖", "Default Scan Model", "Set the BTC/default scan AI model (Opus 5, Fable 5, etc.) — separate from /aiconfig's per-tier grid."),
+        ("/gateway", "🔀", "Default Scan Gateway", "Switch the main scan gateway (BTC's default) between Direct and Aerolink."),
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
@@ -13676,12 +13681,17 @@ _SCAN_SUBCATS = {
         ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
         ("/aerolinktest", "🧪", "Test Aerolink Keys", "Pings every configured Aerolink key slot and shows which are responding right now."),
         ("/aerolinkkeys", "🔑", "Pause/Resume Aerolink Keys", "Tap a key slot to pause or resume it — paused keys are skipped entirely during rotation."),
+        ("/promptvst",   "📤", "Debug DM — Verified",   "Toggle whether verified-tier scan runs send you the raw prompt/response debug DM."),
+        ("/promptunst",  "📤", "Debug DM — Unverified", "Toggle whether unverified-tier scan runs send you the raw prompt/response debug DM."),
+        ("/promptnt",    "📤", "Debug DM — Nonspecial", "Toggle whether regular-grid scan runs send you the raw prompt/response debug DM."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
         ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
         ("/alt2",    "⏰", "Scan2 Times",       "Edit the exact hour:minute slots Scan2 fires at."),
         ("/altdemo", "⏰", "TS1 Times",   "Edit the exact hour:minute slots TS1 (demo scan1) fires at."),
         ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
+        ("/settime", "🕐", "Set Time Verified/Unverified", "Manually force one specific hour:minute slot to Verified, Unverified, or back to Normal — independent of the auto promote/demote system."),
+        ("/timepanel", "🕐", "Time Panel (Paper Tracking)", "Track win-rate/streak for admin-picked times against S1/S2/TS1/TS2 — pulls existing data if already scheduled there, else runs its own paper-only scan (never real money)."),
         ("/st",   "⭐", "Special Times Performance", "Win rate for every verified/unverified special-time slot, per scan kind."),
         ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
         ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
@@ -13733,6 +13743,7 @@ _COPYADMIN_SUBCATS = {
     "manage": ("🛡 Moderation", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
         ("/pauseuser", "⏸", "Pause / Unpause",   "Pause or resume a specific user's copy trading without removing them."),
+        ("/autosltp",  "⚙️", "Auto-Manage SL/TP", "Pick a user (or ALL) and turn off the bot touching their SL/TP — for a user trading manually on the same connected account."),
     ]),
     "tiers": ("⭐ VIP & Tiers", [
         ("/setvip",    "⭐", "Promote to VIP",     "Give a user VIP for a date range — they get every signal (tap or type the dates)."),
@@ -13763,6 +13774,7 @@ _TV_SUBCATS = {
         ("/tvstudies",   "📊", "Read TV Indicators", "Pulls current RSI/EMA/MACD values straight from TradingView."),
         ("/calcstudies", "🧮", "Calculate (BingX)",  "Calculates the same indicators locally from BingX candle data."),
         ("/compare",     "⚖️", "4-Way BTC Compare",  "Runs 4 parallel BTC analyses (TV vs BingX data) side by side."),
+        ("/readindicators", "🔎", "TV Data Audit", "Cross-checks TradingView's live indicator values against a fresh BingX-based calculation, flagging any mismatch."),
     ]),
 }
 
@@ -13792,6 +13804,8 @@ _SETTINGS_SUBCATS = {
         ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
         ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
         ("/winrate", "🎯", "Win Rate Targets", "Set the promote/demote win-rate target independently for Scan1, Scan2, TS1, and TS2."),
+        ("/freelimit", "🆓", "Free Daily Signal Limit", "Set how many signals the Free channel gets shown per day before locking further reveals."),
+        ("/chatmodel", "💬", "Chat AI Model", "Pick which AI model/gateway powers /chat's own replies — separate from the scan AI."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
