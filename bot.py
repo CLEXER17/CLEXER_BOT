@@ -1714,6 +1714,15 @@ def _daily_summary_loop():
     global _daily_summary_last_sent_date, _weekly_summary_last_sent, _monthly_summary_last_sent
     while True:
         try:
+            # Standby-skip (admin report 2026-08-09 — recap sent twice):
+            # this loop was never gated by is_active_server() like the main
+            # scan loop is, so in the multi-server setup BOTH co2 and co3
+            # independently ran it — each one's own local _daily_summary_
+            # last_sent_date/etc starts fresh in its own memory, so both
+            # could decide "I haven't sent today's recap yet" and both send
+            # it, duplicating every daily/weekly/monthly recap.
+            if CLEXER_API_URL and not is_active_server():
+                time.sleep(60); continue
             now = datetime.now(timezone.utc) + IST
             if now.hour == 0 and now.minute < 10:
                 yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
