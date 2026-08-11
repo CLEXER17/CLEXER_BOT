@@ -187,19 +187,28 @@ img,svg,canvas{display:block;max-width:100%}
   display:flex;align-items:center;
   transition:background .5s,border-color .5s,backdrop-filter .5s;
   border-bottom:1px solid transparent;
+  /* While transparent the header is a full-width invisible strip across the
+     top of the page. Letting it swallow clicks meant the CTA's bar blocked
+     whatever sat under it, so only the real controls are targets until the
+     header actually has a background to justify capturing them. */
+  pointer-events:none;
 }
+#site-header.scrolled{pointer-events:auto}
+#site-header .brand,#main-nav,#header-cta,#burger{pointer-events:auto}
 #site-header.scrolled{
   background:rgba(8,10,17,.78);
   backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border-bottom-color:var(--line-soft);
 }
-#site-header .wrap{display:flex;align-items:center;gap:28px;width:min(1360px,94vw)}
-.brand{display:flex;align-items:center;gap:13px;flex:none;cursor:pointer}
+#site-header .wrap{display:flex;align-items:center;gap:20px;width:min(1360px,94vw);min-width:0}
+.brand{display:flex;align-items:center;gap:13px;flex:none;cursor:pointer;min-width:0}
 .brand .emblem{width:38px;height:38px;flex:none}
 .brand-name{display:flex;flex-direction:column;line-height:1.1}
 .brand-name .b1{font-family:var(--serif);font-size:14.5px;font-weight:600;letter-spacing:.3em;color:var(--ivory)}
 .brand-name .b2{font-family:var(--mono);font-size:8.5px;letter-spacing:.5em;color:var(--gold);margin-top:3px}
-#main-nav{display:flex;align-items:center;gap:4px;margin-left:auto}
+/* nav takes the slack and may shrink; the CTA never does, so the two can
+   never end up sharing the same pixels */
+#main-nav{display:flex;align-items:center;gap:4px;margin-left:auto;min-width:0;flex:0 1 auto;flex-wrap:nowrap}
 .nav-link{
   position:relative;font-family:var(--mono);font-size:10.5px;font-weight:500;
   letter-spacing:.24em;text-transform:uppercase;color:var(--muted);
@@ -213,7 +222,22 @@ img,svg,canvas{display:block;max-width:100%}
 .nav-link:hover{color:var(--ivory)}
 .nav-link.active{color:var(--gold-bright)}
 .nav-link.active::after,.nav-link:hover::after{transform:scaleX(1)}
-#header-cta{margin-left:10px}
+#header-cta{margin-left:10px;flex:none;white-space:nowrap}
+.nav-link{flex:none;white-space:nowrap}
+
+/* Between the mobile breakpoint and a comfortable desktop the eight links plus
+   the CTA do not fit at full size. Tighten the links first, then drop the CTA
+   label to its icon — rather than letting them overlap. */
+@media (max-width:1279px) and (min-width:1024px){
+  #site-header .wrap{gap:12px}
+  .nav-link{padding:10px 8px;letter-spacing:.16em;font-size:10px}
+  .nav-link::after{left:8px;right:8px}
+}
+@media (max-width:1139px) and (min-width:1024px){
+  #header-cta{padding-left:12px;padding-right:12px}
+  #header-cta span{display:none}
+  #header-cta .tg-ico{margin:0}
+}
 #burger{
   display:none;margin-left:auto;width:48px;height:48px;
   flex-direction:column;align-items:center;justify-content:center;gap:7px;
@@ -761,7 +785,28 @@ site-footer{display:block}
    MARKET TERMINAL
    ============================================================ */
 #terminal{border:1px solid var(--line);background:#0B0F1A;position:relative}
-#terminal.fs{position:fixed;inset:0;z-index:9700;border:none}
+
+/* ---- fullscreen: the chart owns the viewport ----
+   Used both as the native-fullscreen skin and as the overlay fallback, so the
+   two paths look and behave identically. 100dvh keeps it correct while a
+   mobile browser's URL bar collapses; the 100vh line is the fallback. */
+#terminal.fs{
+  position:fixed;inset:0;z-index:10000;border:none;
+  height:100vh;height:100dvh;width:100vw;
+  background:#0B0F1A;display:flex;flex-direction:column;
+  padding-bottom:env(safe-area-inset-bottom);
+  overscroll-behavior:contain;
+}
+#terminal.fs .term-body{flex:1;min-height:0}
+#terminal.fs .term-note{flex:none}
+/* everything outside the chart stops responding while it is up, so a stray
+   drag or wheel can never reach the page underneath */
+body.chart-fs > *:not(#page-shade){pointer-events:none}
+body.chart-fs #terminal.fs{pointer-events:auto}
+body.chart-fs #bottom-nav,body.chart-fs #site-header{opacity:0;pointer-events:none}
+body.chart-fs{overflow:hidden;touch-action:none}
+#terminal.fs .term-topbar{position:relative;z-index:2}
+#terminal.fs #tgl-fs{border-color:var(--gold-soft);color:var(--gold-bright)}
 .term-topbar{
   display:flex;align-items:center;gap:14px;padding:12px 16px;flex-wrap:wrap;
   border-bottom:1px solid var(--line-soft);background:rgba(13,18,32,.8);
@@ -819,15 +864,26 @@ site-footer{display:block}
 .tstat .ts-v{font-size:12.5px;color:var(--ivory-dim);letter-spacing:.05em;font-variant-numeric:tabular-nums}
 .tstat .ts-v.up{color:var(--jade)}
 .tstat .ts-v.down{color:var(--crimson)}
+/* the age of the last accepted tick — turns amber once the feed goes stale, so
+   the LIVE badge can never be the only thing speaking for the connection */
+#ts-updated{color:var(--dim)}
+#ts-updated.stale{color:var(--gold-bright)}
 .term-body{display:grid;grid-template-columns:1fr 250px}
-.chart-zone{position:relative;height:clamp(360px,52vh,560px)}
-#terminal.fs .chart-zone{height:calc(100vh - 210px)}
+.chart-zone{position:relative;height:clamp(360px,52vh,560px);overscroll-behavior:contain}
+/* in fullscreen the zone is sized by the flex column, not by a vh guess that
+   goes wrong the moment a mobile URL bar collapses */
+#terminal.fs .term-body{height:100%}
+#terminal.fs .chart-zone{height:100%}
 /* two layers: the base holds candles/grid/volume/EMA and is only repainted when
    the data or viewport changes; the overlay carries crosshair + level pulse */
 #chart-canvas,#chart-overlay{position:absolute;inset:0;width:100%;height:100%}
+/* Inline, pan-y leaves vertical scrolling to the browser so a phone can still
+   scroll past the chart, while horizontal drag stays ours. In fullscreen there
+   is no page to scroll, so the chart takes every gesture. */
 #chart-canvas{touch-action:pan-y;cursor:crosshair;outline-offset:-3px;z-index:1}
 #chart-overlay{z-index:2;pointer-events:none}
 @media (pointer:fine){ #chart-canvas{touch-action:none} }
+#terminal.fs #chart-canvas{touch-action:none}
 .chart-badge{
   position:absolute;top:10px;right:12px;z-index:5;
   display:flex;align-items:center;gap:8px;
@@ -1285,7 +1341,9 @@ body{overflow-wrap:break-word}
   #hero{min-height:calc(100svh - var(--bottomnav-h));padding-bottom:0}
   .hero-inner{padding:2vh 0 8vh}
   #story-sticky{height:calc(100svh - var(--bottomnav-h))}
-  #terminal.fs{bottom:var(--bottomnav-h)}
+  /* the bottom nav is hidden while fullscreen is up, so the chart gets the
+     whole viewport instead of reserving a strip for a bar that is not there */
+  #terminal.fs{bottom:0}
   #drawer{height:min(88svh,88vh)}
 
   /* comfortable tap targets everywhere */
@@ -2609,6 +2667,7 @@ NO QUALIFIED SETUP.
         <div class="tstat"><span class="ts-k">24h Volume</span><span class="ts-v" id="ts-vol">—</span></div>
         <div class="tstat"><span class="ts-k">24h Change</span><span class="ts-v" id="ts-chg">—</span></div>
         <div class="tstat"><span class="ts-k">Feed</span><span class="ts-v" id="ts-feed" style="color:var(--gold)">CONNECTING</span></div>
+        <div class="tstat"><span class="ts-k">Updated</span><span class="ts-v" id="ts-updated">—</span></div>
       </div>
       <div class="term-body">
         <div class="chart-zone" id="chart-zone">
@@ -3161,6 +3220,7 @@ const ClexAPI = (function(){
     status:        () => get('/public/status'),
     activity:      () => get('/public/activity'),
     price:      sym => get('/price?sym=' + encodeURIComponent(sym)),
+    prices:    syms => get('/public/prices?syms=' + encodeURIComponent(syms.join(','))),
     klines: (sym, tf, limit) =>
       get(`/public/klines?sym=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&limit=${limit||200}`)
   };
@@ -3698,6 +3758,21 @@ const MarketData = (function(){
     return c ? c.map(x=>x.c) : null;
   }
 
+  /* Force the next load() to hit the network — used when a candle period rolls
+     over and the cached series is genuinely a bar short. */
+  function invalidate(sym, tf, count){ cache.delete(keyOf(sym, tf, count)); }
+
+  /* Apply a batch quote to a cached series' last candle, so the watchlist
+     sparklines track the live price without refetching anything. */
+  function applyPrice(sym, tf, count, price){
+    const c = cached(sym, tf, count);
+    if (!c || !c.length || !isFinite(price) || price <= 0) return;
+    const last = c[c.length-1];
+    last.c = price;
+    if (price > last.h) last.h = price;
+    if (price < last.l) last.l = price;
+  }
+
   function stats(candles){
     // real 24h window, sized from the timeframe rather than a fixed bar count
     const win = candles.slice(-Math.min(candles.length, 96));
@@ -3706,7 +3781,7 @@ const MarketData = (function(){
     return { hi, lo, vol, chg:(candles[candles.length-1].c / win[0].o - 1) * 100 };
   }
 
-  return { load, cached, closes, stats, TF_MIN, TF_API };
+  return { load, cached, closes, stats, invalidate, applyPrice, TF_MIN, TF_API };
 })();
 
 /* compact volume, from the real summed candle volume */
@@ -4068,10 +4143,46 @@ function CandleChart(baseCv, overCv, opts){
     appendTick(price){
       if (!candles.length) return;
       const last = candles[candles.length-1];
+      if (last.c === price && price <= last.h && price >= last.l) return;  // nothing moved
       last.c = price;
       if (price>last.h) last.h=price;
       if (price<last.l) last.l=price;
+      // only the last EMA value can have changed; recompute that rather than
+      // dropping the whole cache and rebuilding the series on every tick
+      if (emaCache.arr && emaCache.ref === candles && emaCache.arr.length === candles.length){
+        const k = 2/(emaCache.p+1), i = candles.length-1;
+        emaCache.arr[i] = i === 0 ? price : price*k + emaCache.arr[i-1]*(1-k);
+      } else {
+        emaCache.ref = null;
+      }
+      markDirty();
+    },
+    /* Levels can change independently of the candles (the signal feed refreshes
+       far more often than history needs to). Swapping them must not reset the
+       view or replay the build animation. */
+    setLevels(lv){
+      levels = lv || null;
+      markDirty();
+    },
+    get levels(){ return levels; },
+    /* True once the newest bar's period has elapsed, i.e. a real new candle now
+       exists upstream and should be fetched rather than extrapolated. */
+    periodElapsed(tfMin){
+      if (!candles.length || !tfMin) return false;
+      const last = candles[candles.length-1];
+      return Date.now() - last.t >= tfMin*60000;
+    },
+    /* Adopt a fresh series while holding the viewport steady: if the user is
+       parked at the right edge they keep following the market, otherwise their
+       scroll position is preserved as new bars arrive. */
+    mergeCandles(next){
+      if (!next || !next.length) return;
+      const atRightEdge = view.start >= Math.max(0, candles.length - view.count) - 1;
+      const added = Math.max(0, next.length - candles.length);
+      candles = next;
       emaCache.ref = null;
+      const maxStart = Math.max(0, candles.length - view.count);
+      view.start = atRightEdge ? maxStart : clamp(view.start + added, 0, maxStart);
       markDirty();
     },
     destroy(){ scene && scene.destroy(); }
@@ -6134,26 +6245,194 @@ function roadmapRail(idx, total, per){
 })();
 
 /* ==========================================================================
+ * CHART FULLSCREEN
+ * --------------------------------------------------------------------------
+ * Native fullscreen where the browser allows it, a viewport-filling overlay
+ * where it does not (notably iOS Safari, which has no Element.requestFullscreen
+ * outside <video>). Both paths apply the same CSS, so behaviour and appearance
+ * do not diverge between platforms.
+ *
+ * Every listener here is attached once, at init, and gated on `on` — toggling
+ * fullscreen never adds or removes one, so they cannot accumulate.
+ * ========================================================================== */
+const Fullscreen = (function(){
+  let el = null, onResize = null, on = false, scrollY = 0, wired = false, nativeMode = false;
+
+  const nativeAvailable = () =>
+    !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+
+  const isNative = () =>
+    !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+  /* iOS ignores overflow:hidden on body, so the page is pinned by position:fixed
+     and the scroll offset is restored by hand on the way out. */
+  function lockPage(){
+    scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    document.body.style.top = `-${scrollY}px`;
+    document.body.classList.add('chart-fs');
+    document.body.style.position = 'fixed';
+    document.body.style.width = '100%';
+  }
+  function unlockPage(){
+    document.body.classList.remove('chart-fs');
+    document.body.style.position = '';
+    document.body.style.width = '';
+    document.body.style.top = '';
+    window.scrollTo(0, scrollY);
+  }
+
+  /* A gesture that starts outside the chart must not reach the page behind it.
+     Inside the chart the event is left alone so the chart's own handlers keep
+     their normal drag / zoom / pinch behaviour. */
+  function outside(e){
+    return on && el && !(e.target instanceof Node && el.contains(e.target));
+  }
+  function blockOutside(e){
+    if (outside(e) && e.cancelable) e.preventDefault();
+  }
+
+  function apply(state){
+    on = state;
+    if (!el) return;
+    el.classList.toggle('fs', on);
+    const btn = $('#tgl-fs');
+    if (btn){
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', String(on));
+      btn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Fullscreen');
+    }
+    if (on) lockPage(); else unlockPage();
+    onResize && onResize();
+  }
+
+  function enter(){
+    if (on) return;
+    // The overlay goes up first, unconditionally — it is the thing that
+    // actually guarantees the look and the interaction lock, and applying it
+    // synchronously means there is no gap while a native request resolves.
+    // Native is then requested as an upgrade; if it is refused (embedded
+    // frames, iOS Safari, a click the browser does not trust) the overlay is
+    // already in place and nothing has to be undone.
+    apply(true);
+    if (!nativeAvailable()) return;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) return;
+    try {
+      const p = req.call(el);
+      if (p && typeof p.catch === 'function') p.catch(()=>{});
+    } catch(err){ /* the overlay is already doing the job */ }
+  }
+
+  function exit(){
+    if (!on) return;
+    if (isNative()){
+      const ex = document.exitFullscreen || document.webkitExitFullscreen;
+      if (ex){ try { ex.call(document); return; } catch(err){} }
+    }
+    nativeMode = false;
+    apply(false);
+  }
+
+  function init(target, resizeFn){
+    el = target; onResize = resizeFn;
+    if (wired) return;
+    wired = true;
+
+    // native fullscreen can also be left with the browser's own Esc/gesture
+    // only reconcile against the native state when we actually went native —
+    // otherwise an unrelated fullscreenchange would tear down the overlay
+    const sync = ()=>{
+      const native = isNative();
+      if (native){ nativeMode = true; if (!on) apply(true); else onResize && onResize(); }
+      else if (on && nativeMode){ nativeMode = false; apply(false); }
+    };
+    document.addEventListener('fullscreenchange', sync);
+    document.addEventListener('webkitfullscreenchange', sync);
+
+    document.addEventListener('keydown', e=>{
+      if (on && e.key === 'Escape'){ e.preventDefault(); exit(); }
+    });
+
+    // capture phase: these fire before any page-level gesture handler, so a
+    // stray wheel or swipe outside the chart cannot drive the page underneath
+    document.addEventListener('wheel',     blockOutside, {passive:false, capture:true});
+    document.addEventListener('touchmove', blockOutside, {passive:false, capture:true});
+
+    const relayout = ()=>{ if (on) onResize && onResize(); };
+    addEventListener('resize', relayout, {passive:true});
+    addEventListener('orientationchange', ()=> setTimeout(relayout, 260));
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', relayout, {passive:true});
+  }
+
+  return { init, enter, exit, toggle(){ on ? exit() : enter(); }, get active(){ return on; } };
+})();
+
+/* ==========================================================================
  * MARKET TERMINAL WIRING
  * ========================================================================== */
 const Terminal = (function(){
-  let chart=null, tf='15m', pair=PAIRS[0], inited=false, tickTimer=null;
+  let chart=null, tf='15m', pair=PAIRS[0], inited=false;
+  let priceTimer=null, wlTimer=null, staleTimer=null;
+  let loadToken=0;                 // guards against a stale timeframe response
+  let lastTickAt=0, feedState='connecting';
 
+  const PRICE_MS = 4000;           // active symbol — one small request
+  const WL_MS    = 20000;          // whole watchlist in a single batch request
+  const STALE_MS = 25000;          // no accepted tick for this long => not live
+
+  /* One place decides what the feed indicators say, and it is driven by when
+     real data last arrived — never hard-coded. */
   function setFeed(state){
-    const badge=$('#chart-badge'), st=$('#chart-state'),
-          ts=$('#ts-feed'), tag=$('#mkt-feedtag'), mf=$('#mkt-feed');
-    const label = state==='live' ? 'LIVE' : state==='loading' ? 'CONNECTING' : 'UNAVAILABLE';
-    if (ts)  ts.textContent = label;
-    if (tag) tag.textContent = state==='live' ? 'Live market data'
-                             : state==='loading' ? 'Connecting…' : 'Live data unavailable';
-    if (badge) badge.innerHTML = `<span class="dot"></span>${state==='live' ? 'Live feed' : state==='loading' ? 'Connecting…' : 'Data unavailable'}`;
-    if (st){
-      st.style.display = state==='live' ? 'none' : 'flex';
-      st.innerHTML = state==='loading'
-        ? 'Connecting to market data<span class="ds-dots"></span>'
-        : 'Market data unavailable<span class="ds-dots"></span>';
+    if (state === feedState) return;
+    feedState = state;
+    const COPY = {
+      connecting  : ['CONNECTING',   'Connecting…',      'Connecting to market data'],
+      live        : ['LIVE',         'Live feed',        ''],
+      stale       : ['STALE',        'Data stale',       'Market data has stopped updating'],
+      reconnecting: ['RECONNECTING', 'Reconnecting…',    'Reconnecting to market data'],
+      offline     : ['OFFLINE',      'Data unavailable', 'Market data unavailable']
+    };
+    const [short, badgeTxt, overlay] = COPY[state] || COPY.offline;
+    const ts=$('#ts-feed'), badge=$('#chart-badge'), st=$('#chart-state'),
+          tag=$('#mkt-feedtag'), mf=$('#mkt-feed'), up=$('#ts-updated');
+    if (ts){
+      ts.textContent = short;
+      ts.style.color = state==='live' ? 'var(--jade)'
+                     : state==='offline' ? 'var(--crimson)' : 'var(--gold)';
     }
-    if (mf) StatusFeed.paint(mf, state==='live' ? 'ONLINE' : state==='loading' ? null : 'UNAVAILABLE');
+    if (badge) badge.innerHTML = `<span class="dot"></span>${badgeTxt}`;
+    if (tag) tag.textContent = state==='live' ? 'Live market data' : badgeTxt;
+    if (st){
+      // the overlay only covers the canvas when there is nothing real on it
+      st.style.display = (state==='live' || state==='stale') ? 'none' : 'flex';
+      if (overlay) st.innerHTML = overlay + '<span class="ds-dots"></span>';
+    }
+    if (mf) StatusFeed.paint(mf, state==='live' ? 'ONLINE'
+                               : state==='offline' ? 'UNAVAILABLE' : null);
+    if (up && state !== 'live') up.classList.toggle('stale', state==='stale' || state==='offline');
+  }
+
+  /* The "updated Ns ago" readout is the honest counterpart to the LIVE badge:
+     if ticks stop arriving the label keeps counting and the feed goes STALE. */
+  function markTick(){
+    lastTickAt = Date.now();
+    paintUpdated();
+    if (feedState !== 'live') setFeed('live');
+  }
+  function paintUpdated(){
+    const el = $('#ts-updated'); if(!el) return;
+    if (!lastTickAt){ el.textContent = '—'; return; }
+    const secs = Math.round((Date.now()-lastTickAt)/1000);
+    el.textContent = secs < 5 ? 'just now' : secs < 60 ? secs+'s ago'
+                   : Math.round(secs/60)+'m ago';
+    el.classList.toggle('stale', secs*1000 > STALE_MS);
+  }
+  function watchStale(){
+    clearInterval(staleTimer);
+    staleTimer = setInterval(()=>{
+      paintUpdated();
+      if (lastTickAt && Date.now()-lastTickAt > STALE_MS && feedState === 'live') setFeed('stale');
+    }, 2000);
   }
 
   /* Real CLEX levels for this symbol, or none. There is no scaled stand-in:
@@ -6180,50 +6459,103 @@ const Terminal = (function(){
     return lv;
   }
 
-  async function load(animate){
-    setFeed('loading');
+  const setChg = v => {
+    const up = v>=0, txt=(up?'+':'')+v.toFixed(2)+'%';
+    const a=$('#term-chg'), b=$('#ts-chg');
+    if (a){ a.textContent=txt; a.className='tp-chg '+(up?'up':'down'); }
+    if (b){ b.textContent=txt; b.className='ts-v '+(up?'up':'down'); }
+  };
+  const blankStats = () => {
+    ['#term-price','#ts-high','#ts-low','#ts-vol'].forEach(s=>{ const e=$(s); if(e) e.textContent='—'; });
+    const c=$('#term-chg'); if(c){ c.textContent='—'; c.className='tp-chg'; }
+    const g=$('#ts-chg');   if(g){ g.textContent='—'; g.className='ts-v'; }
+  };
+
+  /* Levels only. Called whenever the signal feed refreshes — it must not touch
+     the candle series, because reloading history there reset the user's zoom
+     and pan and replayed the build animation every 45 seconds. */
+  function applyLevels(){
+    if (!chart) return;
+    const lv = liveLevels();
+    chart.setLevels(lv);
+    chart.showLevels = !!lv && $('#tgl-sig').classList.contains('active');
+  }
+
+  /* Candle history. Only runs on first load and on symbol / timeframe change.
+     `loadToken` makes a slow response from a previous timeframe a no-op, so an
+     older payload can never overwrite a newer selection. */
+  async function loadHistory(animate){
+    const token = ++loadToken;
+    const wantPair = pair.api, wantTf = tf;
+    if (feedState !== 'live') setFeed('connecting');
+
     let candles;
     try{
-      candles = await MarketData.load(pair.api, tf, 260);
+      candles = await MarketData.load(wantPair, wantTf, 260);
     }catch(err){
-      setFeed('error');
-      ['#term-price','#ts-high','#ts-low','#ts-vol'].forEach(s=>{ const e=$(s); if(e) e.textContent='—'; });
-      const c=$('#term-chg'); if(c){ c.textContent='—'; c.className='tp-chg'; }
-      const g=$('#ts-chg');   if(g){ g.textContent='—'; g.className='ts-v'; }
-      liveLevels();
+      if (token !== loadToken) return;
+      setFeed('offline');
+      blankStats();
+      applyLevels();
       return;
     }
-    const lv = liveLevels();
-    chart.setData(candles, pair.dec, lv, animate);
-    chart.showLevels = !!lv && $('#tgl-sig').classList.contains('active');
+    if (token !== loadToken) return;          // a newer request already won
+
+    chart.setData(candles, pair.dec, liveLevels(), animate);
+    chart.showLevels = !!chart.levels && $('#tgl-sig').classList.contains('active');
+
     const s = MarketData.stats(candles);
-    const last = candles[candles.length-1].c;
-    $('#term-price').textContent = fmt(last, pair.dec);
-    const setChg = v => {
-      const up = v>=0, txt=(up?'+':'')+v.toFixed(2)+'%';
-      $('#term-chg').textContent=txt; $('#term-chg').className='tp-chg '+(up?'up':'down');
-      $('#ts-chg').textContent=txt;   $('#ts-chg').className='ts-v '+(up?'up':'down');
-    };
+    $('#term-price').textContent = fmt(candles[candles.length-1].c, pair.dec);
     setChg(s.chg);
     $('#ts-high').textContent = fmt(s.hi, pair.dec);
     $('#ts-low').textContent  = fmt(s.lo, pair.dec);
     $('#ts-vol').textContent  = fmtVol(s.vol);
-    setFeed('live');
+    markTick();
+    pollPrice(true);                          // fill in the exchange's own 24h figures
+  }
 
-    // the ticker carries the exchange's own 24h figures — more accurate than a
-    // window over the candle series, so it overwrites them once it lands
+  /* Live price. Updates the forming candle in place — no refetch of history,
+     no canvas rebuild, no re-render of anything that did not change. */
+  async function pollPrice(immediate){
+    if (!chart) return;
     const want = pair.api;
-    ClexAPI.price(want).then(d=>{
+    try{
+      const d = await ClexAPI.price(want);
       if (pair.api !== want) return;          // symbol changed mid-flight
       const px = Number(d.price);
-      if (isFinite(px) && px>0) $('#term-price').textContent = fmt(px, pair.dec);
+      if (!isFinite(px) || px <= 0) throw new Error('no price');
+
+      $('#term-price').textContent = fmt(px, pair.dec);
+      chart.appendTick(px);                   // mutates the last candle only
+
       if (isFinite(Number(d.high24))) $('#ts-high').textContent = fmt(Number(d.high24), pair.dec);
       if (isFinite(Number(d.low24)))  $('#ts-low').textContent  = fmt(Number(d.low24),  pair.dec);
       if (isFinite(Number(d.volume)) && Number(d.volume)>0) $('#ts-vol').textContent = fmtVol(Number(d.volume));
-      // only if the ticker actually carries a change; a flat 0 means the
-      // exchange did not report one, and the candle-derived figure is better
       if (isFinite(Number(d.change)) && Number(d.change) !== 0) setChg(Number(d.change));
-    }).catch(()=>{});
+
+      const w = $(`.wl-item[data-p="${pair.key}"] .wi-price`);
+      if (w) w.textContent = fmt(px, pair.dec);
+      markTick();
+
+      // a finished period needs a real new candle, not an extrapolated one
+      if (chart.periodElapsed(MarketData.TF_MIN[tf]||15)) refreshCandles();
+    }catch(err){
+      // a single missed poll is not an outage; the stale watcher decides
+      if (feedState === 'live' && Date.now()-lastTickAt > STALE_MS) setFeed('reconnecting');
+      else if (!lastTickAt) setFeed('reconnecting');
+    }
+  }
+
+  /* Pulls the latest bars and hands them to the chart without disturbing the
+     view — used when a candle period rolls over. */
+  async function refreshCandles(){
+    const want = pair.api, wantTf = tf;
+    try{
+      MarketData.invalidate(want, wantTf, 260);
+      const c = await MarketData.load(want, wantTf, 260);
+      if (pair.api !== want || tf !== wantTf) return;
+      chart.mergeCandles(c);
+    }catch(e){ /* the next poll tries again */ }
   }
   function initOnce(){
     if (inited) return; inited=true;
@@ -6252,20 +6584,26 @@ const Terminal = (function(){
       const b=e.target.closest('.sym-item'); if(!b)return;
       setPair(b.dataset.p); sel.classList.remove('open');
     });
-    // timeframe
+    // timeframe — the loading state shows immediately, and loadHistory's token
+    // makes sure a slow response from the previous timeframe cannot land late
     $('#tf-row').addEventListener('click', e=>{
-      const b=e.target.closest('.tf-btn'); if(!b)return;
+      const b=e.target.closest('.tf-btn'); if(!b || b.classList.contains('active')) return;
       $$('#tf-row .tf-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
-      tf=b.dataset.tf; chart.opts.tf=tf; load('fast');
+      tf=b.dataset.tf; chart.opts.tf=tf;
+      setFeed('connecting');
+      loadHistory('fast');
     });
     // tools
     $('#tgl-vol').addEventListener('click', e=>{ const a=e.currentTarget.classList.toggle('active'); chart.showVol=a; });
     $('#tgl-ema').addEventListener('click', e=>{ const a=e.currentTarget.classList.toggle('active'); chart.showEMA=a; });
     $('#tgl-sig').addEventListener('click', e=>{ const a=e.currentTarget.classList.toggle('active'); chart.showLevels=a; });
-    $('#tgl-fs').addEventListener('click', ()=>{
-      const t=$('#terminal'); const on=t.classList.toggle('fs');
-      document.body.style.overflow = on?'hidden':'';
-      setTimeout(()=>chart.resize(), 60);
+    $('#tgl-fs').addEventListener('click', ()=> Fullscreen.toggle());
+    Fullscreen.init($('#terminal'), ()=>{
+      // two passes: one immediately, one after the layout settles, because a
+      // mobile browser reports its final viewport a beat after the transition
+      chart.resize();
+      requestAnimationFrame(()=>chart.resize());
+      setTimeout(()=>chart.resize(), 260);
     });
     // watchlist
     const wl=$('#wl-items');
@@ -6277,44 +6615,75 @@ const Terminal = (function(){
         <span class="wi-chg">—</span>
       </button>`).join('');
     wl.addEventListener('click', e=>{ const b=e.target.closest('.wl-item'); if(b) setPair(b.dataset.p); });
-    load(true); chart.resize();
-    loadWatchlist();
-    startTicks();
+
+    loadHistory(true); chart.resize();
+    loadSparkSeries().then(pollWatchlist);
+    startLoops();
+    // coming back to the tab should refresh immediately, not wait out the interval
+    document.addEventListener('visibilitychange', ()=>{
+      if (!document.hidden && marketVisible()){ pollPrice(); pollWatchlist(); }
+    });
   }
 
-  /* Every watchlist row is real: one klines request per symbol, cached, then
-     price / change / sparkline all read from that same series. A symbol whose
-     data does not load keeps its dashes rather than showing invented numbers. */
-  async function loadWatchlist(){
-    await Promise.all(PAIRS.map(async p=>{
-      try{
-        const c = await MarketData.load(p.api, '1H', 120);
-        if (!c.length) return;
-        const last = c[c.length-1].c;
-        const first = c[Math.max(0, c.length-24)].o;
-        const chg = (last/first - 1) * 100;
-        const row = $(`.wl-item[data-p="${p.key}"]`);
-        if (row){
-          $('.wi-price', row).textContent = fmt(last, p.dec);
-          const ch = $('.wi-chg', row);
-          ch.textContent = (chg>=0?'+':'')+chg.toFixed(2)+'%';
-          ch.className = 'wi-chg ' + (chg>=0?'up':'down');
-        }
-        const px = $(`.si-p[data-px="${p.key}"]`);
-        if (px) px.textContent = fmt(last, p.dec);
-      }catch(e){ /* leave the dashes — no invented fallback */ }
-    }));
+  /* Sparkline shape comes from real 1H candles, fetched once per symbol.
+     Price and change then arrive from the batch quote poll, so keeping the
+     watchlist current costs one request for the whole list, not one per row. */
+  async function loadSparkSeries(){
+    await Promise.all(PAIRS.map(p=>
+      MarketData.load(p.api, '1H', 120).catch(()=>null)   // dashes stay on failure
+    ));
     drawSparks();
   }
 
+  /* One batch request for every row. Only the symbols that actually changed
+     are touched in the DOM. */
+  async function pollWatchlist(){
+    try{
+      const d = await ClexAPI.prices(PAIRS.map(p=>p.api));
+      const prices = d.prices || {};
+      let redraw = false;
+      for (const p of PAIRS){
+        const q = prices[p.api]; if (!q) continue;
+        const px = Number(q.price), chg = Number(q.change);
+        if (!isFinite(px) || px <= 0) continue;
+
+        const row = $(`.wl-item[data-p="${p.key}"]`);
+        if (row){
+          const pe = $('.wi-price', row), txt = fmt(px, p.dec);
+          if (pe && pe.textContent !== txt) pe.textContent = txt;
+          if (isFinite(chg) && chg !== 0){
+            const ch = $('.wi-chg', row);
+            const ctxt = (chg>=0?'+':'')+chg.toFixed(2)+'%';
+            if (ch && ch.textContent !== ctxt){
+              ch.textContent = ctxt;
+              ch.className = 'wi-chg ' + (chg>=0?'up':'down');
+            }
+          }
+        }
+        const sp = $(`.si-p[data-px="${p.key}"]`);
+        if (sp) sp.textContent = fmt(px, p.dec);
+        MarketData.applyPrice(p.api, '1H', 120, px);
+        redraw = true;
+      }
+      if (redraw) drawSparks();
+    }catch(e){ /* leave the last real values in place */ }
+  }
+
+  /* Sparklines repaint on an animation frame rather than inline, so a burst of
+     quote updates coalesces into a single draw. */
+  let sparkRaf = null;
   function drawSparks(){
-    for (const cv of $$('.wi-spark')){
-      const p = PAIRS.find(x=>x.key===cv.dataset.k); if(!p) continue;
-      const full = MarketData.closes(p.api, '1H', 120);
-      if (!full || full.length < 4) continue;
-      const d = full.slice(-60);
-      sparkline(cv, d, d[d.length-1]>=d[0] ? '#57B98E' : '#C05B6C');
-    }
+    if (sparkRaf) return;
+    sparkRaf = requestAnimationFrame(()=>{
+      sparkRaf = null;
+      for (const cv of $$('.wi-spark')){
+        const p = PAIRS.find(x=>x.key===cv.dataset.k); if(!p) continue;
+        const full = MarketData.closes(p.api, '1H', 120);
+        if (!full || full.length < 4) continue;
+        const d = full.slice(-60);
+        sparkline(cv, d, d[d.length-1]>=d[0] ? '#57B98E' : '#C05B6C');
+      }
+    });
   }
 
   function setPair(key){
@@ -6322,39 +6691,32 @@ const Terminal = (function(){
     $('#sym-current').textContent = pair.sym;
     $$('.sym-item').forEach(x=>x.classList.toggle('active', x.dataset.p===key));
     $$('.wl-item').forEach(x=>x.classList.toggle('active', x.dataset.p===key));
-    load(true);   // full rebuild: the new chart grows out of the centre
+    loadHistory(true);   // full rebuild: the new chart grows out of the centre
   }
 
-  /* Polls the real last price. It does not move the chart on its own — a tick
-     is only appended when the exchange actually reports a different price. */
-  function startTicks(){
-    if (tickTimer) return;
-    let lastPx = null;
-    (function schedule(){
-      tickTimer = setTimeout(async ()=>{
-        if (document.body.dataset.activePage==='market' && !document.hidden){
-          try{
-            const d = await ClexAPI.price(pair.api);
-            const px = Number(d.price ?? d.last ?? d.markPrice);
-            if (isFinite(px) && px > 0){
-              $('#term-price').textContent = fmt(px, pair.dec);
-              if (lastPx !== px){ chart.appendTick(px); lastPx = px; }
-              const w = $(`.wl-item[data-p="${pair.key}"] .wi-price`);
-              if (w) w.textContent = fmt(px, pair.dec);
-            }
-          }catch(e){ /* a missed poll changes nothing on screen */ }
-        }
-        schedule();
-      }, 15000);
-    })();
+  /* Two loops, both single-instance and both idle while the Market page is not
+     showing — so navigating away and back cannot leave a second one running. */
+  const marketVisible = () =>
+    (document.body.dataset.activePage === 'market' || Fullscreen.active) && !document.hidden;
+
+  function startLoops(){
+    stopLoops();
+    priceTimer = setInterval(()=>{ if (marketVisible()) pollPrice(); }, PRICE_MS);
+    wlTimer    = setInterval(()=>{ if (marketVisible()) pollWatchlist(); }, WL_MS);
+    watchStale();
   }
-  function stopTicks(){ clearTimeout(tickTimer); tickTimer = null; }
+  function stopLoops(){
+    clearInterval(priceTimer); priceTimer = null;
+    clearInterval(wlTimer);    wlTimer = null;
+    clearInterval(staleTimer); staleTimer = null;
+  }
   return {
     initOnce,
     resize:()=>{ if(chart) chart.resize(); },
     redrawSparks:()=>{ if(inited) drawSparks(); },
-    refreshLevels:()=>{ if(inited) load(false); },
-    destroy(){ stopTicks(); chart && chart.destroy(); inited=false; }
+    // signal-feed refresh: levels only, never a candle reload
+    refreshLevels:()=>{ if(inited) applyLevels(); },
+    destroy(){ stopLoops(); chart && chart.destroy(); inited=false; }
   };
 })();
 
