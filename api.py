@@ -640,7 +640,7 @@ def get_active_trades(request: Request):
                         "symbol": None, "side": None, "status": "LOCKED",
                         "entry": None, "tp1": None, "tp2": None, "sl": None,
                         "qty": None, "leverage": None, "tp1_hit": False,
-                        "source": source, "opened_at": t.get("opened_at"),
+                        "source": source, "opened_at": t.get("opened_at") or t.get("created_at"),
                         "locked": True, "tag": "vip",
                     })
                 return
@@ -660,7 +660,7 @@ def get_active_trades(request: Request):
             "leverage":t.get("leverage") or my_lev.get(_sym) or 10,
             "tp1_hit": bool(t.get("tp1_hit", False)),
             "source":  source,
-            "opened_at": t.get("opened_at"),
+            "opened_at": t.get("opened_at") or t.get("created_at"),
             "locked":  False,
             **({"category": tag} if tag else {}),
         })
@@ -864,7 +864,9 @@ def get_public_activity(limit: int = 12):
                 "side": "SHORT" if str(t.get("signal", "")).upper() in ("SHORT", "SELL") else "LONG",
                 "source": src,
                 "result": None,
-                "ts": float(t.get("opened_at") or 0),
+                # bot.py stamps scan trades with created_at; opened_at only
+                # exists on the BTC/main trade
+                "ts": float(t.get("opened_at") or t.get("created_at") or 0),
             })
 
     for h in (state.get("scan_history") or []):
