@@ -661,6 +661,53 @@ def get_trade_history(user: dict = Depends(get_current_user)):
     return {"history": history, "total": len(history)}
 
 
+@app.get("/public/results")
+def get_public_results(limit: int = 10):
+    """Public, unauthenticated closed-result feed for the marketing website.
+
+    Reads the bot's GLOBAL scan_history (Scan1/Scan2 closed trades) out of the
+    pushed state blob. SL outcomes are excluded by design — the public page
+    shows reached-target and break-even outcomes only. BE is its own category
+    and is never merged into SL or counted as a loss.
+
+    Deliberately carries no price levels (entry/sl/tp), no user data and no
+    win-rate — a rate computed over an SL-filtered set would be misleading."""
+    state = read_state() or {}
+    hist = state.get("scan_history") or []
+    if not isinstance(hist, list):
+        hist = []
+
+    limit = max(1, min(int(limit or 10), 30))
+    out = []
+    # scan_history is append-ordered, so iterate newest-first.
+    for h in reversed(hist):
+        if not isinstance(h, dict):
+            continue
+        result = str(h.get("result", "")).strip().upper()
+        if not result or result.startswith("SL"):
+            continue
+        if result.startswith("TIMEOUT"):
+            continue
+        raw_side = str(h.get("signal", "")).upper()
+        out.append({
+            "symbol": h.get("symbol") or "",
+            "side":   "LONG" if raw_side in ("LONG", "BUY") else "SHORT",
+            "result": result,                       # TP1 | TP2 | BE
+            "source": "S2" if h.get("ver") == 2 else "S1",
+            "time":   h.get("time") or "",
+        })
+        if len(out) >= limit:
+            break
+
+    counts = {"tp2": 0, "tp1": 0, "be": 0}
+    for r in out:
+        if r["result"].startswith("TP2"):  counts["tp2"] += 1
+        elif r["result"].startswith("TP1"): counts["tp1"] += 1
+        elif r["result"].startswith("BE"):  counts["be"]  += 1
+
+    return {"results": out, "count": len(out), "counts": counts}
+
+
 @app.get("/virtual/state")
 def get_virtual_state(user: dict = Depends(get_current_user)):
     """Paper-trading state for the Mini App's Virtual tab — settings, open
