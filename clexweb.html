@@ -1034,8 +1034,14 @@ site-footer{display:block}
 .free-item{
   display:flex;align-items:center;gap:18px;padding:19px 6px;
   border-bottom:1px solid rgba(242,236,223,.07);transition:padding-left .4s var(--ease-out),background .4s;
+  /* the whole row is the tap target, not just the arrow */
+  width:100%;text-align:left;background:none;border-left:0;border-right:0;border-top:0;
+  cursor:pointer;font:inherit;color:inherit;-webkit-tap-highlight-color:transparent;
 }
 .free-item:hover{padding-left:14px;background:rgba(201,169,106,.03)}
+.free-item:focus-visible{outline:1px solid var(--gold-soft);outline-offset:2px;background:rgba(201,169,106,.05)}
+.free-item:focus-visible .fi-arrow{transform:translateX(6px);color:var(--gold)}
+.free-item:active{background:rgba(201,169,106,.06)}
 .free-item .fi-idx{font-family:var(--mono);font-size:9px;color:var(--gold);letter-spacing:.2em;flex:none}
 .free-item .fi-name{font-family:var(--serif);font-size:clamp(.95rem,1.7vw,1.15rem);letter-spacing:.14em;color:var(--ivory-dim);text-transform:uppercase}
 .free-item .fi-arrow{margin-left:auto;color:var(--dim);transition:transform .4s,color .4s}
@@ -2878,11 +2884,11 @@ No qualified setup.
     <div class="free-grid">
       <div>
         <div class="free-list" data-stagger>
-          <div class="free-item"><span class="fi-idx">F·01</span><span class="fi-name">Free market updates</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></div>
-          <div class="free-item"><span class="fi-idx">F·02</span><span class="fi-name">Selected signals</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></div>
-          <div class="free-item"><span class="fi-idx">F·03</span><span class="fi-name">Results</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></div>
-          <div class="free-item"><span class="fi-idx">F·04</span><span class="fi-name">Bot announcements</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></div>
-          <div class="free-item"><span class="fi-idx">F·05</span><span class="fi-name">Community updates</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></div>
+          <button type="button" class="free-item" data-nav="market"><span class="fi-idx">F·01</span><span class="fi-name">Free market updates</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></button>
+          <button type="button" class="free-item" data-nav="signals"><span class="fi-idx">F·02</span><span class="fi-name">Selected signals</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></button>
+          <button type="button" class="free-item" data-nav="results"><span class="fi-idx">F·03</span><span class="fi-name">Results</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></button>
+          <button type="button" class="free-item" data-nav="bot"><span class="fi-idx">F·04</span><span class="fi-name">Bot announcements</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></button>
+          <button type="button" class="free-item" data-nav="community"><span class="fi-idx">F·05</span><span class="fi-name">Community updates</span><svg class="fi-arrow" style="width:15px;height:15px"><use href="#arrow-r"/></svg></button>
         </div>
         <div style="margin-top:36px" data-reveal>
           <a class="btn btn-primary" data-link="freeChannel" target="_blank" rel="noopener"><svg class="tg-ico"><use href="#tg-icon"/></svg><span data-cfg="ctaFree">Join Free Channel</span></a>
