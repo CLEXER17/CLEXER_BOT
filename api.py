@@ -695,6 +695,9 @@ def get_public_results(limit: int = 10):
             "result": result,                       # TP1 | TP2 | BE
             "source": "S2" if h.get("ver") == 2 else "S1",
             "time":   h.get("time") or "",
+            # Historical exit price only. Entry/SL/TP levels stay private —
+            # those are the live product, this is a settled outcome.
+            "close_price": h.get("close_price"),
         })
         if len(out) >= limit:
             break
