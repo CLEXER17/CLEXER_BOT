@@ -889,6 +889,26 @@ def get_public_activity(limit: int = 12):
     return {"events": events[:limit], "count": len(events[:limit])}
 
 
+@app.get("/public/prices")
+def get_public_prices(syms: str = "BTC-USDT"):
+    """Batch quotes for the website's watchlist and ticker.
+
+    One request instead of one per symbol — the page polls this on a short
+    interval, so fanning it out per symbol multiplied backend load by the
+    number of rows for no benefit. Capped at 16 symbols per call. A symbol
+    that fails is simply absent from the response; it is never filled in."""
+    wanted = [s.strip().upper() for s in str(syms).split(",") if s.strip()][:16]
+    out = {}
+    for s in wanted:
+        try:
+            d = get_price(s)
+            if d and d.get("price"):
+                out[s] = {"price": d["price"], "change": d.get("change", 0.0)}
+        except Exception:
+            continue
+    return {"prices": out, "count": len(out), "ts": int(time.time())}
+
+
 _KLINE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
              "1h": "1h", "4h": "4h", "1d": "1d"}
 
