@@ -442,9 +442,22 @@ def get_price(sym: str = "BTC-USDT"):
         if isinstance(d, list): d = d[0] if d else {}
         price = float(d.get("lastPrice", 0))
         if price > 0:
+            # BingX returns priceChangePercent as 0 on this endpoint, so derive
+            # the real 24h change from openPrice rather than reporting a flat 0%.
+            try:
+                chg = float(d.get("priceChangePercent") or 0)
+            except (TypeError, ValueError):
+                chg = 0.0
+            if not chg:
+                try:
+                    op = float(d.get("openPrice") or 0)
+                    if op > 0:
+                        chg = (price / op - 1) * 100
+                except (TypeError, ValueError):
+                    pass
             return {
                 "price":  price,
-                "change": float(d.get("priceChangePercent", 0)),
+                "change": chg,
                 "high24": float(d.get("highPrice", price)),
                 "low24":  float(d.get("lowPrice",  price)),
                 "volume": float(d.get("quoteVolume", 0)),

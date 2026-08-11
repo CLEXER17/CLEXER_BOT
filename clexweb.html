@@ -940,6 +940,13 @@ site-footer{display:block}
 .data-state .ds-k{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--gold);margin-bottom:10px}
 .data-state .ds-t{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--muted)}
 .data-state.err .ds-k{color:var(--crimson)}
+/* chart connection state — sits over the canvas, never replaces it with fake bars */
+.chart-state{
+  position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;
+  background:rgba(10,13,20,.72);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);
+  font-family:var(--mono);font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--muted);
+  pointer-events:none;
+}
 .ds-dots::after{content:"";animation:dsDots 1.4s steps(4,end) infinite}
 @keyframes dsDots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
 .reduced-motion .ds-dots::after{content:"..."; animation:none}
@@ -2559,9 +2566,9 @@ NO QUALIFIED SETUP.
       <div>
         <p class="kicker">Compartment <span class="zh">市场</span> 02</p>
         <h1 class="page-title">Market <span class="accent">Terminal</span></h1>
-        <p class="page-desc">A professional charting environment for studying structure around <span data-cfg="botName">CLEX™ BOT</span> levels. Running on a simulated feed — architected so a live market API can be connected later.</p>
+        <p class="page-desc">A professional charting environment for studying structure around <span data-cfg="botName">CLEX™ BOT</span> levels. Candles, prices and volume are live market data.</p>
       </div>
-      <span class="demo-tag">Simulated feed</span>
+      <span class="demo-tag" id="mkt-feedtag">Live market data</span>
     </div>
   </div>
 
@@ -2600,14 +2607,15 @@ NO QUALIFIED SETUP.
         <div class="tstat"><span class="ts-k">24h Low</span><span class="ts-v" id="ts-low">—</span></div>
         <div class="tstat"><span class="ts-k">24h Volume</span><span class="ts-v" id="ts-vol">—</span></div>
         <div class="tstat"><span class="ts-k">24h Change</span><span class="ts-v" id="ts-chg">—</span></div>
-        <div class="tstat"><span class="ts-k">Feed</span><span class="ts-v" style="color:var(--gold)">SIMULATED</span></div>
+        <div class="tstat"><span class="ts-k">Feed</span><span class="ts-v" id="ts-feed" style="color:var(--gold)">CONNECTING</span></div>
       </div>
       <div class="term-body">
         <div class="chart-zone" id="chart-zone">
           <canvas id="chart-canvas"></canvas>
           <canvas id="chart-overlay" aria-hidden="true"></canvas>
           <div class="chart-legend" id="chart-legend" aria-hidden="true"></div>
-          <div class="chart-badge"><span class="dot"></span>Simulated feed</div>
+          <div class="chart-badge" id="chart-badge"><span class="dot"></span>Connecting…</div>
+          <div class="chart-state" id="chart-state">Connecting to market data<span class="ds-dots"></span></div>
         </div>
         <aside class="watchlist" id="watchlist">
           <div class="wl-head">Watchlist</div>
@@ -2616,24 +2624,27 @@ NO QUALIFIED SETUP.
       </div>
       <div class="term-note">
         <span class="mono-note">Scroll / pinch to zoom · Drag to pan · Double&#8209;tap to reset</span>
-        <span class="mono-note" style="color:var(--gold-soft)">Signal levels drawn from the current example signal</span>
+        <span class="mono-note" style="color:var(--gold-soft)" id="term-lvnote">Levels are drawn only when CLEX has a live signal on this pair</span>
       </div>
     </div>
 
     <div class="mkt-extra">
       <div class="frame cc-panel" data-reveal>
-        <div class="cc-h"><span class="cc-t">Signal levels on chart</span><span class="demo-tag">Sample</span></div>
-        <div class="status-line"><span class="sl-k">Entry zone</span><span class="sl-v" style="color:var(--gold-bright)" id="mk-entry">—</span></div>
-        <div class="status-line"><span class="sl-k">TP1</span><span class="sl-v" style="color:var(--jade)" id="mk-tp1">—</span></div>
-        <div class="status-line"><span class="sl-k">TP2</span><span class="sl-v" style="color:var(--jade)" id="mk-tp2">—</span></div>
-        <div class="status-line"><span class="sl-k">SL</span><span class="sl-v" style="color:var(--crimson)" id="mk-sl">—</span></div>
+        <div class="cc-h"><span class="cc-t">Signal levels on chart</span><span class="demo-tag" id="mk-tag">—</span></div>
+        <div id="mk-levels">
+          <div class="status-line"><span class="sl-k">Entry zone</span><span class="sl-v" style="color:var(--gold-bright)" id="mk-entry">—</span></div>
+          <div class="status-line"><span class="sl-k">TP1</span><span class="sl-v" style="color:var(--jade)" id="mk-tp1">—</span></div>
+          <div class="status-line"><span class="sl-k">TP2</span><span class="sl-v" style="color:var(--jade)" id="mk-tp2">—</span></div>
+          <div class="status-line"><span class="sl-k">SL</span><span class="sl-v" style="color:var(--crimson)" id="mk-sl">—</span></div>
+        </div>
+        <div class="af-empty" id="mk-empty" style="display:none">No active CLEX signal</div>
       </div>
       <div class="frame cc-panel" data-reveal>
         <div class="cc-h"><span class="cc-t">CLEX™ System</span><span class="demo-tag">Live status</span></div>
-        <div class="status-line"><span class="sl-k">Market data</span><span class="sl-v"><span class="sl-dot on"></span>Online</span></div>
-        <div class="status-line"><span class="sl-k">Scanner</span><span class="sl-v"><span class="sl-dot on"></span>Active</span></div>
-        <div class="status-line"><span class="sl-k">Signals</span><span class="sl-v"><span class="sl-dot idle"></span>Monitoring</span></div>
-        <div class="status-line"><span class="sl-k">Telegram</span><span class="sl-v"><span class="sl-dot on"></span>Connected</span></div>
+        <div class="status-line"><span class="sl-k">Market data</span><span class="sl-v st-state" id="mkt-feed"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+        <div class="status-line"><span class="sl-k">Scanner</span><span class="sl-v st-state" id="mkt-scanner"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+        <div class="status-line"><span class="sl-k">Signal engine</span><span class="sl-v st-state" id="mkt-engine"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+        <div class="status-line"><span class="sl-k">Trade monitor</span><span class="sl-v st-state" id="mkt-monitor"><span class="sl-dot"></span><span class="stv">—</span></span></div>
       </div>
     </div>
    </div>
@@ -3274,15 +3285,18 @@ function applyConfig(){
 /* ==========================================================================
  * PREVIEW DATA
  * ========================================================================== */
+/* Which symbols the terminal offers, and how many decimals each is quoted to.
+   No prices or volumes here — those are fetched, never declared. `api` is the
+   exchange symbol the klines endpoint expects. */
 const PAIRS = [
-  { sym:'ETH/USDT',  key:'ETH',   price:1794.62,  dec:2, vol:'1.24B'  },
-  { sym:'BTC/USDT',  key:'BTC',   price:64218.40, dec:1, vol:'8.71B'  },
-  { sym:'SOL/USDT',  key:'SOL',   price:142.87,   dec:2, vol:'642.3M' },
-  { sym:'BNB/USDT',  key:'BNB',   price:571.20,   dec:2, vol:'318.9M' },
-  { sym:'XRP/USDT',  key:'XRP',   price:0.5284,   dec:4, vol:'421.6M' },
-  { sym:'AVAX/USDT', key:'AVAX',  price:27.412,   dec:3, vol:'188.2M' },
-  { sym:'LINK/USDT', key:'LINK',  price:14.286,   dec:3, vol:'156.7M' },
-  { sym:'ARB/USDT',  key:'ARB',   price:0.8142,   dec:4, vol:'92.4M'  }
+  { sym:'BTC/USDT',  key:'BTC',   api:'BTC-USDT',  dec:1 },
+  { sym:'ETH/USDT',  key:'ETH',   api:'ETH-USDT',  dec:2 },
+  { sym:'SOL/USDT',  key:'SOL',   api:'SOL-USDT',  dec:2 },
+  { sym:'BNB/USDT',  key:'BNB',   api:'BNB-USDT',  dec:2 },
+  { sym:'XRP/USDT',  key:'XRP',   api:'XRP-USDT',  dec:4 },
+  { sym:'AVAX/USDT', key:'AVAX',  api:'AVAX-USDT', dec:3 },
+  { sym:'LINK/USDT', key:'LINK',  api:'LINK-USDT', dec:3 },
+  { sym:'ARB/USDT',  key:'ARB',   api:'ARB-USDT',  dec:4 }
 ];
 
 const SIGNALS = [
@@ -3662,83 +3676,71 @@ function sizeCanvas(cv, big){
 }
 
 /* ==========================================================================
- * MARKET DATA — deterministic simulated feed, served through CLEX_DATA.
- * To go live: implement fetchCandles() and set CLEX_CONFIG.market.live = true
+ * MARKET DATA — real OHLCV only.
+ * --------------------------------------------------------------------------
+ * Candles come from /public/klines, which fetches BingX server-side (the
+ * browser is CORS-blocked from the exchange directly). There is no generator
+ * behind this any more: a symbol with no data renders an unavailable state,
+ * it never falls back to a synthetic series.
  * ========================================================================== */
 const MarketData = (function(){
   const TF_MIN = { '1m':1, '5m':5, '15m':15, '1H':60, '4H':240, '1D':1440 };
+  const TF_API = { '1m':'1m', '5m':'5m', '15m':'15m', '1H':'1h', '4H':'4h', '1D':'1d' };
+  const cache = new Map();          // key -> {candles, at}
+  const inflight = new Map();
+  const TTL = 45000;
 
-  function build(pairKey, tf, count){
-    const pair = PAIRS.find(p=>p.key===pairKey) || PAIRS[0];
-    const id = pairKey + '_' + tf + '_' + count;
-    let seed = 0; for (let i=0;i<id.length;i++) seed = (seed*31 + id.charCodeAt(i))|0;
-    const rnd = mulberry(Math.abs(seed)+7919);
-    const tfm = TF_MIN[tf] || 15;
-    const volaBase = 0.0022 * Math.sqrt(tfm/15);
-    const out = new Array(count);
-    let price = pair.price * (1 - 0.035 + rnd()*0.02);
-    let trend = (rnd()-0.5) * 0.0009;
-    const now = Date.UTC(2026,7,10,12,0,0);
-    for (let i=0;i<count;i++){
-      if (i % 24 === 0) trend = (rnd()-0.5) * 0.0011;
-      const vola = volaBase * (0.55 + rnd()*1.05);
-      const drift = trend + (rnd()-0.5)*vola;
-      const open = price;
-      const close = open * (1 + drift);
-      const wick = Math.abs(drift) + vola*(0.35 + rnd()*0.85);
-      out[i] = {
-        t: now - (count-1-i)*tfm*60000, o:open,
-        h: Math.max(open,close) * (1 + wick*0.55*rnd() + vola*0.2),
-        l: Math.min(open,close) * (1 - wick*0.55*rnd() - vola*0.2),
-        c: close, v: (0.4 + rnd()*1.6) * (1 + Math.abs(drift)/vola*0.6)
-      };
-      price = close;
-    }
-    // ease the series toward the quoted price so the last candle is coherent
-    const adj = pair.price / out[count-1].c;
-    for (let i=0;i<count;i++){
-      const f = 1 + (adj-1)*Math.pow(i/(count-1), 2.2);
-      out[i].o*=f; out[i].h*=f; out[i].l*=f; out[i].c*=f;
-    }
-    return out;
+  const keyOf = (sym, tf, count) => sym+'|'+tf+'|'+count;
+
+  /* synchronous read; null when we have not loaded it yet */
+  function cached(sym, tf, count){
+    const hit = cache.get(keyOf(sym, tf, count));
+    return hit ? hit.candles : null;
   }
 
-  /* every consumer goes through the cache — the same series is never rebuilt */
-  function genCandles(pairKey, tf, count){
-    return CLEX_DATA.get('market', pairKey+'|'+tf+'|'+count, ()=>build(pairKey, tf, count));
-  }
-  /* closes are read far more often than candles; memoise them separately */
-  function closes(pairKey, tf, count){
-    return CLEX_DATA.get('market', 'closes|'+pairKey+'|'+tf+'|'+count,
-      ()=> genCandles(pairKey, tf, count).map(c=>c.c));
+  /* one request per symbol+timeframe, de-duplicated and TTL-cached — a repaint
+     or a viewport tick never re-hits the API */
+  function load(sym, tf, count){
+    const k = keyOf(sym, tf, count);
+    const hit = cache.get(k);
+    if (hit && Date.now() - hit.at < TTL) return Promise.resolve(hit.candles);
+    if (inflight.has(k)) return inflight.get(k);
+    const p = ClexAPI.klines(sym, TF_API[tf] || '15m', count)
+      .then(d=>{
+        const candles = d.candles || [];
+        if (!candles.length) throw new Error('empty');
+        cache.set(k, { candles, at: Date.now() });
+        return candles;
+      })
+      .finally(()=> inflight.delete(k));
+    inflight.set(k, p);
+    return p;
   }
 
-  /* Live hook — batch-friendly by design: one request per symbol+timeframe,
-     never a per-row fetch inside a loop. */
-  async function fetchCandles(pairKey, tf, count){
-    if (!CLEX_CONFIG.market.live || !CLEX_CONFIG.market.endpoint) return genCandles(pairKey, tf, count);
-    const key = 'live|'+pairKey+'|'+tf+'|'+count;
-    const cached = CLEX_DATA.get('market', key, ()=>null);
-    if (cached) return cached;
-    try {
-      const r = await fetch(`${CLEX_CONFIG.market.endpoint}?symbol=${pairKey}USDT&interval=${tf}&limit=${count}`);
-      const j = await r.json();
-      const rows = j.map(k => ({ t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5] }));
-      CLEX_DATA.get('market', key, ()=>rows);
-      return rows;
-    } catch(e){ return genCandles(pairKey, tf, count); }
+  function closes(sym, tf, count){
+    const c = cached(sym, tf, count);
+    return c ? c.map(x=>x.c) : null;
   }
 
   function stats(candles){
-    return CLEX_DATA.get('market', 'stats|'+candles[0].t+'|'+candles.length+'|'+candles[candles.length-1].c, ()=>{
-      const win = candles.slice(-96);
-      let hi=-Infinity, lo=Infinity, vol=0;
-      for (const c of win){ if(c.h>hi)hi=c.h; if(c.l<lo)lo=c.l; vol+=c.v; }
-      return { hi, lo, vol, chg:(candles[candles.length-1].c / win[0].o - 1) * 100 };
-    });
+    // real 24h window, sized from the timeframe rather than a fixed bar count
+    const win = candles.slice(-Math.min(candles.length, 96));
+    let hi=-Infinity, lo=Infinity, vol=0;
+    for (const c of win){ if(c.h>hi)hi=c.h; if(c.l<lo)lo=c.l; vol+=c.v; }
+    return { hi, lo, vol, chg:(candles[candles.length-1].c / win[0].o - 1) * 100 };
   }
-  return { genCandles, closes, fetchCandles, stats, TF_MIN };
+
+  return { load, cached, closes, stats, TF_MIN, TF_API };
 })();
+
+/* compact volume, from the real summed candle volume */
+function fmtVol(v){
+  if (!isFinite(v) || v <= 0) return '—';
+  if (v >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+'M';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+'K';
+  return v.toFixed(2);
+}
 
 const fmt = (v, dec) => v.toLocaleString('en-US',{minimumFractionDigits:dec, maximumFractionDigits:dec});
 
@@ -4825,14 +4827,31 @@ function makeSlider(root, onChange){
 /* ==========================================================================
  * BUILDERS
  * ========================================================================== */
+/* Home ticker — real quotes. It renders with dashes first and fills in per
+   symbol as each /price lands; a symbol that never answers keeps its dash. */
 function buildTicker(){
   const track = $('#ticker-track'); if(!track) return;
-  const rnd = mulberry(777);
-  const html = PAIRS.concat(PAIRS).map(p=>{
-    const chg = (rnd()-0.42)*4.6;
-    return `<span class="tk-item"><span class="pair">${p.sym}</span><span class="price">${fmt(p.price,p.dec)}</span><span class="chg ${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span></span>`;
-  }).join('');
-  track.innerHTML = html + html;
+  const row = p => `<span class="tk-item"><span class="pair">${p.sym}</span>`
+    + `<span class="price" data-tk="${p.key}">—</span>`
+    + `<span class="chg" data-tkc="${p.key}">—</span></span>`;
+  const html = PAIRS.map(row).join('');
+  track.innerHTML = html + html;     // duplicated for the seamless marquee loop
+
+  if (!ClexAPI.enabled()) return;
+  const paint = () => PAIRS.forEach(async p=>{
+    try{
+      const d = await ClexAPI.price(p.api);
+      const px = Number(d.price), ch = Number(d.change);
+      if (!isFinite(px) || px <= 0) return;
+      $$(`[data-tk="${p.key}"]`, track).forEach(e=> e.textContent = fmt(px, p.dec));
+      if (isFinite(ch) && ch !== 0) $$(`[data-tkc="${p.key}"]`, track).forEach(e=>{
+        e.textContent = (ch>=0?'+':'')+ch.toFixed(2)+'%';
+        e.className = 'chg ' + (ch>=0?'up':'down');
+      });
+    }catch(e){ /* dash stays */ }
+  });
+  paint();
+  setInterval(()=>{ if(!document.hidden) paint(); }, 60000);
 }
 
 function buildSysReadout(){
@@ -5165,7 +5184,7 @@ function openDrawer(s){
     </div>
     <p class="mono-note" style="margin-top:10px">${s.scan} · ${s.tf} · ${s.age}</p>
     <canvas id="drawer-spark"></canvas>
-    <p class="mono-note" style="text-align:right;color:var(--dim)">Simulated price path</p>
+    <p class="mono-note" id="drawer-sparknote" style="text-align:right;color:var(--dim)">Loading price action…</p>
     <div class="d-levels">
       <div class="sig-cell full"><span class="k">Entry zone</span><span class="v gold">${s.entry}</span></div>
       <div class="sig-cell"><span class="k">TP1</span><span class="v jade">${s.tp1}</span></div>
@@ -5200,12 +5219,18 @@ function openDrawer(s){
   const T = REDUCED ? 0 : 1;
   drawerTimers.push(setTimeout(()=>{ try{ $('#drawer-close').focus({preventScroll:true}); }catch(e){} }, 120));
   drawerTimers.push(setTimeout(()=>{ const em=$('#d-emblem'); em && em.classList.add('in'); }, 320*T));
+  /* real recent price action for this pair — the panel stays blank rather than
+     drawing an invented path if the market data does not load */
   drawerTimers.push(setTimeout(()=>{
     const cv = $('#drawer-spark'); if(!cv) return;
-    const base=(s.e1+s.e2)/2, r=mulberry(Math.round(base*1000)+7);
-    const data=[]; let v=base*(1+(r()-.5)*0.01);
-    for(let i=0;i<64;i++){ v = v*(1+(r()-.5)*0.006); data.push(v); }
-    drawPricePath(cv, data, s.side==='LONG' ? '#57B98E' : '#C05B6C', 950*T);
+    const note = $('#drawer-sparknote');
+    MarketData.load(s.pair, '15m', 96).then(candles=>{
+      if (!$('#drawer-spark')) return;             // drawer closed meanwhile
+      if (note) note.textContent = 'Recent price action · 15m';
+      drawPricePath(cv, candles.map(c=>c.c), s.side==='LONG' ? '#57B98E' : '#C05B6C', 950*T);
+    }).catch(()=>{
+      if (note) note.textContent = 'Price data unavailable';
+    });
   }, 480*T));
   drawerTimers.push(setTimeout(()=>{
     const steps = $$('.d-step', drawer), fill = $('#d-flow-fill');
@@ -6028,33 +6053,92 @@ function roadmapRail(idx, total, per){
  * ========================================================================== */
 const Terminal = (function(){
   let chart=null, tf='15m', pair=PAIRS[0], inited=false, tickTimer=null;
-  const levels = { e1:1791, e2:1798, tp1:1778, tp2:1773, sl:1806 };
 
-  function scaleLevels(p){
-    // example signal levels expressed relative to the pair price so every symbol shows markers
-    const base = 1794.62;
-    const k = p.price/base;
-    return { e1:levels.e1*k, e2:levels.e2*k, tp1:levels.tp1*k, tp2:levels.tp2*k, sl:levels.sl*k };
+  function setFeed(state){
+    const badge=$('#chart-badge'), st=$('#chart-state'),
+          ts=$('#ts-feed'), tag=$('#mkt-feedtag'), mf=$('#mkt-feed');
+    const label = state==='live' ? 'LIVE' : state==='loading' ? 'CONNECTING' : 'UNAVAILABLE';
+    if (ts)  ts.textContent = label;
+    if (tag) tag.textContent = state==='live' ? 'Live market data'
+                             : state==='loading' ? 'Connecting…' : 'Live data unavailable';
+    if (badge) badge.innerHTML = `<span class="dot"></span>${state==='live' ? 'Live feed' : state==='loading' ? 'Connecting…' : 'Data unavailable'}`;
+    if (st){
+      st.style.display = state==='live' ? 'none' : 'flex';
+      st.innerHTML = state==='loading'
+        ? 'Connecting to market data<span class="ds-dots"></span>'
+        : 'Market data unavailable<span class="ds-dots"></span>';
+    }
+    if (mf) StatusFeed.paint(mf, state==='live' ? 'ONLINE' : state==='loading' ? null : 'UNAVAILABLE');
   }
-  function load(animate){
-    const candles = MarketData.genCandles(pair.key, tf, 260);
-    const lv = scaleLevels(pair);
+
+  /* Real CLEX levels for this symbol, or none. There is no scaled stand-in:
+     if the bot has no live signal on the pair, the chart draws no levels. */
+  function liveLevels(){
+    const want = pair.key + '-USDT';
+    const p = (SIGNALS_VIEW||[]).find(x=>!x.locked && x.pair === want);
+    const box = $('#mk-levels'), empty = $('#mk-empty'), tag = $('#mk-tag');
+    if (!p){
+      if (box)   box.style.display = 'none';
+      if (empty) empty.style.display = 'flex';
+      if (tag)   tag.textContent = 'None';
+      return null;
+    }
+    const n = s => Number(String(s).replace(/[$,]/g,''));
+    const lv = { e1:n(p.entry), e2:n(p.entry), tp1:n(p.tp1), tp2:n(p.tp2), sl:n(p.sl) };
+    if (box)   box.style.display = '';
+    if (empty) empty.style.display = 'none';
+    if (tag)   tag.textContent = p.scan + ' · ' + p.side;
+    $('#mk-entry').textContent = p.entry;
+    $('#mk-tp1').textContent   = p.tp1;
+    $('#mk-tp2').textContent   = p.tp2;
+    $('#mk-sl').textContent    = p.sl;
+    return lv;
+  }
+
+  async function load(animate){
+    setFeed('loading');
+    let candles;
+    try{
+      candles = await MarketData.load(pair.api, tf, 260);
+    }catch(err){
+      setFeed('error');
+      ['#term-price','#ts-high','#ts-low','#ts-vol'].forEach(s=>{ const e=$(s); if(e) e.textContent='—'; });
+      const c=$('#term-chg'); if(c){ c.textContent='—'; c.className='tp-chg'; }
+      const g=$('#ts-chg');   if(g){ g.textContent='—'; g.className='ts-v'; }
+      liveLevels();
+      return;
+    }
+    const lv = liveLevels();
     chart.setData(candles, pair.dec, lv, animate);
+    chart.showLevels = !!lv && $('#tgl-sig').classList.contains('active');
     const s = MarketData.stats(candles);
     const last = candles[candles.length-1].c;
     $('#term-price').textContent = fmt(last, pair.dec);
-    const up = s.chg>=0;
-    $('#term-chg').textContent = (up?'+':'')+s.chg.toFixed(2)+'%';
-    $('#term-chg').className = 'tp-chg '+(up?'up':'down');
+    const setChg = v => {
+      const up = v>=0, txt=(up?'+':'')+v.toFixed(2)+'%';
+      $('#term-chg').textContent=txt; $('#term-chg').className='tp-chg '+(up?'up':'down');
+      $('#ts-chg').textContent=txt;   $('#ts-chg').className='ts-v '+(up?'up':'down');
+    };
+    setChg(s.chg);
     $('#ts-high').textContent = fmt(s.hi, pair.dec);
     $('#ts-low').textContent  = fmt(s.lo, pair.dec);
-    $('#ts-vol').textContent  = pair.vol;
-    $('#ts-chg').textContent  = (up?'+':'')+s.chg.toFixed(2)+'%';
-    $('#ts-chg').className = 'ts-v '+(up?'up':'down');
-    $('#mk-entry').textContent = fmt(lv.e1,pair.dec)+' – '+fmt(lv.e2,pair.dec);
-    $('#mk-tp1').textContent = fmt(lv.tp1,pair.dec);
-    $('#mk-tp2').textContent = fmt(lv.tp2,pair.dec);
-    $('#mk-sl').textContent  = fmt(lv.sl,pair.dec);
+    $('#ts-vol').textContent  = fmtVol(s.vol);
+    setFeed('live');
+
+    // the ticker carries the exchange's own 24h figures — more accurate than a
+    // window over the candle series, so it overwrites them once it lands
+    const want = pair.api;
+    ClexAPI.price(want).then(d=>{
+      if (pair.api !== want) return;          // symbol changed mid-flight
+      const px = Number(d.price);
+      if (isFinite(px) && px>0) $('#term-price').textContent = fmt(px, pair.dec);
+      if (isFinite(Number(d.high24))) $('#ts-high').textContent = fmt(Number(d.high24), pair.dec);
+      if (isFinite(Number(d.low24)))  $('#ts-low').textContent  = fmt(Number(d.low24),  pair.dec);
+      if (isFinite(Number(d.volume)) && Number(d.volume)>0) $('#ts-vol').textContent = fmtVol(Number(d.volume));
+      // only if the ticker actually carries a change; a flat 0 means the
+      // exchange did not report one, and the candle-derived figure is better
+      if (isFinite(Number(d.change)) && Number(d.change) !== 0) setChg(Number(d.change));
+    }).catch(()=>{});
   }
   function initOnce(){
     if (inited) return; inited=true;
@@ -6072,7 +6156,7 @@ const Terminal = (function(){
     });
     // symbol menu
     const menu=$('#sym-menu');
-    menu.innerHTML = PAIRS.map((p,i)=>`<button class="sym-item${i===0?' active':''}" data-p="${p.key}"><span>${p.sym}</span><span class="si-p">${fmt(p.price,p.dec)}</span></button>`).join('');
+    menu.innerHTML = PAIRS.map((p,i)=>`<button class="sym-item${i===0?' active':''}" data-p="${p.key}"><span>${p.sym}</span><span class="si-p" data-px="${p.key}">—</span></button>`).join('');
     const sel=$('#sym-select');
     $('#sym-btn').addEventListener('click', ()=>{
       const o=!sel.classList.contains('open');
@@ -6100,44 +6184,54 @@ const Terminal = (function(){
     });
     // watchlist
     const wl=$('#wl-items');
-    wl.innerHTML = PAIRS.map((p,i)=>{
-      const r=mulberry(p.key.charCodeAt(0)*137+i);
-      const chg=(r()-0.42)*5.2;
-      return `<button class="wl-item${i===0?' active':''}" data-p="${p.key}">
+    wl.innerHTML = PAIRS.map((p,i)=>
+      `<button class="wl-item${i===0?' active':''}" data-p="${p.key}">
         <span class="wi-sym">${p.sym.replace('/USDT','')}</span>
-        <span class="wi-price">${fmt(p.price,p.dec)}</span>
+        <span class="wi-price">—</span>
         <canvas class="wi-spark" data-k="${p.key}"></canvas>
-        <span class="wi-chg ${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>
-      </button>`;
-    }).join('');
+        <span class="wi-chg">—</span>
+      </button>`).join('');
     wl.addEventListener('click', e=>{ const b=e.target.closest('.wl-item'); if(b) setPair(b.dataset.p); });
-    load(true); chart.resize(); drawSparks();
-    startTicks(); animateSparks();
+    load(true); chart.resize();
+    loadWatchlist();
+    startTicks();
   }
-  /* One scheduler drives every sparkline. Closes are memoised, so a frame is
-     just a slice + a stroke — no regeneration, no per-sparkline loop. */
-  let sparkOff=0, sparkCanvases=[];
-  function collectSparks(){ sparkCanvases = $$('.wi-spark'); }
+
+  /* Every watchlist row is real: one klines request per symbol, cached, then
+     price / change / sparkline all read from that same series. A symbol whose
+     data does not load keeps its dashes rather than showing invented numbers. */
+  async function loadWatchlist(){
+    await Promise.all(PAIRS.map(async p=>{
+      try{
+        const c = await MarketData.load(p.api, '1H', 120);
+        if (!c.length) return;
+        const last = c[c.length-1].c;
+        const first = c[Math.max(0, c.length-24)].o;
+        const chg = (last/first - 1) * 100;
+        const row = $(`.wl-item[data-p="${p.key}"]`);
+        if (row){
+          $('.wi-price', row).textContent = fmt(last, p.dec);
+          const ch = $('.wi-chg', row);
+          ch.textContent = (chg>=0?'+':'')+chg.toFixed(2)+'%';
+          ch.className = 'wi-chg ' + (chg>=0?'up':'down');
+        }
+        const px = $(`.si-p[data-px="${p.key}"]`);
+        if (px) px.textContent = fmt(last, p.dec);
+      }catch(e){ /* leave the dashes — no invented fallback */ }
+    }));
+    drawSparks();
+  }
+
   function drawSparks(){
-    if (!sparkCanvases.length) collectSparks();
-    for (const cv of sparkCanvases){
-      const full = MarketData.closes(cv.dataset.k, '1H', 200);
-      const win = 60;
-      const start = Math.floor(sparkOff) % (full.length-win);
-      const d = full.slice(start, start+win);
+    for (const cv of $$('.wi-spark')){
+      const p = PAIRS.find(x=>x.key===cv.dataset.k); if(!p) continue;
+      const full = MarketData.closes(p.api, '1H', 120);
+      if (!full || full.length < 4) continue;
+      const d = full.slice(-60);
       sparkline(cv, d, d[d.length-1]>=d[0] ? '#57B98E' : '#C05B6C');
     }
   }
-  function animateSparks(){
-    if (REDUCED) return;
-    const wl = $('#watchlist');
-    CLEX_ANIMATION_ENGINE.register('sparklines', {
-      el: wl,                       // only runs while the watchlist is on screen
-      fps: 6,                       // a slow, readable drift — not a 60fps redraw
-      render(){ sparkOff += 0.5; drawSparks(); },
-      onEnter: collectSparks
-    });
-  }
+
   function setPair(key){
     pair = PAIRS.find(p=>p.key===key)||PAIRS[0];
     $('#sym-current').textContent = pair.sym;
@@ -6145,29 +6239,36 @@ const Terminal = (function(){
     $$('.wl-item').forEach(x=>x.classList.toggle('active', x.dataset.p===key));
     load(true);   // full rebuild: the new chart grows out of the centre
   }
-  /* a slow state change, so it uses a self-rescheduling timeout rather than a
-     high-frequency loop — and it stops completely when the page isn't showing */
+
+  /* Polls the real last price. It does not move the chart on its own — a tick
+     is only appended when the exchange actually reports a different price. */
   function startTicks(){
-    if (tickTimer || REDUCED) return;
-    let seedN = 5;
+    if (tickTimer) return;
+    let lastPx = null;
     (function schedule(){
-      tickTimer = setTimeout(()=>{
+      tickTimer = setTimeout(async ()=>{
         if (document.body.dataset.activePage==='market' && !document.hidden){
-          const cur = parseFloat($('#term-price').textContent.replace(/,/g,''));
-          const r = mulberry(seedN++)();
-          const next = cur*(1+(r-0.5)*0.0009);
-          $('#term-price').textContent = fmt(next, pair.dec);
-          chart.appendTick(next);
+          try{
+            const d = await ClexAPI.price(pair.api);
+            const px = Number(d.price ?? d.last ?? d.markPrice);
+            if (isFinite(px) && px > 0){
+              $('#term-price').textContent = fmt(px, pair.dec);
+              if (lastPx !== px){ chart.appendTick(px); lastPx = px; }
+              const w = $(`.wl-item[data-p="${pair.key}"] .wi-price`);
+              if (w) w.textContent = fmt(px, pair.dec);
+            }
+          }catch(e){ /* a missed poll changes nothing on screen */ }
         }
         schedule();
-      }, 2400);
+      }, 15000);
     })();
   }
   function stopTicks(){ clearTimeout(tickTimer); tickTimer = null; }
   return {
     initOnce,
     resize:()=>{ if(chart) chart.resize(); },
-    redrawSparks:()=>{ if(inited){ collectSparks(); drawSparks(); } },
+    redrawSparks:()=>{ if(inited) drawSparks(); },
+    refreshLevels:()=>{ if(inited) load(false); },
     destroy(){ stopTicks(); chart && chart.destroy(); inited=false; }
   };
 })();
@@ -6229,7 +6330,9 @@ function bindStatusUI(){
     ['#stat-system','system'], ['#stat-scanner','scanner'],
     ['#stat-engine','signal_engine'], ['#stat-monitor','market_monitor'],
     ['#sys-scanner','scanner'], ['#sys-engine','signal_engine'],
-    ['#sys-monitor','market_monitor']
+    ['#sys-monitor','market_monitor'],
+    ['#mkt-scanner','scanner'], ['#mkt-engine','signal_engine'],
+    ['#mkt-monitor','market_monitor']
   ];
   StatusFeed.on(s=>{
     map.forEach(([sel,key])=> StatusFeed.paint($(sel), s[key]));
