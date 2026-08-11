@@ -2243,7 +2243,7 @@ body[data-active-page="home"] .atmo::after{
     </div>
     <div class="hero-scroll-cue" aria-hidden="true"><span>Scroll</span><span class="line"></span></div>
     <div id="ticker" aria-hidden="true">
-      <div class="tk-label"><span class="dot"></span><span class="lbl-txt">Simulated&nbsp;feed</span></div>
+      <div class="tk-label"><span class="dot"></span><span class="lbl-txt">Live&nbsp;feed</span></div>
       <div class="tk-track" id="ticker-track"></div>
     </div>
   </div>
@@ -2340,21 +2340,22 @@ body[data-active-page="home"] .atmo::after{
         <div class="flow-step" data-step="5"><span class="fs-node">06</span><span class="fs-name">Result</span><span class="fs-sub">Logged</span></div>
       </div>
       <div class="sig-demo" data-reveal="scale">
-        <div class="frame sig-card">
+        <div class="frame sig-card" id="hero-sig">
           <div class="sc-scan" aria-hidden="true"></div>
           <div class="sig-head">
-            <span class="sig-pair">ETH&#8209;USDT</span>
-            <span class="side-badge short">Short</span>
+            <span class="sig-pair" id="hs-pair">—</span>
+            <span class="side-badge" id="hs-side">—</span>
           </div>
-          <div class="sig-rows">
-            <div class="sig-cell full"><span class="k">Entry zone</span><span class="v gold">$1,791 – $1,798</span></div>
-            <div class="sig-cell"><span class="k">TP1</span><span class="v jade">$1,778</span></div>
-            <div class="sig-cell"><span class="k">TP2</span><span class="v jade">$1,773</span></div>
-            <div class="sig-cell"><span class="k">SL</span><span class="v crimson">$1,806</span></div>
-            <div class="sig-cell"><span class="k">Status</span><span class="v" style="color:var(--cyan)">MONITORING</span></div>
+          <div class="sig-rows" id="hs-rows">
+            <div class="sig-cell full"><span class="k">Entry zone</span><span class="v gold" id="hs-entry">—</span></div>
+            <div class="sig-cell"><span class="k">TP1</span><span class="v jade" id="hs-tp1">—</span></div>
+            <div class="sig-cell"><span class="k">TP2</span><span class="v jade" id="hs-tp2">—</span></div>
+            <div class="sig-cell"><span class="k">SL</span><span class="v crimson" id="hs-sl">—</span></div>
+            <div class="sig-cell"><span class="k">Status</span><span class="v" style="color:var(--cyan)" id="hs-status">—</span></div>
           </div>
+          <div class="af-empty" id="hs-empty" style="display:none">No active signal right now</div>
           <div class="sig-foot">
-            <span class="demo-tag">Interface preview — not financial advice</span>
+            <span class="demo-tag" id="hs-tag">Not financial advice</span>
             <a class="ch-more" href="#/signals" data-nav="signals" style="font-family:var(--mono);font-size:9.5px;letter-spacing:.3em;color:var(--dim);text-transform:uppercase">View signals <svg style="width:13px;height:13px"><use href="#arrow-r"/></svg></a>
           </div>
         </div>
@@ -2413,7 +2414,7 @@ NO QUALIFIED SETUP.
           <div class="frame log-panel">
             <div class="log-head">
               <span class="log-title">📜 SCAN1 HISTORY</span>
-              <span class="demo-tag">Sample log</span>
+              <span class="demo-tag">Live record</span>
             </div>
             <div id="home-log-items"></div>
           </div>
@@ -2787,48 +2788,33 @@ NO QUALIFIED SETUP.
             <div class="slide">
               <div class="tg-msg">
                 <div class="tg-from"><span class="tg-ava"><svg viewBox="0 0 120 120" style="color:#14100A"><use href="#emblem"/></svg></span><span class="tg-name" data-cfg="botName">CLEX™ BOT</span><span class="tg-verified">●</span></div>
-                <div class="tg-body">📊 <span class="hl">MARKET SIGNAL</span>
+                <div class="tg-body" id="tgm-signal">📊 <span class="hl">MARKET SIGNAL</span>
 
-<span class="i">ETH-USDT</span> · <span class="dn">SHORT</span>
-
-ENTRY   <span class="hl">$1,791 – $1,798</span>
-TP1     <span class="up">$1,778</span>
-TP2     <span class="up">$1,773</span>
-SL      <span class="dn">$1,806</span>
-
-<span class="dim">STATUS  MONITORING</span></div>
-                <div class="tg-meta"><span>PREVIEW</span><span>·</span><span>14:32</span></div>
+<span class="dim">Loading…</span></div>
+                <div class="tg-meta"><span id="tgm-signal-meta">LIVE</span><span>·</span><span id="tgm-signal-time">—</span></div>
               </div>
             </div>
             <div class="slide">
               <div class="tg-msg">
                 <div class="tg-from"><span class="tg-ava"><svg viewBox="0 0 120 120" style="color:#14100A"><use href="#emblem"/></svg></span><span class="tg-name" data-cfg="botName">CLEX™ BOT</span><span class="tg-verified">●</span></div>
-                <div class="tg-body">📜 <span class="hl">SCAN1 HISTORY</span>
+                <div class="tg-body" id="tgm-history">📜 <span class="hl">SCAN HISTORY</span>
 
-🏆 AKE-USDT · BUY · <span class="up">TP2 HIT</span>
-<span class="dim">@0.001763</span>
-
-🎯 BANK-USDT · BUY · <span class="up">TP1 HIT</span>
-<span class="dim">@0.1112</span>
-
-🎯 TRADOOR-USDT · BUY · <span class="up">TP1 HIT</span>
-<span class="dim">@0.5128</span></div>
-                <div class="tg-meta"><span>PREVIEW</span><span>·</span><span>09:05</span></div>
+<span class="dim">Loading…</span></div>
+                <div class="tg-meta"><span id="tgm-history-meta">LIVE</span><span>·</span><span id="tgm-history-time">—</span></div>
               </div>
             </div>
             <div class="slide">
               <div class="tg-msg">
                 <div class="tg-from"><span class="tg-ava"><svg viewBox="0 0 120 120" style="color:#14100A"><use href="#emblem"/></svg></span><span class="tg-name" data-cfg="botName">CLEX™ BOT</span><span class="tg-verified">●</span></div>
                 <div class="tg-body"><span class="hl">CLEX™ BOT</span>  <span class="dim" data-cfg="botVersion">v17.8.5</span>
-<span class="up">DEPLOYED</span>
 
-TV FEED    : <span class="dn">OFFLINE</span>
-SOURCE     : <span class="i">BINANCE FALLBACK</span>
-CHARTS     : <span class="dim">OFF</span>
-NEWS FEED  : <span class="up">ON</span>
+SCANNER    : <span class="dim" id="tgs-scanner">—</span>
+ENGINE     : <span class="dim" id="tgs-engine">—</span>
+MONITOR    : <span class="dim" id="tgs-monitor">—</span>
+SCAN1/2    : <span class="dim" id="tgs-auto">—</span>
 
-STATUS     : <span class="up">ACTIVE</span></div>
-                <div class="tg-meta"><span>PREVIEW</span><span>·</span><span>08:00</span></div>
+STATUS     : <span class="dim" id="tgs-system">—</span></div>
+                <div class="tg-meta"><span id="tgs-meta">LIVE</span><span>·</span><span id="tgs-time">—</span></div>
               </div>
             </div>
             <div class="slide">
@@ -3019,7 +3005,7 @@ continue in the channel.</div>
         </div>
       </div>
     </div>
-    <p class="foot-disclaimer">Trading digital assets involves significant risk. Nothing on this website constitutes financial advice. Past performance does not guarantee future results. All market data, signals, results, statistics and community profiles shown on this site are simulated and shown to illustrate the interface.</p>
+    <p class="foot-disclaimer">Trading digital assets involves significant risk. Nothing on this website constitutes financial advice. Past performance does not guarantee future results. Market data, signals, results and statistics on this site are read live from the CLEX™ system and the exchange; public history shows setups that reached target or closed at break-even.</p>
     <div class="foot-base">
       <span>© 2026 <span data-cfg="brandName">CRYPTO CLEXER</span> — All observation, no noise.</span>
       <span>We watch · We analyze · We wait · We act</span>
@@ -3092,16 +3078,6 @@ const CLEX_CONFIG = {
   ctaSecondary : 'Explore CLEX™ BOT',
   ctaFree      : 'Join Free Channel',
   ctaVip       : 'Request VIP Access',
-
-  /* ---- MARKET DATA SOURCE ---------------------------------------------- */
-  /* The chart runs on a deterministic simulated feed by default.
-     To connect a real API later, set live:true and implement fetchCandles()
-     in the MarketData module — the whole terminal will use it unchanged.  */
-  market: {
-    live        : false,
-    feedLabel   : 'SIMULATED FEED',
-    endpoint    : ''      // e.g. 'https://api.example.com/klines'
-  },
 
   /* ---- LIVE BOT DATA ---------------------------------------------------- */
   /* Public, read-only endpoints on the CLEX central API. Nothing here is a
@@ -3561,8 +3537,8 @@ const Geometry = (function(){
 const CLEX_PARALLAX = { x:0, y:0 };
 
 /* ==========================================================================
- * CLEX_DATA — cache layer between the UI and any future backend.
- * Today it serves the simulated feed; swap the loaders and the UI is unchanged.
+ * CLEX_DATA — generic TTL cache used by the non-market builders.
+ * Market/candle caching lives in MarketData, keyed by symbol+timeframe.
  * ========================================================================== */
 const CLEX_DATA = (function(){
   const TTL = { market: 15000, signal: 60000, result: 60000, community: 120000 };
@@ -4854,37 +4830,70 @@ function buildTicker(){
   setInterval(()=>{ if(!document.hidden) paint(); }, 60000);
 }
 
+/* The boot readout used to assert ONLINE/ACTIVE regardless of the engine's real
+   state. It now types out whatever /public/status reports, and re-types itself
+   if the state changes while the section is on screen. */
 function buildSysReadout(){
   const box = $('#sys-readout-lines'); if(!box) return;
-  /* each line lands in turn, with the occasional pause before it appears */
-  const L = [
-    { t:`<span class="v-gold">CLEX™ SYSTEM</span> <span class="k">${CLEX_CONFIG.botVersion}</span>`, d:260 },
-    { t:`<span class="k">INITIALIZING…</span>`, d:760 },
-    { t:``, d:120 },
-    { t:`<span class="k">MARKET FEED ........ </span><span class="v-on">ONLINE</span>`, d:340 },
-    { t:`<span class="k">SCANNER ............ </span><span class="v-on">ACTIVE</span>`, d:300 },
-    { t:`<span class="k">SIGNAL ENGINE ...... </span><span class="v-on">READY</span>`, d:640 },
-    { t:`<span class="k">MONITOR ............ </span><span class="v-on">ACTIVE</span>`, d:300 },
-    { t:`<span class="k">TV FEED ............ </span><span class="v-off">OFFLINE</span>`, d:280 },
-    { t:`<span class="k">SOURCE ............. </span><span class="v-ivory">BINANCE FALLBACK</span>`, d:560 },
-    { t:``, d:160 },
-    { t:`<span class="v-gold">SYSTEM READY</span>`, d:0 }
-  ];
-  box.innerHTML = L.map(()=>'<div class="term-line"></div>').join('');
-  const rows = $$('.term-line', box);
-  if (REDUCED){ rows.forEach((r,i)=>r.innerHTML=L[i].t); return; }
-  let i=0;
-  const io = new IntersectionObserver(en=>{
-    if (!en[0].isIntersecting) return;
-    io.disconnect();
+  const TONE = { ONLINE:'v-on', ACTIVE:'v-on', LIMITED:'v-ivory', IDLE:'v-ivory',
+                 PAUSED:'v-ivory', OFFLINE:'v-off', UNAVAILABLE:'v-off' };
+  const pad = (k) => (k + ' ').padEnd(19, '.') + ' ';
+
+  function lines(){
+    const s = StatusFeed.last;
+    const row = (k, v) =>
+      ({ t:`<span class="k">${pad(k)}</span><span class="${TONE[v]||'v-ivory'}">${v}</span>`, d:300 });
+    if (!ClexAPI.enabled() || !s){
+      return [
+        { t:`<span class="v-gold">CLEX™ SYSTEM</span> <span class="k">${CLEX_CONFIG.botVersion}</span>`, d:260 },
+        { t:`<span class="k">CONNECTING…</span>`, d:0 }
+      ];
+    }
+    const out = [
+      { t:`<span class="v-gold">CLEX™ SYSTEM</span> <span class="k">${CLEX_CONFIG.botVersion}</span>`, d:260 },
+      { t:`<span class="k">READING ENGINE STATE…</span>`, d:700 },
+      { t:``, d:120 },
+      row('SYSTEM',        s.system),
+      row('SCANNER',       s.scanner),
+      row('SIGNAL ENGINE', s.signal_engine),
+      row('MONITOR',       s.market_monitor),
+      { t:``, d:160 }
+    ];
+    out.push(s.live
+      ? { t:`<span class="k">${pad('LAST HEARTBEAT')}</span><span class="v-ivory">${agoLabel(s.last_seen)}</span>`, d:200 }
+      : { t:`<span class="v-off">ENGINE NOT REPORTING</span>`, d:0 });
+    if (s.live) out.push({ t:`<span class="v-gold">${s.system === 'ONLINE' ? 'SYSTEM READY' : 'SYSTEM ' + s.system}</span>`, d:0 });
+    return out;
+  }
+
+  let typing = false, seen = '';
+  function render(){
+    const L = lines();
+    const sig = L.map(x=>x.t).join('|');
+    if (sig === seen || typing) return;
+    seen = sig;
+    box.innerHTML = L.map(()=>'<div class="term-line"></div>').join('');
+    const rows = $$('.term-line', box);
+    if (REDUCED){ rows.forEach((r,i)=>r.innerHTML=L[i].t); return; }
+    let i=0; typing = true;
     (function step(){
-      if (i>=L.length){ rows[rows.length-1].innerHTML += '<span class="term-caret"></span>'; return; }
+      if (i>=L.length){
+        rows[rows.length-1].innerHTML += '<span class="term-caret"></span>';
+        typing = false; return;
+      }
       rows[i].innerHTML = L[i].t;
       const wait = L[i].d; i++;
       setTimeout(step, wait);
     })();
+  }
+
+  let visible = false;
+  const io = new IntersectionObserver(en=>{
+    visible = en[0].isIntersecting;
+    if (visible) render();
   }, {threshold:.3});
   io.observe($('#sys-readout'));
+  StatusFeed.on(()=>{ if (visible) render(); });
 }
 
 function resClass(r){
@@ -5011,6 +5020,78 @@ function signalTile(s, i){
   </button>`;
 }
 
+/* Home hero card — the newest real unlocked signal, or an honest empty state.
+   It never renders invented levels; a VIP-only feed simply reports that. */
+function paintHeroSignal(){
+  const card = $('#hero-sig'); if(!card) return;
+  const rows = $('#hs-rows'), empty = $('#hs-empty'), tag = $('#hs-tag');
+  const list = SIGNALS_VIEW || [];
+  const p = list.find(x=>!x.locked);
+  if (!p){
+    rows.style.display = 'none';
+    empty.style.display = 'flex';
+    empty.textContent = list.length ? 'Active setups are VIP-only right now' : 'No active signal right now';
+    $('#hs-pair').textContent = 'CLEX™ FEED';
+    const sb = $('#hs-side'); sb.textContent = '—'; sb.className = 'side-badge';
+    if (tag) tag.textContent = 'Not financial advice';
+    return;
+  }
+  rows.style.display = '';
+  empty.style.display = 'none';
+  $('#hs-pair').textContent = p.pair;
+  const sb = $('#hs-side');
+  sb.textContent = p.side; sb.className = 'side-badge ' + p.side.toLowerCase();
+  $('#hs-entry').textContent  = p.entry;
+  $('#hs-tp1').textContent    = p.tp1;
+  $('#hs-tp2').textContent    = p.tp2;
+  $('#hs-sl').textContent     = p.sl;
+  $('#hs-status').textContent = p.status;
+  if (tag) tag.textContent = p.scan + ' · ' + p.age + ' · Not financial advice';
+}
+
+/* The two Telegram cards on the Bot page that carry trade data (as opposed to
+   message layout) — both read the same live feeds the rest of the site uses. */
+function paintTelegramCards(){
+  const sig = $('#tgm-signal');
+  if (sig){
+    const p = (SIGNALS_VIEW||[]).find(x=>!x.locked);
+    const meta = $('#tgm-signal-meta'), time = $('#tgm-signal-time');
+    if (!ClexAPI.enabled()){
+      sig.innerHTML = `📊 <span class="hl">MARKET SIGNAL</span>\n\n<span class="dim">Live data unavailable</span>`;
+    } else if (p){
+      sig.innerHTML = `📊 <span class="hl">MARKET SIGNAL</span>\n\n`
+        + `<span class="i">${p.pair}</span> · <span class="${p.side==='LONG'?'up':'dn'}">${p.side}</span>\n\n`
+        + `ENTRY   <span class="hl">${p.entry}</span>\n`
+        + `TP1     <span class="up">${p.tp1}</span>\n`
+        + `TP2     <span class="up">${p.tp2}</span>\n`
+        + `SL      <span class="dn">${p.sl}</span>\n\n`
+        + `<span class="dim">STATUS  ${p.status}</span>`;
+      if (time) time.textContent = p.age;
+    } else {
+      const locked = (SIGNALS_VIEW||[]).some(x=>x.locked);
+      sig.innerHTML = `📊 <span class="hl">MARKET SIGNAL</span>\n\n`
+        + `<span class="dim">${locked ? 'Active setups are VIP-only right now' : 'No qualified setup.'}</span>`;
+      if (time) time.textContent = '—';
+    }
+    if (meta) meta.textContent = ClexAPI.enabled() ? 'LIVE' : 'NO SIGNAL';
+  }
+
+  const hist = $('#tgm-history');
+  if (hist){
+    const rows = (HISTORY_VIEW||[]).slice(0,3);
+    const time = $('#tgm-history-time');
+    if (!rows.length){
+      hist.innerHTML = `📜 <span class="hl">SCAN HISTORY</span>\n\n`
+        + `<span class="dim">${RESULTS_STATE==='error' ? 'Live data unavailable' : 'No published results yet'}</span>`;
+      if (time) time.textContent = '—';
+    } else {
+      hist.innerHTML = `📜 <span class="hl">SCAN HISTORY</span>\n\n`
+        + rows.map(h=>`${h.ico} ${h.pair} · ${h.side} · <span class="up">${h.res}</span>\n<span class="dim">${h.px||''}</span>`).join('\n\n');
+      if (time) time.textContent = rows[0].date;
+    }
+  }
+}
+
 function paintSignals(){
   const grid = $('#signals-grid'); if(!grid) return;
   grid.innerHTML = SIGNALS_VIEW.length
@@ -5039,7 +5120,10 @@ async function refreshSignals(showLoading){
     setStatTile(4, SIGNALS_VIEW.length);   // "Live now" on the results page
     const _pos = $('#sys-positions'); if (_pos) _pos.textContent = String(SIGNALS_VIEW.length);
     setCounter('#comm-live', SIGNALS_VIEW.length);
+    paintHeroSignal();
+    paintTelegramCards();
     renderConsole();
+    Terminal.refreshLevels();
   }catch(err){
     // a good grid stays up; only an empty one shows the reconnect state
     if (!SIGNALS_VIEW.length){
@@ -5386,6 +5470,7 @@ async function refreshResults(){
     setStatTile(2, c.tp2 || 0);
     setStatTile(3, c.be  || 0);
     setCounter('#comm-results', HISTORY_VIEW.length);
+    paintTelegramCards();
   }catch(err){
     // keep whatever we last had rather than blanking a good page
     RESULTS_STATE = HISTORY_VIEW.length ? 'ready' : 'error';
@@ -6334,8 +6419,33 @@ function bindStatusUI(){
     ['#mkt-scanner','scanner'], ['#mkt-engine','signal_engine'],
     ['#mkt-monitor','market_monitor']
   ];
+  /* the Telegram status card on the Bot page — the one slide that reports
+     state rather than message format, so it carries real values */
+  const tone = v => v==='ONLINE'||v==='ACTIVE' ? 'up' : (v==='OFFLINE'||v==='UNAVAILABLE') ? 'dn' : 'dim';
+  const tg = (sel, v) => {
+    const e = $(sel); if(!e) return;
+    e.textContent = v; e.className = tone(v);
+  };
+
   StatusFeed.on(s=>{
     map.forEach(([sel,key])=> StatusFeed.paint($(sel), s[key]));
+    tg('#tgs-scanner', s.scanner);
+    tg('#tgs-engine',  s.signal_engine);
+    tg('#tgs-monitor', s.market_monitor);
+    tg('#tgs-system',  s.system);
+    const auto = $('#tgs-auto');
+    if (auto){
+      auto.textContent = s.live
+        ? `${s.scan1_auto?'ON':'OFF'} / ${s.scan2_auto?'ON':'OFF'}`
+        : '—';
+      auto.className = 'dim';
+    }
+    const t = $('#tgs-time');
+    if (t) t.textContent = s.live && s.last_seen
+      ? new Date(s.last_seen*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+      : '—';
+    const m = $('#tgs-meta');
+    if (m) m.textContent = s.live ? 'LIVE' : 'NO SIGNAL';
     const hb = $('#sys-heartbeat');
     if (hb) hb.textContent = s.live && s.last_seen ? agoLabel(s.last_seen) : 'No signal';
     const pos = $('#sys-positions');

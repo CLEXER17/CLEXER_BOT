@@ -431,6 +431,28 @@ async def set_maintenance(request: Request):
     return _maintenance
 
 # ── price (server-side BingX fetch — avoids browser CORS block) ───────────────
+_daily_open_cache: dict = {}     # sym -> (open_price, fetched_at)
+
+def _daily_change_pct(sym: str, price: float) -> float:
+    """Real 24h change, taken from the current daily candle's open.
+
+    Cached for 5 minutes: the daily open only changes once a day, so a ticker
+    poll must not turn into a second upstream request every time."""
+    try:
+        hit = _daily_open_cache.get(sym)
+        if hit and time.time() - hit[1] < 300:
+            op = hit[0]
+        else:
+            r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+                             params={"symbol": sym, "interval": "1d", "limit": 1}, timeout=8)
+            rows = (r.json() or {}).get("data") or []
+            op = float(rows[-1]["open"]) if rows else 0.0
+            _daily_open_cache[sym] = (op, time.time())
+        return (price / op - 1) * 100 if op > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
 @app.get("/price")
 def get_price(sym: str = "BTC-USDT"):
     """Fetch live price from BingX server-side. No auth required."""
@@ -442,19 +464,17 @@ def get_price(sym: str = "BTC-USDT"):
         if isinstance(d, list): d = d[0] if d else {}
         price = float(d.get("lastPrice", 0))
         if price > 0:
-            # BingX returns priceChangePercent as 0 on this endpoint, so derive
-            # the real 24h change from openPrice rather than reporting a flat 0%.
+            # This endpoint reports priceChangePercent as 0, and its openPrice is
+            # the CURRENT candle's open (it yields ~0.001% moves), not the 24h
+            # open — so neither is a usable 24h change. Take it from the daily
+            # candle instead, which is the real thing.
+            chg = 0.0
             try:
                 chg = float(d.get("priceChangePercent") or 0)
             except (TypeError, ValueError):
-                chg = 0.0
-            if not chg:
-                try:
-                    op = float(d.get("openPrice") or 0)
-                    if op > 0:
-                        chg = (price / op - 1) * 100
-                except (TypeError, ValueError):
-                    pass
+                pass
+            if abs(chg) < 0.005:
+                chg = _daily_change_pct(sym, price)
             return {
                 "price":  price,
                 "change": chg,
