@@ -2206,6 +2206,50 @@ def _maintenance_live_if_due():
     except Exception as e:
         print(f"[MAINTENANCE] periodic re-assert failed: {e}")
 
+_last_status_push = 0.0
+_last_scan_ts     = 0.0    # when a scan cycle was last kicked off (set by _run_auto_scan)
+_last_scan_kind   = ""     # "scan1" / "scan2"
+
+def _push_public_status_if_due(force: bool = False):
+    """Publish this server's REAL runtime state to the shared store so the
+    public website can show what the bot is actually doing.
+
+    Nothing else pushes this: save_state() carries trades/stats/history only,
+    and bot_paused/bot_stopped have always lived purely in this process's
+    memory. Without this, every client had to guess — which is exactly why the
+    website kept claiming ONLINE/ACTIVE while the bot sat paused (admin report,
+    2026-08-11).
+
+    Runs from the heartbeat thread, so it keeps publishing WHILE paused — a
+    status feed that stops updating when the bot pauses would be useless. The
+    `ts` it carries is what lets a reader tell "paused" from "process is gone".
+
+    Public-safe only: operational flags, no ids, no keys, no server names, no
+    user data.
+    """
+    global _last_status_push
+    now = time.time()
+    if not force and now - _last_status_push < _FAILOVER_CHECK_INTERVAL:
+        return
+    _last_status_push = now
+    if not CLEXER_API_URL:
+        return
+    try:
+        _kv_push("public_status", {
+            "ts":            now,
+            "paused":        bot_paused.is_set(),
+            "stopped":       bot_stopped.is_set(),
+            "scan1_auto":    bool(SCAN1_AUTO_ENABLED),
+            "scan2_auto":    bool(SCAN2_AUTO_ENABLED),
+            "btc_analysis":  bool(btc_analysis_enabled),
+            "channel_paused": bool(channel_paused),
+            "scan_interval": SIGNAL_SCAN_INTERVAL,
+            "last_scan_ts":  _last_scan_ts,
+            "last_scan":     _last_scan_kind,
+        }, retries=1)
+    except Exception as e:
+        print(f"[STATUS] public status push failed: {e}")
+
 def _server_heartbeat_loop():
     """Dedicated always-on background thread for server coordination — admin
     report 2026-08-09: co2 was genuinely active and healthy but still went
@@ -2227,6 +2271,7 @@ def _server_heartbeat_loop():
                 else:
                     _self_heartbeat_if_due()
                     _maintenance_live_if_due()
+                    _push_public_status_if_due()
         except Exception as e:
             print(f"[SERVER HEARTBEAT] error: {e}")
         time.sleep(20)
@@ -10300,6 +10345,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
+        _push_public_status_if_due(force=True)   # website reflects it immediately
         send_go_screen(chat_id)
 
     elif cmd == "/demo" and is_scanadmin:
@@ -10406,6 +10452,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/pause":
         bot_paused.set(); bot_stopped.set()
+        _push_public_status_if_due(force=True)   # website reflects it immediately
         _ctrl_btns = {"inline_keyboard": [[
             {"text": "🟢 Resume",       "callback_data": "bot_go"},
             {"text": "🟠 Stop Scans",  "callback_data": "bot_stop"},
@@ -10417,6 +10464,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/stop":
         bot_stopped.set(); bot_paused.clear()
+        _push_public_status_if_due(force=True)   # website reflects it immediately
         _ctrl_btns = {"inline_keyboard": [[
             {"text": "🟢 Resume",       "callback_data": "bot_go"},
             {"text": "🔴 Pause All",    "callback_data": "bot_pause"},
@@ -16817,7 +16865,12 @@ _SCAN_CYCLE_DEDUP_TTL = 600  # 10 min — comfortably longer than one scan cycle
 
 def _run_auto_scan(cid, scan_ver=2, is_special=False, trigger_hm=None):
     """Auto-scan entry point — called from main loop at IST :02."""
-    global _scan_cycle_placed
+    global _scan_cycle_placed, _last_scan_ts, _last_scan_kind
+    # Real "last scan" marker for the public status feed — this is the only
+    # place in the codebase that knows a scan cycle actually began.
+    _last_scan_ts   = time.time()
+    _last_scan_kind = f"scan{scan_ver}"
+    _push_public_status_if_due(force=True)
     # "Auto-Scan starting" DM removed 2026-07-28 — routine noise, not an
     # error. auto=True below also suppresses the rest of this run's progress
     # chatter in the admin DM; genuine errors still get through.

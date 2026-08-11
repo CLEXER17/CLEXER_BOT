@@ -397,7 +397,12 @@ def health():
 # Starts ON by default — send /miniapp resume from Telegram to go live
 _maintenance = {"on": True, "msg": "Under Maintenance — send /miniapp resume to go live"}
 
-_MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health", "/cryptopay/", "/payment_events")
+_MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health", "/cryptopay/",
+                                "/payment_events",
+                                # The public marketing website is not the mini app. /miniapp pause
+                                # is about the Telegram web app; it used to black out the website
+                                # too, which has no user data and nothing to pause.
+                                "/public/")
 
 @app.middleware("http")
 async def maintenance_gate(request: Request, call_next):
@@ -709,6 +714,179 @@ def get_public_results(limit: int = 10):
         elif r["result"].startswith("BE"):  counts["be"]  += 1
 
     return {"results": out, "count": len(out), "counts": counts}
+
+
+class _AnonRequest:
+    """Stands in for a Request with no Telegram initData, so a delegated call
+    is always resolved at the most restrictive (Free) tier."""
+    headers: dict = {}
+
+
+@app.get("/public/signals")
+def get_public_signals():
+    """Free-tier view of the live positions, for the public website.
+
+    Delegates to /trades/active with the auth header deliberately stripped, so
+    the same server-side tier filtering runs and VIP-only setups come back as
+    locked placeholders with no numbers. Separate route only so the public site
+    stays reachable while the mini app is in maintenance."""
+    return get_active_trades(_AnonRequest())
+
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+def _parse_ist(s: str) -> float:
+    """bot.py stamps history with ist_str(): '11 Aug 2026  02:15 PM IST'."""
+    try:
+        return datetime.strptime(str(s).replace(" IST", "").strip(),
+                                 "%d %b %Y  %I:%M %p").replace(tzinfo=_IST).timestamp()
+    except Exception:
+        return 0.0
+
+
+_STATUS_STALE_AFTER = 180   # no heartbeat for 3 min => we do not know, and must not claim ONLINE
+
+@app.get("/public/status")
+def get_public_status():
+    """Real operational state of the bot, published by bot.py's heartbeat
+    thread (see _push_public_status_if_due). Read-only, no ids, no server
+    names, no credentials.
+
+    An absent or stale blob resolves to OFFLINE rather than defaulting to
+    anything operational — API reachability is not bot liveness."""
+    st = _kv_dict("public_status")
+    ts = float(st.get("ts") or 0)
+    age = time.time() - ts if ts else None
+    live = bool(ts) and age is not None and age < _STATUS_STALE_AFTER
+
+    if not live:
+        unknown = "OFFLINE"
+        return {
+            "live": False, "last_seen": ts or None, "age": age,
+            "system": unknown, "scanner": unknown,
+            "signal_engine": unknown, "market_monitor": unknown,
+        }
+
+    paused  = bool(st.get("paused"))
+    stopped = bool(st.get("stopped"))
+    scan_on = bool(st.get("scan1_auto")) or bool(st.get("scan2_auto"))
+
+    # PAUSE freezes everything; STOP blocks new scans but monitoring continues.
+    system = "PAUSED" if paused else ("LIMITED" if stopped else "ONLINE")
+    if paused or stopped:
+        scanner = "PAUSED"
+        engine  = "PAUSED"
+    elif not scan_on:
+        scanner = "IDLE"
+        engine  = "IDLE"
+    else:
+        scanner = "ACTIVE"
+        engine  = "ACTIVE"
+    monitor = "PAUSED" if paused else "ACTIVE"
+
+    return {
+        "live": True,
+        "last_seen": ts,
+        "age": age,
+        "system": system,
+        "scanner": scanner,
+        "signal_engine": engine,
+        "market_monitor": monitor,
+        # raw flags so the UI never has to re-derive meaning
+        "paused": paused,
+        "stopped": stopped,
+        "scan1_auto": bool(st.get("scan1_auto")),
+        "scan2_auto": bool(st.get("scan2_auto")),
+        "scan_interval": st.get("scan_interval"),
+        "last_scan": st.get("last_scan") or None,
+        "last_scan_ts": st.get("last_scan_ts") or None,
+    }
+
+
+@app.get("/public/activity")
+def get_public_activity(limit: int = 12):
+    """Public activity feed, derived strictly from records the bot actually
+    wrote. Two real event kinds exist today:
+
+      opened  — a position present in the live state, timestamped by opened_at
+      closed  — an entry in scan_history, timestamped by its own close time
+
+    There is no scanner-event log in the system, so nothing here reports scans
+    started, pairs evaluated or setups rejected. SL closes are excluded, same
+    rule as /public/results. No user data, no ids, no price levels."""
+    state = read_state() or {}
+    limit = max(1, min(int(limit or 12), 40))
+    events = []
+
+    for key, src in (("scan1_trades", "S1"), ("scan2_trades", "S2")):
+        lst = state.get(key) or []
+        if not isinstance(lst, list):
+            lst = list(lst.values()) if hasattr(lst, "values") else []
+        for t in lst:
+            if not isinstance(t, dict) or not t.get("symbol"):
+                continue
+            events.append({
+                "kind": "opened",
+                "symbol": t.get("symbol"),
+                "side": "SHORT" if str(t.get("signal", "")).upper() in ("SHORT", "SELL") else "LONG",
+                "source": src,
+                "result": None,
+                "ts": float(t.get("opened_at") or 0),
+            })
+
+    for h in (state.get("scan_history") or []):
+        if not isinstance(h, dict):
+            continue
+        result = str(h.get("result", "")).strip().upper()
+        if not result or result.startswith("SL") or result.startswith("TIMEOUT"):
+            continue
+        events.append({
+            "kind": "closed",
+            "symbol": h.get("symbol"),
+            "side": "SHORT" if str(h.get("signal", "")).upper() in ("SHORT", "SELL") else "LONG",
+            "source": "S2" if h.get("ver") == 2 else "S1",
+            "result": result,
+            "ts": _parse_ist(h.get("time")),
+        })
+
+    events = [e for e in events if e["ts"] > 0]
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return {"events": events[:limit], "count": len(events[:limit])}
+
+
+_KLINE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+             "1h": "1h", "4h": "4h", "1d": "1d"}
+
+@app.get("/public/klines")
+def get_public_klines(sym: str = "BTC-USDT", tf: str = "15m", limit: int = 200):
+    """Real OHLCV from BingX, fetched server-side for the same reason /price
+    is — the browser is CORS-blocked from calling the exchange directly.
+    No key required; this is BingX's public market data."""
+    interval = _KLINE_TF.get(str(tf).lower())
+    if not interval:
+        raise HTTPException(400, "bad timeframe")
+    limit = max(10, min(int(limit or 200), 500))
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/klines",
+                         params={"symbol": sym, "interval": interval, "limit": limit},
+                         timeout=10)
+        rows = (r.json() or {}).get("data") or []
+    except Exception as e:
+        raise HTTPException(502, f"market data unavailable: {e}")
+
+    out = []
+    for k in rows:
+        try:
+            out.append({
+                "t": int(k["time"]), "o": float(k["open"]), "h": float(k["high"]),
+                "l": float(k["low"]),  "c": float(k["close"]), "v": float(k.get("volume") or 0),
+            })
+        except Exception:
+            continue
+    out.sort(key=lambda c: c["t"])
+    if not out:
+        raise HTTPException(502, "market data unavailable")
+    return {"symbol": sym, "tf": tf, "candles": out, "count": len(out)}
 
 
 @app.get("/virtual/state")
