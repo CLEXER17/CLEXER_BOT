@@ -495,6 +495,16 @@ main{position:relative;z-index:1}
 .sl-dot.off{background:var(--crimson)}
 .sl-dot.idle{background:var(--cyan)}
 .sl-dot.idle::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--cyan);opacity:.5;animation:ringPulse 2.4s ease-out infinite}
+/* unknown until the backend answers — never renders as an operational state */
+.sl-dot.unknown{background:var(--dim)}
+.st-state{display:inline-flex;align-items:center;gap:10px}
+#stat-system,#stat-scanner,#stat-engine,#stat-monitor{font-size:1.05rem;padding-top:8px}
+.st-state .stv{transition:color .4s}
+.st-state.s-on   .stv{color:var(--jade)}
+.st-state.s-warn .stv{color:var(--gold-bright)}
+.st-state.s-off  .stv{color:var(--crimson)}
+.st-state.s-idle .stv{color:var(--cyan)}
+.st-state.s-unknown .stv{color:var(--dim)}
 @keyframes ringPulse{0%{transform:scale(.5);opacity:.7}100%{transform:scale(1.9);opacity:0}}
 
 /* ============================================================
@@ -1065,7 +1075,11 @@ site-footer{display:block}
 .profile-card .pc-tag{display:block;margin-top:16px;font-family:var(--mono);font-size:8px;letter-spacing:.3em;color:var(--dim);text-transform:uppercase}
 
 /* activity feed */
-#activity-feed{display:flex;flex-direction:column;gap:0;overflow:hidden}
+#activity-feed{display:flex;flex-direction:column;gap:0;overflow:hidden;min-height:120px}
+.af-empty{
+  display:flex;align-items:center;justify-content:center;padding:38px 16px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--dim);
+}
 .af-item{
   display:flex;align-items:center;gap:13px;padding:13px 4px;
   border-bottom:1px solid rgba(242,236,223,.05);
@@ -2710,7 +2724,7 @@ NO QUALIFIED SETUP.
       <div>
         <p class="kicker">Command Center <span class="zh">系统</span> 05</p>
         <h1 class="page-title"><span data-cfg="botName">CLEX™ BOT</span></h1>
-        <p class="page-desc">The scanning and signal engine at the core of the ecosystem. Watch it operate below — a simulated console mirroring the live Telegram behavior.</p>
+        <p class="page-desc">The scanning and signal engine at the core of the ecosystem. The readout below reflects the engine's actual reported state.</p>
       </div>
       <a class="btn btn-primary btn-sm" data-link="telegramBot" target="_blank" rel="noopener"><svg class="tg-ico"><use href="#tg-icon"/></svg>Open in Telegram</a>
     </div>
@@ -2718,25 +2732,25 @@ NO QUALIFIED SETUP.
 
   <div class="wrap">
     <div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin-top:0" data-stagger>
-      <div class="stat-tile"><span class="sv" style="font-size:1.05rem;padding-top:8px;display:inline-flex;align-items:center;gap:10px"><span class="sl-dot on"></span>ONLINE</span><span class="sk">System status</span></div>
-      <div class="stat-tile"><span class="sv" style="font-size:1.05rem;padding-top:8px;display:inline-flex;align-items:center;gap:10px"><span class="sl-dot on"></span>ACTIVE</span><span class="sk">Market scanner</span></div>
-      <div class="stat-tile"><span class="sv" style="font-size:1.05rem;padding-top:8px;display:inline-flex;align-items:center;gap:10px"><span class="sl-dot on"></span>ACTIVE</span><span class="sk">Signal engine</span></div>
-      <div class="stat-tile"><span class="sv" style="font-size:1.05rem;padding-top:8px;display:inline-flex;align-items:center;gap:10px"><span class="sl-dot idle"></span>ACTIVE</span><span class="sk">Market monitor</span></div>
+      <div class="stat-tile"><span class="sv st-state" id="stat-system"><span class="sl-dot"></span><span class="stv">—</span></span><span class="sk">System status</span></div>
+      <div class="stat-tile"><span class="sv st-state" id="stat-scanner"><span class="sl-dot"></span><span class="stv">—</span></span><span class="sk">Market scanner</span></div>
+      <div class="stat-tile"><span class="sv st-state" id="stat-engine"><span class="sl-dot"></span><span class="stv">—</span></span><span class="sk">Signal engine</span></div>
+      <div class="stat-tile"><span class="sv st-state" id="stat-monitor"><span class="sl-dot"></span><span class="stv">—</span></span><span class="sk">Market monitor</span></div>
     </div>
 
     <div class="cc-grid">
       <div class="frame cc-panel" data-reveal>
-        <div class="cc-h"><span class="cc-t">Engine console</span><span class="demo-tag">Simulated output</span></div>
+        <div class="cc-h"><span class="cc-t">Engine console</span><span class="demo-tag" id="cc-feedtag">Live readout</span></div>
         <div id="bot-console"><div class="bc-fade"></div><div id="bot-console-lines"></div></div>
       </div>
       <div>
         <div class="frame cc-panel" data-reveal>
           <div class="cc-h"><span class="cc-t">CLEX™ System</span><span class="mono-note" data-cfg="botVersion">v17.8.5</span></div>
-          <div class="status-line"><span class="sl-k">Market data</span><span class="sl-v"><span class="sl-dot on"></span>Online</span></div>
-          <div class="status-line"><span class="sl-k">Scanner</span><span class="sl-v"><span class="sl-dot on"></span>Active</span></div>
-          <div class="status-line"><span class="sl-k">Signals</span><span class="sl-v"><span class="sl-dot idle"></span>Monitoring</span></div>
-          <div class="status-line"><span class="sl-k">Telegram</span><span class="sl-v"><span class="sl-dot on"></span>Connected</span></div>
-          <div class="status-line"><span class="sl-k">Database</span><span class="sl-v"><span class="sl-dot on"></span>Online</span></div>
+          <div class="status-line"><span class="sl-k">Scanner</span><span class="sl-v st-state" id="sys-scanner"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+          <div class="status-line"><span class="sl-k">Signal engine</span><span class="sl-v st-state" id="sys-engine"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+          <div class="status-line"><span class="sl-k">Trade monitor</span><span class="sl-v st-state" id="sys-monitor"><span class="sl-dot"></span><span class="stv">—</span></span></div>
+          <div class="status-line"><span class="sl-k">Engine heartbeat</span><span class="sl-v" id="sys-heartbeat">—</span></div>
+          <div class="status-line"><span class="sl-k">Live positions</span><span class="sl-v" id="sys-positions">—</span></div>
           <div class="status-line"><span class="sl-k">Build</span><span class="sl-v" style="color:var(--gold-bright)">Private testing</span></div>
         </div>
         <div class="frame cc-panel" style="margin-top:20px" data-reveal>
@@ -2921,15 +2935,15 @@ continue in the channel.</div>
       <div>
         <p class="kicker">Compartment <span class="zh">社区</span> 08</p>
         <h1 class="page-title">The <span class="accent">Community</span></h1>
-        <p class="page-desc">Early testers and members following the system as it evolves. Profiles below are illustrative — not real customer identities.</p>
+        <p class="page-desc">Early testers and members following the system as it evolves.</p>
       </div>
-      <span class="demo-tag">Illustrative profiles</span>
+      <span class="demo-tag">Open to everyone</span>
     </div>
   </div>
   <div class="wrap">
     <div class="comm-stats" data-stagger>
-      <div class="stat-tile"><span class="sv" data-count="120" data-suffix="+">0</span><span class="sk">Testing seats · illustrative</span></div>
-      <div class="stat-tile gold"><span class="sv" data-count="42">0</span><span class="sk">Pairs watched · illustrative</span></div>
+      <div class="stat-tile"><span class="sv" id="comm-live" data-count="0">0</span><span class="sk">Live positions</span></div>
+      <div class="stat-tile gold"><span class="sv" id="comm-results" data-count="0">0</span><span class="sk">Logged results</span></div>
       <div class="stat-tile"><span class="sv" data-count="24" data-suffix="/7">0</span><span class="sk">System uptime target</span></div>
     </div>
 
@@ -2947,7 +2961,7 @@ continue in the channel.</div>
 
     <div class="cc-grid" style="margin-top:44px">
       <div class="frame cc-panel" data-reveal>
-        <div class="cc-h"><span class="cc-t">Community activity</span><span class="demo-tag">Simulated</span></div>
+        <div class="cc-h"><span class="cc-t">Community activity</span><span class="demo-tag">Live events</span></div>
         <div id="activity-feed" aria-live="off"></div>
       </div>
       <div class="frame cc-panel" data-reveal>
@@ -3086,7 +3100,7 @@ const CLEX_CONFIG = {
   api: {
     live        : true,
     baseUrl     : 'https://central-api-production-bd09.up.railway.app',
-    signalsPath : '/trades/active',
+    signalsPath : '/public/signals',
     resultsPath : '/public/results',
     refreshMs   : 45000,   // signal feed poll interval
     timeoutMs   : 9000
@@ -3155,8 +3169,13 @@ const ClexAPI = (function(){
 
   return {
     enabled,
-    activeSignals: () => get(cfg().signalsPath || '/trades/active'),
-    publicResults: () => get(cfg().resultsPath || '/public/results')
+    activeSignals: () => get(cfg().signalsPath || '/public/signals'),
+    publicResults: () => get(cfg().resultsPath || '/public/results'),
+    status:        () => get('/public/status'),
+    activity:      () => get('/public/activity'),
+    price:      sym => get('/price?sym=' + encodeURIComponent(sym)),
+    klines: (sym, tf, limit) =>
+      get(`/public/klines?sym=${encodeURIComponent(sym)}&tf=${encodeURIComponent(tf)}&limit=${limit||200}`)
   };
 })();
 
@@ -3337,19 +3356,6 @@ const PROFILES = [
   { h:'@silent_scan',    r:'Community Member',  q:'I like that it doesn&rsquo;t post something every hour.', s:4 },
   { h:'@zeroline',       r:'Early Tester',      q:'The history log is the part I check first.',      s:5 },
   { h:'@deltaflow',      r:'Community Member',  q:'Format is consistent, that&rsquo;s the main thing.', s:6 }
-];
-
-const ACTIVITY = [
-  { src:'CLEX™ BOT',    txt:'Signal detected · ETH-USDT',      c:'gold' },
-  { src:'VIP',          txt:'New market update posted',        c:'crimson' },
-  { src:'Free Channel', txt:'Update posted',                   c:'cyan' },
-  { src:'Result',       txt:'TP1 HIT · BANK-USDT',             c:'jade' },
-  { src:'CLEX™ BOT',    txt:'Market scan completed',           c:'gold' },
-  { src:'CLEX™ BOT',    txt:'No qualified setup · monitoring', c:'dim' },
-  { src:'Result',       txt:'TP2 HIT · AKE-USDT',              c:'jade' },
-  { src:'VIP',          txt:'Early setup shared',              c:'crimson' },
-  { src:'Free Channel', txt:'Bot update announced',            c:'cyan' },
-  { src:'CLEX™ BOT',    txt:'Monitoring 42 pairs',             c:'gold' }
 ];
 
 /* ==========================================================================
@@ -4937,7 +4943,6 @@ function buildCommunity(){
         <span><span class="pc-handle">${p.h}</span><span class="pc-role">${p.r}</span></span>
       </div>
       <p class="pc-quote">&ldquo;${p.q}&rdquo;</p>
-      <span class="pc-tag">— Illustrative profile</span>
     </div></div>`).join('');
 }
 
@@ -5013,6 +5018,9 @@ async function refreshSignals(showLoading){
     SIGNALS_VIEW = (d.positions || []).map(shapePosition);
     paintSignals();
     setStatTile(4, SIGNALS_VIEW.length);   // "Live now" on the results page
+    const _pos = $('#sys-positions'); if (_pos) _pos.textContent = String(SIGNALS_VIEW.length);
+    setCounter('#comm-live', SIGNALS_VIEW.length);
+    renderConsole();
   }catch(err){
     // a good grid stays up; only an empty one shows the reconnect state
     if (!SIGNALS_VIEW.length){
@@ -5320,6 +5328,15 @@ function buildResults(){
   }
 }
 
+/* re-run a counter with a real value (the animation only ever plays once) */
+function setCounter(sel, value){
+  const el = $(sel); if(!el) return;
+  el.dataset.count = String(value);
+  delete el.dataset.done;
+  el.textContent = '0';
+  runCounters(el.parentElement);
+}
+
 function setStatTile(idx, value){
   const el = $$('#stats-row .stat-tile')[idx]; if(!el) return;
   const sv = $('.sv', el); if(!sv) return;
@@ -5343,6 +5360,7 @@ async function refreshResults(){
     setStatTile(1, c.tp1 || 0);
     setStatTile(2, c.tp2 || 0);
     setStatTile(3, c.be  || 0);
+    setCounter('#comm-results', HISTORY_VIEW.length);
   }catch(err){
     // keep whatever we last had rather than blanking a good page
     RESULTS_STATE = HISTORY_VIEW.length ? 'ready' : 'error';
@@ -6155,78 +6173,211 @@ const Terminal = (function(){
 })();
 
 /* ==========================================================================
- * BOT CONSOLE SIMULATION
+ * SYSTEM STATUS — the bot's own reported state
+ * --------------------------------------------------------------------------
+ * /public/status is published by the bot's heartbeat thread. It keeps
+ * publishing while paused, so a stale timestamp means the process is gone,
+ * not that it is idle. Neither case is ever rendered as operational: the
+ * dots and labels start at UNKNOWN and only leave it on a real answer.
  * ========================================================================== */
-(function botConsole(){
-  const box=$('#bot-console-lines'); if(!box) return;
-  /* an endless scanner cycle — deliberately unhurried, all simulated */
-  const SEQ = [
-    { t:'<span class="d">[SCN]</span> <span class="g">SCAN STARTED</span>', d:1100 },
-    { t:'      <span class="i">BTC</span>  ................ <span class="d">NO SETUP</span>', d:900 },
-    { t:'      <span class="i">ETH</span>  ................ <span class="d">NO SETUP</span>', d:900 },
-    { t:'      <span class="i">SOL</span>  ................ <span class="d">NO SETUP</span>', d:1000 },
-    { t:'<span class="d">[FLT]</span> <span class="c">MARKET CONDITIONS REJECTED</span>', d:1300 },
-    { t:'      <span class="d">scanning…</span>', d:2600 },
-    { t:'<span class="d">[SCN]</span> re-scanning 42 pairs …', d:2000 },
-    { t:'<span class="d">[FLT]</span> <span class="g">SETUP DETECTED</span>', d:800 },
-    { t:'      <span class="i">ETH-USDT</span> · <span class="c">SHORT</span>', d:700 },
-    { t:'      <span class="g">ENTRY ZONE FOUND</span>  $1,791 – $1,798', d:1200 },
-    { t:'<span class="d">[PUB]</span> <span class="g">SIGNAL PUBLISHED</span>', d:900 },
-    { t:'      TP1 <span class="j">$1,778</span>   TP2 <span class="j">$1,773</span>   SL <span class="c">$1,806</span>', d:1200 },
-    { t:'<span class="d">[MON]</span> <span class="i">MONITORING</span> …', d:2600 },
-    { t:'<span class="d">[MON]</span> <span class="j">TP1 HIT</span>', d:1200 },
-    { t:'<span class="d">[LOG]</span> <span class="g">RESULT LOGGED</span> · <span class="d">simulated output</span>', d:2800 }
-  ];
-  const MAX_LINES = 30;          // the console never accumulates DOM nodes
-  let i=0, running=false, timer=null;
-  function push(html){
-    const d=document.createElement('div');
-    d.className='bc-line af-enter'; d.innerHTML=html;
-    box.appendChild(d);
-    while (box.children.length>MAX_LINES) box.removeChild(box.firstChild);
+const StatusFeed = (function(){
+  const subs = [];
+  let last = null, timer = null, retry = null;
+
+  const TONE = { ONLINE:'on', ACTIVE:'on', LIMITED:'warn', IDLE:'idle',
+                 PAUSED:'warn', OFFLINE:'off', UNAVAILABLE:'off' };
+
+  function paint(el, value){
+    if (!el) return;
+    const v = value || 'UNAVAILABLE';
+    const tone = TONE[v] || 'unknown';
+    const dot = $('.sl-dot', el), txt = $('.stv', el);
+    if (dot) dot.className = 'sl-dot ' + (tone === 'unknown' ? 'unknown' : tone);
+    if (txt) txt.textContent = v;
+    el.className = el.className.replace(/\bs-\w+/g,'').trim() + ' s-' + tone;
   }
-  function step(){
-    if(!running) return;
-    push(SEQ[i].t);
-    const wait = REDUCED ? 1400 : SEQ[i].d;
-    i = (i+1) % SEQ.length;
-    if (i===0){ timer=setTimeout(()=>{ box.innerHTML=''; step(); }, 2200); return; }
-    timer=setTimeout(step, wait);
+
+  async function refresh(){
+    clearTimeout(retry);
+    if (!ClexAPI.enabled()) return;
+    try{
+      last = await ClexAPI.status();
+    }catch(err){
+      // unreachable API is its own honest state — never fall through to ONLINE
+      last = { live:false, system:'UNAVAILABLE', scanner:'UNAVAILABLE',
+               signal_engine:'UNAVAILABLE', market_monitor:'UNAVAILABLE' };
+      retry = setTimeout(refresh, 20000);
+    }
+    subs.forEach(fn=>{ try{ fn(last); }catch(e){} });
   }
-  // prefill so the console never reads as empty on arrival
-  SEQ.slice(0,5).forEach(s=>push(s.t)); i=5;
-  const io=new IntersectionObserver(en=>{
-    if (en[0].isIntersecting && !running){ running=true; step(); }
-    else if (!en[0].isIntersecting){ running=false; clearTimeout(timer); }
-  },{threshold:.2});
-  io.observe($('#bot-console'));
+
+  function start(){
+    if (timer || !ClexAPI.enabled()) return;
+    refresh();
+    timer = setInterval(()=>{ if(!document.hidden) refresh(); }, 30000);
+  }
+
+  return {
+    start, refresh, paint,
+    get last(){ return last; },
+    on(fn){ subs.push(fn); if (last) fn(last); }
+  };
 })();
 
+function bindStatusUI(){
+  const map = [
+    ['#stat-system','system'], ['#stat-scanner','scanner'],
+    ['#stat-engine','signal_engine'], ['#stat-monitor','market_monitor'],
+    ['#sys-scanner','scanner'], ['#sys-engine','signal_engine'],
+    ['#sys-monitor','market_monitor']
+  ];
+  StatusFeed.on(s=>{
+    map.forEach(([sel,key])=> StatusFeed.paint($(sel), s[key]));
+    const hb = $('#sys-heartbeat');
+    if (hb) hb.textContent = s.live && s.last_seen ? agoLabel(s.last_seen) : 'No signal';
+    const pos = $('#sys-positions');
+    if (pos) pos.textContent = ClexAPI.enabled() && SIGNALS_VIEW ? String(SIGNALS_VIEW.length) : '—';
+  });
+}
+
 /* ==========================================================================
- * COMMUNITY ACTIVITY FEED
+ * ENGINE CONSOLE — real readout, not a simulated scanner
+ * --------------------------------------------------------------------------
+ * Nothing in the system records scan-started / pair-evaluated / setup-rejected
+ * events, so this reports only what the backend actually knows: the engine's
+ * state, its live positions, and its real recent opens and closes.
  * ========================================================================== */
-(function activity(){
-  const feed=$('#activity-feed'); if(!feed) return;
-  const COL={gold:'var(--gold)',crimson:'var(--crimson)',cyan:'var(--cyan)',jade:'var(--jade)',dim:'var(--dim)'};
-  let i=0, timer=null, on=false;
-  function mins(n){ return n<1?'now':(n+'m ago'); }
-  function add(){
-    const a=ACTIVITY[i%ACTIVITY.length]; i++;
-    const el=document.createElement('div');
-    el.className='af-item af-enter';
-    el.innerHTML=`<span class="af-dot" style="background:${COL[a.c]}"></span>
-      <span class="af-src">${a.src}</span><span class="af-txt">${a.txt}</span><span class="af-time">now</span>`;
-    feed.prepend(el);
-    $$('.af-item',feed).forEach((n,k)=>{ if(k>0) $('.af-time',n).textContent=mins(k*2); });
-    while (feed.children.length>7) feed.removeChild(feed.lastChild);
+function renderConsole(){
+  const box = $('#bot-console-lines'); if(!box) return;
+  const tag = $('#cc-feedtag');
+  const s   = StatusFeed.last;
+
+  if (!ClexAPI.enabled() || !s){
+    box.innerHTML = `<div class="bc-line"><span class="d">[SYS]</span> <span class="d">connecting…</span></div>`;
+    return;
   }
-  const io=new IntersectionObserver(en=>{
-    on=en[0].isIntersecting;
-    if(on && !timer){ for(let k=0;k<5;k++) add(); timer=setInterval(()=>{ if(!document.hidden) add(); }, REDUCED?9000:4200); }
-    else if(!on && timer){ clearInterval(timer); timer=null; }
-  },{threshold:.15});
-  io.observe(feed);
-})();
+  if (!s.live){
+    if (tag) tag.textContent = 'Live data unavailable';
+    box.innerHTML = `<div class="bc-line"><span class="d">[SYS]</span> <span class="c">LIVE DATA UNAVAILABLE</span></div>
+      <div class="bc-line"><span class="d">      the engine is not reporting</span></div>`;
+    return;
+  }
+  if (tag) tag.textContent = 'Live readout';
+
+  const L = [];
+  const row = (k, v, cls) => L.push(`<div class="bc-line"><span class="d">[${k}]</span> <span class="${cls||'i'}">${v}</span></div>`);
+
+  row('SYS', s.system, s.system==='ONLINE' ? 'g' : 'c');
+  row('SCN', 'scanner ' + s.scanner.toLowerCase(), s.scanner==='ACTIVE' ? 'g' : 'c');
+  row('SIG', 'signal engine ' + s.signal_engine.toLowerCase(), s.signal_engine==='ACTIVE' ? 'g' : 'c');
+  row('MON', 'trade monitor ' + s.market_monitor.toLowerCase(), s.market_monitor==='ACTIVE' ? 'g' : 'c');
+  if (s.last_scan && s.last_scan_ts)
+    row('SCN', 'last cycle · ' + s.last_scan.toUpperCase() + ' · ' + agoLabel(s.last_scan_ts));
+  row('POS', 'live positions · ' + (SIGNALS_VIEW ? SIGNALS_VIEW.length : 0));
+
+  const open = (SIGNALS_VIEW||[]).filter(p=>!p.locked);
+  if (open.length){
+    L.push(`<div class="bc-line">&nbsp;</div>`);
+    open.slice(0,6).forEach(p=>{
+      L.push(`<div class="bc-line">      <span class="i">${p.pair}</span> · <span class="${p.side==='LONG'?'j':'c'}">${p.side}</span> · <span class="d">${p.scan} · ${p.status}</span></div>`);
+    });
+  }
+  const locked = (SIGNALS_VIEW||[]).filter(p=>p.locked).length;
+  if (locked) L.push(`<div class="bc-line">      <span class="d">+ ${locked} VIP-only ${locked===1?'setup':'setups'} withheld</span></div>`);
+
+  if (ACTIVITY_VIEW && ACTIVITY_VIEW.length){
+    L.push(`<div class="bc-line">&nbsp;</div>`);
+    ACTIVITY_VIEW.slice(0,5).forEach(e=>{
+      const k = e.kind === 'closed' ? 'LOG' : 'PUB';
+      const v = e.kind === 'closed' ? `${e.result} · ${e.pair}` : `signal opened · ${e.pair}`;
+      L.push(`<div class="bc-line"><span class="d">[${k}]</span> <span class="${e.kind==='closed'?'j':'g'}">${v}</span> <span class="d">${e.ago}</span></div>`);
+    });
+  }
+  box.innerHTML = L.join('');
+}
+
+/* ==========================================================================
+ * COMMUNITY ACTIVITY — real backend events only
+ * ========================================================================== */
+var ACTIVITY_VIEW  = [];
+var ACTIVITY_STATE = 'loading';
+let activityRetry  = null;
+
+function shapeEvent(e){
+  return {
+    kind  : e.kind,
+    pair  : prettyPair(e.symbol),
+    side  : e.side === 'SHORT' ? 'SHORT' : 'LONG',
+    source: e.source || 'SCAN',
+    result: e.result ? (e.result.startsWith('TP2') ? 'TP2 HIT'
+                      : e.result.startsWith('TP1') ? 'TP1 HIT' : 'BREAK EVEN') : null,
+    ts    : e.ts,
+    ago   : agoLabel(e.ts)
+  };
+}
+
+function paintActivity(){
+  const feed = $('#activity-feed'); if(!feed) return;
+  if (ACTIVITY_STATE === 'loading'){
+    feed.innerHTML = `<div class="af-empty"><span class="ds-dots">Connecting</span></div>`;
+    return;
+  }
+  if (ACTIVITY_STATE === 'error'){
+    feed.innerHTML = `<div class="af-empty">Live data unavailable</div>`;
+    return;
+  }
+  if (!ACTIVITY_VIEW.length){
+    feed.innerHTML = `<div class="af-empty">No recent activity</div>`;
+    return;
+  }
+  const seen = new Set($$('.af-item', feed).map(n=>n.dataset.k));
+  feed.innerHTML = ACTIVITY_VIEW.map(e=>{
+    const k = e.kind + ':' + e.pair + ':' + e.ts;
+    const col = e.kind === 'closed'
+      ? (e.result === 'BREAK EVEN' ? 'var(--cyan)' : 'var(--jade)')
+      : 'var(--gold)';
+    const txt = e.kind === 'closed'
+      ? `${e.result} · ${e.pair}`
+      : `Signal opened · ${e.pair} · ${e.side}`;
+    // only genuinely new rows animate in
+    const isNew = seen.size && !seen.has(k);
+    return `<div class="af-item${isNew && !REDUCED ? ' af-enter' : ''}" data-k="${k}">
+      <span class="af-dot" style="background:${col}"></span>
+      <span class="af-src">${e.source}</span>
+      <span class="af-txt">${txt}</span>
+      <span class="af-time">${e.ago}</span>
+    </div>`;
+  }).join('');
+}
+
+async function refreshActivity(){
+  clearTimeout(activityRetry);
+  if (!ClexAPI.enabled()) return;
+  try{
+    const d = await ClexAPI.activity();
+    ACTIVITY_VIEW  = (d.events || []).map(shapeEvent);
+    ACTIVITY_STATE = 'ready';
+  }catch(err){
+    if (!ACTIVITY_VIEW.length) ACTIVITY_STATE = 'error';
+    activityRetry = setTimeout(refreshActivity, 20000);
+  }
+  paintActivity();
+  renderConsole();
+}
+
+function buildActivity(){
+  const feed = $('#activity-feed');
+  if (!ClexAPI.enabled()){
+    if (feed) feed.innerHTML = `<div class="af-empty">Live data unavailable</div>`;
+    return;
+  }
+  bindStatusUI();
+  StatusFeed.on(()=> renderConsole());
+  StatusFeed.start();
+  paintActivity();
+  refreshActivity();
+  setInterval(()=>{ if(!document.hidden) refreshActivity(); }, 90000);
+}
 
 /* ==========================================================================
  * DEVICE ADAPTATION
@@ -6301,6 +6452,7 @@ function boot(){
   buildCommunity();
   buildSignals();
   buildResults();
+  buildActivity();
 
   buildRoadmapVertical();
   sliders.roadmap  = makeSlider($('#roadmap-slider'), (i,total,per)=> roadmapRail(i,total,per));
