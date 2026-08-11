@@ -464,17 +464,12 @@ def get_price(sym: str = "BTC-USDT"):
         if isinstance(d, list): d = d[0] if d else {}
         price = float(d.get("lastPrice", 0))
         if price > 0:
-            # This endpoint reports priceChangePercent as 0, and its openPrice is
-            # the CURRENT candle's open (it yields ~0.001% moves), not the 24h
-            # open — so neither is a usable 24h change. Take it from the daily
-            # candle instead, which is the real thing.
-            chg = 0.0
-            try:
-                chg = float(d.get("priceChangePercent") or 0)
-            except (TypeError, ValueError):
-                pass
-            if abs(chg) < 0.005:
-                chg = _daily_change_pct(sym, price)
+            # Neither of this endpoint's own change fields is usable:
+            # priceChangePercent comes back as 0 on some calls and as a
+            # FRACTION (0.01 meaning 1%) on others, and openPrice is the current
+            # candle's open, not the 24h open. The daily candle is the only
+            # consistent source, so it is the one we use.
+            chg = _daily_change_pct(sym, price)
             return {
                 "price":  price,
                 "change": chg,
