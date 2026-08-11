@@ -3239,16 +3239,30 @@ function dataState(kind){
     <span class="ds-t">Reconnecting<span class="ds-dots"></span></span></div>`;
 }
 
-/* ---- shaping helpers: API position -> the card shape this page renders ---- */
+/* ---- shaping helpers: API position -> the card shape this page renders ----
+   Backend strings are escaped here, at the boundary, rather than at each of the
+   dozen template literals that consume them. Symbols and timestamps originate
+   from the exchange and the bot rather than from user input, but they still end
+   up inside innerHTML, and one escaped choke point is easier to keep correct
+   than remembering it at every call site. */
+const esc = s => String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
 const fmtPx = v => {
   const n = Number(v);
   if (!isFinite(n) || n === 0) return '—';
   const dec = n >= 1000 ? 1 : n >= 10 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 4 : 6;
   return '$' + n.toLocaleString('en-US', {minimumFractionDigits:dec, maximumFractionDigits:dec});
 };
-/* the bot emits both "BEAT-USDT" and bare "BTCUSDT" — normalise to one form */
+/* the bot emits both "BEAT-USDT" and bare "BTCUSDT" — normalise to one form.
+   Anything outside the exchange-symbol character set is dropped, so the result
+   is safe to interpolate regardless of what the upstream string contained. */
 const prettyPair = s => String(s||'').toUpperCase().replace(/[_/]/g,'-')
-  .replace(/([A-Z0-9]+)(USDT)$/, '$1-$2').replace(/-{2,}/g,'-');
+  .replace(/[^A-Z0-9-]/g,'')
+  .replace(/([A-Z0-9]+)(USDT)$/, '$1-$2').replace(/-{2,}/g,'-').slice(0,24);
+/* fixed lookup, unknown sources collapse to a constant — a backend value can
+   never reach the DOM through here */
 const scanLabel  = src => ({main:'BTC', scan1:'SCAN1', scan2:'SCAN2', demo1:'TS1', demo2:'TS2'})[src] || 'SCAN';
 function agoLabel(ts){
   const n = Number(ts); if(!isFinite(n) || n<=0) return 'live';
@@ -3298,7 +3312,7 @@ function shapeResult(r){
     px   : r.close_price ? ('@' + String(Number(r.close_price).toPrecision(6)).replace(/\.?0+$/,'')) : '',
     scan : r.source === 'S2' ? 'SCAN2' : 'SCAN1',
     // bot timestamps look like "11 Aug 2026  02:15 PM IST" — the log row wants "11 AUG"
-    date : String(r.time||'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase(),
+    date : esc(String(r.time||'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase()),
     ico  : label === 'TP2 HIT' ? '🏆' : label === 'TP1 HIT' ? '🎯' : '⚖️'
   };
 }
@@ -6880,12 +6894,12 @@ let activityRetry  = null;
 
 function shapeEvent(e){
   return {
-    kind  : e.kind,
+    kind  : e.kind === 'closed' ? 'closed' : 'opened',
     pair  : prettyPair(e.symbol),
     side  : e.side === 'SHORT' ? 'SHORT' : 'LONG',
-    source: e.source || 'SCAN',
-    result: e.result ? (e.result.startsWith('TP2') ? 'TP2 HIT'
-                      : e.result.startsWith('TP1') ? 'TP1 HIT' : 'BREAK EVEN') : null,
+    source: e.source === 'S2' ? 'S2' : 'S1',
+    result: e.result ? (String(e.result).startsWith('TP2') ? 'TP2 HIT'
+                      : String(e.result).startsWith('TP1') ? 'TP1 HIT' : 'BREAK EVEN') : null,
     ts    : e.ts,
     ago   : agoLabel(e.ts)
   };

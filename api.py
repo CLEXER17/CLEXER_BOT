@@ -19,7 +19,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -35,17 +34,208 @@ DATA_DIR        = os.environ.get("DATA_DIR", "/data")
 STATE_FILE      = os.path.join(DATA_DIR, "clexer_state.json")
 CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "")   # @CryptoBot — verifies incoming webhook signatures
 ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID", "")   # same value as bot.py's — must be set here too for /trades/active's admin view
+INITDATA_MAX_AGE = int(os.environ.get("INITDATA_MAX_AGE", "3600"))   # seconds
 IST = timezone(timedelta(hours=5, minutes=30))
 
 fernet = Fernet(ENCRYPTION_KEY)
 
 app = FastAPI(title="CLEXER API", version="1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Was allow_origins=["*"] for everything, which let any site on the internet
+# script a visitor's browser into calling the authenticated endpoints with their
+# initData header attached.
+#
+# Split by what the endpoint actually exposes rather than banning cross-origin
+# outright, because these two cases have opposite requirements:
+#
+#   PUBLIC  (/public/*, /price, /health) — the marketing site's data. No auth,
+#           no user data, no credentials. Stays open to any origin so the site
+#           keeps working on whatever domain it is deployed to.
+#   PRIVATE (everything else) — reached with X-Telegram-Init-Data or the push
+#           secret. Allow-listed origins only; an unknown origin gets no
+#           Access-Control header and the browser refuses to hand over the body.
+#
+# The Mini App itself is served from this same service and calls it via
+# window.location.origin, so it is same-origin and never needs CORS at all.
+_PUBLIC_CORS_PREFIXES = ("/public/", "/price", "/health", "/maintenance")
+
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in
+                   os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_TELEGRAM_ORIGINS = ["https://web.telegram.org", "https://webk.telegram.org",
+                     "https://webz.telegram.org"]
+ALLOWED_ORIGINS += _TELEGRAM_ORIGINS
+# Opt-in only, for local development against a localhost or file:// page.
+if os.environ.get("DEV_MODE") == "1":
+    ALLOWED_ORIGINS += ["http://localhost:8000", "http://127.0.0.1:8000", "null"]
+
+
+def _cors_headers(request: Request) -> dict:
+    origin = request.headers.get("origin", "")
+    if not origin:
+        return {}
+    path = request.url.path
+    if path.startswith(_PUBLIC_CORS_PREFIXES):
+        # public read-only data — safe for any origin, and never credentialed
+        allow = "*"
+    elif origin.rstrip("/") in ALLOWED_ORIGINS:
+        allow = origin
+    else:
+        return {}
+    h = {
+        "Access-Control-Allow-Origin": allow,
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data, X-Push-Secret, Accept",
+        "Access-Control-Max-Age": "600",
+    }
+    if allow != "*":
+        h["Vary"] = "Origin"
+    return h
+
+
+# ── error sanitising ──────────────────────────────────────────────────────────
+def _server_error(where: str, exc: Exception) -> HTTPException:
+    """Log the real cause, return an opaque 500.
+
+    Several handlers used to return f"DB error: {e}", which hands the caller
+    psycopg2 text — table names, column names, sometimes the connection target."""
+    print(f"[ERROR] {where}: {type(exc).__name__}: {exc}")
+    return HTTPException(500, "Internal error")
+
+
+def _market_error(exc: Exception) -> HTTPException:
+    print(f"[ERROR] market data: {type(exc).__name__}: {exc}")
+    return HTTPException(502, "Market data unavailable")
+
+
+# ── input validation ──────────────────────────────────────────────────────────
+import re as _re
+_SYMBOL_RE = _re.compile(r"^[A-Z0-9]{2,15}-[A-Z0-9]{2,10}$")
+
+
+def _clean_symbol(sym: str) -> str:
+    """Exchange symbols only. These are interpolated into an outbound request to
+    BingX, so an unvalidated value is an open relay for arbitrary query content
+    and a cache-poisoning vector for _daily_open_cache."""
+    s = str(sym or "").strip().upper()
+    if not _SYMBOL_RE.match(s):
+        raise HTTPException(400, "Invalid symbol")
+    return s
+
+
+# ── rate limiting ─────────────────────────────────────────────────────────────
+# Deliberately in-process and lightweight: this service is a single Railway
+# instance, and the goal is to stop scraping and credential-stuffing loops, not
+# to build a distributed quota system. Limits are generous enough that the
+# website's own polling (a price every 4s, a batch quote every 20s) never trips.
+_RATE_BUCKETS: dict = {}
+_RATE_RULES = (
+    # (path prefix, max requests, window seconds)
+    ("/bingx/",     10,  60),   # credential writes — tightest
+    ("/copy/",      60,  60),   # per-user private data
+    ("/virtual/",   60,  60),
+    ("/trades/",    90,  60),
+    ("/public/",   240,  60),   # website polling lives here
+    ("/price",     240,  60),
 )
+_RATE_DEFAULT = (120, 60)
+_RATE_EXEMPT = ("/kv/", "/push_state", "/payment_events", "/health", "/cryptopay/")
+
+
+def _client_ip(request: Request) -> str:
+    # Railway terminates TLS upstream, so the socket peer is the proxy
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit(request: Request):
+    path = request.url.path
+    if path.startswith(_RATE_EXEMPT):
+        return None                      # server-to-server, already secret-gated
+    limit, window = _RATE_DEFAULT
+    for prefix, lim, win in _RATE_RULES:
+        if path.startswith(prefix):
+            limit, window = lim, win
+            break
+    now = time.time()
+    key = (_client_ip(request), window, limit, path.split("/")[1] if "/" in path[1:] else path)
+    hits = _RATE_BUCKETS.get(key)
+    if hits is None:
+        hits = _RATE_BUCKETS[key] = []
+    cutoff = now - window
+    while hits and hits[0] < cutoff:
+        hits.pop(0)
+    if len(hits) >= limit:
+        return int(hits[0] + window - now) + 1
+    hits.append(now)
+    # opportunistic sweep so the dict cannot grow without bound
+    if len(_RATE_BUCKETS) > 4000:
+        for k in [k for k, v in _RATE_BUCKETS.items() if not v or v[-1] < now - 300]:
+            _RATE_BUCKETS.pop(k, None)
+    return None
+
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+# The Mini App is the only HTML this service serves. Its markup is inline
+# (styles, handlers and script all live in clexer-miniapp.html) and it loads
+# Telegram's WebApp SDK, so the policy has to allow inline script/style and
+# telegram.org — but nothing wider than that.
+_MINIAPP_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://telegram.org https://*.telegram.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' https://*.up.railway.app; "
+    "frame-ancestors https://web.telegram.org https://*.telegram.org; "
+    "base-uri 'none'; form-action 'none'"
+)
+
+
+@app.middleware("http")
+async def security_gate(request: Request, call_next):
+    # preflight is answered here so it never has to pass the rate limiter or
+    # reach a handler
+    if request.method == "OPTIONS":
+        resp = JSONResponse({}, status_code=204)
+        for k, v in _cors_headers(request).items():
+            resp.headers[k] = v
+        for k, v in _SECURITY_HEADERS.items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    retry_after = _rate_limit(request)
+    if retry_after is not None:
+        resp = JSONResponse({"error": "rate_limited", "msg": "Too many requests"}, status_code=429)
+        resp.headers["Retry-After"] = str(retry_after)
+    else:
+        try:
+            resp = await call_next(request)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            print(f"[ERROR] unhandled {request.url.path}: {type(exc).__name__}: {exc}")
+            resp = JSONResponse({"error": "internal"}, status_code=500)
+    for k, v in _cors_headers(request).items():
+        resp.headers[k] = v
+    for k, v in _SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    if request.url.path == "/app":
+        resp.headers.setdefault("Content-Security-Policy", _MINIAPP_CSP)
+        # Telegram embeds the Mini App in an iframe. X-Frame-Options has no
+        # allow-list form, so drop it here and let the CSP frame-ancestors
+        # directive above do the framing control.
+        resp.headers.pop("X-Frame-Options", None)
+    return resp
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_conn():
@@ -142,6 +332,8 @@ def verify_init_data(init_data: str) -> dict:
     Verify Telegram WebApp initData HMAC.
     Returns parsed user dict if valid, raises 401 if not.
     """
+    if not init_data or len(init_data) > 4096:
+        raise HTTPException(401, "Invalid initData")
     parsed = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
     received_hash = parsed.pop("hash", None)
     if not received_hash:
@@ -154,20 +346,35 @@ def verify_init_data(init_data: str) -> dict:
     if not hmac.compare_digest(expected, received_hash):
         raise HTTPException(401, "Invalid initData")
 
-    # optional: reject if older than 1 hour
-    auth_date = int(parsed.get("auth_date", 0))
-    if time.time() - auth_date > 86400:
+    # The comment here said "1 hour" but the check allowed 24, so a captured
+    # initData string stayed usable for a day. Telegram's own guidance is a
+    # short window; a Mini App session that outlives it simply re-opens.
+    try:
+        auth_date = int(parsed.get("auth_date", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(401, "Invalid initData")
+    age = time.time() - auth_date
+    if auth_date <= 0 or age > INITDATA_MAX_AGE or age < -300:
         raise HTTPException(401, "initData expired")
 
-    user_json = parsed.get("user", "{}")
-    return json.loads(user_json)
+    try:
+        user = json.loads(parsed.get("user", "{}"))
+    except (ValueError, TypeError):
+        raise HTTPException(401, "Invalid initData")
+    # a valid signature over a payload with no usable user id is not an identity
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int) or user["id"] <= 0:
+        raise HTTPException(401, "Invalid initData")
+    return user
 
 
 def get_current_user(request: Request) -> dict:
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     if not init_data:
-        # Allow dev bypass when running locally without Telegram
-        if os.environ.get("DEV_MODE") == "1":
+        # Dev bypass, local only. It used to key off DEV_MODE alone — setting
+        # that variable on the deployed service would have handed every
+        # authenticated endpoint to anonymous callers as user id 0.
+        if os.environ.get("DEV_MODE") == "1" and os.environ.get("ALLOW_DEV_AUTH_BYPASS") == "1":
+            print("[SECURITY] dev auth bypass used")
             return {"id": 0, "first_name": "Dev", "username": "dev"}
         raise HTTPException(401, "No initData")
     return verify_init_data(init_data)
@@ -249,7 +456,7 @@ async def push_state(request: Request):
                 """, (json.dumps(body),))
             conn.commit()
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("db", e)
     return {"ok": True}
 
 # ── generic key-value sync (copytrade users DB, bot settings, active-server flag) ──
@@ -261,6 +468,20 @@ def _kv_check_secret(request: Request):
     if PUSH_STATE_SECRET:
         if request.headers.get("X-Push-Secret", "") != PUSH_STATE_SECRET:
             raise HTTPException(403, "Forbidden")
+
+
+def _require_secret(request: Request):
+    """Like _kv_check_secret but fails closed when no secret is configured.
+
+    The lenient version treats a missing PUSH_STATE_SECRET as "no auth needed",
+    which is fine for a write nobody can guess the shape of but not for a read
+    that returns the user store. A deployment without the secret set is
+    misconfigured; it must not silently serve private blobs to the internet."""
+    if not PUSH_STATE_SECRET:
+        print("[SECURITY] PUSH_STATE_SECRET is not set — refusing authenticated read")
+        raise HTTPException(403, "Forbidden")
+    if request.headers.get("X-Push-Secret", "") != PUSH_STATE_SECRET:
+        raise HTTPException(403, "Forbidden")
 
 @app.post("/kv/{key}")
 async def kv_push(key: str, request: Request):
@@ -278,11 +499,18 @@ async def kv_push(key: str, request: Request):
                 """, (key, json.dumps(body)))
             conn.commit()
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("db", e)
     return {"ok": True}
 
 @app.get("/kv/{key}")
-def kv_pull(key: str):
+def kv_pull(key: str, request: Request):
+    # Server-to-server only. This was unauthenticated: the write path checked
+    # the shared secret but the read path did not, so anyone who guessed a key
+    # name could pull whole blobs straight out of the store — ct_users (every
+    # Telegram id, tier, wallet balance and open position) included. Both bot.py
+    # and copytrade.py already send X-Push-Secret on every GET via _central_get,
+    # so requiring it here breaks nothing.
+    _require_secret(request)
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -291,8 +519,10 @@ def kv_pull(key: str):
         if row:
             return {"found": True, "data": row["data_json"], "updated_at": row["updated_at"].isoformat()}
         return {"found": False, "data": None}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("kv_pull", e)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # CRYPTO PAY (@CryptoBot) webhook + payment event queue
@@ -346,7 +576,7 @@ async def cryptopay_webhook(request: Request):
                 """, (cid, event_type, amount, json.dumps(meta)))
             conn.commit()
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("db", e)
     _send_telegram_dm(cid, f"✅ <b>Payment received</b> — ${amount:,.2f}\n\nProcessing shortly...\n\n<i>🛡️ Capital protected</i>")
     return {"ok": True}
 
@@ -360,7 +590,7 @@ def get_payment_events(request: Request, processed: bool = False):
                 rows = cur.fetchall()
         return {"events": [dict(r) | {"created_at": r["created_at"].isoformat()} for r in rows]}
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("db", e)
 
 @app.post("/payment_events/{event_id}/ack")
 def ack_payment_event(event_id: int, request: Request):
@@ -371,7 +601,7 @@ def ack_payment_event(event_id: int, request: Request):
                 cur.execute("UPDATE payment_events SET processed = TRUE WHERE id = %s", (event_id,))
             conn.commit()
     except Exception as e:
-        raise HTTPException(500, f"DB error: {e}")
+        raise _server_error("db", e)
     return {"ok": True}
 
 # ── startup ───────────────────────────────────────────────────────────────────
@@ -413,7 +643,15 @@ async def maintenance_gate(request: Request, call_next):
     silently cut off every bot server's shared data sync until someone happens
     to send /miniapp resume — which can itself require a bot to be polling."""
     if _maintenance["on"] and not request.url.path.startswith(_MAINTENANCE_EXEMPT_PREFIXES):
-        return JSONResponse({"error": "maintenance", "msg": _maintenance["msg"]}, status_code=503)
+        resp = JSONResponse({"error": "maintenance", "msg": _maintenance["msg"]}, status_code=503)
+        # this middleware sits outside security_gate, so a 503 returned here
+        # would otherwise carry neither the CORS nor the security headers and
+        # the browser would report an opaque failure instead of the 503
+        for k, v in _cors_headers(request).items():
+            resp.headers[k] = v
+        for k, v in _SECURITY_HEADERS.items():
+            resp.headers.setdefault(k, v)
+        return resp
     return await call_next(request)
 
 @app.get("/maintenance")
@@ -456,6 +694,7 @@ def _daily_change_pct(sym: str, price: float) -> float:
 @app.get("/price")
 def get_price(sym: str = "BTC-USDT"):
     """Fetch live price from BingX server-side. No auth required."""
+    sym = _clean_symbol(sym)
     try:
         r = requests.get(
             "https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
@@ -892,7 +1131,11 @@ def get_public_prices(syms: str = "BTC-USDT"):
     interval, so fanning it out per symbol multiplied backend load by the
     number of rows for no benefit. Capped at 16 symbols per call. A symbol
     that fails is simply absent from the response; it is never filled in."""
-    wanted = [s.strip().upper() for s in str(syms).split(",") if s.strip()][:16]
+    wanted = []
+    for raw in str(syms).split(",")[:16]:
+        raw = raw.strip().upper()
+        if raw and _SYMBOL_RE.match(raw) and raw not in wanted:
+            wanted.append(raw)
     out = {}
     for s in wanted:
         try:
@@ -912,17 +1155,21 @@ def get_public_klines(sym: str = "BTC-USDT", tf: str = "15m", limit: int = 200):
     """Real OHLCV from BingX, fetched server-side for the same reason /price
     is — the browser is CORS-blocked from calling the exchange directly.
     No key required; this is BingX's public market data."""
+    sym = _clean_symbol(sym)
     interval = _KLINE_TF.get(str(tf).lower())
     if not interval:
-        raise HTTPException(400, "bad timeframe")
-    limit = max(10, min(int(limit or 200), 500))
+        raise HTTPException(400, "Invalid timeframe")
+    try:
+        limit = max(10, min(int(limit or 200), 500))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Invalid limit")
     try:
         r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/klines",
                          params={"symbol": sym, "interval": interval, "limit": limit},
                          timeout=10)
         rows = (r.json() or {}).get("data") or []
     except Exception as e:
-        raise HTTPException(502, f"market data unavailable: {e}")
+        raise _market_error(e)
 
     out = []
     for k in rows:
@@ -1243,8 +1490,12 @@ def get_copy_trades(user: dict = Depends(get_current_user)):
     upsert_user(user)
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # explicit columns rather than SELECT * — the caller needs the trade,
+            # not the row's internal id or its own tg_id echoed back
             cur.execute("""
-                SELECT * FROM copy_trades
+                SELECT symbol, side, entry, tp, sl, size_usdt, leverage,
+                       status, opened_at, closed_at, close_price, pnl_usdt
+                FROM copy_trades
                 WHERE tg_id = %s
                 ORDER BY opened_at DESC
                 LIMIT 50
