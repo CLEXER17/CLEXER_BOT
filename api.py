@@ -402,7 +402,7 @@ _MAINTENANCE_EXEMPT_PREFIXES = ("/maintenance", "/kv/", "/push_state", "/health"
                                 # The public marketing website is not the mini app. /miniapp pause
                                 # is about the Telegram web app; it used to black out the website
                                 # too, which has no user data and nothing to pause.
-                                "/public/")
+                                "/public/", "/price")
 
 @app.middleware("http")
 async def maintenance_gate(request: Request, call_next):
