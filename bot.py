@@ -9362,6 +9362,12 @@ def _handle_whale_trade_msg(raw: str):
     global _last_whale_post_time, _whale_debug_count, _whale_debug_last_log
     if not SEND_NEWS:
         return
+    # Standby-skip (2026-08-09 audit) — both co2 and co3 run their own
+    # websocket connection and would otherwise both post the same whale
+    # trade to the channel; the connection itself stays open on every
+    # server (cheap), only the actual channel-posting is gated here.
+    if CLEXER_API_URL and not is_active_server():
+        return
     try:
         d = json.loads(raw)
         # TEMP DEBUG — confirm raw trade frames are actually arriving, same
@@ -9662,6 +9668,13 @@ def _poll_payment_events():
     while True:
         try:
             time.sleep(30)
+            # Standby-skip (2026-08-09 audit) — this docstring's "one process
+            # owns ct._db" assumption doesn't hold in the multi-server setup:
+            # without this, both co2 and co3 poll the same unprocessed events
+            # and can both process the same event before either one's ack
+            # lands, double-crediting a wallet or double-granting VIP.
+            if CLEXER_API_URL and not is_active_server():
+                continue
             hdrs = {"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}
             r = requests.get(f"{CLEXER_API_URL}/payment_events", params={"processed": "false"}, headers=hdrs, timeout=10)
             if not r.ok:
@@ -18091,7 +18104,13 @@ def main():
         time.sleep(60)
         while True:
             try:
-                _check_vip_expiries()
+                # Standby-skip (2026-08-09 audit, same class as the recap
+                # duplication bug): without this, both co2 and co3 each
+                # independently downgrade/kick expired VIPs and send the
+                # expiry DM — duplicate messages, and both race to write
+                # the same user's record.
+                if not CLEXER_API_URL or is_active_server():
+                    _check_vip_expiries()
             except Exception as e:
                 print(f"[VIP] expiry check error: {e}")
             time.sleep(3600)  # hourly is plenty for a date-based expiry
@@ -18100,7 +18119,12 @@ def main():
     def _scheduled_broadcast_loop():
         while True:
             try:
-                _fire_due_scheduled_broadcasts()
+                # Standby-skip — _scheduled_broadcasts is loaded from the
+                # shared central store on BOTH servers, so without this both
+                # would see the same due entry and both fire it, duplicating
+                # the broadcast to every user/channel/admin.
+                if not CLEXER_API_URL or is_active_server():
+                    _fire_due_scheduled_broadcasts()
             except Exception as e:
                 print(f"[SCHEDULED BC] fire check error: {e}")
             time.sleep(30)  # fine enough to hit "2.05pm" without checking every tick
@@ -18176,6 +18200,13 @@ def main():
     # Startup sync check — alert admin if any orphan positions exist
     def _startup_sync():
         time.sleep(10)  # wait for db to load
+        # Standby-skip (2026-08-09 audit) — without this, every server that
+        # boots (active or standby) independently hits BingX's real position
+        # API for every connected user (doubling real exchange API load) and,
+        # if any orphan is found, both send the duplicate "STARTUP SYNC
+        # ALERT" admin DM with action buttons.
+        if CLEXER_API_URL and not is_active_server():
+            return
         lines = ct.sync_check()
         has_orphan = any("ORPHAN" in l or "GHOST" in l for l in lines)
         if has_orphan:
