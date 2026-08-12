@@ -11678,7 +11678,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"Model: /timepanel model aerolink opus5</i>"
             )
             if not _tp_lines:
-                send_reply(chat_id, _tp_header + "<i>No times configured yet.</i>" + _tp_footer)
+                send_reply(chat_id, _tp_header + "<i>No times configured yet.</i>" + _tp_footer, skip_smallcaps=True)
             else:
                 _margin = 100  # room for a "(continued)" tag / footer / HTML close tags
                 _chunks = []; _cur = _tp_header
@@ -11691,7 +11691,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _chunks[-1] += _tp_footer
                 for _i, _chunk in enumerate(_chunks):
                     _tag = f"<i>(part {_i+1}/{len(_chunks)})</i>\n\n" if len(_chunks) > 1 else ""
-                    send_reply(chat_id, _tag + _chunk)
+                    # skip_smallcaps: this list leans on real <b>/<i> formatting
+                    # to stay scannable — smallcaps only protects <code>/<pre>,
+                    # so it flattens bold/italic into hard-to-read unicode caps
+                    # (admin report 2026-08-12).
+                    send_reply(chat_id, _tag + _chunk, skip_smallcaps=True)
 
     elif cmd == "/winrate" and is_scanadmin:
         send_winrate_screen(chat_id)
@@ -15077,7 +15081,11 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
 
     for i, chunk in enumerate(chunks):
         tag = f"<i>(part {i+1}/{len(chunks)})</i>\n\n" if len(chunks) > 1 else ""
-        send_reply(chat_id, tag + chunk)
+        # skip_smallcaps: same reason as /timepanel's chunked send — this
+        # relies on real <b>/<i> formatting, which smallcaps flattens into
+        # unicode caps that are harder to read, not easier (admin report
+        # 2026-08-12).
+        send_reply(chat_id, tag + chunk, skip_smallcaps=True)
 
 def _find_back_target(cmd_text):
     """Find the correct 'Back' callback_data for a command — the immediate
