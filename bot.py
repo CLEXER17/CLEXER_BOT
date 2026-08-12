@@ -11736,11 +11736,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _vt_kind_label = {"scan1": "S1", "scan2": "S2", "test1": "TS1", "test2": "TS2"}
         if _vt_sub in ("add", "remove"):
             if len(parts) < 4 or parts[2].lower() not in _vt_kind_map:
-                send_reply(chat_id, f"Usage: <code>/vsttimes {_vt_sub} S1 14.15-14.17</code>\nSource: S1, S2, TS1, TS2"); return
+                send_reply(chat_id, f"Usage: <code>/vsttimes {_vt_sub} S1 14.15-14.17</code>\nSource: S1, S2, TS1, TS2", skip_smallcaps=True); return
             _vt_kind = _vt_kind_map[parts[2].lower()]
             _vt_times = _tp_parse_times(parts[3])
             if not _vt_times:
-                send_reply(chat_id, "Time must be H.MM (e.g. 14.16) or a same-hour range H.MM-H.MM (e.g. 14.15-14.17)."); return
+                send_reply(chat_id, "Time must be H.MM (e.g. 14.16) or a same-hour range H.MM-H.MM (e.g. 14.15-14.17).", skip_smallcaps=True); return
             if _vt_sub == "add":
                 _VST_COPY_ALLOWED[_vt_kind] |= _vt_times
                 _vt_verb = "Added"
@@ -11750,13 +11750,16 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _save_slot_state()
             _vt_times_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_vt_times))
             send_reply(chat_id, f"✅ <b>{_vt_verb}</b> {_vt_kind_label[_vt_kind]}: {_vt_times_str}"
-                + ("" if VST_COPY_ALLOWLIST_ENABLED else "\n\n<i>Note: the allowlist gate is currently OFF (/vsttimes off) — every verified time still copy-trades normally until you turn it on.</i>"))
+                + ("" if VST_COPY_ALLOWLIST_ENABLED else "\n\n<i>Note: the allowlist gate is currently OFF (/vsttimes off) — every verified time still copy-trades normally until you turn it on.</i>"),
+                skip_smallcaps=True)
         elif _vt_sub == "on":
             VST_COPY_ALLOWLIST_ENABLED = True; _save_slot_state()
-            send_reply(chat_id, "✅ VST copy-trade allowlist: <b>ON</b> — only times added via /vsttimes add now place real copy trade orders. Every other verified time still posts to VIP/Free, it just stays signal-only for real money.")
+            send_reply(chat_id, "✅ VST copy-trade allowlist: <b>ON</b> — only times added via /vsttimes add now place real copy trade orders. Every other verified time still posts to VIP/Free, it just stays signal-only for real money.",
+                skip_smallcaps=True)
         elif _vt_sub == "off":
             VST_COPY_ALLOWLIST_ENABLED = False; _save_slot_state()
-            send_reply(chat_id, "❌ VST copy-trade allowlist: <b>OFF</b> — back to the normal rule, every verified time copy-trades as usual.")
+            send_reply(chat_id, "❌ VST copy-trade allowlist: <b>OFF</b> — back to the normal rule, every verified time copy-trades as usual.",
+                skip_smallcaps=True)
         else:
             _vt_lines = []
             for _k in ("scan1", "scan2", "test1", "test2"):
