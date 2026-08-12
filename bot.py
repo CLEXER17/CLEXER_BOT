@@ -8327,8 +8327,14 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         "entry_price": entry, "sl_price": t.get("sl", 0)})
     if close_result == "SL":
         _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
-        _send_sl_reassurance(sym,
-            _sl_reassurance_channels(bool(t.get("tier_routed")), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id", ""))
+        # No separate _send_sl_reassurance call here (admin report 2026-08-12:
+        # "sending sl 2 times") - unlike BTC/demo's SL paths, this scan
+        # _send_sl_and_log call above already passes tier_routed explicitly,
+        # so it already reached VIP/Free with fmt_scan_update's real-SL text,
+        # which is byte-identical to _send_sl_reassurance's own hardcoded
+        # template (made intentionally identical wording on 2026-08-06, but
+        # that also made the follow-up "reassurance" send a pure duplicate
+        # for this call site specifically).
     _slot_hm = _slot_hm_for_trade(t)
     if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
     _close_sig_snapshot(t.get("sig_id", ""), close_result)
@@ -8971,8 +8977,13 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
                 _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
-                _send_sl_reassurance(sym,
-                    _sl_reassurance_channels(t.get("tier_routed", False), t.get("share_free", True)), t.get("reply_map"), t.get("sig_id",""))
+                # No separate _send_sl_reassurance here (admin report
+                # 2026-08-12: "sending sl 2 times", $BEAT) - _send_sl_and_log
+                # above already passes tier_routed explicitly and reached
+                # VIP/Free with fmt_scan_update's real-SL text, which is
+                # byte-identical to _send_sl_reassurance's own template. This
+                # is the live-monitor path that catches almost every real SL
+                # hit, so it's the one users actually saw double-post.
             _slot_hm = _slot_hm_for_trade(t)
             if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
             _close_sig_snapshot(t.get("sig_id",""), result)
