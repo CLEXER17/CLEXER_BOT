@@ -11828,7 +11828,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                         _vt_tp = _vt_st.get("tp", 0) if _vt_st else 0
                         _vt_sl = _vt_st.get("sl", 0) if _vt_st else 0
                         _vt_streak = _vt_st.get("streak", 0) if _vt_st else 0
-                        _vt_status = f"{_vt_tp}w {_vt_sl}l {_vt_streak}s" if (_vt_tp + _vt_sl) else "no data"
+                        _vt_total_n = _vt_tp + _vt_sl
+                        _vt_pct = round(_vt_tp / _vt_total_n * 100) if _vt_total_n else 0
+                        _vt_status = f"{_vt_pct}% ({_vt_tp}/{_vt_sl}) s{_vt_streak}" if _vt_total_n else "no data"
                     _vt_lines.append(f"• <b>{_vt_kind_label[_k]} {_hm[0]}:{_hm[1]:02d}</b> — <i>{_vt_status}</i>")
             _vt_total = sum(len(v) for v in _VST_COPY_ALLOWED.values())
             _vt_header = (
