@@ -858,7 +858,17 @@ def get_active_trades(request: Request):
             if is_admin_view:
                 reveal, tag = True, cat
             elif viewer_tier == "vip":
-                reveal, tag = (cat == "verified"), None
+                # cat alone isn't enough (2026-08-12 gap): cat is re-derived here
+                # from the schedule's special/no_copy sets, which know nothing
+                # about bot.py's /vsttimes allowlist gate — a verified time that
+                # gate demoted to Channel-1-only still classifies as cat=="verified"
+                # here even though bot.py never posted it to VIP/Free at all. The
+                # trade's own tier_routed flag is bot.py's actual, authoritative
+                # decision (schedule verification AND the allowlist, if that gate
+                # is on) — requiring both keeps a VST-demoted trade's real numbers
+                # from leaking to VIP viewers on the website when Telegram VIP
+                # subscribers correctly never saw it.
+                reveal, tag = (cat == "verified" and tier_routed), None
             else:
                 reveal, tag = share_free, None
             if not reveal and t.get("symbol") in my_symbols:
