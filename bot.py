@@ -17298,13 +17298,12 @@ def _tp_report_line(source: str, hm: tuple) -> str:
     covered = hm in info["sched"]
     key = _slot_key(info["slot_kind"], hm) if covered else _slot_key(f"panel_{source}", hm)
     st = _slot_stats.get(key)
-    origin = f"live in {source}'s schedule" if covered else f"this panel's own paper runs"
     if not st or (st.get("tp", 0) + st.get("sl", 0)) == 0:
-        return f"• <b>{source} {hm_str}</b> — no data yet <i>({origin})</i>"
+        return f"• <b>{source} {hm_str}</b> — no data yet"
     tp, sl, streak = st.get("tp", 0), st.get("sl", 0), st.get("streak", 0)
     total = tp + sl
     wr = tp / total * 100 if total else 0
-    return f"• <b>{source} {hm_str}</b> — {wr:.0f}% ({tp}W/{sl}L), streak {streak} <i>({origin})</i>"
+    return f"• <b>{source} {hm_str}</b> — {wr:.0f}% ({tp}W/{sl}L), streak {streak}"
 
 _demo_monitor_lock = __import__("threading").Lock()
 
