@@ -11645,20 +11645,44 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _save_time_panel()
             send_reply(chat_id, f"✅ Time Panel model set to <b>{'Aerolink' if _TP_AEROLINK else 'Direct'} · {MODEL_REGISTRY.get(_TP_MODEL, _TP_MODEL)}</b>.")
         else:
+            # Admin report 2026-08-12: with enough (source, time) entries
+            # configured, this list alone blew past Telegram's 4096-char
+            # message limit and sendMessage rejected the WHOLE reply with
+            # "text is too long" — meaning the admin got nothing back at all,
+            # not even a truncated view. Now chunked across as many messages
+            # as needed (matches the pattern _send_group_mentions already
+            # uses), so every configured entry is always visible regardless
+            # of how many there are.
             _tp_lines = []
             for _src in ("S1", "S2", "TS1", "TS2"):
                 for _hm in sorted(_TP_ENTRIES.get(_src, set())):
                     _tp_lines.append(_tp_report_line(_src, _hm))
-            _tp_body = "\n".join(_tp_lines) if _tp_lines else "<i>No times configured yet.</i>"
-            send_reply(chat_id,
+            _tp_header = (
                 f"🕐 <b>Time Panel</b>\n\n"
                 f"<blockquote>Status: <b>{'✅ ON' if _TP_ENABLED else '❌ OFF'}</b>\n"
                 f"Model: <b>{'Aerolink' if _TP_AEROLINK else 'Direct'} · {MODEL_REGISTRY.get(_TP_MODEL, _TP_MODEL)}</b></blockquote>\n\n"
-                f"{_tp_body}\n\n"
-                f"<i>Add: /timepanel add S1 14.15-14.17\n"
+            )
+            _tp_footer = (
+                f"\n\n<i>Add: /timepanel add S1 14.15-14.17\n"
                 f"Remove: /timepanel remove S1 14.16\n"
                 f"On/Off: /timepanel on | /timepanel off\n"
-                f"Model: /timepanel model aerolink opus5</i>")
+                f"Model: /timepanel model aerolink opus5</i>"
+            )
+            if not _tp_lines:
+                send_reply(chat_id, _tp_header + "<i>No times configured yet.</i>" + _tp_footer)
+            else:
+                _margin = 100  # room for a "(continued)" tag / footer / HTML close tags
+                _chunks = []; _cur = _tp_header
+                for _line in _tp_lines:
+                    if len(_cur) + len(_line) + 1 > _TG_MSG_LIMIT - _margin:
+                        _chunks.append(_cur); _cur = ""
+                    _cur += _line + "\n"
+                if _cur:
+                    _chunks.append(_cur)
+                _chunks[-1] += _tp_footer
+                for _i, _chunk in enumerate(_chunks):
+                    _tag = f"<i>(part {_i+1}/{len(_chunks)})</i>\n\n" if len(_chunks) > 1 else ""
+                    send_reply(chat_id, _tag + _chunk)
 
     elif cmd == "/winrate" and is_scanadmin:
         send_winrate_screen(chat_id)
