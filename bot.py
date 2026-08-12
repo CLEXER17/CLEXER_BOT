@@ -5203,13 +5203,31 @@ def _force_direct48(sched_kind, kind: str = "btc", scan_ver: int = None) -> bool
     return _ai_category(kind, scan_ver) in ("nonspecial", "unverified")
 
 def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
-    """Which gateway to use — same (scan type x classification) grid as _ai_model()."""
+    """Which gateway to use — same (scan type x classification) grid as _ai_model().
+
+    /vsttimes fine-grained downgrade (admin request 2026-08-12): when the
+    allowlist gate is ON and a kind's verified tier is currently configured
+    for Direct, only the specific times actually selected in /vsttimes keep
+    Direct — every other verified time (still a genuine verified/special
+    time per the schedule, just not one of the chosen "active" ones) falls
+    back to Aerolink for its AI call instead, regardless of what the grid
+    cell itself says. Applies uniformly to whichever kind is running
+    (Scan1/Scan2/TS1/TS2) since VST_COPY_ALLOWLIST_ENABLED/_VST_COPY_ALLOWED
+    are already tracked per-kind. Gate OFF (default) is a complete no-op —
+    every verified time keeps using the grid's own configured gateway,
+    unchanged from before."""
     sched_kind = _ai_sched_kind(kind, scan_ver)
     if _force_direct48(sched_kind, kind, scan_ver):
         return False
     if sched_kind is None:
         return USE_AEROLINK
-    return AICFG_GRID[sched_kind][_ai_category(kind, scan_ver)]["aerolink"]
+    _cat = _ai_category(kind, scan_ver)
+    _cell_aerolink = AICFG_GRID[sched_kind][_cat]["aerolink"]
+    if VST_COPY_ALLOWLIST_ENABLED and _cat == "verified" and not _cell_aerolink:
+        _hm = getattr(_scan_ctx, "trigger_hm", None)
+        if not _vst_copy_allowed(sched_kind, _hm):
+            return True   # not one of the /vsttimes-selected times — fall back to Aerolink
+    return _cell_aerolink
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
