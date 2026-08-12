@@ -11809,13 +11809,26 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "❌ VST allowlist: <b>OFF</b> — back to the normal rule, every verified time posts to VIP/Free and copy-trades as usual.",
                 skip_smallcaps=True)
         else:
+            # _slot_stats is keyed by _slot_key(kind, hm) — Scan1/Scan2 use
+            # "scan1"/"scan2" there (matches _VST_COPY_ALLOWED's own keys), but
+            # TS1/TS2's real win/loss tracking uses "demo1"/"demo2", NOT
+            # "test1"/"test2" (that's only _SCAN_SPECIAL's convention) — see
+            # every _slot_track(f"demo{dver}", ...) call at TP/SL/BE time.
+            _vt_stats_kind = {"scan1": "scan1", "scan2": "scan2", "test1": "demo1", "test2": "demo2"}
             _vt_lines = []
             _vt_active_n = 0
             for _k in ("scan1", "scan2", "test1", "test2"):
                 for _hm in sorted(_VST_COPY_ALLOWED.get(_k, set())):
                     _vt_active = _is_currently_verified(_k, _hm)
                     if _vt_active: _vt_active_n += 1
-                    _vt_status = "active" if _vt_active else "demoted — auto-resumes if re-verified"
+                    if not _vt_active:
+                        _vt_status = "demoted"
+                    else:
+                        _vt_st = _slot_stats.get(_slot_key(_vt_stats_kind[_k], _hm))
+                        _vt_tp = _vt_st.get("tp", 0) if _vt_st else 0
+                        _vt_sl = _vt_st.get("sl", 0) if _vt_st else 0
+                        _vt_streak = _vt_st.get("streak", 0) if _vt_st else 0
+                        _vt_status = f"{_vt_tp}w {_vt_sl}l {_vt_streak}s" if (_vt_tp + _vt_sl) else "no data"
                     _vt_lines.append(f"• <b>{_vt_kind_label[_k]} {_hm[0]}:{_hm[1]:02d}</b> — <i>{_vt_status}</i>")
             _vt_total = sum(len(v) for v in _VST_COPY_ALLOWED.values())
             _vt_header = (
