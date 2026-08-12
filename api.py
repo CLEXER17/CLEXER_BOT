@@ -961,6 +961,7 @@ def get_public_results(limit: int = 10):
 
     limit = max(1, min(int(limit or 10), 30))
     out = []
+    counts = {"tp2": 0, "tp1": 0, "be": 0}
     # scan_history is append-ordered, so iterate newest-first.
     for h in reversed(hist):
         if not isinstance(h, dict):
@@ -971,6 +972,24 @@ def get_public_results(limit: int = 10):
         if result.startswith("TIMEOUT"):
             continue
         raw_side = str(h.get("signal", "")).upper()
+        # TP1 is a milestone flag on the trade (tp1_hit), never the FINAL
+        # result a trade closes at — bot.py's own scan lifecycle only ever
+        # logs a close as TP2, BE, or SL (see _log_scan_history's callers:
+        # the TP2 branch always logs "TP2", the SL/BE branch logs
+        # close_result = "BE" if tp1_hit else "SL"). So "reached TP1" is
+        # never a literal result=="TP1" match here - it's implied by TP2
+        # (which passed through TP1 on the way) and by BE (which the bot's
+        # own state machine only ever reaches after tp1_hit was set True).
+        # Counting only literal "TP1" strings left this counter stuck at 0
+        # forever regardless of real volume (admin report 2026-08-12: a
+        # page showing "BE: 6, TP1: 0" - impossible, since BE requires TP1).
+        tp1_hit = bool(h.get("tp1_hit"))
+        reached_tp1 = result.startswith("TP1") or result.startswith("TP2") or result.startswith("BE")
+        if result.startswith("BE") and not tp1_hit:
+            # Should be structurally impossible per the bot's own close_result
+            # logic - surfaced rather than silently trusted, per the "don't
+            # manufacture a TP1 result, investigate instead" instruction.
+            print(f"[PUBLIC RESULTS] BE entry with tp1_hit=False — data inconsistency: {h.get('symbol')} {h.get('time')}")
         out.append({
             "symbol": h.get("symbol") or "",
             "side":   "LONG" if raw_side in ("LONG", "BUY") else "SHORT",
@@ -980,15 +999,13 @@ def get_public_results(limit: int = 10):
             # Historical exit price only. Entry/SL/TP levels stay private —
             # those are the live product, this is a settled outcome.
             "close_price": h.get("close_price"),
+            "tp1_reached": reached_tp1,  # lets the frontend verify BE/TP2 <= TP1 itself
         })
+        if result.startswith("TP2"): counts["tp2"] += 1
+        if result.startswith("BE"):  counts["be"]  += 1
+        if reached_tp1:               counts["tp1"] += 1
         if len(out) >= limit:
             break
-
-    counts = {"tp2": 0, "tp1": 0, "be": 0}
-    for r in out:
-        if r["result"].startswith("TP2"):  counts["tp2"] += 1
-        elif r["result"].startswith("TP1"): counts["tp1"] += 1
-        elif r["result"].startswith("BE"):  counts["be"]  += 1
 
     return {"results": out, "count": len(out), "counts": counts}
 
