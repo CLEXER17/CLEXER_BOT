@@ -479,7 +479,17 @@ def _daily_verified_slot_count() -> int:
     """Fixed count of the day's SCHEDULED 'verified' slot times across
     Scan1/Scan2/TS1/TS2 (admin-configured special times minus the no-copy
     exclusions) — known upfront from settings, independent of how many of
-    those slots actually fire a real signal vs. 'no trade found' that day."""
+    those slots actually fire a real signal vs. 'no trade found' that day.
+
+    When the VST copy-trade allowlist gate is on (/vsttimes), the basis for
+    this count changes too (admin request 2026-08-12): only allowlisted
+    times that are CURRENTLY verified count — a time sitting on the
+    allowlist while temporarily demoted doesn't inflate the quota, matching
+    how a demoted slot doesn't actually reach VIP/Free today either."""
+    if VST_COPY_ALLOWLIST_ENABLED:
+        return sum(len(_VST_COPY_ALLOWED.get(k, set()) &
+                        (_SCAN_SPECIAL.get(k, set()) - _SCAN_SPECIAL_NO_COPY.get(k, set())))
+                   for k in ("scan1", "scan2", "test1", "test2"))
     return sum(len(_SCAN_SPECIAL.get(k, set())) - len(_SCAN_SPECIAL_NO_COPY.get(k, set()))
                for k in ("scan1", "scan2", "test1", "test2"))
 
@@ -4581,13 +4591,25 @@ _SCAN_SPECIAL_NO_COPY = {
 VST_COPY_ALLOWLIST_ENABLED = False
 _VST_COPY_ALLOWED = {"scan1": set(), "scan2": set(), "test1": set(), "test2": set()}
 
+def _is_currently_verified(kind: str, hm) -> bool:
+    """Context-free equivalent of _ai_category(kind) == 'verified' for a
+    specific (kind, hm) pair — used by /vsttimes add, which runs in the
+    command handler, not inside a live scan cycle (so _scan_ctx's
+    thread-local special/trigger_hm aren't meaningfully set there)."""
+    return hm in _SCAN_SPECIAL.get(kind, set()) and hm not in _SCAN_SPECIAL_NO_COPY.get(kind, set())
+
 def _vst_copy_allowed(kind: str, hm) -> bool:
     """True if a verified trade at this (kind, hm) is allowed to place real
     copytrade orders — always True while the allowlist gate is off (normal
-    rule), otherwise only True for a time explicitly added via /vsttimes."""
+    rule). Otherwise requires BOTH an explicit /vsttimes add AND that the
+    time is CURRENTLY verified right now — a demoted time is automatically
+    excluded even though it's still on the list (admin request 2026-08-12:
+    "if that time present in vsttimes it auto demote in vsttimes too"), and
+    a later re-promotion is automatically allowed again, with no separate
+    bookkeeping needed since this is re-evaluated fresh every call."""
     if not VST_COPY_ALLOWLIST_ENABLED:
         return True
-    return hm in _VST_COPY_ALLOWED.get(kind, set())
+    return hm in _VST_COPY_ALLOWED.get(kind, set()) and _is_currently_verified(kind, hm)
 
 # ─── Per-kind concurrency (2026-07-29, redesigned 2026-07-30, bounded-parallel 2026-07-30) ─
 # Scan1/Scan2/TS1/TS2 each have TWO independent tracks — "regular" (the hourly/dense
@@ -8552,12 +8574,16 @@ def fmt_scan_signal(t: dict) -> str:
     coin = sym.replace("-USDT","").replace("USDT","")
 
     _gw_tag = _gw_model_tag("scan1" if ver == 1 else "scan2")
+    # A verified time the /vsttimes allowlist demoted to Channel-1-only still
+    # gets marked as such — distinguishes it from a genuinely nonspecial run
+    # in the one place (Channel 1) it still reaches (admin request 2026-08-12).
+    _vst_tag = " [VST]" if t.get("vst_downgraded") else ""
     if et == "ZONE" and t.get("zone_lo") and t.get("zone_hi"):
         zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = t.get("sig_id") or f"#ID{int(t.get('created_at', time.time()))}"
         return (
-            f"📩 <b>#{coin}USDT</b>  S{ver} {_gw_tag} | Mid-Term\n\n"
+            f"📩 <b>#{coin}USDT</b>  S{ver} {_gw_tag} | Mid-Term{_vst_tag}\n\n"
             f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
             f"⏳ Signal Details:\n"
             f"Target 1: <b>{tp1:,.4g}</b>\n"
@@ -8570,7 +8596,7 @@ def fmt_scan_signal(t: dict) -> str:
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
     return _scan_box(
         "Scan Signal",
-        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}",
+        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}{_vst_tag}",
         [
             [f"{arrow} — {_smallcaps_title('Market Entry')}"],
             [f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>",
@@ -11724,12 +11750,15 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     send_reply(chat_id, _tag + _chunk, skip_smallcaps=True)
 
     elif cmd == "/vsttimes" and is_scanadmin:
-        # Global allowlist gate for verified-time copy trade (admin request
-        # 2026-08-12) — see VST_COPY_ALLOWLIST_ENABLED/_VST_COPY_ALLOWED's own
-        # comment for the full design. OFF (default) = today's normal rule,
-        # completely unaffected. ON = only a verified time explicitly added
-        # here places real copytrade orders; every other verified time still
-        # posts to VIP/Free and still paper-mirrors.
+        # Global allowlist gate for verified-time VIP/Free routing + copy
+        # trade (admin request 2026-08-12) — see VST_COPY_ALLOWLIST_ENABLED/
+        # _VST_COPY_ALLOWED's own comment for the full design. OFF (default)
+        # = today's normal rule, completely unaffected. ON = only a verified
+        # time explicitly added here (and currently verified) posts to
+        # VIP/Free and copy-trades; every other verified time is demoted to
+        # Channel 1 only, tagged [VST]. A demoted/re-promoted allowlisted
+        # time drops out/returns automatically, nothing to re-add.
+        # Free-channel quota is also based on the allowlist count while on.
         global VST_COPY_ALLOWLIST_ENABLED
         _vt_sub = parts[1].lower() if len(parts) > 1 else ""
         _vt_kind_map = {"s1": "scan1", "s2": "scan2", "ts1": "test1", "ts2": "test2"}
@@ -11742,32 +11771,56 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             if not _vt_times:
                 send_reply(chat_id, "Time must be H.MM (e.g. 14.16) or a same-hour range H.MM-H.MM (e.g. 14.15-14.17).", skip_smallcaps=True); return
             if _vt_sub == "add":
-                _VST_COPY_ALLOWED[_vt_kind] |= _vt_times
+                # Only a time that's CURRENTLY verified can be registered (admin
+                # request 2026-08-12) — the allowlist is meant to track real,
+                # proven verified slots, not reserve a spot for one that might
+                # verify someday. Once added, later demote/re-promote cycles are
+                # handled automatically by _vst_copy_allowed's own gate needing
+                # BOTH "on the list" and "currently verified" — nothing further
+                # to do here for that part.
+                _vt_ok       = {hm for hm in _vt_times if _is_currently_verified(_vt_kind, hm)}
+                _vt_rejected = _vt_times - _vt_ok
+                _VST_COPY_ALLOWED[_vt_kind] |= _vt_ok
                 _vt_verb = "Added"
+                _vt_times = _vt_ok
             else:
                 _VST_COPY_ALLOWED[_vt_kind] -= _vt_times
                 _vt_verb = "Removed"
+                _vt_rejected = set()
             _save_slot_state()
-            _vt_times_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_vt_times))
-            send_reply(chat_id, f"✅ <b>{_vt_verb}</b> {_vt_kind_label[_vt_kind]}: {_vt_times_str}"
-                + ("" if VST_COPY_ALLOWLIST_ENABLED else "\n\n<i>Note: the allowlist gate is currently OFF (/vsttimes off) — every verified time still copy-trades normally until you turn it on.</i>"),
-                skip_smallcaps=True)
+            if not _vt_times and _vt_rejected:
+                _vt_rej_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_vt_rejected))
+                send_reply(chat_id, f"⚠️ None of those are currently verified — nothing added.\nNot verified right now: {_vt_rej_str}", skip_smallcaps=True)
+            else:
+                _vt_times_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_vt_times)) if _vt_times else "(none)"
+                _vt_rej_note = ""
+                if _vt_rejected:
+                    _vt_rej_str = ", ".join(f"{h}:{m:02d}" for h, m in sorted(_vt_rejected))
+                    _vt_rej_note = f"\n⚠️ Skipped (not currently verified): {_vt_rej_str}"
+                send_reply(chat_id, f"✅ <b>{_vt_verb}</b> {_vt_kind_label[_vt_kind]}: {_vt_times_str}{_vt_rej_note}"
+                    + ("" if VST_COPY_ALLOWLIST_ENABLED else "\n\n<i>Note: the allowlist gate is currently OFF (/vsttimes off) — every verified time still behaves normally until you turn it on.</i>"),
+                    skip_smallcaps=True)
         elif _vt_sub == "on":
             VST_COPY_ALLOWLIST_ENABLED = True; _save_slot_state()
-            send_reply(chat_id, "✅ VST copy-trade allowlist: <b>ON</b> — only times added via /vsttimes add now place real copy trade orders. Every other verified time still posts to VIP/Free, it just stays signal-only for real money.",
+            send_reply(chat_id, "✅ VST allowlist: <b>ON</b> — only times added via /vsttimes add (and currently verified) post to VIP/Free and place real copy trade orders. Every other verified time is demoted to Channel 1 only, tagged [VST].",
                 skip_smallcaps=True)
         elif _vt_sub == "off":
             VST_COPY_ALLOWLIST_ENABLED = False; _save_slot_state()
-            send_reply(chat_id, "❌ VST copy-trade allowlist: <b>OFF</b> — back to the normal rule, every verified time copy-trades as usual.",
+            send_reply(chat_id, "❌ VST allowlist: <b>OFF</b> — back to the normal rule, every verified time posts to VIP/Free and copy-trades as usual.",
                 skip_smallcaps=True)
         else:
             _vt_lines = []
+            _vt_active_n = 0
             for _k in ("scan1", "scan2", "test1", "test2"):
                 for _hm in sorted(_VST_COPY_ALLOWED.get(_k, set())):
-                    _vt_lines.append(f"• <b>{_vt_kind_label[_k]} {_hm[0]}:{_hm[1]:02d}</b>")
+                    _vt_active = _is_currently_verified(_k, _hm)
+                    if _vt_active: _vt_active_n += 1
+                    _vt_status = "active" if _vt_active else "demoted — auto-resumes if re-verified"
+                    _vt_lines.append(f"• <b>{_vt_kind_label[_k]} {_hm[0]}:{_hm[1]:02d}</b> — <i>{_vt_status}</i>")
+            _vt_total = sum(len(v) for v in _VST_COPY_ALLOWED.values())
             _vt_header = (
-                f"🔐 <b>VST Copy-Trade Allowlist</b>\n\n"
-                f"<blockquote>Status: <b>{'✅ ON — only these times copy-trade' if VST_COPY_ALLOWLIST_ENABLED else '❌ OFF — normal rule, every verified time copy-trades'}</b></blockquote>\n\n"
+                f"🔐 <b>VST Allowlist</b> — {_vt_active_n} active / {_vt_total} registered\n\n"
+                f"<blockquote>Status: <b>{'✅ ON — only these active times post to VIP/Free and copy-trade' if VST_COPY_ALLOWLIST_ENABLED else '❌ OFF — normal rule, every verified time posts and copy-trades'}</b></blockquote>\n\n"
             )
             _vt_footer = (
                 f"\n\n<i>Add: /vsttimes add S1 14.15-14.17\n"
@@ -13167,6 +13220,19 @@ Reasoning: [one line]"""
                         # 2026-07-27) — unverified special-time slots and the regular
                         # hourly grid both stay Channel-1-only now, same as before.
                         _tier_routed = _is_special and _ai_category(_kind) == "verified"
+                        # VST copy-trade allowlist (admin request 2026-08-12, /vsttimes) —
+                        # a genuinely verified time that isn't on the allowlist gets
+                        # demoted to Channel-1-only for this signal's ENTIRE lifecycle
+                        # (entry, TP1, TP2, SL/BE all key off the single tier_routed flag
+                        # stored on slot_data below) rather than just skipping copy trade:
+                        # no VIP/Free posting, no Free-quota consumption, no paper mirroring
+                        # — same as any other non-tier-routed signal, distinguished only by
+                        # a [VST] tag in the message so it's still visible as "was actually
+                        # verified" rather than a genuinely nonspecial run. Off by default;
+                        # when off this is always False and changes nothing.
+                        _vst_downgraded = _tier_routed and not _vst_copy_allowed(_kind, _trigger_hm)
+                        if _vst_downgraded:
+                            _tier_routed = False
                         if _tier_routed:
                             vip_trade_stats[f"scan{scan_ver}_signals"] += 1
                         # Only verified/special-time (tier_routed) signals ever compete
@@ -13180,6 +13246,7 @@ Reasoning: [one line]"""
                         _effective_share_free = _share_free
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
+                        slot_data["vst_downgraded"] = _vst_downgraded  # fmt_scan_signal tags [VST] when set
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
@@ -13206,12 +13273,6 @@ Reasoning: [one line]"""
                         # must never auto-execute real orders on them until admin moves
                         # them out of _SCAN_SPECIAL_NO_COPY.
                         _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
-                        # Second, independent gate (admin request 2026-08-12, /vsttimes) —
-                        # off by default (normal rule, unaffected). When on, a verified
-                        # time additionally needs its own explicit entry in
-                        # _VST_COPY_ALLOWED to place real orders; everything else about
-                        # it (posting to VIP/Free, paper mirroring) is untouched.
-                        _vst_blocked = _tier_routed and not _is_unverified and not _vst_copy_allowed(_kind, _trigger_hm)
                         # Records whether THIS specific trade record was ever eligible to
                         # open a real copytrade position — same condition as the
                         # ct.on_scan_signal gate just below. Bug (admin report
@@ -13223,16 +13284,18 @@ Reasoning: [one line]"""
                         # hit was closing the REAL position that actually belonged to the
                         # verified trade. Every ct.on_scan_* close call below is now
                         # gated on this flag so only the trade that could have opened a
-                        # real position can ever close one.
-                        slot_data["ct_opened"] = bool(_tier_routed and not _is_unverified and not _vst_blocked)
+                        # real position can ever close one. (_vst_downgraded already
+                        # forced _tier_routed False above, so it needs no separate
+                        # mention here — this naturally comes out False for it too.)
+                        slot_data["ct_opened"] = bool(_tier_routed and not _is_unverified)
                         if _tier_routed:
                             # Virtual (paper) mirroring follows what's actually SHOWN in
-                            # VIP/Free, not the real-copytrade safety gates above — unlike
-                            # real orders, an unverified or allowlist-blocked slot is
-                            # still safe to paper-trade.
+                            # VIP/Free — an unverified slot is still safe to paper-trade,
+                            # but a _vst_downgraded one already isn't tier_routed here at
+                            # all, so it correctly stops mirroring too.
                             ct.virtual_on_signal(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
                                 tier_routed=_tier_routed, share_free=_effective_share_free)
-                        if _tier_routed and not _is_unverified and not _vst_blocked:
+                        if _tier_routed and not _is_unverified:
                             ct_results = ct.on_scan_signal(sd, chosen_sym, cp, _effective_share_free)
                             # Real order confirmation — kept even during quiet
                             # auto-mode, unlike the two routine "no copy trade"
@@ -13240,9 +13303,9 @@ Reasoning: [one line]"""
                             send_reply(cid, f"📋 <b>Copy Trade ({chosen_sym}):</b>\n"+"\n".join(ct_results[:5]), important=True)
                         elif _is_unverified:
                             send_reply(cid, f"📋 <b>{chosen_sym}:</b> Unverified special time ({_trigger_hm[0]}:{_trigger_hm[1]:02d}) — posted to VIP/Free, but no copy trade orders placed until this slot is verified.")
-                        elif _vst_blocked:
+                        elif _vst_downgraded:
                             _vb_hm = f"{_trigger_hm[0]}:{_trigger_hm[1]:02d}" if _trigger_hm else "this time"
-                            send_reply(cid, f"📋 <b>{chosen_sym}:</b> {_kind} {_vb_hm} isn't on the /vsttimes allowlist — posted to VIP/Free, but no copy trade orders placed.")
+                            send_reply(cid, f"📋 <b>{chosen_sym}:</b> {_kind} {_vb_hm} isn't on the /vsttimes allowlist — demoted to Channel 1 only (tagged [VST]), no VIP/Free post, no copy trade orders placed.")
                         else:
                             send_reply(cid, f"📋 <b>{chosen_sym}:</b> Signal-only slot (not VIP/Free) — no copy trade orders placed.")
                         # Send skip summary explaining why previous coins were skipped
@@ -13894,7 +13957,7 @@ _SCAN_SUBCATS = {
         ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
         ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals. (/ctpause is the same command.)"),
         ("/vst",    "⭐", "Verified Auto-Scans",   "Turn VERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2. Manual runs always still work."),
-        ("/vsttimes", "🔐", "VST Copy-Trade Allowlist", "Global ON/OFF gate for verified-time copy trade. OFF (default): every verified time copy-trades as normal. ON: only times you explicitly add here place real orders — every other verified time still posts to VIP/Free, just stays signal-only for real money."),
+        ("/vsttimes", "🔐", "VST Allowlist (Copy Trade + VIP/Free)", "Global ON/OFF gate for which verified times reach VIP/Free and place real copy trade orders. OFF (default): every verified time behaves as normal. ON: only times you explicitly add (and that are CURRENTLY verified) post to VIP/Free and copy-trade — every other verified time is demoted to Channel 1 only, tagged [VST]. A time auto-drops out if it demotes and auto-returns if it's re-verified, with no action needed. Free-channel quota is also based on the allowlist count while this is on."),
         ("/unst",   "🔒", "Unverified Auto-Scans", "Turn UNVERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
         ("/stopnt", "📋", "Regular-Grid Auto-Scans", "Turn NONSPECIAL (regular-grid) auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
     ]),
@@ -18222,6 +18285,15 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # VERIFIED special-time signals (admin request 2026-07-27) — unverified
             # special-time slots stay Channel-1-only too, same as Scan1/Scan2.
             _demo1_tier_routed = is_special and _ai_category(_kind) == "verified"
+            # See the matching /vsttimes downgrade on the live Scan1/Scan2 path —
+            # demo_msg was already built above with the plain header, so the [VST]
+            # tag is spliced in here rather than reordering the whole build.
+            _demo_vst_downgraded = _demo1_tier_routed and not _vst_copy_allowed(_kind, trigger_hm)
+            if _demo_vst_downgraded:
+                _demo1_tier_routed = False
+                demo_msg = demo_msg.replace(
+                    f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
+                    f"TS{scan_ver} {_gw_model_tag('test', scan_ver)} [VST]", 1)
             # Used to hardcode share_free=True (bypassing the daily quota entirely
             # for every TS1 special-time signal) — now respects the same quota as
             # everything else: within quota -> real signal to Free; exhausted ->
@@ -18265,24 +18337,23 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
             _demo_is_unverified = _demo1_tier_routed and trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
-            # See the matching /vsttimes gate on the live Scan1/Scan2 placement.
-            _demo_vst_blocked = _demo1_tier_routed and not _demo_is_unverified and not _vst_copy_allowed(_kind, trigger_hm)
             # See the matching flag + comment on the live Scan1/Scan2 slot_data —
             # marks whether this specific trade record could ever have opened a
             # real copytrade position, so its own close events can't affect a
             # position that actually belongs to a different (verified) trade
-            # stacked on the same symbol.
-            slot_data["ct_opened"] = bool(_demo_ct_on and _demo1_tier_routed and not _demo_is_unverified and not _demo_vst_blocked)
+            # stacked on the same symbol. (_demo_vst_downgraded already forced
+            # _demo1_tier_routed False above, so it needs no separate mention.)
+            slot_data["ct_opened"] = bool(_demo_ct_on and _demo1_tier_routed and not _demo_is_unverified)
             if _demo1_tier_routed:
                 ct.virtual_on_signal(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
                     tier_routed=_demo1_tier_routed, share_free=_demo_share_free)
-            if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified and not _demo_vst_blocked:
+            if _demo_ct_on and _demo1_tier_routed and not _demo_is_unverified:
                 _demo_sd = {"ver": _demo_ver, "signal": scan_signal_val, "entry": scan_entry,
                              "sl": scan_sl, "tp1": scan_tp1, "tp2": scan_tp2}
                 ct_results = ct.on_scan_signal(_demo_sd, chosen_sym, cp, True)
                 send_admin(f"📋 <b>Demo{scan_ver} Copy Trade ({chosen_sym}):</b>\n" + "\n".join(ct_results[:5]))
-            elif _demo_vst_blocked:
-                send_admin(f"📋 <b>{chosen_sym}:</b> {_kind} isn't on the /vsttimes allowlist — posted to VIP/Free, but no Demo{scan_ver} copy trade orders placed.")
+            elif _demo_vst_downgraded:
+                send_admin(f"📋 <b>{chosen_sym}:</b> {_kind} isn't on the /vsttimes allowlist — demoted to Channel 1 only (tagged [VST]), no VIP/Free post, no Demo{scan_ver} copy trade orders placed.")
             signal_placed = True
             print(f"  [TEST] {chosen_sym} {scan_signal_val} demo signal placed — scan{lbl}")
 
