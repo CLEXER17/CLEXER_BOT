@@ -8223,7 +8223,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
         _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
-        ct.on_scan_tp2(sym)
+        if t.get("ct_opened"): ct.on_scan_tp2(sym)
         ct.virtual_on_close(sym, price, "TP2")
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -8247,7 +8247,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
             react_category="tp1")
-        ct.on_scan_tp1(sym)
+        if t.get("ct_opened"): ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -8273,7 +8273,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     # getting told about wins on a trade it was already following.
     _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
-    ct.on_scan_sl(sym)
+    if t.get("ct_opened"): ct.on_scan_sl(sym)
     ct.virtual_on_close(sym, price, close_result)
     log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
         "sl_hit_time": _ist_str_now(), "result": close_result,
@@ -8660,7 +8660,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True),
                 react_category="timeout_win" if pnl >= 0 else "timeout_loss")
-            ct.on_scan_sl(sym, reason="TIMEOUT")
+            if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
             ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
@@ -8727,7 +8727,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _tp2_ids = send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
-            ct.on_scan_tp2(sym)
+            if t.get("ct_opened"): ct.on_scan_tp2(sym)
             ct.virtual_on_close(sym, price, "TP2")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -8755,7 +8755,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
-                ct.on_scan_tp1(sym)
+                if t.get("ct_opened"): ct.on_scan_tp1(sym)
                 ct.virtual_on_tp1(sym, tp1)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -8790,7 +8790,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
             _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
                 tier_routed=(result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
-            ct.on_scan_sl(sym)
+            if t.get("ct_opened"): ct.on_scan_sl(sym)
             ct.virtual_on_close(sym, price, result)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "sl_hit_time": _ist_str_now(), "result": result,
@@ -13076,6 +13076,19 @@ Reasoning: [one line]"""
                         # must never auto-execute real orders on them until admin moves
                         # them out of _SCAN_SPECIAL_NO_COPY.
                         _is_unverified = _tier_routed and _trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+                        # Records whether THIS specific trade record was ever eligible to
+                        # open a real copytrade position — same condition as the
+                        # ct.on_scan_signal gate just below. Bug (admin report
+                        # 2026-08-12): a nonspecial/unverified trade can legitimately
+                        # stack on a symbol that a verified trade already occupies (VST
+                        # priority rule, see the "already in active trade" guard above)
+                        # — but ct.on_scan_sl/tp1/tp2 are symbol-keyed with no concept of
+                        # "which trade record is this," so the STALE trade's own SL/BE
+                        # hit was closing the REAL position that actually belonged to the
+                        # verified trade. Every ct.on_scan_* close call below is now
+                        # gated on this flag so only the trade that could have opened a
+                        # real position can ever close one.
+                        slot_data["ct_opened"] = bool(_tier_routed and not _is_unverified)
                         if _tier_routed:
                             # Virtual (paper) mirroring follows what's actually SHOWN in
                             # VIP/Free, not the real-copytrade safety gate above — unlike
@@ -17306,7 +17319,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp2")
-        ct.on_scan_tp2(sym)
+        if t.get("ct_opened"): ct.on_scan_tp2(sym)
         ct.virtual_on_close(sym, cp, "TP2")
         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
@@ -17335,7 +17348,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp1")
-        ct.on_scan_tp1(sym)
+        if t.get("ct_opened"): ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
         _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
             tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
@@ -17360,7 +17373,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
           f"{'🛡️' if close_result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(close_result)}"]],
         tag=sig_id)
     _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
-    ct.on_scan_sl(sym)
+    if t.get("ct_opened"): ct.on_scan_sl(sym)
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
         _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
@@ -17449,7 +17462,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp2")
-                        ct.on_scan_tp2(sym)
+                        if t.get("ct_opened"): ct.on_scan_tp2(sym)
                         ct.virtual_on_close(sym, cp, "TP2")
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp2"] += 1
@@ -17483,7 +17496,7 @@ def _demo_monitor_loop():
                             f"🪪 {sig_id}"
                         )
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
-                        ct.on_scan_sl(sym)
+                        if t.get("ct_opened"): ct.on_scan_sl(sym)
                         ct.virtual_on_close(sym, cp, lbl)
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_sl"] += 1
@@ -17513,7 +17526,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp1")
-                        ct.on_scan_tp1(sym)
+                        if t.get("ct_opened"): ct.on_scan_tp1(sym)
                         ct.virtual_on_tp1(sym, tp1)
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp1"] += 1
@@ -17539,7 +17552,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
                             react_category="timeout_win" if pnl >= 0 else "timeout_loss")
-                        ct.on_scan_sl(sym, reason="TIMEOUT")
+                        if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _slot_hm_for_trade(t, created)
@@ -18024,6 +18037,12 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             _demo_ver = 3 if scan_ver == 1 else 4
             _demo_ct_on = ct.DEMO1_CT_ENABLED if scan_ver == 1 else ct.DEMO2_CT_ENABLED
             _demo_is_unverified = _demo1_tier_routed and trigger_hm in _SCAN_SPECIAL_NO_COPY.get(_kind, set())
+            # See the matching flag + comment on the live Scan1/Scan2 slot_data —
+            # marks whether this specific trade record could ever have opened a
+            # real copytrade position, so its own close events can't affect a
+            # position that actually belongs to a different (verified) trade
+            # stacked on the same symbol.
+            slot_data["ct_opened"] = bool(_demo_ct_on and _demo1_tier_routed and not _demo_is_unverified)
             if _demo1_tier_routed:
                 ct.virtual_on_signal(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
                     tier_routed=_demo1_tier_routed, share_free=_demo_share_free)
