@@ -5587,13 +5587,25 @@ async function refreshResults(){
   window.__clexResultsRender && window.__clexResultsRender();
   try{
     const d = await ClexAPI.publicResults();
-    HISTORY_VIEW  = (d.results || []).map(shapeResult);
+    const rawResults = d.results || [];
+    HISTORY_VIEW  = rawResults.map(shapeResult);
     RESULTS_STATE = 'ready';
-    const c = d.counts || {};
+    // Derived straight from the raw results, not the API's counts object -
+    // BE can only occur after TP1, so tp1 is every entry that reached TP1
+    // (TP2 + BE + literal TP1 closes), never just a literal "TP1" result.
+    // Keeping this derivation here too (rather than only trusting the
+    // server aggregate) means the tiles can never show BE > TP1.
+    let tp1 = 0, tp2 = 0, be = 0;
+    rawResults.forEach(r => {
+      const res = String(r.result || '').toUpperCase();
+      if (res.startsWith('TP2')) tp2++;
+      if (res.startsWith('BE'))  be++;
+      if (r.tp1_reached || res.startsWith('TP2') || res.startsWith('BE') || res.startsWith('TP1')) tp1++;
+    });
     setStatTile(0, HISTORY_VIEW.length);
-    setStatTile(1, c.tp1 || 0);
-    setStatTile(2, c.tp2 || 0);
-    setStatTile(3, c.be  || 0);
+    setStatTile(1, tp1);
+    setStatTile(2, tp2);
+    setStatTile(3, be);
     setCounter('#comm-results', HISTORY_VIEW.length);
     paintTelegramCards();
   }catch(err){

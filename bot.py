@@ -356,8 +356,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
-        for _k, _v in (_trail_ids or {}).items():
-            if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+        _track_sl_ids(t.get("sig_id",""), "trailing_mid", _trail_ids)
     else:
         if t.get("trail_sl2_moved"):
             return
@@ -389,8 +388,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
-        for _k, _v in (_trail_ids or {}).items():
-            if _k.startswith("free:"): _track_free_sl(t.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid2", _v)
+        _track_sl_ids(t.get("sig_id",""), "trailing_mid2", _trail_ids)
 
 def _apply_trail_sl_btc(price: float):
     if not TRAIL_SL_BTC:
@@ -420,8 +418,7 @@ def _apply_trail_sl_btc(price: float):
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
-        for _k, _v in (_trail_ids or {}).items():
-            if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+        _track_sl_ids(active_trade.get("sig_id",""), "trailing_mid", _trail_ids)
     else:
         if active_trade.get("trail_sl2_moved"):
             return
@@ -447,10 +444,13 @@ def _apply_trail_sl_btc(price: float):
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
-        for _k, _v in (_trail_ids or {}).items():
-            if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid2", _v)
-    for _k, _v in (_trail_ids or {}).items():
-        if _k.startswith("free:"): _track_free_sl(active_trade.get("sig_id",""), _k.split(":", 1)[1], "trailing_mid", _v)
+        # Both branches above already track their own ids via _track_sl_ids
+        # (trailing_mid / trailing_mid2 respectively) — a stray unconditional
+        # third tracking call used to sit here re-tagging whichever _trail_ids
+        # was last set as "trailing_mid" regardless of which branch actually
+        # ran, silently overwriting the field with the wrong message ids
+        # whenever the post-TP1 branch fired. Removed rather than mirrored.
+        _track_sl_ids(active_trade.get("sig_id",""), "trailing_mid2", _trail_ids)
 
 def _delete_trail_sl_messages(t: dict):
     """TP1 hit makes the earlier 'Trailing SL moved to X' note stale (SL is
@@ -1216,10 +1216,11 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
     return ids
 
 def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwargs) -> dict:
-    """Same as send_lifecycle_reply, but also records this signal's Free-channel
-    SL-hit message_id + final result (SL/BE) so /clearslfree can later find and
-    delete exactly this signal's messages — only if result is a real SL, never
-    for BE. See _track_free_sl/_finalize_free_sl for the actual bookkeeping.
+    """Same as send_lifecycle_reply, but also records this signal's Free- and
+    VIP-channel SL-hit message_id + final result (SL/BE) so /clearslfree and
+    /clearslvip can later find and delete exactly this signal's messages —
+    only if result is a real SL, never for BE. See _track_sl_ids/
+    _finalize_free_sl/_finalize_vip_sl for the actual bookkeeping.
     Excludes Channel 2 (VIP Mirror) for a real SL only — admin request, BE
     (breakeven, i.e. TP1 already hit) still posts there as normal.
 
@@ -1228,10 +1229,9 @@ def _send_sl_and_log(text: str, reply_map: dict, sig_id: str, result: str, **kwa
     kwargs.setdefault("exclude_ch2", result == "SL")
     kwargs.setdefault("react_category", "sl" if result == "SL" else "be")
     ids = send_lifecycle_reply(text, reply_map, **kwargs)
-    for k, v in (ids or {}).items():
-        if k.startswith("free:"):
-            _track_free_sl(sig_id, k.split(":", 1)[1], "sl_mid", v)
+    _track_sl_ids(sig_id, "sl_mid", ids)
     _finalize_free_sl(sig_id, result)
+    _finalize_vip_sl(sig_id, result)
     return ids
 
 def send_to_tier_channels(text: str, share_free: bool, exclude_ch2: bool = False):
@@ -7952,8 +7952,7 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
     _ids = send_entry_signal(fmt_signal(signal), include_ch2=False, tier_routed=True,
         share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"],
         react_category="entry")
-    for k, v in (_ids or {}).items():
-        if k.startswith("free:"): _track_free_sl(signal["sig_id"], k.split(":", 1)[1], "entry_mid", v)
+    _track_sl_ids(signal["sig_id"], "entry_mid", _ids)
     _attach_chart_image_async(SYMBOL.replace("USDT", ""), _ids)
     return _ids
 
@@ -8495,7 +8494,14 @@ def _clear_free_sl_messages() -> tuple:
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
             continue
         cid = entry.get("cid")
-        for field in ("entry_mid", "trailing_mid", "sl_mid"):
+        # trailing_mid2 (the post-TP1 "halfway to TP2" trailing-SL notice) is
+        # tracked via the same _track_free_sl(field=...) mechanism but was
+        # missing from this cleanup list — a real-SL signal that had already
+        # moved its SL a second time before reversing into a loss would leave
+        # that second trailing notice stranded in Free forever. Included here
+        # since a "delete this signal's messages" action should mean all of
+        # them, not just the first three.
+        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid"):
             mid = entry.get(field)
             if not mid:
                 continue
@@ -8512,6 +8518,112 @@ def _clear_free_sl_messages() -> tuple:
     _save_free_sl_log()
     return ok, fail
 
+# --- VIP-channel SL message log — same idea as the Free-channel one above,
+# but for the VIP channel(s) instead. Kept as a fully separate log (not a
+# shared one keyed by destination) since Free and VIP messages get deleted
+# independently by their own admin commands, and a signal can easily be
+# tracked in one log without the other (e.g. share_free=False, entry_mid
+# only ever posted to VIP, never Free).
+_VIP_SL_LOG_FILE = os.path.join(DATA_DIR, "vip_sl_log.json")
+_vip_sl_log: dict = {}   # sig_id -> {"cid": str, "entry_mid": int|None, "trailing_mid": int|None, "trailing_mid2": int|None, "sl_mid": int|None, "result": "SL"|"BE"|None}
+
+def _save_vip_sl_log():
+    try:
+        with open(_VIP_SL_LOG_FILE, "w") as f:
+            json.dump(_vip_sl_log, f)
+    except Exception as e:
+        print(f"[VIP SL LOG] save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("vip_sl_log", _vip_sl_log)
+        except Exception as e:
+            print(f"[VIP SL LOG] central push error: {e}")
+
+def _track_vip_sl(sig_id: str, cid: str, field: str, message_id: int):
+    """Records one VIP-channel message_id (entry/trailing/trailing2/sl) under
+    its signal's sig_id. Only actually queued for deletion later if that
+    signal's result turns out to be a real SL (see _finalize_vip_sl)."""
+    if not sig_id or not message_id:
+        return
+    entry = _vip_sl_log.setdefault(sig_id, {"cid": cid, "entry_mid": None, "trailing_mid": None, "trailing_mid2": None, "sl_mid": None, "result": None})
+    entry["cid"] = cid
+    entry[field] = message_id
+    if len(_vip_sl_log) > 500:
+        for _old in list(_vip_sl_log)[:len(_vip_sl_log) - 500]:
+            del _vip_sl_log[_old]
+    _save_vip_sl_log()
+
+def _finalize_vip_sl(sig_id: str, result: str):
+    """Marks a signal's final outcome (SL or BE) once it closes. Safe no-op
+    if the signal was never tracked via _track_vip_sl."""
+    if not sig_id or sig_id not in _vip_sl_log:
+        return
+    _vip_sl_log[sig_id]["result"] = result
+    _save_vip_sl_log()
+
+def _load_vip_sl_log():
+    global _vip_sl_log
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/vip_sl_log")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_VIP_SL_LOG_FILE, r.json(), "VIP SL LOG")
+        if d is None and os.path.exists(_VIP_SL_LOG_FILE):
+            with open(_VIP_SL_LOG_FILE) as f:
+                d = json.load(f)
+        if d is not None:
+            _vip_sl_log = d
+            print(f"[VIP SL LOG] Loaded {len(_vip_sl_log)} tracked signal(s)")
+    except Exception as e:
+        print(f"[VIP SL LOG] load error: {e}")
+
+def _pending_vip_sl_count() -> int:
+    """How many signals are actually eligible to be cleared right now — real
+    SL result only, BE and still-open ones don't count."""
+    return sum(1 for v in _vip_sl_log.values() if v.get("result") == "SL")
+
+def _clear_vip_sl_messages() -> tuple:
+    """Deletes the entry + trailing-SL + SL-hit messages for every signal
+    whose final result was a real SL (never BE) from VIP, then drops those
+    signals from the log. BE and still-open signals are left untouched.
+    Returns (deleted_count, failed_count)."""
+    global _vip_sl_log
+    ok = 0; fail = 0
+    _remaining = {}
+    for sig_id, entry in _vip_sl_log.items():
+        if entry.get("result") != "SL":
+            _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
+            continue
+        cid = entry.get("cid")
+        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid"):
+            mid = entry.get(field)
+            if not mid:
+                continue
+            try:
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                    json={"chat_id": cid, "message_id": mid}, timeout=10)
+                if r.json().get("ok"):
+                    ok += 1
+                else:
+                    fail += 1
+            except Exception:
+                fail += 1
+    _vip_sl_log = _remaining
+    _save_vip_sl_log()
+    return ok, fail
+
+def _track_sl_ids(sig_id: str, field: str, ids: dict):
+    """Records message_ids from a send_lifecycle_reply/send_entry_signal
+    result dict into both the Free and VIP SL-tracking logs at once, keyed
+    by whichever destinations that call actually posted to. Single place so
+    every lifecycle send site (entry, trailing SL, trailing SL post-TP1)
+    feeds both /clearslfree and /clearslvip without duplicating the same
+    free:/vip: prefix-matching loop at each call site."""
+    for _k, _v in (ids or {}).items():
+        if _k.startswith("free:"): _track_free_sl(sig_id, _k.split(":", 1)[1], field, _v)
+        elif _k.startswith("vip:"): _track_vip_sl(sig_id, _k.split(":", 1)[1], field, _v)
+
 def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     """Redacted Free-channel entry-signal variant — direction/entry/SL/TP
     replaced with lock placeholders. Same _scan_box template every other
@@ -8527,6 +8639,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
 
 _load_sig_snapshots()
 _load_free_sl_log()
+_load_vip_sl_log()
 
 def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
     """Renders the admin-only startup status message. No box-drawing borders —
@@ -9961,7 +10074,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -11551,6 +11664,14 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "📭 No real-SL signals in Free channel(s) to clear right now (BE outcomes are never touched)."); return
         _ask_confirm(chat_id, _check_id, "clear_free_sl",
             f"Delete {_n} signal(s) that hit a real SL from Free channel(s)? For each one this removes its entry signal, its trailing-SL notice, and its SL-hit message — never BE/breakeven trades, and never other signals' trailing-SL messages.",
+            "help_main")
+
+    elif cmd == "/clearslvip":
+        _n = _pending_vip_sl_count()
+        if not _n:
+            send_reply(chat_id, "📭 No real-SL signals in VIP channel(s) to clear right now (BE outcomes are never touched)."); return
+        _ask_confirm(chat_id, _check_id, "clear_vip_sl",
+            f"Delete {_n} signal(s) that hit a real SL from VIP channel(s)? For each one this removes its entry signal, its trailing-SL notice(s), and its SL-hit message — never BE/breakeven trades, and never other signals' trailing-SL messages.",
             "help_main")
 
     elif cmd == "/resetspins":
@@ -13281,8 +13402,7 @@ Reasoning: [one line]"""
                             include_ch2=False, tier_routed=_tier_routed, share_free=_effective_share_free,
                             locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
                             sig_id=slot_data["sig_id"], react_category="entry")
-                        for _k, _v in (slot_data["reply_map"] or {}).items():
-                            if _k.startswith("free:"): _track_free_sl(slot_data["sig_id"], _k.split(":", 1)[1], "entry_mid", _v)
+                        _track_sl_ids(slot_data["sig_id"], "entry_mid", slot_data["reply_map"])
                         _attach_chart_image_async(chosen_sym.replace("-USDT", "").replace("USDT", ""), slot_data["reply_map"])
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
@@ -14117,7 +14237,8 @@ _SETTINGS_SUBCATS = {
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
-        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged SL/BE-hit message from the Free channel(s)."),
+        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged real-SL signal's messages from the Free channel(s) — BE trades are never touched."),
+        ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every logged real-SL signal's messages from the VIP channel(s) — BE trades are never touched."),
         ("/resetspins", "🎰", "Reset All VIP Spins", "Clear every user's locked VIP spin price so everyone can spin again immediately."),
         ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
         ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
@@ -14510,6 +14631,9 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
     elif action_id == "clear_free_sl":
         _ok, _fail = _clear_free_sl_messages()
         result_text = f"✅ <b>Deleted {_ok} message(s)</b> (entry + trailing-SL + SL-hit) for real-SL signals from Free channel(s). BE trades untouched." + (f"\n⚠️ {_fail} failed to delete (already gone or too old)." if _fail else "")
+    elif action_id == "clear_vip_sl":
+        _ok, _fail = _clear_vip_sl_messages()
+        result_text = f"✅ <b>Deleted {_ok} message(s)</b> (entry + trailing-SL + SL-hit) for real-SL signals from VIP channel(s). BE trades untouched." + (f"\n⚠️ {_fail} failed to delete (already gone or too old)." if _fail else "")
     elif action_id == "reset_all_spins":
         _n = 0
         for _uid, _u in list(ct._db.items()):
@@ -18327,8 +18451,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             _save_sig_snapshot(_demo_sig_id, chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2, f"demo{scan_ver}")
             _demo_reply_map = send_entry_signal(demo_msg, include_ch2=False, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
                 locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id, react_category="entry")
-            for _k, _v in (_demo_reply_map or {}).items():
-                if _k.startswith("free:"): _track_free_sl(_demo_sig_id, _k.split(":", 1)[1], "entry_mid", _v)
+            _track_sl_ids(_demo_sig_id, "entry_mid", _demo_reply_map)
             _attach_chart_image_async(coin, _demo_reply_map)
 
             slot_data = {
