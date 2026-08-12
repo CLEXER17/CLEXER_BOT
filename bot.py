@@ -8840,8 +8840,17 @@ def _tick_one(ver: int, t: dict) -> bool:
             _delete_trail_sl_messages(t)
             _log_scan_history(t, result, price)
             _sl_msg = fmt_scan_update("SL_HIT", price, t)
+            # Follows the entry's own tier_routed flag unconditionally, same as
+            # _force_close_scan_trade's matching branch (2026-07-28 fix) - a
+            # verified slot's real SL loss goes to VIP/Free same as its wins
+            # would. This live-monitor call site (the path that actually
+            # catches almost every real SL hit, vs. admin force-close) was
+            # missed when that fix went in: gating on result=="BE" meant every
+            # genuine SL loss never reached VIP/Free at all here, only Channel
+            # 1 - so it was never tracked as a Free message and /clearslfree
+            # had nothing to find (admin report 2026-08-12).
             _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
-                tier_routed=(result == "BE" and bool(t.get("tier_routed"))), share_free=t.get("share_free", True))
+                tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
             if t.get("ct_opened"): ct.on_scan_sl(sym)
             ct.virtual_on_close(sym, price, result)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
