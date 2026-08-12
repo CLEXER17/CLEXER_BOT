@@ -10343,6 +10343,15 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # help menu above already has its own inline keyboard.
         send_reply(chat_id, "👇 Quick actions", reply_markup=_reply_keyboard_for_chat(chat_id))
 
+    elif cmd == "/cmd":
+        # Flat text list of every command — /help is the button menu, /cmd
+        # is the "just show me everything at once, with how to run each
+        # one" version (admin request 2026-08-12). Filtered by the caller's
+        # OWN real access: full admin sees everything, a co-admin sees
+        # Scan+Trade Control on top of the open-to-all ones, everyone else
+        # sees just the open-to-all ones.
+        _send_all_commands_list(chat_id, is_admin, is_co_admin(_check_id))
+
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
         _push_public_status_if_due(force=True)   # website reflects it immediately
@@ -13728,6 +13737,10 @@ _HELP_CATS = {
             ("/session",  "🕐", "London / NY / Sleep session"),
             ("/history",  "📜", "Last 5 signals"),
             ("/stats",    "🏆", "Win rate & trade statistics"),
+            ("/cmd",      "📖", "This list — every command, its use, and how to run it"),
+            ("/chat",     "💬", "Start an AI chat session with the bot"),
+            ("/vip",      "⭐", "See VIP plans and pricing"),
+            ("/addfunds", "💵", "Top up your copy-trade wallet"),
         ]
     ),
     # copyuser, tradecontrol, scan, copyadmin, settings, tv, and broadcast are all
@@ -13772,7 +13785,7 @@ _SCAN_SUBCATS = {
     "toggles": ("⚙️ On/Off Switches", [
         ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
         ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
-        ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals."),
+        ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals. (/ctpause is the same command.)"),
         ("/vst",    "⭐", "Verified Auto-Scans",   "Turn VERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2. Manual runs always still work."),
         ("/unst",   "🔒", "Unverified Auto-Scans", "Turn UNVERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
         ("/stopnt", "📋", "Regular-Grid Auto-Scans", "Turn NONSPECIAL (regular-grid) auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
@@ -13846,6 +13859,7 @@ _COPYADMIN_SUBCATS = {
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
         ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
         ("/leaderboard", "🏆", "Volume Leaderboard", "Ranks users by real copy-trade volume — Today, 7D, 30D, Year, or All-Time."),
+        ("/adminlinks", "🔗", "Admin Quick Links", "Shows quick-access links/shortcuts for admin tools."),
     ]),
     "manage": ("🛡 Moderation", [
         ("/kick",      "🚫", "Remove User",       "Disconnects a user and cancels any pending orders for them."),
@@ -13881,15 +13895,16 @@ _TV_SUBCATS = {
         ("/tvstudies",   "📊", "Read TV Indicators", "Pulls current RSI/EMA/MACD values straight from TradingView."),
         ("/calcstudies", "🧮", "Calculate (BingX)",  "Calculates the same indicators locally from BingX candle data."),
         ("/compare",     "⚖️", "4-Way BTC Compare",  "Runs 4 parallel BTC analyses (TV vs BingX data) side by side."),
-        ("/readindicators", "🔎", "TV Data Audit", "Cross-checks TradingView's live indicator values against a fresh BingX-based calculation, flagging any mismatch."),
+        ("/readindicators", "🔎", "TV Data Audit", "Cross-checks TradingView's live indicator values against a fresh BingX-based calculation, flagging any mismatch. (/checktvdata is the same command.)"),
     ]),
 }
 
 # ─── "Settings" is split into sub-sections (main gate → door) ─────────────────
 _SETTINGS_SUBCATS = {
     "botcontrol": ("▶️ Bot Control", [
-        ("/go",    "▶️", "Resume Bot",   "Starts scanning again after a pause."),
+        ("/go",    "▶️", "Resume Bot",   "Starts scanning again after a pause. (/resume is the same command.)"),
         ("/pause", "⏸", "Pause Bot",    "Freezes everything — no new scans, signals, or trades."),
+        ("/stop",  "🛑", "Stop New Scans", "Blocks new scans from starting, but keeps monitoring any trades already open — unlike /pause, which freezes everything."),
     ]),
     "btcsettings": ("📡 BTC Settings", [
         ("/btcmode",      "🔀", "Prompt Mode V7/V9",  "Switch which BTC analysis prompt version is used."),
@@ -13899,6 +13914,7 @@ _SETTINGS_SUBCATS = {
     "charts": ("🖼 Charts & Images", [
         ("/chartson",  "📸", "Enable Charts",   "Turn on chart snapshot generation for signals."),
         ("/chartsoff", "🚫", "Disable Charts",  "Turn off chart snapshots — saves API credits."),
+        ("/charts",    "🖼", "Chart Snapshot Status", "Shows whether chart snapshots are currently on or off, with a preview."),
         ("/images",    "🖼", "Images On/Off",   "Enable or disable chart images being sent at all."),
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
@@ -13911,6 +13927,10 @@ _SETTINGS_SUBCATS = {
         ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
         ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
         ("/winrate", "🎯", "Win Rate Targets", "Set the promote/demote win-rate target independently for Scan1, Scan2, TS1, and TS2."),
+        ("/wrscan1", "🎯", "Scan1 Win Rate Target", "Direct shortcut to set Scan1's own win-rate target, e.g. /wrscan1 65 — same setting /winrate's picker changes."),
+        ("/wrscan2", "🎯", "Scan2 Win Rate Target", "Direct shortcut to set Scan2's own win-rate target."),
+        ("/wrts1",   "🎯", "TS1 Win Rate Target",   "Direct shortcut to set TS1's own win-rate target."),
+        ("/wrts2",   "🎯", "TS2 Win Rate Target",   "Direct shortcut to set TS2's own win-rate target."),
         ("/freelimit", "🆓", "Free Daily Signal Limit", "Set how many signals the Free channel gets shown per day before locking further reveals."),
         ("/chatmodel", "💬", "Chat AI Model", "Pick which AI model/gateway powers /chat's own replies — separate from the scan AI."),
     ]),
@@ -14985,6 +15005,79 @@ _NESTED_CATS = {"copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_
                  "settings": (_SETTINGS_SUBCATS, "settings_sub"),
                  "broadcast": (_BROADCAST_SUBCATS, "broadcast_sub"),
                  "tv": (_TV_SUBCATS, "tv_sub")}
+
+# A co-admin's own scope (per _co_admin_allowed_commands' docstring: every
+# command in Scan Control + Trade Control, nothing from Copy Admin/Settings/
+# Broadcast) maps onto exactly these two _HELP_CATS category ids.
+_CO_ADMIN_CAT_IDS = {"scan", "tradecontrol"}
+
+def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
+    """One flat, always-current command list for /cmd — built from the exact
+    same registries that already power the button-driven help menu
+    (_HELP_CATS' own "monitor" entries + every _NESTED_CATS SUBCATS dict).
+    Adding a new command's entry to any of those — the normal way a command
+    gets a help-menu button in this codebase — makes it show up in /cmd too,
+    automatically, with no separate list to keep in sync.
+    Returns [(category_label, cmd, emoji, title_or_None, desc), ...], in
+    _HELP_CATS' own definition order. A full admin sees every category; a
+    co-admin sees Scan Control + Trade Control on top of the open-to-all
+    ones (their real access, not everything); anyone else sees only the
+    open-to-all categories."""
+    out = []
+    for cat_id, (cat_label, admin_only, entries) in _HELP_CATS.items():
+        if admin_only and not (is_admin_view or (is_co_admin_view and cat_id in _CO_ADMIN_CAT_IDS)):
+            continue
+        for cmd, emoji, desc in entries:
+            out.append((cat_label, cmd, emoji, None, desc))
+        if cat_id in _NESTED_CATS:
+            subcats, _cb_prefix = _NESTED_CATS[cat_id]
+            for _sub_id, (_sub_label, sub_entries) in subcats.items():
+                for cmd, emoji, title, desc in sub_entries:
+                    out.append((cat_label, cmd, emoji, title, desc))
+    return out
+
+def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool = False):
+    """/cmd — flat text list of every registered command, its use, and how
+    to run it, chunked across as many messages as Telegram's 4096-char
+    limit requires (same problem /timepanel hit — see that fix's commit).
+    Category headers are re-shown at the top of any continuation message a
+    category's own entry list got split across, so context is never lost."""
+    reg = _all_commands_registry(is_admin_view, is_co_admin_view)
+    by_cat = {}
+    for cat_label, c, emoji, title, desc in reg:
+        by_cat.setdefault(cat_label, []).append((c, emoji, title, desc))
+
+    header = (f"📖 <b>All Commands</b> ({len(reg)} total)\n\n"
+              f"<i>Pulled live from the same list that powers the button menu — "
+              f"add a command's entry there and it shows up here too.</i>\n")
+    footer = f"\n<i>Tip: /help for the button-driven menu instead.</i>"
+
+    lines = []  # (is_category_header, text)
+    for cat_label, entries in by_cat.items():
+        lines.append((True, f"\n<b>{cat_label}</b>"))
+        for c, emoji, title, desc in entries:
+            lbl = f"{emoji} <code>{c}</code>" + (f" — <b>{title}</b>" if title else "")
+            lines.append((False, f"{lbl}\n<i>{desc}</i>"))
+
+    margin = 120  # room for the part-tag + footer + any HTML close tags
+    chunks = []; cur = header
+    last_cat_header = None
+    for is_hdr, text in lines:
+        if is_hdr:
+            last_cat_header = text
+        if len(cur) + len(text) + 1 > _TG_MSG_LIMIT - margin:
+            chunks.append(cur)
+            # a chunk break mid-category re-opens with that category's own
+            # header so the continuation still reads in context
+            cur = (last_cat_header + "\n") if not is_hdr and last_cat_header else ""
+        cur += text + "\n"
+    if cur.strip():
+        chunks.append(cur)
+    chunks[-1] += footer
+
+    for i, chunk in enumerate(chunks):
+        tag = f"<i>(part {i+1}/{len(chunks)})</i>\n\n" if len(chunks) > 1 else ""
+        send_reply(chat_id, tag + chunk)
 
 def _find_back_target(cmd_text):
     """Find the correct 'Back' callback_data for a command — the immediate
