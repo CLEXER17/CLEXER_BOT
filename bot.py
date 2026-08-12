@@ -9900,7 +9900,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -15135,8 +15135,10 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
 # ─── END HELP MENU ────────────────────────────────────────────────────────────
 
 
+_last_getupdates_fail_alert = 0.0
+
 def command_listener():
-    global last_update_id
+    global last_update_id, _last_getupdates_fail_alert
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
@@ -15164,7 +15166,36 @@ def command_listener():
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
                 params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query"]}, timeout=25)
             data = r.json()
-            if not data.get("ok"): time.sleep(5); continue
+            if not data.get("ok"):
+                # This used to be completely silent — no print, no admin DM —
+                # so a stuck getUpdates loop (most commonly a 409 Conflict,
+                # meaning ANOTHER process is polling this same bot token) meant
+                # the bot looked totally dead to every user with zero trace
+                # anywhere except a human noticing (admin report 2026-08-12:
+                # "not replying in DM", active server's own heartbeat was fine
+                # — this loop had silently been failing the whole time).
+                # Rate-limited DM so a sustained outage doesn't spam the admin
+                # every 5s; sendMessage is a separate API call from getUpdates,
+                # so this alert still gets through even while polling is stuck.
+                _err_code = data.get("error_code")
+                _err_desc = str(data.get("description", ""))[:300]
+                print(f"[CMD] getUpdates not ok: {_err_code} {_err_desc}")
+                _now = time.time()
+                if ADMIN_CHAT_ID and _now - _last_getupdates_fail_alert > 300:
+                    _last_getupdates_fail_alert = _now
+                    if _err_code == 409:
+                        _alert = (f"🔴 <b>Telegram polling conflict (409)</b>\n\n"
+                            f"Another process is calling getUpdates with this same bot token — "
+                            f"'{SERVER_NAME}' is receiving NO commands until that clears.\n\n"
+                            f"Check for a second live Railway deployment/instance still running.\n\n"
+                            f"<code>{_html.escape(_err_desc)}</code>")
+                    else:
+                        _alert = (f"⚠️ <b>Telegram getUpdates failing</b>\n\n"
+                            f"'{SERVER_NAME}' cannot receive commands right now.\n\n"
+                            f"<code>{_err_code}: {_html.escape(_err_desc)}</code>")
+                    try: send_reply(ADMIN_CHAT_ID, _alert)
+                    except Exception: pass
+                time.sleep(5); continue
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
 
