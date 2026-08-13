@@ -13251,11 +13251,12 @@ Reasoning: [one line]"""
                             print(f"  [SCAN] attempt {_attempt+1}/{_retry_budget} using gateway={_gw_dbg} model={_ai_model(_kind)}")
                             _client, _used_key = _claude_client_skip(_kind, _attempt, _aero_bad_keys)
                             # Admin request 2026-08-06: keep thinking ON (do not disable it) and
-                            # instead give it enough room that it can never eat the whole budget —
-                            # 2500 for Direct (was 200), 5000 for Aerolink (was 2500, since
-                            # whatever's behind Aerolink also tends to narrate step-by-step on
-                            # top of thinking, needing extra headroom).
-                            _call_max_tokens = 5000 if _using_aero else 2500
+                            # instead give it enough room that it can never eat the whole budget.
+                            # Direct bumped 2500 -> 5000 (admin request 2026-08-13, matching
+                            # Aerolink's own ceiling) now that /thinking's real extended-thinking
+                            # param shares this same pool with the output — 2500 was sized for
+                            # plain narration headroom alone, not an actual thinking budget too.
+                            _call_max_tokens = 5000
                             r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
                                 messages=[{"role":"user","content":content}], **_thinking_kwarg())
