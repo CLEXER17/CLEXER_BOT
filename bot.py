@@ -5396,7 +5396,7 @@ def _run_bench_matrix(kind, symbol, model_id, messages_content, system, formula)
                 _bench_open[_bid] = {"symbol": symbol, "kind": kind, "combo": _combo, **_parsed, "opened_at": time.time()}
         except Exception as e:
             print(f"[BENCH] {kind} {symbol} think={'on' if _think_on else 'off'} effort={_eff} failed: {e}")
-    _bench_log.append({"time": ist_str(), "stats": {k: dict(v) for k, v in _bench_stats.items()}})
+    _bench_log.append({"time": now_ist().strftime("%H:%M"), "stats": {k: dict(v) for k, v in _bench_stats.items()}})
     if len(_bench_log) > 40:
         del _bench_log[:-40]
     _save_bench_state()
@@ -5441,17 +5441,35 @@ def _bench_monitor_loop():
         except Exception as e:
             print(f"[BENCH MONITOR] {e}")
 
+_BENCH_COL_SHORT = {"low": "Lo", "medium": "Me", "high": "Hi", "xhigh": "Xh", "max": "Mx"}
+
+def _bench_col_label(think_on: bool, effort: str) -> str:
+    return ("on" if think_on else "of") + _BENCH_COL_SHORT[effort]
+
 def _bench_table_text() -> str:
-    """Renders the current /benchtable comparison — one line per combo, grouped
-    THINK ON then THINK OFF, each showing win%, W/L, and streak. A vertical
-    list rather than the wide box-drawing grid, since a 10-column table doesn't
-    render usably in Telegram's mobile <pre> blocks. The per-combo rows use
-    fixed-width padding for column alignment, so they're wrapped in <pre> —
-    Telegram renders plain text in a proportional font, which would otherwise
-    turn that padding into ragged, unaligned gaps instead of real columns."""
-    if not _bench_stats:
-        return "📭 No resolved benchmark trades yet — turn on /benchmark and wait for signals to fire and resolve."
+    """Renders /benchtable: a compact TIME x combo win% trend grid (from
+    _bench_log — a stats snapshot taken at every trigger, so this shows how
+    each combo's cumulative win rate moved over time, matching the TIME rows
+    from the original spec), followed by the current cumulative win%/W-L/
+    streak totals per combo. Both sections wrapped in <pre> for real
+    monospace column alignment — Telegram renders plain text in a
+    proportional font, which would otherwise turn fixed-width padding into
+    ragged, unaligned gaps instead of real columns."""
+    if not _bench_log and not _bench_stats:
+        return "📭 No benchmark snapshots yet — turn on /benchmark and wait for a trigger to fire."
     _rows = []
+    if _bench_log:
+        _rows.append("TIME  " + " ".join(f"{_bench_col_label(t, e):>4}" for t, e in _BENCH_COMBOS))
+        for _row in _bench_log[-15:]:
+            _snap = _row.get("stats", {})
+            _cells = []
+            for _t, _e in _BENCH_COMBOS:
+                _s = _snap.get(_bench_combo_key(_t, _e), {"win": 0, "loss": 0})
+                _tot = _s.get("win", 0) + _s.get("loss", 0)
+                _cells.append(f"{round(_s.get('win',0)/_tot*100):>3}%" if _tot else "  - ")
+            _rows.append(f"{_row.get('time','?'):<6}" + " ".join(_cells))
+        _rows.append("")
+    _rows.append("CURRENT TOTALS")
     for _grp_label, _grp_think in (("THINK ON", True), ("THINK OFF", False)):
         _rows.append(_grp_label)
         for _eff in _TRADE_EFFORT_LEVELS:
