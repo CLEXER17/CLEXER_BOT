@@ -287,6 +287,13 @@ TRADE_THINKING_ENABLED = True  # /thinking on|off — global switch for Claude's
                                 # inline in the visible output, which is what was previously eating into
                                 # max_tokens and causing empty/cut-off responses (admin reports 2026-08-06).
                                 # Default ON per admin's already-stated preference for these calls.
+TRADE_EFFORT_LEVEL = "high"  # /effort (or /eff) low|medium|high|xhigh|max — output_config.effort for the
+                              # same trade-analysis Claude calls TRADE_THINKING_ENABLED covers. "high" matches
+                              # the API's own default (equivalent to omitting the param entirely), so this is
+                              # a no-op until an admin actually changes it. Independent of the thinking on/off
+                              # switch above — effort controls response depth regardless of whether extended
+                              # thinking specifically is toggled on.
+_TRADE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # Model registry — every model ID selectable anywhere in /aiconfig, admin-
 # editable via /addmodel, /removemodel, /models (2026-07-28). Not restricted
@@ -5237,18 +5244,26 @@ def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
     return _cell_aerolink
 
 def _thinking_kwarg(model_id: str) -> dict:
-    """Splat into any trade-analysis .messages.create(**...) call to toggle
-    Claude's extended-thinking mode on/off in one place — /thinking on|off
-    controls TRADE_THINKING_ENABLED globally. {} when off (parameter simply
-    omitted, exactly today's pre-existing behavior); when on, matches
-    /chat's own thinking:{"type":"adaptive"} usage for consistency.
+    """Splat into any trade-analysis .messages.create(**...) call to apply
+    both /thinking (on|off) and /effort (low|medium|high|xhigh|max) in one
+    place. {} entirely for non-Claude models (found 2026-08-13, same guard
+    _chat_call_claude_text already has) — /model and /aiconfig both let
+    admin point scan/BTC analysis at non-Claude catalog models (GPT/GLM/Kimi
+    via Aerolink), which aren't confirmed to understand these params the
+    way Claude models do.
 
-    Requires model_id and only adds the param for genuine claude-* models
-    (found 2026-08-13, same guard _chat_call_claude_text already has) —
-    /model and /aiconfig both let admin point scan/BTC analysis at non-Claude
-    catalog models (GPT/GLM/Kimi via Aerolink), which aren't confirmed to
-    understand this param the way Claude models do."""
-    return {"thinking": {"type": "adaptive"}} if TRADE_THINKING_ENABLED and _is_claude_model(model_id) else {}
+    For a genuine claude-* model: output_config.effort is always included
+    (TRADE_EFFORT_LEVEL defaults to "high", the API's own default, so this
+    is a no-op until an admin changes it — independent of the thinking
+    on/off switch below). thinking:{"type":"adaptive"} is added on top only
+    when TRADE_THINKING_ENABLED is True; when False the param is simply
+    omitted, exactly today's pre-existing behavior for that piece."""
+    if not _is_claude_model(model_id):
+        return {}
+    _kw = {"output_config": {"effort": TRADE_EFFORT_LEVEL}}
+    if TRADE_THINKING_ENABLED:
+        _kw["thinking"] = {"type": "adaptive"}
+    return _kw
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
@@ -7243,7 +7258,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -7312,6 +7327,7 @@ def load_settings():
             PROMPT_DM_UNVERIFIED = d.get("prompt_dm_unverified", True)
             PROMPT_DM_NONSPECIAL = d.get("prompt_dm_nonspecial", False)
             TRADE_THINKING_ENABLED = d.get("trade_thinking_enabled", True)
+            TRADE_EFFORT_LEVEL = d.get("trade_effort_level", "high") if d.get("trade_effort_level") in _TRADE_EFFORT_LEVELS else "high"
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -7378,6 +7394,7 @@ def save_settings():
             "prompt_dm_unverified": PROMPT_DM_UNVERIFIED,
             "prompt_dm_nonspecial": PROMPT_DM_NONSPECIAL,
             "trade_thinking_enabled": TRADE_THINKING_ENABLED,
+            "trade_effort_level": TRADE_EFFORT_LEVEL,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -10126,7 +10143,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -13796,6 +13813,25 @@ Reasoning: [one line]"""
             f"When OFF, calls go back to today's plain behavior with no thinking param.\n\n"
             f"Doesn't touch /chat's own thinking setting — that's separate and always on.", reply_markup=_mkp)
 
+    elif cmd in ("/effort", "/eff") and is_admin:
+        global TRADE_EFFORT_LEVEL
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in _TRADE_EFFORT_LEVELS:
+            TRADE_EFFORT_LEVEL = _arg
+            save_settings()
+        _mkp = {"inline_keyboard": [
+            [{"text": ("✅ " if TRADE_EFFORT_LEVEL == _lv else "") + _lv.upper(), "callback_data": f"effort:{_lv}"} for _lv in _TRADE_EFFORT_LEVELS[:3]],
+            [{"text": ("✅ " if TRADE_EFFORT_LEVEL == _lv else "") + _lv.upper(), "callback_data": f"effort:{_lv}"} for _lv in _TRADE_EFFORT_LEVELS[3:]],
+        ]}
+        send_reply(chat_id,
+            f"<b>🎚 Effort — Trade Analysis</b>\n\n"
+            f"Active: <b>{TRADE_EFFORT_LEVEL.upper()}</b>\n\n"
+            f"How much the model reasons before answering, on every trade-analysis Claude call "
+            f"(BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more tokens, more cost.\n\n"
+            f"low → medium → high (API default) → xhigh → max\n\n"
+            f"Independent of /thinking's on/off switch — applies either way. "
+            f"Doesn't touch /chat's own effort (fixed at medium).", reply_markup=_mkp)
+
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
@@ -14184,6 +14220,7 @@ _SCAN_SUBCATS = {
         ("/gateway", "🔀", "Default Scan Gateway", "Switch the main scan gateway (BTC's default) between Direct and Aerolink."),
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat."),
+        ("/effort", "🎚", "Effort — Trade Analysis", "Sets low/medium/high/xhigh/max effort for every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more cost. Doesn't affect /chat."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
         ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
@@ -16756,6 +16793,9 @@ def command_listener():
 
                     elif cb_data.startswith("thinking:") and cb_is_admin:
                         handle_command(f"/thinking {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
+
+                    elif cb_data.startswith("effort:") and cb_is_admin:
+                        handle_command(f"/effort {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
 
                     elif cb_data.startswith("gateway:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
