@@ -187,15 +187,25 @@ _SECURITY_HEADERS = {
 
 # The Mini App is the only HTML this service serves. Its markup is inline
 # (styles, handlers and script all live in clexer-miniapp.html) and it loads
-# Telegram's WebApp SDK, so the policy has to allow inline script/style and
-# telegram.org — but nothing wider than that.
+# Telegram's WebApp SDK plus TradingView's chart widget, so the policy has
+# to allow inline script/style, telegram.org, and tradingview.com — but
+# nothing wider than that.
+#
+# TradingView needs three separate directives, not just script-src (found
+# 2026-08-13 via browser console: "Loading the script
+# 'https://s3.tradingview.com/tv.js' violates ... script-src ... blocked" -
+# the chart panel was stuck on its loading spinner forever because the
+# script itself never even loaded): script-src to load tv.js, frame-src
+# since the widget renders the actual chart in its own iframe (not inline
+# canvas), and connect-src for the live data feed the iframe streams over.
 _MINIAPP_CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://telegram.org https://*.telegram.org; "
+    "script-src 'self' 'unsafe-inline' https://telegram.org https://*.telegram.org https://*.tradingview.com; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https:; "
     "font-src 'self' data:; "
-    "connect-src 'self' https://*.up.railway.app; "
+    "connect-src 'self' https://*.up.railway.app https://*.tradingview.com wss://*.tradingview.com; "
+    "frame-src https://*.tradingview.com; "
     "frame-ancestors https://web.telegram.org https://*.telegram.org; "
     "base-uri 'none'; form-action 'none'"
 )
