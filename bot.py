@@ -13252,11 +13252,12 @@ Reasoning: [one line]"""
                             _client, _used_key = _claude_client_skip(_kind, _attempt, _aero_bad_keys)
                             # Admin request 2026-08-06: keep thinking ON (do not disable it) and
                             # instead give it enough room that it can never eat the whole budget.
-                            # Direct bumped 2500 -> 5000 (admin request 2026-08-13, matching
-                            # Aerolink's own ceiling) now that /thinking's real extended-thinking
-                            # param shares this same pool with the output — 2500 was sized for
-                            # plain narration headroom alone, not an actual thinking budget too.
-                            _call_max_tokens = 5000
+                            # Direct bumped 2500 -> 5000, Aerolink bumped 5000 -> 50000 (admin
+                            # request 2026-08-13) now that /thinking's real extended-thinking
+                            # param shares this same pool with the output — the old values were
+                            # sized for plain narration headroom alone, not an actual thinking
+                            # budget too.
+                            _call_max_tokens = 50000 if _using_aero else 5000
                             r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
                                 messages=[{"role":"user","content":content}], **_thinking_kwarg())
