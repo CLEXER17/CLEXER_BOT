@@ -610,13 +610,24 @@ def startup():
     init_db()
 
 # ── health ────────────────────────────────────────────────────────────────────
+_MINIAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clexer-miniapp.html")
+
 @app.get("/app")
 def serve_miniapp():
     # Telegram's in-app WebView caches web_app pages aggressively across
     # sessions — a stale cached copy previously kept serving a dead API URL
     # long after the file was fixed and redeployed. Explicit no-cache headers
     # force it (and any browser) to always fetch the latest deployed version.
-    return FileResponse("clexer-miniapp.html", media_type="text/html",
+    #
+    # Path resolved relative to this file (not the process's cwd) — a bare
+    # "clexer-miniapp.html" only works if the process happens to be launched
+    # from the repo root, which isn't guaranteed to match across Railway
+    # services/redeploys even on the same repo. When it doesn't match,
+    # Starlette's FileResponse fails during the response body send (after
+    # this app's own middleware has already returned), so it escapes this
+    # app's error handling entirely and surfaces as a bare, header-less 500
+    # (co3 migration, 2026-08-13: every other route worked, only /app 500'd).
+    return FileResponse(_MINIAPP_HTML_PATH, media_type="text/html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
 
 @app.get("/health")
