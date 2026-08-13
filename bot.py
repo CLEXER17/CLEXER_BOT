@@ -5445,22 +5445,26 @@ def _bench_table_text() -> str:
     """Renders the current /benchtable comparison — one line per combo, grouped
     THINK ON then THINK OFF, each showing win%, W/L, and streak. A vertical
     list rather than the wide box-drawing grid, since a 10-column table doesn't
-    render usably in Telegram's mobile <pre> blocks."""
+    render usably in Telegram's mobile <pre> blocks. The per-combo rows use
+    fixed-width padding for column alignment, so they're wrapped in <pre> —
+    Telegram renders plain text in a proportional font, which would otherwise
+    turn that padding into ragged, unaligned gaps instead of real columns."""
     if not _bench_stats:
         return "📭 No resolved benchmark trades yet — turn on /benchmark and wait for signals to fire and resolve."
-    _lines = []
+    _rows = []
     for _grp_label, _grp_think in (("THINK ON", True), ("THINK OFF", False)):
-        _lines.append(f"<b>{_grp_label}</b>")
+        _rows.append(_grp_label)
         for _eff in _TRADE_EFFORT_LEVELS:
             _k = _bench_combo_key(_grp_think, _eff)
             _s = _bench_stats.get(_k, {"win": 0, "loss": 0, "streak": 0})
             _total = _s["win"] + _s["loss"]
             _pct = round(_s["win"] / _total * 100) if _total else 0
             _streak_str = f"+{_s['streak']}" if _s["streak"] > 0 else str(_s["streak"])
-            _lines.append(f"  {_eff.upper():<7} {_pct:>3}%  ({_s['win']}/{_s['loss']})  streak {_streak_str}")
+            _rows.append(f"  {_eff.upper():<7}{_pct:>4}%  ({_s['win']}/{_s['loss']})  streak {_streak_str}")
+        _rows.append("")
     _open_n = len(_bench_open)
-    _lines.append(f"\n<i>{_open_n} benchmark trade(s) still open, tracking toward TP1/SL.</i>")
-    return "\n".join(_lines)
+    _table = "<pre>" + _html.escape("\n".join(_rows).rstrip()) + "</pre>"
+    return f"{_table}\n<i>{_open_n} benchmark trade(s) still open, tracking toward TP1/SL.</i>"
 
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
