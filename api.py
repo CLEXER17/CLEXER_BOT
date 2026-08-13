@@ -234,7 +234,18 @@ async def security_gate(request: Request, call_next):
         # Telegram embeds the Mini App in an iframe. X-Frame-Options has no
         # allow-list form, so drop it here and let the CSP frame-ancestors
         # directive above do the framing control.
-        resp.headers.pop("X-Frame-Options", None)
+        #
+        # Starlette's MutableHeaders has no .pop() (confirmed 2026-08-13 via
+        # co3's real traceback: AttributeError: 'MutableHeaders' object has
+        # no attribute 'pop') - every single /app request raised this
+        # unconditionally, and since it happens after security_gate's own
+        # try/except (which only wraps call_next()), the exception escaped
+        # this app's error handling entirely and fell through to Starlette's
+        # bare default 500 page. del is the correct removal API here, but it
+        # raises KeyError on a missing key, so it needs the containment
+        # check first.
+        if "X-Frame-Options" in resp.headers:
+            del resp.headers["X-Frame-Options"]
     return resp
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
