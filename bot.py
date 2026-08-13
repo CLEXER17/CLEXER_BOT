@@ -5447,10 +5447,12 @@ def _bench_col_label(think_on: bool, effort: str) -> str:
     return ("on" if think_on else "of") + _BENCH_COL_SHORT[effort]
 
 def _bench_table_text() -> str:
-    """Renders /benchtable: a compact TIME x combo win% trend grid (from
-    _bench_log — a stats snapshot taken at every trigger, so this shows how
-    each combo's cumulative win rate moved over time, matching the TIME rows
-    from the original spec), followed by the current cumulative win%/W-L/
+    """Renders /benchtable: a compact TIME x combo W/L+streak trend grid
+    (from _bench_log — a stats snapshot taken at every trigger, so this
+    shows each combo's cumulative win/loss/streak as of that trigger,
+    matching the TIME rows from the original spec — e.g. "4/7s+2" =
+    4 wins/7 losses, currently on a 2-win streak), followed by the current
+    cumulative win%/W-L/
     streak totals per combo. Both sections wrapped in <pre> for real
     monospace column alignment — Telegram renders plain text in a
     proportional font, which would otherwise turn fixed-width padding into
@@ -5459,15 +5461,20 @@ def _bench_table_text() -> str:
         return "📭 No benchmark snapshots yet — turn on /benchmark and wait for a trigger to fire."
     _rows = []
     if _bench_log:
-        _rows.append("TIME  " + " ".join(f"{_bench_col_label(t, e):>4}" for t, e in _BENCH_COMBOS))
+        _rows.append("TIME  " + " ".join(f"{_bench_col_label(t, e):>7}" for t, e in _BENCH_COMBOS))
         for _row in _bench_log[-15:]:
             _snap = _row.get("stats", {})
             _cells = []
             for _t, _e in _BENCH_COMBOS:
-                _s = _snap.get(_bench_combo_key(_t, _e), {"win": 0, "loss": 0})
+                _s = _snap.get(_bench_combo_key(_t, _e), {"win": 0, "loss": 0, "streak": 0})
                 _tot = _s.get("win", 0) + _s.get("loss", 0)
-                _cells.append(f"{round(_s.get('win',0)/_tot*100):>3}%" if _tot else "  - ")
-            _rows.append(f"{_row.get('time','?'):<6}" + " ".join(_cells))
+                if _tot:
+                    _stk = _s.get("streak", 0)
+                    _stk_str = f"+{_stk}" if _stk > 0 else str(_stk)
+                    _cells.append(f"{_s.get('win',0)}/{_s.get('loss',0)}s{_stk_str}")
+                else:
+                    _cells.append("-")
+            _rows.append(f"{_row.get('time','?'):<6}" + " ".join(f"{_c:>7}" for _c in _cells))
         _rows.append("")
     _rows.append("CURRENT TOTALS")
     for _grp_label, _grp_think in (("THINK ON", True), ("THINK OFF", False)):
