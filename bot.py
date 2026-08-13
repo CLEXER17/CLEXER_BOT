@@ -5446,26 +5446,31 @@ _BENCH_COL_SHORT = {"low": "Lo", "medium": "Me", "high": "Hi", "xhigh": "Xh", "m
 def _bench_col_label(think_on: bool, effort: str) -> str:
     return ("on" if think_on else "of") + _BENCH_COL_SHORT[effort]
 
-def _bench_table_text() -> str:
+def _bench_table_text(filter_think: bool = None) -> str:
     """Renders /benchtable: a compact TIME x combo W/L+streak trend grid
     (from _bench_log — a stats snapshot taken at every trigger, so this
     shows each combo's cumulative win/loss/streak as of that trigger,
     matching the TIME rows from the original spec — e.g. "4/7s+2" =
     4 wins/7 losses, currently on a 2-win streak), followed by the current
-    cumulative win%/W-L/
-    streak totals per combo. Both sections wrapped in <pre> for real
-    monospace column alignment — Telegram renders plain text in a
-    proportional font, which would otherwise turn fixed-width padding into
-    ragged, unaligned gaps instead of real columns."""
+    cumulative win%/W-L/streak totals per combo. Both sections wrapped in
+    <pre> for real monospace column alignment — Telegram renders plain
+    text in a proportional font, which would otherwise turn fixed-width
+    padding into ragged, unaligned gaps instead of real columns.
+
+    filter_think: None shows both THINK ON and THINK OFF (5+5 columns);
+    True/False restricts everything to just that group's 5 combos, for
+    /benchtable think on|off (admin request — narrower table, easier to
+    read on mobile without the other group's columns in the way)."""
     if not _bench_log and not _bench_stats:
         return "📭 No benchmark snapshots yet — turn on /benchmark and wait for a trigger to fire."
+    _combos = [c for c in _BENCH_COMBOS if filter_think is None or c[0] == filter_think]
     _rows = []
     if _bench_log:
-        _rows.append("TIME  " + " ".join(f"{_bench_col_label(t, e):>7}" for t, e in _BENCH_COMBOS))
+        _rows.append("TIME  " + " ".join(f"{_bench_col_label(t, e):>7}" for t, e in _combos))
         for _row in _bench_log[-15:]:
             _snap = _row.get("stats", {})
             _cells = []
-            for _t, _e in _BENCH_COMBOS:
+            for _t, _e in _combos:
                 _s = _snap.get(_bench_combo_key(_t, _e), {"win": 0, "loss": 0, "streak": 0})
                 _tot = _s.get("win", 0) + _s.get("loss", 0)
                 if _tot:
@@ -5478,6 +5483,8 @@ def _bench_table_text() -> str:
         _rows.append("")
     _rows.append("CURRENT TOTALS")
     for _grp_label, _grp_think in (("THINK ON", True), ("THINK OFF", False)):
+        if filter_think is not None and _grp_think != filter_think:
+            continue
         _rows.append(_grp_label)
         for _eff in _TRADE_EFFORT_LEVELS:
             _k = _bench_combo_key(_grp_think, _eff)
@@ -14098,7 +14105,13 @@ Reasoning: [one line]"""
             f"own gateway. OFF by default — real extra API cost, opt-in only.", reply_markup=_mkp)
 
     elif cmd in ("/benchtable", "/bt") and is_admin:
-        send_reply(chat_id, f"<b>🧪 Benchmark Comparison</b>\n\n{_bench_table_text()}")
+        # Accepts "think on"/"think off" or just bare "on"/"off" — /bt think on,
+        # /bt think off, /bt on, /bt off all work the same way (admin request:
+        # a narrower single-group table instead of both ON+OFF side by side).
+        _bt_arg = " ".join(parts[1:]).lower()
+        _bt_filter = False if "off" in _bt_arg else (True if "on" in _bt_arg else None)
+        _bt_title = {True: " — Think ON", False: " — Think OFF", None: ""}[_bt_filter]
+        send_reply(chat_id, f"<b>🧪 Benchmark Comparison{_bt_title}</b>\n\n{_bench_table_text(_bt_filter)}")
 
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
