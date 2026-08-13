@@ -5369,6 +5369,16 @@ def _fire_bench_matrix(kind: str, symbol: str, model_id: str, messages_content, 
         args=(kind, symbol, model_id, messages_content, system, formula), daemon=True).start()
 
 def _run_bench_matrix(kind, symbol, model_id, messages_content, system, formula):
+    # /aiconfig lets an admin point any tier at a non-Claude catalog model
+    # (GPT/GLM/Kimi via Aerolink) — thinking/effort are Claude-only concepts,
+    # so on a non-Claude model every one of the 10 "combos" would be an
+    # identical, wasted call with nothing to actually compare. Skip the
+    # whole matrix rather than fire 10 pointless requests (found 2026-08-13,
+    # same class of gap _thinking_kwarg already guards against for the real
+    # trade path).
+    if not _is_claude_model(model_id):
+        print(f"[BENCH] {kind} {symbol}: skipped — {model_id} isn't a Claude model, no thinking/effort to compare")
+        return
     for _i, (_think_on, _eff) in enumerate(_BENCH_COMBOS):
         try:
             _client = _claude_client(attempt=_i, force_aerolink=True)
