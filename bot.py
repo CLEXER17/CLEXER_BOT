@@ -280,6 +280,13 @@ FORCE_DIRECT48_NORMAL_UNVERIFIED = False  # /directnu on|off — forces Scan1+Sc
                                            # and "unverified" tiers onto Direct gateway + claude-opus-4-8, overriding
                                            # whatever /aiconfig has those two cells set to. Verified/special-time
                                            # slots are untouched. Does NOT mutate AICFG_GRID (see _ai_model/_ai_aerolink).
+TRADE_THINKING_ENABLED = True  # /thinking on|off — global switch for Claude's extended-thinking param
+                                # (thinking:{"type":"adaptive"}, same mechanism /chat's Claude calls already use)
+                                # on every trade-analysis call: BTC (both prompt styles), Scan1/Scan2, TS1/TS2.
+                                # Gives the model a separate reasoning budget instead of narrating step-by-step
+                                # inline in the visible output, which is what was previously eating into
+                                # max_tokens and causing empty/cut-off responses (admin reports 2026-08-06).
+                                # Default ON per admin's already-stated preference for these calls.
 
 # Model registry — every model ID selectable anywhere in /aiconfig, admin-
 # editable via /addmodel, /removemodel, /models (2026-07-28). Not restricted
@@ -5229,6 +5236,14 @@ def _ai_aerolink(kind: str = "btc", scan_ver: int = None) -> bool:
             return True   # not one of the /vsttimes-selected times — fall back to Aerolink
     return _cell_aerolink
 
+def _thinking_kwarg() -> dict:
+    """Splat into any trade-analysis .messages.create(**...) call to toggle
+    Claude's extended-thinking mode on/off in one place — /thinking on|off
+    controls TRADE_THINKING_ENABLED globally. {} when off (parameter simply
+    omitted, exactly today's pre-existing behavior); when on, matches
+    /chat's own thinking:{"type":"adaptive"} usage for consistency."""
+    return {"thinking": {"type": "adaptive"}} if TRADE_THINKING_ENABLED else {}
+
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
     Opus 5), AGLM4 (Aerolink + a registered GLM model). Tag comes from
@@ -6961,7 +6976,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
         try:
             msg = _claude_client(attempt=attempt).messages.create(
                 model=SCAN_MODEL, max_tokens=1200,
-                messages=[{"role": "user", "content": content}])
+                messages=[{"role": "user", "content": content}], **_thinking_kwarg())
             _log_api_usage("btc_analysis", SCAN_MODEL,
                            msg.usage.input_tokens, msg.usage.output_tokens,
                            gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -6976,7 +6991,7 @@ def analyze_with_claude(ticker, data, validate_trade=False):
                 try:
                     msg = _claude_client(attempt=1).messages.create(
                         model=SCAN_MODEL, max_tokens=1200,
-                        messages=[{"role": "user", "content": content_text}])
+                        messages=[{"role": "user", "content": content_text}], **_thinking_kwarg())
                     _log_api_usage("btc_analysis_textonly", SCAN_MODEL,
                                    msg.usage.input_tokens, msg.usage.output_tokens,
                                    gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -7093,7 +7108,7 @@ def b1_analyze(ticker, data, use_tv=False):
         msg = _claude_client().messages.create(
             model=SCAN_MODEL, max_tokens=2000,
             system="You are a trading signal bot. Respond with ONLY a JSON object. No reasoning, no steps, no text before or after the JSON.",
-            messages=[{"role": "user", "content": prompt}])
+            messages=[{"role": "user", "content": prompt}], **_thinking_kwarg())
         _log_api_usage("btc_b1", SCAN_MODEL,
                        msg.usage.input_tokens, msg.usage.output_tokens,
                        gateway="Aerolink" if _ai_aerolink("btc") else "Direct")
@@ -7222,7 +7237,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -7290,6 +7305,7 @@ def load_settings():
             PROMPT_DM_VERIFIED = d.get("prompt_dm_verified", True)
             PROMPT_DM_UNVERIFIED = d.get("prompt_dm_unverified", True)
             PROMPT_DM_NONSPECIAL = d.get("prompt_dm_nonspecial", False)
+            TRADE_THINKING_ENABLED = d.get("trade_thinking_enabled", True)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -7355,6 +7371,7 @@ def save_settings():
             "prompt_dm_verified": PROMPT_DM_VERIFIED,
             "prompt_dm_unverified": PROMPT_DM_UNVERIFIED,
             "prompt_dm_nonspecial": PROMPT_DM_NONSPECIAL,
+            "trade_thinking_enabled": TRADE_THINKING_ENABLED,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -10103,7 +10120,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -13241,7 +13258,7 @@ Reasoning: [one line]"""
                             _call_max_tokens = 5000 if _using_aero else 2500
                             r2 = _client.messages.create(
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
-                                messages=[{"role":"user","content":content}])
+                                messages=[{"role":"user","content":content}], **_thinking_kwarg())
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
                                            r2.usage.input_tokens, r2.usage.output_tokens,
                                            gateway="Aerolink" if _using_aero else "Direct")
@@ -13752,6 +13769,25 @@ Reasoning: [one line]"""
             f"Verified/special-time slots are untouched.\n\n"
             f"When OFF, both tiers go back to whatever /aiconfig has configured.", reply_markup=_mkp)
 
+    elif cmd == "/thinking" and is_admin:
+        global TRADE_THINKING_ENABLED
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in ("on", "off"):
+            TRADE_THINKING_ENABLED = (_arg == "on")
+            save_settings()
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if TRADE_THINKING_ENABLED else "") + "ON",  "callback_data": "thinking:on"},
+            {"text": ("✅ " if not TRADE_THINKING_ENABLED else "") + "OFF", "callback_data": "thinking:off"},
+        ]]}
+        send_reply(chat_id,
+            f"<b>🧠 Extended Thinking — Trade Analysis</b>\n\n"
+            f"Active: <b>{'ON' if TRADE_THINKING_ENABLED else 'OFF'}</b>\n\n"
+            f"When ON, every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) uses "
+            f"extended thinking — the model gets a separate reasoning budget instead of "
+            f"narrating step-by-step inline in its visible output.\n\n"
+            f"When OFF, calls go back to today's plain behavior with no thinking param.\n\n"
+            f"Doesn't touch /chat's own thinking setting — that's separate and always on.", reply_markup=_mkp)
+
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
@@ -14139,6 +14175,7 @@ _SCAN_SUBCATS = {
         ("/model",   "🤖", "Default Scan Model", "Set the BTC/default scan AI model (Opus 5, Fable 5, etc.) — separate from /aiconfig's per-tier grid."),
         ("/gateway", "🔀", "Default Scan Gateway", "Switch the main scan gateway (BTC's default) between Direct and Aerolink."),
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
+        ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
         ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
@@ -16709,6 +16746,9 @@ def command_listener():
                     elif cb_data.startswith("directnu:") and cb_is_admin:
                         handle_command(f"/directnu {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
 
+                    elif cb_data.startswith("thinking:") and cb_is_admin:
+                        handle_command(f"/thinking {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
+
                     elif cb_data.startswith("gateway:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
                         if _garg == "direct":
@@ -18328,7 +18368,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     # rewrite above, so it has room to reach the real output block anyway.
                     r2 = _client.messages.create(
                         model=_ai_model("test", scan_ver), max_tokens=4000,
-                        messages=[{"role":"user","content":analysis_prompt}])
+                        messages=[{"role":"user","content":analysis_prompt}], **_thinking_kwarg())
                     _log_api_usage(f"demo{scan_ver}_{chosen_sym}", _ai_model("test", scan_ver),
                                    r2.usage.input_tokens, r2.usage.output_tokens,
                                    gateway="Aerolink" if _using_aero else "Direct")
