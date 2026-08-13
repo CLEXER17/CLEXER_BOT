@@ -295,6 +295,24 @@ TRADE_EFFORT_LEVEL = "high"  # /effort (or /eff) low|medium|high|xhigh|max — o
                               # thinking specifically is toggled on.
 _TRADE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
+TRADE_BENCHMARK_ENABLED = False  # /benchmark on|off (/bench alias) — fires 10 EXTRA read-only Aerolink calls
+                                  # (thinking on/off x all 5 effort levels) alongside every REAL trade-analysis
+                                  # trigger across BTC, Scan1, Scan2, and TS1/TS2, on a background thread that
+                                  # reuses the exact same prompt/content the real call already built. Each of
+                                  # the 10 responses becomes its own private virtual trade (bench_open/bench_
+                                  # monitor below), tracked to a TP1 (win) or SL (loss) outcome, purely to
+                                  # compare which (thinking, effort) combo calls the most accurate signals.
+                                  # Completely separate from the real trade objects (scan1_trades/scan2_trades/
+                                  # active_trade/demo trades), VIP/Free posting, and ct.* copytrade — the
+                                  # background thread only ever reads state and calls Claude; it never touches
+                                  # any of those, so it can neither duplicate a real signal nor delay/interrupt
+                                  # the real trade or copy-trade pipeline. Always Aerolink (force_aerolink=True)
+                                  # regardless of the real slot's own configured gateway. OFF by default — real
+                                  # API cost, opt-in only.
+_BENCH_COMBOS = [(_t, _e) for _t in (True, False) for _e in _TRADE_EFFORT_LEVELS]  # 10, stable order:
+                                  # all 5 thinking-ON efforts first, then all 5 thinking-OFF — matches the
+                                  # THINK ON | THINK OFF column grouping in the /benchtable output.
+
 # Model registry — every model ID selectable anywhere in /aiconfig, admin-
 # editable via /addmodel, /removemodel, /models (2026-07-28). Not restricted
 # to Claude — Lumosel (the current Aerolink backend) proxies many providers
@@ -5265,6 +5283,175 @@ def _thinking_kwarg(model_id: str) -> dict:
         _kw["thinking"] = {"type": "adaptive"}
     return _kw
 
+def _bench_combo_key(think_on: bool, effort: str) -> str:
+    return f"{'on' if think_on else 'off'}:{effort}"
+
+_BENCH_FILE = os.path.join(DATA_DIR, "bench_stats.json")
+_bench_open: dict = {}    # bench_id -> {"symbol","kind","combo","side","entry","sl","tp1","tp2","opened_at"}
+_bench_stats: dict = {}   # combo_key -> {"win": int, "loss": int, "streak": int}
+_bench_log: list = []     # rolling snapshot rows (capped 40): {"time": "...", "stats": {...}}
+
+def _save_bench_state():
+    _blob = {"open": _bench_open, "stats": _bench_stats, "log": _bench_log}
+    try:
+        with open(_BENCH_FILE, "w") as f:
+            json.dump(_blob, f)
+    except Exception as e:
+        print(f"[BENCH] save error: {e}")
+    if CLEXER_API_URL:
+        try:
+            _kv_push("bench_state", _blob)
+        except Exception as e:
+            print(f"[BENCH] central push error: {e}")
+
+def _load_bench_state():
+    global _bench_open, _bench_stats, _bench_log
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/bench_state")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_BENCH_FILE, r.json(), "BENCH STATE")
+        if d is None and os.path.exists(_BENCH_FILE):
+            with open(_BENCH_FILE) as f:
+                d = json.load(f)
+        if d is not None:
+            _bench_open = d.get("open", {}) or {}
+            _bench_stats = d.get("stats", {}) or {}
+            _bench_log = d.get("log", []) or []
+            print(f"[BENCH] Loaded {len(_bench_open)} open, {len(_bench_stats)} combo(s) tracked")
+    except Exception as e:
+        print(f"[BENCH] load error: {e}")
+
+def _bench_parse_response(kind: str, raw: str, formula) -> dict:
+    """Parses one benchmark combo's raw response into {"side","entry","sl","tp1","tp2"},
+    or None for WAIT/HOLD/unparseable. kind=="btc" uses the JSON format (tp1/tp2 already
+    in the response); every other kind uses the Signal:/Entry:/SL: text format and computes
+    tp1/tp2 from sl_dist via the (tp1_mult, tp2_mult) formula, matching that kind's own
+    real-trade math exactly (Scan1/Scan2: 1.5x/3.0x, TS1/TS2: 2.0x/3.75x)."""
+    if not raw:
+        return None
+    try:
+        if kind == "btc":
+            _sig = extract_json_from_response(raw)
+            if not _sig: return None
+            _side = str(_sig.get("signal", "")).upper()
+            if _side not in ("BUY", "SELL"): return None
+            _entry = float(_sig.get("entry") or 0); _sl = float(_sig.get("sl") or 0)
+            _tp1 = float(_sig.get("tp1") or 0); _tp2 = float(_sig.get("tp2") or 0)
+            if _entry <= 0 or _sl <= 0 or _tp1 <= 0 or _tp2 <= 0: return None
+            return {"side": _side, "entry": _entry, "sl": _sl, "tp1": _tp1, "tp2": _tp2}
+        _clean = raw.replace(",", "")
+        _sig_m = re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", raw, re.IGNORECASE)
+        if not _sig_m: return None
+        _side = _sig_m.group(1).upper()
+        if _side not in ("BUY", "SELL"): return None
+        _entry_m = re.search(r"Entry[:\s]+([0-9.]+)", _clean, re.IGNORECASE)
+        _sl_m = re.search(r"SL[:\s]+([0-9.]+)", _clean, re.IGNORECASE)
+        if not _entry_m or not _sl_m: return None
+        _entry = float(_entry_m.group(1)); _sl = float(_sl_m.group(1))
+        if _entry <= 0 or _sl <= 0: return None
+        _sl_dist = abs(_entry - _sl)
+        _t1m, _t2m = formula
+        _tp1 = round(_entry + _sl_dist*_t1m if _side == "BUY" else _entry - _sl_dist*_t1m, 6)
+        _tp2 = round(_entry + _sl_dist*_t2m if _side == "BUY" else _entry - _sl_dist*_t2m, 6)
+        return {"side": _side, "entry": _entry, "sl": _sl, "tp1": _tp1, "tp2": _tp2}
+    except Exception:
+        return None
+
+def _fire_bench_matrix(kind: str, symbol: str, model_id: str, messages_content, system: str = None, formula=None):
+    """Fires the 10-combo /benchmark comparison matrix on a background thread —
+    no-op when TRADE_BENCHMARK_ENABLED is off. See that global's own comment for
+    the full isolation guarantees (never touches real trades/VIP/Free/copytrade)."""
+    if not TRADE_BENCHMARK_ENABLED:
+        return
+    threading.Thread(target=_run_bench_matrix,
+        args=(kind, symbol, model_id, messages_content, system, formula), daemon=True).start()
+
+def _run_bench_matrix(kind, symbol, model_id, messages_content, system, formula):
+    for _i, (_think_on, _eff) in enumerate(_BENCH_COMBOS):
+        try:
+            _client = _claude_client(attempt=_i, force_aerolink=True)
+            _kwargs = dict(model=model_id, max_tokens=50000,
+                messages=[{"role": "user", "content": messages_content}],
+                output_config={"effort": _eff})
+            if system: _kwargs["system"] = system
+            if _think_on: _kwargs["thinking"] = {"type": "adaptive"}
+            _msg = _client.messages.create(**_kwargs)
+            _raw = _claude_text(_msg)
+            _parsed = _bench_parse_response(kind, _raw, formula)
+            if _parsed:
+                _combo = _bench_combo_key(_think_on, _eff)
+                _bid = f"{symbol}:{_combo}:{int(time.time()*1000)}:{_i}"
+                _bench_open[_bid] = {"symbol": symbol, "kind": kind, "combo": _combo, **_parsed, "opened_at": time.time()}
+        except Exception as e:
+            print(f"[BENCH] {kind} {symbol} think={'on' if _think_on else 'off'} effort={_eff} failed: {e}")
+    _bench_log.append({"time": ist_str(), "stats": {k: dict(v) for k, v in _bench_stats.items()}})
+    if len(_bench_log) > 40:
+        del _bench_log[:-40]
+    _save_bench_state()
+
+def _bench_resolve(bid: str, outcome: str):
+    _t = _bench_open.pop(bid, None)
+    if not _t:
+        return
+    _s = _bench_stats.setdefault(_t["combo"], {"win": 0, "loss": 0, "streak": 0})
+    if outcome == "win":
+        _s["win"] += 1
+        _s["streak"] = _s["streak"] + 1 if _s["streak"] >= 0 else 1
+    else:
+        _s["loss"] += 1
+        _s["streak"] = _s["streak"] - 1 if _s["streak"] <= 0 else -1
+
+def _bench_monitor_loop():
+    """Dedicated 30s poll loop, entirely separate from every real trade monitor
+    (_tick_one, _demo_monitor_loop, etc.) — only ever reads _bench_open/writes
+    _bench_stats, never touches a real trade object, Telegram, or ct.*. Win =
+    reaches TP1 first (directional call was roughly right); loss = hits SL
+    first. Harmless no-op whenever _bench_open is empty."""
+    while True:
+        try:
+            time.sleep(30)
+            if not _bench_open:
+                continue
+            _resolved_any = False
+            for _bid, _t in list(_bench_open.items()):
+                _price = get_bingx_price(_t["symbol"])
+                if not _price:
+                    continue
+                _side = _t["side"]
+                _hit_sl = (_side == "BUY" and _price <= _t["sl"]) or (_side == "SELL" and _price >= _t["sl"])
+                _hit_tp = (_side == "BUY" and _price >= _t["tp1"]) or (_side == "SELL" and _price <= _t["tp1"])
+                if _hit_sl:
+                    _bench_resolve(_bid, "loss"); _resolved_any = True
+                elif _hit_tp:
+                    _bench_resolve(_bid, "win"); _resolved_any = True
+            if _resolved_any:
+                _save_bench_state()
+        except Exception as e:
+            print(f"[BENCH MONITOR] {e}")
+
+def _bench_table_text() -> str:
+    """Renders the current /benchtable comparison — one line per combo, grouped
+    THINK ON then THINK OFF, each showing win%, W/L, and streak. A vertical
+    list rather than the wide box-drawing grid, since a 10-column table doesn't
+    render usably in Telegram's mobile <pre> blocks."""
+    if not _bench_stats:
+        return "📭 No resolved benchmark trades yet — turn on /benchmark and wait for signals to fire and resolve."
+    _lines = []
+    for _grp_label, _grp_think in (("THINK ON", True), ("THINK OFF", False)):
+        _lines.append(f"<b>{_grp_label}</b>")
+        for _eff in _TRADE_EFFORT_LEVELS:
+            _k = _bench_combo_key(_grp_think, _eff)
+            _s = _bench_stats.get(_k, {"win": 0, "loss": 0, "streak": 0})
+            _total = _s["win"] + _s["loss"]
+            _pct = round(_s["win"] / _total * 100) if _total else 0
+            _streak_str = f"+{_s['streak']}" if _s["streak"] > 0 else str(_s["streak"])
+            _lines.append(f"  {_eff.upper():<7} {_pct:>3}%  ({_s['win']}/{_s['loss']})  streak {_streak_str}")
+    _open_n = len(_bench_open)
+    _lines.append(f"\n<i>{_open_n} benchmark trade(s) still open, tracking toward TP1/SL.</i>")
+    return "\n".join(_lines)
+
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
     Opus 5), AGLM4 (Aerolink + a registered GLM model). Tag comes from
@@ -7026,6 +7213,11 @@ def analyze_with_claude(ticker, data, validate_trade=False):
     if signal is None:
         print(f"  [CLAUDE] JSON parse failed. Raw:\n{raw[:400]}"); return None
 
+    # /benchmark — same read-only comparison matrix as the scan loops' hooks.
+    # BTC's own JSON response already carries tp1/tp2 directly (formula=None,
+    # each combo's own response supplies its own targets, same as the real path).
+    _fire_bench_matrix("btc", SYMBOL, SCAN_MODEL, content, formula=None)
+
     try:
         sig_type = signal.get("signal", "")
         if sig_type == "HOLD":
@@ -7258,7 +7450,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -7328,6 +7520,7 @@ def load_settings():
             PROMPT_DM_NONSPECIAL = d.get("prompt_dm_nonspecial", False)
             TRADE_THINKING_ENABLED = d.get("trade_thinking_enabled", True)
             TRADE_EFFORT_LEVEL = d.get("trade_effort_level", "high") if d.get("trade_effort_level") in _TRADE_EFFORT_LEVELS else "high"
+            TRADE_BENCHMARK_ENABLED = d.get("trade_benchmark_enabled", False)
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -7395,6 +7588,7 @@ def save_settings():
             "prompt_dm_nonspecial": PROMPT_DM_NONSPECIAL,
             "trade_thinking_enabled": TRADE_THINKING_ENABLED,
             "trade_effort_level": TRADE_EFFORT_LEVEL,
+            "trade_benchmark_enabled": TRADE_BENCHMARK_ENABLED,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -8704,6 +8898,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
 _load_sig_snapshots()
 _load_free_sl_log()
 _load_vip_sl_log()
+_load_bench_state()
 
 def _deploy_status_box(tv_status: str, source_status: str, charts_on: bool, news_on: bool, paused: bool) -> str:
     """Renders the admin-only startup status message. No box-drawing borders —
@@ -10143,7 +10338,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -13326,6 +13521,15 @@ Reasoning: [one line]"""
                             break
                         continue
 
+                    # /benchmark (admin request 2026-08-13): fires the 10-combo
+                    # thinking x effort comparison matrix on a background thread,
+                    # entirely read-only and separate from this real trade — reuses
+                    # the exact same content this successful call just used, but
+                    # never touches scan1_trades/scan2_trades, never posts to VIP/
+                    # Free, never calls ct.* copytrade. A no-op when the toggle is
+                    # off, and always Aerolink regardless of this slot's own gateway.
+                    _fire_bench_matrix(f"scan{scan_ver}", chosen_sym, _ai_model(_kind), content, formula=(1.5, 3.0))
+
                     import re as _re
                     _analysis_clean = analysis.replace(",", "")  # strip thousand-sep commas before parsing
                     def _parse(label):
@@ -13832,6 +14036,31 @@ Reasoning: [one line]"""
             f"Independent of /thinking's on/off switch — applies either way. "
             f"Doesn't touch /chat's own effort (fixed at medium).", reply_markup=_mkp)
 
+    elif cmd in ("/benchmark", "/bench") and is_admin:
+        global TRADE_BENCHMARK_ENABLED
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in ("on", "off"):
+            TRADE_BENCHMARK_ENABLED = (_arg == "on")
+            save_settings()
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if TRADE_BENCHMARK_ENABLED else "") + "ON",  "callback_data": "trbench:on"},
+            {"text": ("✅ " if not TRADE_BENCHMARK_ENABLED else "") + "OFF", "callback_data": "trbench:off"},
+        ], [{"text": "📊 View Table (/bt)", "callback_data": "trbench:table"}]]}
+        send_reply(chat_id,
+            f"<b>🧪 Benchmark — Thinking × Effort Comparison</b>\n\n"
+            f"Active: <b>{'ON' if TRADE_BENCHMARK_ENABLED else 'OFF'}</b>\n\n"
+            f"When ON, every real trade-analysis trigger (BTC, Scan1/Scan2, TS1/TS2) also fires "
+            f"10 EXTRA read-only Aerolink calls in the background — thinking ON/OFF × all 5 effort "
+            f"levels — reusing the exact same prompt the real call just used. Each response becomes "
+            f"its own private virtual trade, tracked to a TP1 (win) or SL (loss), building a running "
+            f"win-rate table per combo. See /benchtable (/bt) for results.\n\n"
+            f"Fully separate from the real trade: never posts to VIP/Free, never touches copy trade, "
+            f"never delays or duplicates the real signal — always Aerolink regardless of that slot's "
+            f"own gateway. OFF by default — real extra API cost, opt-in only.", reply_markup=_mkp)
+
+    elif cmd in ("/benchtable", "/bt") and is_admin:
+        send_reply(chat_id, f"<b>🧪 Benchmark Comparison</b>\n\n{_bench_table_text()}")
+
     elif cmd == "/coin" and is_scanadmin:
         if len(parts) < 2:
             send_reply(chat_id,
@@ -14221,6 +14450,7 @@ _SCAN_SUBCATS = {
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat."),
         ("/effort", "🎚", "Effort — Trade Analysis", "Sets low/medium/high/xhigh/max effort for every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more cost. Doesn't affect /chat."),
+        ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
         ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
@@ -16797,6 +17027,10 @@ def command_listener():
                     elif cb_data.startswith("effort:") and cb_is_admin:
                         handle_command(f"/effort {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
 
+                    elif cb_data.startswith("trbench:") and cb_is_admin:
+                        _tba = cb_data.split(':',1)[1]
+                        handle_command("/benchtable" if _tba == "table" else f"/benchmark {_tba}", cb_chat_id, {}, sender_id=cb_cid)
+
                     elif cb_data.startswith("gateway:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
                         if _garg == "direct":
@@ -18449,6 +18683,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     break
                 continue
 
+            # /benchmark — same read-only comparison matrix as the live scan loop's
+            # matching hook. Never touches TS1/TS2's own trade lists, VIP/Free, or
+            # ct.* copytrade — see that hook's comment for the full rationale.
+            _fire_bench_matrix(f"test{scan_ver}", chosen_sym, _ai_model("test", scan_ver), analysis_prompt, formula=(2.0, 3.75))
+
             _ac = analysis.replace(",","")
             def _p(label):
                 m = _re.search(rf"{label}[:\s]+([0-9.]+)", _ac, _re.IGNORECASE)
@@ -18854,6 +19093,7 @@ def main():
     threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
     threading.Thread(target=_chat_session_sweep_loop, daemon=True).start()
+    threading.Thread(target=_bench_monitor_loop, daemon=True).start()
 
     _load_time_panel()
     threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
