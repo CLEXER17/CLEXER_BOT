@@ -5509,6 +5509,22 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     mdl = MODEL_REGISTRY.get(_m, _m[:6])
     return f"{gw}{mdl}"
 
+def _prompt_debug_text(prompt: str, limit: int = 3800) -> str:
+    """Formats a prompt for the admin's /promptvst /promptunst /promptnt
+    debug-echo DM — HTML-escaped and capped at `limit` chars (Telegram's own
+    message cap is 4096; this leaves room for the header line above it).
+    Previously cut off silently mid-sentence with no indication anything was
+    missing (admin report 2026-08-13 — a TS2 prompt echo stopped mid-word at
+    "OUTPUT ONLY — no", read as a possible bug). Slices the RAW prompt first
+    and escapes only the shown portion — escaping before slicing could cut
+    an HTML entity in half. Appends a truncation note with the omitted char
+    count when cut short. Only the DISPLAY is ever truncated — the real
+    .messages.create() call always sends the full, untruncated prompt."""
+    _shown = f"<pre>{_html.escape(prompt[:limit])}</pre>"
+    if len(prompt) > limit:
+        _shown += f"\n<i>…truncated for display, {len(prompt) - limit} more char(s) — the full prompt was sent to the model.</i>"
+    return _shown
+
 PAUSED_AEROLINK_KEYS: set = set()  # ints 1-20 — key slots the admin has manually paused
 # (e.g. a free-tier key at capacity) via /aerolinkkeys — skipped entirely everywhere
 # key rotation happens, same as an empty/unconfigured slot.
@@ -13478,7 +13494,7 @@ Reasoning: [one line]"""
                         # /promptnt.
                         send_reply(cid,
                             f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>\n\n"
-                            f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
+                            + _prompt_debug_text(analysis_prompt), important=True)
 
                     def _build_content(_prompt):
                         _c = []
@@ -18678,7 +18694,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 # model was actually asked. Gated by /promptvst /promptunst /promptnt.
                 send_reply(cid,
                     f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>\n\n"
-                    f"<pre>{_html.escape(analysis_prompt[:3800])}</pre>", important=True)
+                    + _prompt_debug_text(analysis_prompt), important=True)
 
             # Claude analysis
             analysis = ""; _claude_ok = False; _last_claude_err = ""
