@@ -5258,6 +5258,11 @@ function buildSignals(){
     refreshSignals(true);
     setInterval(()=>{ if(!document.hidden) refreshSignals(false); },
                 Math.max(15000, CLEX_CONFIG.api.refreshMs || 45000));
+    // the interval skips hidden tabs, so a backgrounded tab would come back
+    // holding a stale book for up to a full period. Catch up on return.
+    document.addEventListener('visibilitychange', ()=>{
+      if (!document.hidden) refreshSignals(false);
+    });
   } else {
     // No API configured — say so. Previously this fell back to a sample
     // signal list, which made an unreachable backend look like a live book.
@@ -7065,7 +7070,7 @@ if (LOWPOWER) document.body.classList.add('low-power');
  * ========================================================================== */
 const sliders = {};
 const PageHooks = {
-  market(){ Terminal.initOnce(); setTimeout(()=>Terminal.resize(), 80); },
+  market(){ Terminal.initOnce(); Terminal.syncPairs(); setTimeout(()=>Terminal.resize(), 80); },
   results(){
     runCounters($('#page-results'));
     $$('#page-results .stat-tile').forEach((t,i)=> setTimeout(()=>t.classList.add('pop'), i*90));
