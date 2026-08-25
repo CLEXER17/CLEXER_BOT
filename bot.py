@@ -18484,8 +18484,11 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
         _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
-        _send_sl_reassurance(sym,
-            _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
+        # No _send_sl_reassurance here either. This site builds the detailed
+        # _scan_box rather than the minimal template, so the two posts were not
+        # byte-identical - but they still both went to VIP/Free, so the channel
+        # saw two SL messages for one close. Only the _send_sl_and_log one is
+        # tracked for /clearslvip and /clearslfree.
     _slot_hm = _slot_hm_for_trade(t, created)
     if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
     _log_demo_history(t, lbl, cp, dver)
@@ -18609,8 +18612,20 @@ def _demo_monitor_loop():
                             vip_trade_stats[f"demo{_dver}_sl"] += 1
                         if lbl == "SL":
                             _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
-                            _send_sl_reassurance(sym,
-                                _sl_reassurance_channels(tier_routed, share_free), t.get("reply_map"), sig_id)
+                            # No _send_sl_reassurance here (admin report 2026-08-25,
+                            # "sending sl hit 2 times"). On a real SL the ternary above
+                            # already swapped _msg to the minimal "Position Closed /
+                            # SL executed" template - byte-identical to what
+                            # _send_sl_reassurance posts - and _send_sl_and_log already
+                            # carried it to VIP/Free via tier_routed. Calling the
+                            # reassurance after it posted the same text to the same
+                            # channels a second time. Same root cause as the 2026-08-12
+                            # $BEAT fix; that fix skipped this site on the assumption
+                            # that demo always sends a detailed result box, which is
+                            # only true for BE - the SL branch uses the minimal one.
+                            # It also left an untracked copy behind: the reassurance
+                            # send bypasses _track_sl_ids, so /clearslvip and
+                            # /clearslfree could never delete that second message.
                         _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
                         _log_demo_history(t, lbl, cp, _dver)
