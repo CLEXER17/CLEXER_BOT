@@ -5643,21 +5643,40 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     mdl = MODEL_REGISTRY.get(_m, _m[:6])
     return f"{gw}{mdl}"
 
-def _prompt_debug_text(prompt: str, limit: int = 3800) -> str:
-    """Formats a prompt for the admin's /promptvst /promptunst /promptnt
-    debug-echo DM — HTML-escaped and capped at `limit` chars (Telegram's own
-    message cap is 4096; this leaves room for the header line above it).
-    Previously cut off silently mid-sentence with no indication anything was
-    missing (admin report 2026-08-13 — a TS2 prompt echo stopped mid-word at
-    "OUTPUT ONLY — no", read as a possible bug). Slices the RAW prompt first
-    and escapes only the shown portion — escaping before slicing could cut
-    an HTML entity in half. Appends a truncation note with the omitted char
-    count when cut short. Only the DISPLAY is ever truncated — the real
-    .messages.create() call always sends the full, untruncated prompt."""
-    _shown = f"<pre>{_html.escape(prompt[:limit])}</pre>"
-    if len(prompt) > limit:
-        _shown += f"\n<i>…truncated for display, {len(prompt) - limit} more char(s) — the full prompt was sent to the model.</i>"
-    return _shown
+_PROMPT_DEBUG_MAX_PARTS = 5
+
+def _send_prompt_debug(cid, header: str, prompt: str, limit: int = 3800):
+    """Sends a /promptvst /promptunst /promptnt prompt-echo DM, split across as
+    many messages as the prompt needs.
+
+    Telegram caps one message at 4096 chars, and the header plus the <pre>
+    wrapper eat into that, so each part carries at most `limit` chars of prompt
+    text. This used to just drop the tail with a "truncated" note (admin
+    request 2026-08-13: send the rest as a second message instead), which meant
+    the OUTPUT block — the part you actually want to check the model against —
+    was the bit that always got cut.
+
+    Splits on a newline inside the last fifth of each chunk where one exists,
+    so a part rarely ends mid-word. Escapes AFTER slicing, never before: cutting
+    an already-escaped string can slice an HTML entity in half and break the
+    message. Only the DISPLAY was ever affected — the real .messages.create()
+    call has always sent the full prompt."""
+    if not prompt:
+        return
+    parts, rest = [], prompt
+    while rest and len(parts) < _PROMPT_DEBUG_MAX_PARTS:
+        if len(rest) <= limit:
+            parts.append(rest); rest = ""; break
+        _cut = rest.rfind("\n", int(limit * 0.8), limit)
+        if _cut <= 0: _cut = limit
+        parts.append(rest[:_cut]); rest = rest[_cut:].lstrip("\n")
+    _total = len(parts)
+    for _i, _chunk in enumerate(parts, 1):
+        _tag = f"  <i>(part {_i}/{_total})</i>" if _total > 1 else ""
+        _foot = (f"\n<i>…{len(rest)} more char(s) beyond part {_total} not shown "
+                 f"(display cap) — the full prompt was sent to the model.</i>"
+                 if _i == _total and rest else "")
+        send_reply(cid, f"{header}{_tag}\n\n<pre>{_html.escape(_chunk)}</pre>{_foot}", important=True)
 
 PAUSED_AEROLINK_KEYS: set = set()  # ints 1-20 — key slots the admin has manually paused
 # (e.g. a free-tier key at capacity) via /aerolinkkeys — skipped entirely everywhere
@@ -13628,9 +13647,9 @@ Reasoning: [one line]"""
                         # just the response, so failures/narration can be debugged against
                         # what the model was actually asked. Gated by /promptvst /promptunst
                         # /promptnt.
-                        send_reply(cid,
-                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>\n\n"
-                            + _prompt_debug_text(analysis_prompt), important=True)
+                        _send_prompt_debug(cid,
+                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>",
+                            analysis_prompt)
 
                     def _build_content(_prompt):
                         _c = []
@@ -18867,9 +18886,9 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 # Admin request 2026-08-06 — send the exact prompt text too, not just
                 # the response, so failures/narration can be debugged against what the
                 # model was actually asked. Gated by /promptvst /promptunst /promptnt.
-                send_reply(cid,
-                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>\n\n"
-                    + _prompt_debug_text(analysis_prompt), important=True)
+                _send_prompt_debug(cid,
+                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>",
+                    analysis_prompt)
 
             # Claude analysis
             analysis = ""; _claude_ok = False; _last_claude_err = ""
