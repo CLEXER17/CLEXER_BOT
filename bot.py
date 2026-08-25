@@ -5592,7 +5592,7 @@ def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
            ("BUY" if (b_score >= 2 and b_score > s_score) else "WAIT")
     out = {"signal": side, "score_sell": s_score, "score_buy": b_score,
            "entry": float(entry), "sl": 0.0, "tp1": 0.0, "tp2": 0.0,
-           "sl_pct": 0.0, "swing": 0.0}
+           "sl_pct": 0.0, "swing": 0.0, "reason": "no_side"}
     if side == "WAIT":
         return out
 
@@ -5610,8 +5610,14 @@ def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
                 break
         else:
             # A valid direction with no usable stop is not a trade. Downgraded
-            # to WAIT here rather than handing a bad stop downstream.
+            # to WAIT here rather than handing a bad stop downstream, but
+            # tagged so the skip log can say which of the two things actually
+            # blocked it. `pct` is the last-5 distance — the nearest candidate
+            # considered — which tells you at a glance whether it missed the
+            # band by a hair or by a mile.
             out["signal"] = "WAIT"
+            out["reason"] = "no_stop"
+            out["sl_pct"] = pct
             return out
     d = abs(entry - st)
     out.update({"sl": st, "sl_pct": pct, "swing": _base,
@@ -5641,9 +5647,17 @@ def _engine_analysis_text(symbol, entry, df5, tp1_mult, tp2_mult, sl_lo=1.5, sl_
         return ""
     _e = _engine_fmt(entry)
     if r["signal"] == "WAIT":
+        # Two very different WAITs, reported differently. Saying "no side
+        # cleared 2-of-4" about a side that plainly DID clear it (seen live:
+        # INJ-USDT sell=2/4 buy=0/4) makes the skip log contradict itself and
+        # hides that the real blocker was the stop-distance band.
+        _why = (f"sell={r['score_sell']}/4 buy={r['score_buy']}/4 — no side cleared 2-of-4"
+                if r.get("reason") != "no_stop" else
+                f"sell={r['score_sell']}/4 buy={r['score_buy']}/4 cleared, but no stop lands "
+                f"in the {sl_lo:g}-{sl_hi:g}% band (nearest {r['sl_pct']:.2f}%)")
         return (f"Signal: WAIT\nEntry: {_e}\nEntry_Type: MARKET\nSL: 0\nTP1: 0\nTP2: 0\n"
                 f"SwingLevel: NONE\nR:R: 0\nConfidence: LOW\n"
-                f"Reasoning: engine sell={r['score_sell']}/4 buy={r['score_buy']}/4 — no side cleared 2-of-4.")
+                f"Reasoning: engine {_why}.")
     _sc = max(r["score_sell"], r["score_buy"])
     # SwingLevel is the PRE-buffer structural extreme the stop was built from.
     # TS1/TS2 hard-requires this line and discards the whole signal without it
