@@ -13688,11 +13688,14 @@ Reasoning: [one line]"""
                         return _prompt, 200
 
                     analysis_prompt, _max_tokens = _build_analysis_prompt(cp)
-                    if _prompt_dm_allowed(_kind):
+                    if _prompt_dm_allowed(_kind) and SIGNAL_ENGINE_MODE != "engine":
                         # Admin request 2026-08-06 — send the exact prompt text too, not
                         # just the response, so failures/narration can be debugged against
                         # what the model was actually asked. Gated by /promptvst /promptunst
-                        # /promptnt.
+                        # /promptnt. Skipped entirely in engine mode: nothing reads that
+                        # prompt there, so DMing it (now 2 messages per coin after the
+                        # part-split) is pure noise about a model that was never called.
+                        # The engine's own decision block is sent below instead.
                         _send_prompt_debug(cid,
                             f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>",
                             analysis_prompt)
@@ -13727,6 +13730,12 @@ Reasoning: [one line]"""
                             _last_claude_err = "engine produced no output (insufficient 5M candles)"
                         else:
                             print(f"  [ENGINE] scan{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
+                            if _prompt_dm_allowed(_kind):
+                                send_reply(cid,
+                                    f"⚙️ <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} "
+                                    f"[{_category_tag(_kind)}] ENGINE</b>\n\n"
+                                    f"<pre>{_html.escape(analysis)}</pre>",
+                                    important=True)
                         _retry_budget = 0
                     for _attempt in range(_retry_budget):
                         try:
@@ -18928,10 +18937,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
 
             analysis_prompt = _build_scalp_v1_prompt(chosen_sym, cp, smc, candidate["vol"], candidate["change"],
                                                      struct=struct, age=age, age_4h=age_4h)
-            if _prompt_dm_allowed("test", scan_ver):
+            if _prompt_dm_allowed("test", scan_ver) and SIGNAL_ENGINE_MODE != "engine":
                 # Admin request 2026-08-06 — send the exact prompt text too, not just
                 # the response, so failures/narration can be debugged against what the
                 # model was actually asked. Gated by /promptvst /promptunst /promptnt.
+                # Skipped in engine mode — see the live scan loop's matching comment.
                 _send_prompt_debug(cid,
                     f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>",
                     analysis_prompt)
@@ -18950,6 +18960,12 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     _last_claude_err = "engine produced no output (insufficient 5M candles)"
                 else:
                     print(f"  [ENGINE] test{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
+                    if _prompt_dm_allowed("test", scan_ver):
+                        send_reply(cid,
+                            f"⚙️ <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} "
+                            f"[{_category_tag('test', scan_ver)}] ENGINE</b>\n\n"
+                            f"<pre>{_html.escape(analysis)}</pre>",
+                            important=True)
                 _retry_budget = 0
             for _attempt in range(_retry_budget):
                 try:
