@@ -5662,7 +5662,14 @@ def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     Opus 5), AGLM4 (Aerolink + a registered GLM model). Tag comes from
     MODEL_REGISTRY — falls back to the raw model ID (truncated) if it was
     never registered (e.g. picked before being added, or registry entry
-    later removed)."""
+    later removed).
+
+    Reports "ENG" for the scan kinds while /switch is in engine mode: no
+    model and no gateway are involved at all there, so printing "A5" on a
+    signal card would name a model that never saw the trade. BTC keeps its
+    real tag either way — /switch deliberately doesn't cover it."""
+    if SIGNAL_ENGINE_MODE == "engine" and kind in ("scan1", "scan2", "test"):
+        return "ENG"
     gw = "A" if _ai_aerolink(kind, scan_ver) else "D"
     _m = _ai_model(kind, scan_ver)
     mdl = MODEL_REGISTRY.get(_m, _m[:6])
