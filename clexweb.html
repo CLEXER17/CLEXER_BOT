@@ -3335,61 +3335,48 @@ function applyConfig(){
 /* ==========================================================================
  * PREVIEW DATA
  * ========================================================================== */
-/* Which symbols the terminal offers, and how many decimals each is quoted to.
-   No prices or volumes here — those are fetched, never declared. `api` is the
-   exchange symbol the klines endpoint expects. */
-const PAIRS = [
-  { sym:'BTC/USDT',  key:'BTC',   api:'BTC-USDT',  dec:1 },
-  { sym:'ETH/USDT',  key:'ETH',   api:'ETH-USDT',  dec:2 },
-  { sym:'SOL/USDT',  key:'SOL',   api:'SOL-USDT',  dec:2 },
-  { sym:'BNB/USDT',  key:'BNB',   api:'BNB-USDT',  dec:2 },
-  { sym:'XRP/USDT',  key:'XRP',   api:'XRP-USDT',  dec:4 },
-  { sym:'AVAX/USDT', key:'AVAX',  api:'AVAX-USDT', dec:3 },
-  { sym:'LINK/USDT', key:'LINK',  api:'LINK-USDT', dec:3 },
-  { sym:'ARB/USDT',  key:'ARB',   api:'ARB-USDT',  dec:4 }
-];
+/* Which symbols the terminal offers. Built at runtime from the bot's own
+   /trades/active feed — never declared here. A pair exists on this page for
+   exactly as long as CLEX holds an open position on it, so the terminal is a
+   window onto the live book rather than a fixed shortlist that happens to
+   look busy. Prices, candles and levels are all fetched; nothing about a
+   market is hardcoded. */
+var PAIRS = [];
 
-const SIGNALS = [
-  { pair:'ETH-USDT',  side:'SHORT', entry:'$1,791 – $1,798', e1:1791, e2:1798, tp1:'$1,778', tp2:'$1,773',
-    sl:'$1,806', status:'MONITORING', state:'active', scan:'SCAN1', tf:'15m', age:'12m ago',
-    note:'Range rejection at the upper boundary with declining momentum on the lower timeframe. Conditions satisfied the short template; monitoring for reaction at TP1.' },
-  { pair:'SOL-USDT',  side:'LONG',  entry:'$141.20 – $142.60', e1:141.2, e2:142.6, tp1:'$145.80', tp2:'$148.40',
-    sl:'$139.10', status:'ACTIVE', state:'active', scan:'SCAN1', tf:'1H', age:'48m ago',
-    note:'Higher-low structure holding above the prior breakout shelf. Entry taken inside the retest band with the invalidation placed below structure.' },
-  { pair:'AVAX-USDT', side:'LONG',  entry:'$27.10 – $27.45', e1:27.1, e2:27.45, tp1:'$28.30', tp2:'$29.10',
-    sl:'$26.55', status:'TP1 HIT', state:'completed', scan:'SCAN2', tf:'4H', age:'6h ago',
-    note:'Continuation setup out of compression. First target reached; the remainder was tracked to invalidation as per the monitoring rules.' },
-  { pair:'LINK-USDT', side:'SHORT', entry:'$14.42 – $14.58', e1:14.42, e2:14.58, tp1:'$14.02', tp2:'$13.74',
-    sl:'$14.86', status:'TP2 HIT', state:'completed', scan:'SCAN1', tf:'1H', age:'11h ago',
-    note:'Failed reclaim of the mid-range level. Both targets were reached before the session close and the result was written to history.' },
-  { pair:'ARB-USDT',  side:'LONG',  entry:'$0.8080 – $0.8160', e1:0.808, e2:0.816, tp1:'$0.8420', tp2:'$0.8680',
-    sl:'$0.7920', status:'OPEN', state:'active', scan:'SCAN2', tf:'15m', age:'3m ago',
-    note:'Fresh publication. Price is inside the entry band and the monitor is tracking level interaction from here.' },
-  { pair:'BNB-USDT',  side:'SHORT', entry:'$574.0 – $577.5', e1:574, e2:577.5, tp1:'$566.2', tp2:'$561.0',
-    sl:'$582.4', status:'SL HIT', state:'completed', scan:'SCAN1', tf:'1H', age:'1d ago',
-    note:'Structure broke against the setup and invalidation was respected. Logged as SL HIT — the system records misses with the same weight as hits.' }
-];
+/* Quote precision, derived from the position's own entry price. A per-symbol
+   table can't work once the list is dynamic — the bot trades sub-cent coins
+   and five-figure ones from the same scanner. */
+function decFor(px){
+  const v = Math.abs(Number(px) || 0);
+  if (!v)           return 4;
+  if (v >= 1000)    return 1;
+  if (v >= 100)     return 2;
+  if (v >= 1)       return 3;
+  if (v >= 0.01)    return 5;
+  if (v >= 0.0001)  return 6;
+  return 8;
+}
 
-const HISTORY = [
-  { pair:'AKE-USDT',      side:'BUY',  res:'TP2 HIT', px:'@0.001763', scan:'SCAN1', date:'08 AUG', ico:'🏆' },
-  { pair:'BANK-USDT',     side:'BUY',  res:'TP1 HIT', px:'@0.1112',   scan:'SCAN1', date:'08 AUG', ico:'🎯' },
-  { pair:'TRADOOR-USDT',  side:'BUY',  res:'TP1 HIT', px:'@0.5128',   scan:'SCAN1', date:'07 AUG', ico:'🎯' },
-  { pair:'LINK-USDT',     side:'SELL', res:'TP2 HIT', px:'@14.502',   scan:'SCAN1', date:'07 AUG', ico:'🏆' },
-  { pair:'HOME-USDT',     side:'SELL', res:'SL HIT',  px:'@0.00689',  scan:'SCAN2', date:'07 AUG', ico:'🔴' },
-  { pair:'AVAX-USDT',     side:'BUY',  res:'TP1 HIT', px:'@27.284',   scan:'SCAN2', date:'06 AUG', ico:'🎯' },
-  { pair:'ARB-USDT',      side:'BUY',  res:'OPEN',    px:'@0.8118',   scan:'SCAN2', date:'06 AUG', ico:'🕐' },
-  { pair:'SEI-USDT',      side:'BUY',  res:'TP2 HIT', px:'@0.3241',   scan:'SCAN1', date:'06 AUG', ico:'🏆' },
-  { pair:'OP-USDT',       side:'SELL', res:'TP1 HIT', px:'@1.6420',   scan:'SCAN1', date:'05 AUG', ico:'🎯' },
-  { pair:'BNB-USDT',      side:'SELL', res:'SL HIT',  px:'@575.80',   scan:'SCAN1', date:'05 AUG', ico:'🔴' },
-  { pair:'TIA-USDT',      side:'BUY',  res:'TP1 HIT', px:'@4.8160',   scan:'SCAN2', date:'05 AUG', ico:'🎯' },
-  { pair:'INJ-USDT',      side:'BUY',  res:'TP2 HIT', px:'@21.084',   scan:'SCAN1', date:'04 AUG', ico:'🏆' },
-  { pair:'SUI-USDT',      side:'BUY',  res:'TP1 HIT', px:'@1.0284',   scan:'SCAN2', date:'04 AUG', ico:'🎯' },
-  { pair:'DOGE-USDT',     side:'SELL', res:'SL HIT',  px:'@0.11842',  scan:'SCAN2', date:'04 AUG', ico:'🔴' },
-  { pair:'ETH-USDT',      side:'SELL', res:'OPEN',    px:'@1794.20',  scan:'SCAN1', date:'03 AUG', ico:'🕐' },
-  { pair:'RUNE-USDT',     side:'BUY',  res:'TP1 HIT', px:'@3.6420',   scan:'SCAN1', date:'03 AUG', ico:'🎯' },
-  { pair:'FET-USDT',      side:'BUY',  res:'TP2 HIT', px:'@1.2840',   scan:'SCAN2', date:'02 AUG', ico:'🏆' },
-  { pair:'NEAR-USDT',     side:'BUY',  res:'TP1 HIT', px:'@4.1260',   scan:'SCAN1', date:'02 AUG', ico:'🎯' }
-];
+/* The active CLEX pairs, straight off SIGNALS_VIEW (which is /trades/active).
+   Locked VIP cards are skipped: the API deliberately withholds the symbol on
+   those, so there is no market to chart — showing one would mean inventing it.
+   Deduped by symbol, because two positions on the same coin are still one
+   market. */
+function activeMarketPairs(){
+  const seen = new Set(), out = [];
+  for (const p of (SIGNALS_VIEW || [])){
+    if (!p || p.locked) continue;
+    const api = String(p.pair || '').toUpperCase().trim();
+    if (!/^[A-Z0-9]{2,15}-USDT$/.test(api)) continue;
+    const key = api.slice(0, -5);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ sym: key + '/USDT', key, api, dec: decFor(p.e1) });
+  }
+  return out;
+}
+
+
 
 const ROADMAP = [
   { n:'01', tag:'Now', name:'Private Testing',       st:'In progress',
@@ -5042,8 +5029,10 @@ function buildHomeLog(){
       box.innerHTML = dataState(RESULTS_STATE === 'error' ? 'error' : 'loading');
       return;
     }
-    const src = ClexAPI.enabled() ? HISTORY_VIEW : HISTORY;
-    box.innerHTML = src.slice(0,6).map(logRow).join('')
+    // Real results or none. There is no sample list behind this any more —
+    // an unreachable API shows an unavailable state, never invented rows.
+    if (!ClexAPI.enabled()){ box.innerHTML = dataState('error'); return; }
+    box.innerHTML = (HISTORY_VIEW || []).slice(0,6).map(logRow).join('')
       || `<p class="mono-note" style="padding:26px 0;text-align:center">No published results yet</p>`;
   };
   paint();
@@ -5248,6 +5237,7 @@ async function refreshSignals(showLoading){
     paintHeroSignal();
     paintTelegramCards();
     renderConsole();
+    Terminal.syncPairs();      // add/drop market pairs to match the open book
     Terminal.refreshLevels();
   }catch(err){
     // a good grid stays up; only an empty one shows the reconnect state
@@ -5269,8 +5259,10 @@ function buildSignals(){
     setInterval(()=>{ if(!document.hidden) refreshSignals(false); },
                 Math.max(15000, CLEX_CONFIG.api.refreshMs || 45000));
   } else {
-    SIGNALS_VIEW = SIGNALS.slice();
-    paintSignals();
+    // No API configured — say so. Previously this fell back to a sample
+    // signal list, which made an unreachable backend look like a live book.
+    SIGNALS_VIEW = [];
+    grid.innerHTML = dataState('error');
   }
 
   grid.addEventListener('click', e=>{
@@ -6397,7 +6389,7 @@ const Fullscreen = (function(){
  * MARKET TERMINAL WIRING
  * ========================================================================== */
 const Terminal = (function(){
-  let chart=null, tf='15m', pair=PAIRS[0], inited=false;
+  let chart=null, tf='15m', pair=null, inited=false, pairsSig='';
   let priceTimer=null, wlTimer=null, staleTimer=null;
   let loadToken=0;                 // guards against a stale timeframe response
   let lastTickAt=0, feedState='connecting';
@@ -6413,6 +6405,7 @@ const Terminal = (function(){
     feedState = state;
     const COPY = {
       connecting  : ['CONNECTING',   'Connecting…',      'Connecting to market data'],
+      nosignal    : ['NO SIGNAL',    'No active signal', 'NO ACTIVE CLEX SIGNAL'],
       live        : ['LIVE',         'Live feed',        ''],
       stale       : ['STALE',        'Data stale',       'Market data has stopped updating'],
       reconnecting: ['RECONNECTING', 'Reconnecting…',    'Reconnecting to market data'],
@@ -6464,7 +6457,7 @@ const Terminal = (function(){
   /* Real CLEX levels for this symbol, or none. There is no scaled stand-in:
      if the bot has no live signal on the pair, the chart draws no levels. */
   function liveLevels(){
-    const want = pair.key + '-USDT';
+    const want = pair ? pair.api : '';
     const p = (SIGNALS_VIEW||[]).find(x=>!x.locked && x.pair === want);
     const box = $('#mk-levels'), empty = $('#mk-empty'), tag = $('#mk-tag');
     if (!p){
@@ -6511,6 +6504,7 @@ const Terminal = (function(){
      `loadToken` makes a slow response from a previous timeframe a no-op, so an
      older payload can never overwrite a newer selection. */
   async function loadHistory(animate){
+    if (!pair) return;                       // no open position -> no chart to draw
     const token = ++loadToken;
     const wantPair = pair.api, wantTf = tf;
     if (feedState !== 'live') setFeed('connecting');
@@ -6543,7 +6537,7 @@ const Terminal = (function(){
   /* Live price. Updates the forming candle in place — no refetch of history,
      no canvas rebuild, no re-render of anything that did not change. */
   async function pollPrice(immediate){
-    if (!chart) return;
+    if (!chart || !pair) return;
     const want = pair.api;
     try{
       const d = await ClexAPI.price(want);
@@ -6575,6 +6569,7 @@ const Terminal = (function(){
   /* Pulls the latest bars and hands them to the chart without disturbing the
      view — used when a candle period rolls over. */
   async function refreshCandles(){
+    if (!pair) return;
     const want = pair.api, wantTf = tf;
     try{
       MarketData.invalidate(want, wantTf, 260);
@@ -6589,7 +6584,7 @@ const Terminal = (function(){
     chart = CandleChart(cv, ov, {
       tf,
       onHover(c){
-        if(!c) return;
+        if(!c || !pair) return;
         const up=c.c>=c.o;
         $('#chart-legend').innerHTML =
           `<span>${pair.sym}</span><span>${tf}</span>` +
@@ -6598,15 +6593,13 @@ const Terminal = (function(){
       }
     });
     // symbol menu
-    const menu=$('#sym-menu');
-    menu.innerHTML = PAIRS.map((p,i)=>`<button class="sym-item${i===0?' active':''}" data-p="${p.key}"><span>${p.sym}</span><span class="si-p" data-px="${p.key}">—</span></button>`).join('');
     const sel=$('#sym-select');
     $('#sym-btn').addEventListener('click', ()=>{
       const o=!sel.classList.contains('open');
       sel.classList.toggle('open',o); $('#sym-btn').setAttribute('aria-expanded',String(o));
     });
     document.addEventListener('click', e=>{ if(!e.target.closest('#sym-select')) sel.classList.remove('open'); });
-    menu.addEventListener('click', e=>{
+    $('#sym-menu').addEventListener('click', e=>{
       const b=e.target.closest('.sym-item'); if(!b)return;
       setPair(b.dataset.p); sel.classList.remove('open');
     });
@@ -6631,19 +6624,11 @@ const Terminal = (function(){
       requestAnimationFrame(()=>chart.resize());
       setTimeout(()=>chart.resize(), 260);
     });
-    // watchlist
-    const wl=$('#wl-items');
-    wl.innerHTML = PAIRS.map((p,i)=>
-      `<button class="wl-item${i===0?' active':''}" data-p="${p.key}">
-        <span class="wi-sym">${p.sym.replace('/USDT','')}</span>
-        <span class="wi-price">—</span>
-        <canvas class="wi-spark" data-k="${p.key}"></canvas>
-        <span class="wi-chg">—</span>
-      </button>`).join('');
-    wl.addEventListener('click', e=>{ const b=e.target.closest('.wl-item'); if(b) setPair(b.dataset.p); });
+    // watchlist — rows are painted by syncPairs(), never hardcoded
+    $('#wl-items').addEventListener('click', e=>{ const b=e.target.closest('.wl-item'); if(b) setPair(b.dataset.p); });
 
-    loadHistory(true); chart.resize();
-    loadSparkSeries().then(pollWatchlist);
+    syncPairs(true);
+    chart.resize();
     startLoops();
     // coming back to the tab should refresh immediately, not wait out the interval
     document.addEventListener('visibilitychange', ()=>{
@@ -6655,6 +6640,7 @@ const Terminal = (function(){
      Price and change then arrive from the batch quote poll, so keeping the
      watchlist current costs one request for the whole list, not one per row. */
   async function loadSparkSeries(){
+    if (!PAIRS.length) return;
     await Promise.all(PAIRS.map(p=>
       MarketData.load(p.api, '1H', 120).catch(()=>null)   // dashes stay on failure
     ));
@@ -6664,6 +6650,7 @@ const Terminal = (function(){
   /* One batch request for every row. Only the symbols that actually changed
      are touched in the DOM. */
   async function pollWatchlist(){
+    if (!PAIRS.length) return;
     try{
       const d = await ClexAPI.prices(PAIRS.map(p=>p.api));
       const prices = d.prices || {};
@@ -6713,11 +6700,63 @@ const Terminal = (function(){
   }
 
   function setPair(key){
-    pair = PAIRS.find(p=>p.key===key)||PAIRS[0];
+    const found = PAIRS.find(p=>p.key===key) || PAIRS[0];
+    if (!found) return;
+    pair = found;
     $('#sym-current').textContent = pair.sym;
-    $$('.sym-item').forEach(x=>x.classList.toggle('active', x.dataset.p===key));
-    $$('.wl-item').forEach(x=>x.classList.toggle('active', x.dataset.p===key));
+    $$('.sym-item').forEach(x=>x.classList.toggle('active', x.dataset.p===pair.key));
+    $$('.wl-item').forEach(x=>x.classList.toggle('active', x.dataset.p===pair.key));
     loadHistory(true);   // full rebuild: the new chart grows out of the centre
+  }
+
+  /* Repaint the selector and watchlist from whatever PAIRS currently holds.
+     Selection is preserved by key, so a background refresh can add or drop
+     rows without yanking the chart out from under someone mid-look. */
+  function renderPairLists(){
+    const menu=$('#sym-menu'), wl=$('#wl-items');
+    const on = k => pair && pair.key === k ? ' active' : '';
+    if (menu) menu.innerHTML = PAIRS.map(p=>
+      `<button class="sym-item${on(p.key)}" data-p="${p.key}"><span>${p.sym}</span>`+
+      `<span class="si-p" data-px="${p.key}">—</span></button>`).join('');
+    if (wl) wl.innerHTML = PAIRS.map(p=>
+      `<button class="wl-item${on(p.key)}" data-p="${p.key}">
+        <span class="wi-sym">${p.key}</span>
+        <span class="wi-price">—</span>
+        <canvas class="wi-spark" data-k="${p.key}"></canvas>
+        <span class="wi-chg">—</span>
+      </button>`).join('');
+  }
+
+  /* The whole point of the page: the tradeable list IS the bot's open book.
+     Called on init and after every /trades/active refresh. Cheap to call
+     repeatedly — it compares the symbol set first and returns immediately
+     when nothing opened or closed. */
+  function syncPairs(force){
+    if (!inited && !force) return;
+    const next = activeMarketPairs();
+    const sig  = next.map(p=>p.key).join(',');
+    if (!force && sig === pairsSig) return;
+    pairsSig = sig;
+    PAIRS = next;
+
+    if (!PAIRS.length){
+      // No open positions -> no markets. Nothing invented to fill the space.
+      pair = null;
+      renderPairLists();
+      const cur=$('#sym-current'); if (cur) cur.textContent = 'NO SIGNAL';
+      blankStats(); liveLevels(); setFeed('nosignal');
+      return;
+    }
+    const keep = pair && PAIRS.some(p=>p.key===pair.key);
+    if (!keep) pair = PAIRS[0];      // closed out from under us — fall to the first
+    renderPairLists();
+    if (!keep){
+      $('#sym-current').textContent = pair.sym;
+      $$('.sym-item').forEach(x=>x.classList.toggle('active', x.dataset.p===pair.key));
+      $$('.wl-item').forEach(x=>x.classList.toggle('active', x.dataset.p===pair.key));
+      loadHistory(true);
+    }
+    loadSparkSeries().then(pollWatchlist).catch(()=>{});
   }
 
   /* Two loops, both single-instance and both idle while the Market page is not
@@ -6742,6 +6781,8 @@ const Terminal = (function(){
     redrawSparks:()=>{ if(inited) drawSparks(); },
     // signal-feed refresh: levels only, never a candle reload
     refreshLevels:()=>{ if(inited) applyLevels(); },
+    // /trades/active changed — add/drop market pairs to match the open book
+    syncPairs:()=>{ if(inited) syncPairs(false); },
     destroy(){ stopLoops(); chart && chart.destroy(); inited=false; }
   };
 })();
