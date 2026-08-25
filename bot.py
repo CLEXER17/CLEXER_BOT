@@ -295,6 +295,19 @@ TRADE_EFFORT_LEVEL = "high"  # /effort (or /eff) low|medium|high|xhigh|max — o
                               # thinking specifically is toggled on.
 _TRADE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
+SIGNAL_ENGINE_MODE = "ai"  # /switch ai|engine — where Scan1/Scan2/TS1/TS2 signals come from.
+                            # "ai"     = today's behavior, unchanged: a Claude call per candidate coin.
+                            # "engine" = _engine_signal() computes the same Signal/Entry/SL/TP block
+                            #            in pure Python from the last 10 5M candles, with NO API call
+                            #            at all — instant, free, deterministic, and immune to the
+                            #            gateway 502s / truncation / narration that break the AI path.
+                            # The engine emits the exact same text block the model would, so every
+                            # downstream parser, SL%-gate, trade builder, channel post and copytrade
+                            # hook runs completely unchanged — the only thing that differs is who
+                            # produced the numbers. BTC is deliberately NOT switched (admin scoped
+                            # this to s1/s2/ts1/ts2 only). Defaults to "ai" so nothing changes until
+                            # an admin explicitly flips it.
+
 TRADE_BENCHMARK_ENABLED = False  # /benchmark on|off (/bench alias) — fires 10 EXTRA read-only Aerolink calls
                                   # (thinking on/off x all 5 effort levels) alongside every REAL trade-analysis
                                   # trigger across BTC, Scan1, Scan2, and TS1/TS2, on a background thread that
@@ -5498,6 +5511,127 @@ def _bench_table_text(filter_think: bool = None) -> str:
     _table = "<pre>" + _html.escape("\n".join(_rows).rstrip()) + "</pre>"
     return f"{_table}\n<i>{_open_n} benchmark trade(s) still open, tracking toward TP1/SL.</i>"
 
+def _engine_fmt(v: float) -> str:
+    """Price as plain decimal text, full precision, NO rounding (admin request
+    2026-08-13). Fixed notation rather than repr() because Python renders small
+    floats in scientific form ('1.234e-05') and the downstream parser's
+    ([0-9.]+) regex would silently read that as 1.234 — off by 10,000x on a
+    real trade. Trailing zeros are trimmed only when a decimal point exists,
+    so an integer price can never lose its own zeros."""
+    s = f"{float(v):.12f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
+    """The deterministic replacement for the AI's judgement, from 10 5M candles.
+
+    Scores four independent detectors for each direction and takes whichever
+    side reaches 2+ AND beats the other. The four deliberately disagree about
+    what they can see, which is the whole point: pivot structure is blind to a
+    straight-line collapse (no reversal = no pivot), while a momentum run is
+    blind to a pullback inside a trend. Either alone misses real trades; two
+    agreeing is a far stronger filter than one strong rule.
+
+      P  structure  either swing series confirms the direction
+      C  momentum   3+ consecutive candles pushing that way, ANCHORED to the
+                    newest candle so an old run can't fire a stale signal
+      E  position   price sits in the bottom/top third of the 10-candle range
+      F  travel     price actually net-moved >1% across the window
+
+    SL uses the venue rule first (extreme of the last 5 candles + 0.3% buffer)
+    and only falls back to scanning other lookbacks when that lands outside the
+    band — a fixed 5-candle window reaches back across a crash and can produce
+    an unusable 16% stop, but replacing it outright made good stops needlessly
+    tight. Returns None when the data can't support a decision at all."""
+    n = len(H)
+    if n < 5 or len(L) != n or len(C) != n or not entry:
+        return None
+    sh  = [H[i] for i in range(1, n-1) if H[i] == max(H[i-1:i+2])]
+    slp = [L[i] for i in range(1, n-1) if L[i] == min(L[i-1:i+2])]
+
+    def _run(v, falling, thr=0.1):
+        c = 1
+        for i in range(len(v)-1, 0, -1):
+            if not v[i-1]: break
+            d = (v[i]-v[i-1])/v[i-1]*100
+            if (d < -thr) if falling else (d > thr): c += 1
+            else: break
+        return c
+
+    rng = max(H) - min(L)
+    if rng <= 0 or not C[0]:
+        return None
+    pos = (C[-1]-min(L))/rng*100
+    net = (C[-1]-C[0])/C[0]*100
+
+    p_s = (len(slp) >= 2 and slp[-1] < slp[-2]) or (len(sh) >= 2 and sh[-1] < sh[-2])
+    p_b = (len(sh)  >= 2 and sh[-1]  > sh[-2])  or (len(slp) >= 2 and slp[-1] > slp[-2])
+    s_score = sum([p_s, _run(H, True)  >= 3, pos < 33, net < -1])
+    b_score = sum([p_b, _run(L, False) >= 3, pos > 67, net > 1])
+
+    side = "SELL" if (s_score >= 2 and s_score > b_score) else \
+           ("BUY" if (b_score >= 2 and b_score > s_score) else "WAIT")
+    out = {"signal": side, "score_sell": s_score, "score_buy": b_score,
+           "entry": float(entry), "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "sl_pct": 0.0}
+    if side == "WAIT":
+        return out
+
+    def _stop(k):
+        base = max(H[-k:]) if side == "SELL" else min(L[-k:])
+        st = base * (1.003 if side == "SELL" else 0.997)
+        return st, abs(entry-st)/entry*100
+
+    st, pct = _stop(5)
+    if not (sl_lo <= pct <= sl_hi):
+        for k in range(1, n+1):
+            st2, pct2 = _stop(k)
+            if sl_lo <= pct2 <= sl_hi:
+                st, pct = st2, pct2
+                break
+        else:
+            # A valid direction with no usable stop is not a trade. Downgraded
+            # to WAIT here rather than handing a bad stop downstream.
+            out["signal"] = "WAIT"
+            return out
+    d = abs(entry - st)
+    out.update({"sl": st, "sl_pct": pct,
+                "tp1": entry - d*tp1_mult if side == "SELL" else entry + d*tp1_mult,
+                "tp2": entry - d*tp2_mult if side == "SELL" else entry + d*tp2_mult})
+    return out
+
+def _engine_analysis_text(symbol, entry, df5, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0) -> str:
+    """Renders the engine's decision as the SAME output block the model emits.
+
+    Deliberately text rather than a dict: every downstream consumer (the
+    Signal:/SL: regex parsers, the SL%-band gates, the trade builder, the
+    channel formatter) already speaks this format, so the engine is a drop-in
+    swap with zero changes below this line. 'SL' never appears in the
+    Reasoning text — the parser takes the FIRST regex hit, and a stray 'SL'
+    later in the line could otherwise be read as the stop price."""
+    try:
+        H = [float(x) for x in df5["high"].values[-10:]]
+        L = [float(x) for x in df5["low"].values[-10:]]
+        C = [float(x) for x in df5["close"].values[-10:]]
+    except Exception as e:
+        print(f"  [ENGINE] {symbol}: cannot read 5M candles: {e}")
+        return ""
+    r = _engine_signal(H, L, C, float(entry), tp1_mult, tp2_mult, sl_lo, sl_hi)
+    if not r:
+        print(f"  [ENGINE] {symbol}: insufficient 5M data ({len(H)} candles)")
+        return ""
+    _e = _engine_fmt(entry)
+    if r["signal"] == "WAIT":
+        return (f"Signal: WAIT\nEntry: {_e}\nEntry_Type: MARKET\nSL: 0\nTP1: 0\nTP2: 0\n"
+                f"R:R: 0\nConfidence: LOW\n"
+                f"Reasoning: engine sell={r['score_sell']}/4 buy={r['score_buy']}/4 — no side cleared 2-of-4.")
+    _sc = max(r["score_sell"], r["score_buy"])
+    return (f"Signal: {r['signal']}\nEntry: {_e}\nEntry_Type: MARKET\n"
+            f"SL: {_engine_fmt(r['sl'])}\nTP1: {_engine_fmt(r['tp1'])}\nTP2: {_engine_fmt(r['tp2'])}\n"
+            f"R:R: {tp2_mult}\nConfidence: {'HIGH' if _sc >= 4 else ('MED' if _sc == 3 else 'LOW')}\n"
+            f"Reasoning: engine {r['signal'].lower()} {_sc}/4 "
+            f"(sell {r['score_sell']}, buy {r['score_buy']}), stop {r['sl_pct']:.2f}% — no API call.")
+
 def _gw_model_tag(kind: str = "btc", scan_ver: int = None) -> str:
     """Gateway+model tag for signal headers, e.g. A5/D5 (Aerolink/Direct +
     Opus 5), AGLM4 (Aerolink + a registered GLM model). Tag comes from
@@ -7512,7 +7646,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -7583,6 +7717,7 @@ def load_settings():
             TRADE_THINKING_ENABLED = d.get("trade_thinking_enabled", True)
             TRADE_EFFORT_LEVEL = d.get("trade_effort_level", "high") if d.get("trade_effort_level") in _TRADE_EFFORT_LEVELS else "high"
             TRADE_BENCHMARK_ENABLED = d.get("trade_benchmark_enabled", False)
+            SIGNAL_ENGINE_MODE = d.get("signal_engine_mode", "ai") if d.get("signal_engine_mode") in ("ai","engine") else "ai"
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -7651,6 +7786,7 @@ def save_settings():
             "trade_thinking_enabled": TRADE_THINKING_ENABLED,
             "trade_effort_level": TRADE_EFFORT_LEVEL,
             "trade_benchmark_enabled": TRADE_BENCHMARK_ENABLED,
+            "signal_engine_mode": SIGNAL_ENGINE_MODE,
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -10400,7 +10536,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -13514,6 +13650,19 @@ Reasoning: [one line]"""
                     _kind = f"scan{scan_ver}"
                     _using_aero = _ai_aerolink(_kind)
                     _retry_budget = _claude_retry_budget(_using_aero)
+                    if SIGNAL_ENGINE_MODE == "engine":
+                        # /switch engine — compute the same output block locally and
+                        # set _retry_budget = 0 so the API loop below never executes.
+                        # Scan1/Scan2's own TP formula is 1.5x / 3.0x off SL distance,
+                        # and its downstream SL gate accepts 1.0-5.0%, so the engine
+                        # targets 1.5-4.0% to sit safely inside it.
+                        analysis = _engine_analysis_text(chosen_sym, cp, df_5m, 1.5, 3.0, 1.5, 4.0)
+                        _claude_ok = bool(analysis)
+                        if not _claude_ok:
+                            _last_claude_err = "engine produced no output (insufficient 5M candles)"
+                        else:
+                            print(f"  [ENGINE] scan{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
+                        _retry_budget = 0
                     for _attempt in range(_retry_budget):
                         try:
                             if _attempt > 0:
@@ -14098,6 +14247,28 @@ Reasoning: [one line]"""
             f"Independent of /thinking's on/off switch — applies either way. "
             f"Doesn't touch /chat's own effort (fixed at medium).", reply_markup=_mkp)
 
+    elif cmd in ("/switch", "/sw") and is_admin:
+        global SIGNAL_ENGINE_MODE
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if _arg in ("ai", "engine"):
+            SIGNAL_ENGINE_MODE = _arg
+            save_settings()
+        _mkp = {"inline_keyboard": [[
+            {"text": ("✅ " if SIGNAL_ENGINE_MODE == "ai" else "") + "🤖 AI",  "callback_data": "sigmode:ai"},
+            {"text": ("✅ " if SIGNAL_ENGINE_MODE == "engine" else "") + "⚙️ ENGINE", "callback_data": "sigmode:engine"},
+        ]]}
+        send_reply(chat_id,
+            f"<b>🔀 Signal Source — Scan1 / Scan2 / TS1 / TS2</b>\n\n"
+            f"Active: <b>{'🤖 AI (Claude call per coin)' if SIGNAL_ENGINE_MODE == 'ai' else '⚙️ ENGINE (pure Python, no API call)'}</b>\n\n"
+            f"<b>AI</b> — today's behavior. One Claude call per candidate coin, via whatever "
+            f"gateway/model /aiconfig has set.\n\n"
+            f"<b>ENGINE</b> — computes Signal/Entry/SL/TP locally from the last 10 5M candles. "
+            f"Scores 4 detectors per direction (structure, momentum, range position, net travel); "
+            f"a side needs 2+ and must beat the other, else WAIT. Instant, free, identical every "
+            f"time, and immune to gateway 502s, truncation and narration.\n\n"
+            f"Everything downstream is unchanged either way — same SL/TP gates, same channel posts, "
+            f"same copy trade. BTC is not affected by this switch.", reply_markup=_mkp)
+
     elif cmd in ("/benchmark", "/bench") and is_admin:
         global TRADE_BENCHMARK_ENABLED
         _arg = parts[1].lower() if len(parts) > 1 else ""
@@ -14518,6 +14689,7 @@ _SCAN_SUBCATS = {
         ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
         ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat."),
         ("/effort", "🎚", "Effort — Trade Analysis", "Sets low/medium/high/xhigh/max effort for every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more cost. Doesn't affect /chat."),
+        ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected."),
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
@@ -17095,6 +17267,9 @@ def command_listener():
                     elif cb_data.startswith("effort:") and cb_is_admin:
                         handle_command(f"/effort {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
 
+                    elif cb_data.startswith("sigmode:") and cb_is_admin:
+                        handle_command(f"/switch {cb_data.split(':',1)[1]}", cb_chat_id, {}, sender_id=cb_cid)
+
                     elif cb_data.startswith("trbench:") and cb_is_admin:
                         _tba = cb_data.split(':',1)[1]
                         handle_command("/benchtable" if _tba == "table" else f"/benchmark {_tba}", cb_chat_id, {}, sender_id=cb_cid)
@@ -18700,6 +18875,17 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             analysis = ""; _claude_ok = False; _last_claude_err = ""
             _using_aero = _ai_aerolink("test", scan_ver)
             _retry_budget = _claude_retry_budget(_using_aero)
+            if SIGNAL_ENGINE_MODE == "engine":
+                # /switch engine — same drop-in as the live scan loop. TS1/TS2 use
+                # 2.0x / 3.75x TP multipliers and gate SL at 1.0-3.0%, so the engine
+                # targets 1.5-3.0% here rather than the scan band.
+                analysis = _engine_analysis_text(chosen_sym, cp, df_5m, 2.0, 3.75, 1.5, 3.0)
+                _claude_ok = bool(analysis)
+                if not _claude_ok:
+                    _last_claude_err = "engine produced no output (insufficient 5M candles)"
+                else:
+                    print(f"  [ENGINE] test{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
+                _retry_budget = 0
             for _attempt in range(_retry_budget):
                 try:
                     if _attempt > 0:
