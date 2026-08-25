@@ -5400,7 +5400,7 @@ def _run_bench_matrix(kind, symbol, model_id, messages_content, system, formula)
                 output_config={"effort": _eff})
             if system: _kwargs["system"] = system
             if _think_on: _kwargs["thinking"] = {"type": "adaptive"}
-            _msg = _client.messages.create(**_kwargs)
+            _msg = _claude_create(_client, **_kwargs)
             _raw = _claude_text(_msg)
             _parsed = _bench_parse_response(kind, _raw, formula)
             if _parsed:
@@ -5511,6 +5511,24 @@ def _bench_table_text(filter_think: bool = None) -> str:
     _table = "<pre>" + _html.escape("\n".join(_rows).rstrip()) + "</pre>"
     return f"{_table}\n<i>{_open_n} benchmark trade(s) still open, tracking toward TP1/SL.</i>"
 
+_STREAM_ABOVE_MAX_TOKENS = 16000
+
+def _claude_create(client, **kwargs):
+    """messages.create(), but streams when max_tokens is large.
+
+    The Anthropic SDK refuses a large non-streaming request outright with
+    "Streaming is required for operations that may take longer than 10
+    minutes" (found live 2026-08-13: it killed every single /benchmark call —
+    10 per trigger, 100% failure — and would have killed the live Aerolink
+    scan path too, since both run at max_tokens=50000). Streaming and then
+    taking the final message is behaviourally identical for every caller
+    here: none of them consume partial output, they all just read the
+    completed response."""
+    if kwargs.get("max_tokens", 0) >= _STREAM_ABOVE_MAX_TOKENS:
+        with client.messages.stream(**kwargs) as _s:
+            return _s.get_final_message()
+    return client.messages.create(**kwargs)
+
 def _engine_fmt(v: float) -> str:
     """Price as plain decimal text, full precision, NO rounding (admin request
     2026-08-13). Fixed notation rather than repr() because Python renders small
@@ -5573,21 +5591,22 @@ def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
     side = "SELL" if (s_score >= 2 and s_score > b_score) else \
            ("BUY" if (b_score >= 2 and b_score > s_score) else "WAIT")
     out = {"signal": side, "score_sell": s_score, "score_buy": b_score,
-           "entry": float(entry), "sl": 0.0, "tp1": 0.0, "tp2": 0.0, "sl_pct": 0.0}
+           "entry": float(entry), "sl": 0.0, "tp1": 0.0, "tp2": 0.0,
+           "sl_pct": 0.0, "swing": 0.0}
     if side == "WAIT":
         return out
 
     def _stop(k):
         base = max(H[-k:]) if side == "SELL" else min(L[-k:])
         st = base * (1.003 if side == "SELL" else 0.997)
-        return st, abs(entry-st)/entry*100
+        return st, abs(entry-st)/entry*100, base
 
-    st, pct = _stop(5)
+    st, pct, _base = _stop(5)
     if not (sl_lo <= pct <= sl_hi):
         for k in range(1, n+1):
-            st2, pct2 = _stop(k)
+            st2, pct2, base2 = _stop(k)
             if sl_lo <= pct2 <= sl_hi:
-                st, pct = st2, pct2
+                st, pct, _base = st2, pct2, base2
                 break
         else:
             # A valid direction with no usable stop is not a trade. Downgraded
@@ -5595,7 +5614,7 @@ def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
             out["signal"] = "WAIT"
             return out
     d = abs(entry - st)
-    out.update({"sl": st, "sl_pct": pct,
+    out.update({"sl": st, "sl_pct": pct, "swing": _base,
                 "tp1": entry - d*tp1_mult if side == "SELL" else entry + d*tp1_mult,
                 "tp2": entry - d*tp2_mult if side == "SELL" else entry + d*tp2_mult})
     return out
@@ -5623,11 +5642,17 @@ def _engine_analysis_text(symbol, entry, df5, tp1_mult, tp2_mult, sl_lo=1.5, sl_
     _e = _engine_fmt(entry)
     if r["signal"] == "WAIT":
         return (f"Signal: WAIT\nEntry: {_e}\nEntry_Type: MARKET\nSL: 0\nTP1: 0\nTP2: 0\n"
-                f"R:R: 0\nConfidence: LOW\n"
+                f"SwingLevel: NONE\nR:R: 0\nConfidence: LOW\n"
                 f"Reasoning: engine sell={r['score_sell']}/4 buy={r['score_buy']}/4 — no side cleared 2-of-4.")
     _sc = max(r["score_sell"], r["score_buy"])
+    # SwingLevel is the PRE-buffer structural extreme the stop was built from.
+    # TS1/TS2 hard-requires this line and discards the whole signal without it
+    # ("no swing level found — WAIT", observed live 2026-08-13 throwing away
+    # every engine SELL). Scan1/Scan2 ignores it; its own SL regex needs a
+    # literal "SL" followed by :/space, which "SwingLevel:" never contains.
     return (f"Signal: {r['signal']}\nEntry: {_e}\nEntry_Type: MARKET\n"
             f"SL: {_engine_fmt(r['sl'])}\nTP1: {_engine_fmt(r['tp1'])}\nTP2: {_engine_fmt(r['tp2'])}\n"
+            f"SwingLevel: {_engine_fmt(r['swing'])} (accepted: {r['sl_pct']:.2f}% in band)\n"
             f"R:R: {tp2_mult}\nConfidence: {'HIGH' if _sc >= 4 else ('MED' if _sc == 3 else 'LOW')}\n"
             f"Reasoning: engine {r['signal'].lower()} {_sc}/4 "
             f"(sell {r['score_sell']}, buy {r['score_buy']}), stop {r['sl_pct']:.2f}% — no API call.")
@@ -13706,7 +13731,7 @@ Reasoning: [one line]"""
                             # sized for plain narration headroom alone, not an actual thinking
                             # budget too.
                             _call_max_tokens = 50000 if _using_aero else 5000
-                            r2 = _client.messages.create(
+                            r2 = _claude_create(_client,
                                 model=_ai_model(_kind), max_tokens=_call_max_tokens,
                                 messages=[{"role":"user","content":content}], **_thinking_kwarg(_ai_model(_kind)))
                             _log_api_usage(f"scan{scan_ver}_{chosen_sym}", _ai_model(_kind),
