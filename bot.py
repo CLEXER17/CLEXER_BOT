@@ -9509,6 +9509,316 @@ def _tick_one(ver: int, t: dict) -> bool:
         print(f"  [SCAN{ver} {sym} TICK ERROR] {e}")
     return False
 
+# ═══════════════════════════════════════════════════════════════════════════
+# INTRADAY SLOTS — BTC-INTRADAY & XAUT-INTRADAY
+# ---------------------------------------------------------------------------
+# Deliberately self-contained. Scan1/Scan2 live inside handle_command's ~3000
+# line block; extending that to carry pullback entries would have put VIP
+# trades and copytrade at risk for a feature neither needs. So these two slots
+# keep their own spec table, their own trade list, their own monitor thread and
+# their own parser. Nothing here mutates scan1_trades/scan2_trades or the BTC
+# active_trade, and the only shared machinery is the send/copytrade helpers.
+#
+# Two things make these different from every existing slot:
+#   PULLBACK ENTRY — the signal names a level price must come BACK to. The
+#     trade sits pending (entry_hit False) until price actually reaches it, and
+#     copytrade rests a real LIMIT order rather than crossing the spread. That
+#     is why entry_hit is honest here and hardcoded True in the scan monitor.
+#   PER-SYMBOL SL BAND — the global 1.0-5.0% scan gate is wrong for both. BTC
+#     intraday wants 1.00-2.50% (5% is wide enough that a nonsense answer
+#     passes straight through it) and XAUT wants 0.45-1.20%, whose ceiling sits
+#     BELOW the global floor — under the old gate XAUT could never have
+#     produced a single trade, ever.
+# ═══════════════════════════════════════════════════════════════════════════
+
+INTRADAY_SPECS = {
+    "btcint": {
+        "symbol": "BTC-USDT", "label": "BTC-INTRADAY", "coin": "BTC",
+        "sl_lo": 1.00, "sl_hi": 2.50,      # % of entry
+        "tp1_mult": 1.5, "tp2_mult": 2.5,  # NOT scan's 1.5/3.0 — admin choice 2026-08-27
+        "leg_min_atr": 2.0,                # impulse must span this many ATR_1H
+        "ttl_hours": 6.0,                  # pending order lifetime
+        "session_ttl": False,
+        "atr1_min_pct": 0.25, "atr1_max_pct": 2.00,
+        "spread_max_pct": 0.06,
+    },
+    "xaut": {
+        "symbol": "XAUT-USDT", "label": "XAUT-INTRADAY", "coin": "XAUT",
+        "sl_lo": 0.45, "sl_hi": 1.20,
+        "tp1_mult": 1.5, "tp2_mult": 2.5,
+        "leg_min_atr": 3.0,                # thinner book needs a bigger impulse to clear costs
+        "ttl_hours": None,                 # expires at its session close instead
+        "session_ttl": True,
+        "atr1_min_pct": 0.06, "atr1_max_pct": 0.80,
+        "spread_max_pct": 0.06,
+    },
+}
+
+INTRADAY_ENABLED = {"btcint": False, "xaut": False}   # /intraday <slot> on|off
+INTRADAY_TAKER_FEE = 0.05                             # % one side, BingX
+# Which engine owns BTC. "classic" = the existing BTC scan (SYMBOL/active_trade/
+# JSON prompt); "intraday" = the pullback slot below. Exactly one runs and the
+# other sleeps — never both, because two systems trading BTC at once means
+# copytrade sizes the same instrument twice (admin choice 2026-08-27).
+BTC_ENGINE = "classic"
+
+_intraday_trades: list = []                  # pending AND open, split by entry_hit
+_intraday_lock = threading.Lock()
+_intraday_oi_hist: dict = {}                 # symbol -> [(ts, open_interest)]
+_gold_cache = {"price": 0.0, "ts": 0.0}      # XAU/USD via TV bridge, 10-min TTL
+
+
+def _intra_spec(kind: str) -> dict:
+    return INTRADAY_SPECS.get(kind) or {}
+
+
+def _bingx_funding(symbol: str):
+    """Current funding rate as a PERCENT per 8h, or None. Public endpoint, no auth."""
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/premiumIndex",
+                         params={"symbol": symbol}, timeout=10).json()
+        d = r.get("data") or {}
+        v = d.get("lastFundingRate")
+        return float(v) * 100.0 if v not in (None, "") else None
+    except Exception as e:
+        print(f"  [INTRA] funding {symbol}: {e}")
+        return None
+
+
+def _bingx_spread(symbol: str):
+    """Top-of-book spread as a PERCENT of mid, or None. Public endpoint, no auth."""
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/depth",
+                         params={"symbol": symbol, "limit": 5}, timeout=10).json()
+        d = r.get("data") or {}
+        bids, asks = d.get("bids") or [], d.get("asks") or []
+        if not bids or not asks:
+            return None
+        # Take the extremes rather than trusting row order — BingX has been
+        # observed returning asks both best-first and worst-first.
+        bid = max(float(b[0]) for b in bids)
+        ask = min(float(a[0]) for a in asks)
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        mid = (ask + bid) / 2.0
+        return (ask - bid) / mid * 100.0
+    except Exception as e:
+        print(f"  [INTRA] spread {symbol}: {e}")
+        return None
+
+
+def _atr_from_df(df, lookback: int = 14) -> float:
+    """True-range average over the last `lookback` bars — same method the
+    existing scan block uses, kept identical so ATR means one thing bot-wide."""
+    try:
+        h = df["high"].values
+        l = df["low"].values
+        c = df["close"].values
+        n = min(lookback + 1, len(df))
+        if n < 2:
+            return 0.0
+        trs = [max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1]))
+               for i in range(len(df) - n + 1, len(df))]
+        return sum(trs) / len(trs) if trs else 0.0
+    except Exception:
+        return 0.0
+
+
+def _gold_spot():
+    """XAU/USD spot for XAUT's peg check -> (price, source, age_seconds),
+    where source is LIVE / STALE / UNAVAILABLE.
+
+    Cached for 10 minutes ON PURPOSE. The TradingView bridge drives one shared
+    chart and tv_load_symbol blocks up to 60s while it switches, so fetching
+    gold on the scan path would stall the scan and yank the chart away from
+    whatever else was using it. Gold does not move 0.5% in ten minutes and 0.5%
+    is the peg threshold, so a ten-minute-old price is entirely adequate for
+    the decision it feeds."""
+    now = time.time()
+    age = now - (_gold_cache["ts"] or 0)
+    if _gold_cache["price"] > 0 and age <= 600:
+        return _gold_cache["price"], "LIVE", int(age)
+    if not TV_BRIDGE_URL:
+        return (_gold_cache["price"] or 0.0), "UNAVAILABLE", (int(age) if _gold_cache["ts"] else 0)
+    try:
+        tv_update_state()
+        if not tv_bridge_state.get("online"):
+            raise RuntimeError("bridge offline")
+        if not _tv_chart_lock.acquire(blocking=False):
+            raise RuntimeError("chart busy")
+        try:
+            for tv_sym in ("OANDA:XAUUSD", "TVC:GOLD"):
+                if tv_load_symbol(tv_sym):
+                    df = tv_get_candles_for(tv_sym, "1h", 3)
+                    if df is not None and len(df):
+                        got = float(df["close"].values[-1])
+                        if got > 0:
+                            _gold_cache["price"] = got
+                            _gold_cache["ts"] = now
+                            return got, "LIVE", 0
+        finally:
+            _tv_chart_lock.release()
+    except Exception as e:
+        print(f"  [INTRA] gold spot: {e}")
+    # Bridge failed. A price we already hold is still worth sending, clearly
+    # labelled STALE, so the prompt can reason about it instead of being starved.
+    if _gold_cache["price"] > 0:
+        return _gold_cache["price"], "STALE", int(now - _gold_cache["ts"])
+    return 0.0, "UNAVAILABLE", 0
+
+
+def _intra_ohlc_rows(df, count: int) -> str:
+    """OHLC rows oldest-first, labelled [-N]..[-1] with -1 newest — the same
+    labelling every other data block in this bot uses."""
+    out = []
+    n = min(count, len(df))
+    o = df["open"].values
+    h = df["high"].values
+    l = df["low"].values
+    c = df["close"].values
+    for i in range(-n, 0):
+        out.append(f"  [{i}] O:{o[i]:,.6g} H:{h[i]:,.6g} L:{l[i]:,.6g} C:{c[i]:,.6g}")
+    return "\n".join(out)
+
+
+def _intra_oi_change_4h(symbol: str):
+    """Open-interest change over ~4H as a percent. BingX only exposes a current
+    snapshot, so this is sampled between scans rather than queried historically.
+    Returns None until a prior sample old enough to compare against exists."""
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/openInterest",
+                         params={"symbol": symbol}, timeout=10).json()
+        cur = float((r.get("data") or {}).get("openInterest", 0) or 0)
+        if cur <= 0:
+            return None
+        hist = _intraday_oi_hist.setdefault(symbol, [])
+        now = time.time()
+        hist.append((now, cur))
+        hist[:] = [(t, v) for t, v in hist if now - t <= 6 * 3600]
+        old = [(t, v) for t, v in hist if now - t >= 3.5 * 3600]
+        if not old or old[0][1] <= 0:
+            return None
+        return (cur - old[0][1]) / old[0][1] * 100.0
+    except Exception:
+        return None
+
+
+def _intra_btc_4h_move():
+    """BTC's current 4H candle move, percent. Feeds XAUT's contagion gate — in a
+    crypto-wide liquidation XAUT is sold as collateral and stops tracking gold
+    entirely, at which point its own structure means nothing."""
+    try:
+        df = bingx_klines("BTC-USDT", "4h", 3)
+        if df is None or len(df) < 1:
+            return None
+        o = float(df["open"].values[-1])
+        c = float(df["close"].values[-1])
+        return (c - o) / o * 100.0 if o else None
+    except Exception:
+        return None
+
+
+def _intra_data_block(kind: str):
+    """Builds the data summary for one intraday slot.
+
+    Returns (block_text, meta) on success, or (None, reason) on failure. Every
+    field the prompts reference is produced here — if a required one cannot be
+    fetched we return a reason rather than sending a half-built block, because
+    a prompt silently missing a gate input is how a gated strategy quietly
+    stops being gated."""
+    spec = _intra_spec(kind)
+    if not spec:
+        return None, "unknown slot"
+    sym = spec["symbol"]
+    try:
+        df_4h = bingx_klines(sym, "4h", 40)
+        df_1h = bingx_klines(sym, "1h", 60)
+        df_5m = bingx_klines(sym, "5m", 40)
+        if df_4h is None or len(df_4h) < 12:
+            return None, "4H candles unavailable"
+        if df_1h is None or len(df_1h) < 24:
+            return None, "1H candles unavailable"
+        if df_5m is None or len(df_5m) < 12:
+            return None, "5M candles unavailable"
+
+        price = get_bingx_price(sym)
+        if not price or price <= 0:
+            price = float(df_5m["close"].values[-1])
+        if not price or price <= 0:
+            return None, "no price"
+
+        atr_4h = _atr_from_df(df_4h, 14)
+        atr_1h = _atr_from_df(df_1h, 14)
+        atr_5m = _atr_from_df(df_5m, 14)
+
+        spread = _bingx_spread(sym)
+        if spread is None:
+            return None, "spread unavailable (the cost gate would be blind)"
+
+        # How stale the newest bar is. The prompt refuses data older than 300s
+        # rather than trading it confidently.
+        try:
+            data_age = max(0, int(time.time() - float(df_5m["time"].values[-1]) / 1000.0))
+        except Exception:
+            data_age = 0
+
+        now_utc = datetime.now(timezone.utc)
+        day_name = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][now_utc.weekday()]
+
+        try:
+            tk = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                              params={"symbol": sym}, timeout=10).json().get("data") or {}
+            chg = float(tk.get("priceChangePercent", 0) or 0)
+            vol = float(tk.get("quoteVolume", 0) or 0)
+        except Exception:
+            chg, vol = 0.0, 0.0
+
+        b = f"=== {sym}.P DATA SUMMARY ===\n"
+        b += f"Symbol: {sym}.P\n"
+        b += f"Price: {price:,.6g}\n"
+        b += f"Data age (s): {data_age}\n"
+        b += f"UTC time: {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
+        b += f"Day: {day_name}\n"
+        if kind == "btcint":
+            b += f"Session: {get_session()}\n"
+        b += f"24h Change: {chg:+.2f}%\n"
+        b += f"Volume (24h): ${vol / 1e6:,.1f}M\n"
+        b += f"Spread: {spread:.4f}%\n"
+        b += f"Taker fee: {INTRADAY_TAKER_FEE:.2f}%\n"
+
+        meta = {"price": price, "spread": spread, "atr_1h": atr_1h,
+                "atr_4h": atr_4h, "data_age": data_age, "day": day_name}
+
+        if kind == "btcint":
+            fr = _bingx_funding(sym)
+            b += (f"Funding (current, 8h): {fr:.4f}%\n" if fr is not None
+                  else "Funding (current, 8h): UNAVAILABLE\n")
+            oi_chg = _intra_oi_change_4h(sym)
+            b += (f"OI change (4H): {oi_chg:+.2f}%\n" if oi_chg is not None
+                  else "OI change (4H): UNAVAILABLE\n")
+        else:
+            gold, gsrc, gage = _gold_spot()
+            b += f"XAU_spot: {gold:,.6g}\n" if gold > 0 else "XAU_spot: 0\n"
+            b += f"Peg_source: {gsrc}\n"
+            b += f"Peg_age (s): {gage}\n"
+            btc_4h = _intra_btc_4h_move()
+            b += (f"BTC 4H move: {btc_4h:+.2f}%\n" if btc_4h is not None
+                  else "BTC 4H move: UNAVAILABLE\n")
+            meta.update({"gold": gold, "peg_source": gsrc, "btc_4h": btc_4h})
+
+        b += f"\n--- 4H OHLC (last 12, oldest first) ---\n{_intra_ohlc_rows(df_4h, 12)}\n"
+        b += f"ATR_4H: {atr_4h:,.6g}\n"
+        b += f"\n--- 1H OHLC (last 24, oldest first) ---\n{_intra_ohlc_rows(df_1h, 24)}\n"
+        b += f"ATR_1H: {atr_1h:,.6g}\n"
+        b += f"\n--- 5M OHLC (last 12, oldest first) ---\n{_intra_ohlc_rows(df_5m, 12)}\n"
+        b += f"ATR_5M: {atr_5m:,.6g}\n"
+        b += f"\nCurrent price: {price:,.6g}\n"
+        return b, meta
+    except Exception as e:
+        print(f"  [INTRA {kind}] data block: {e}")
+        return None, f"data error: {e}"
+
+
 def run_scan_tick_check() -> bool:
     any_closed = False
     for t in list(scan1_trades): any_closed |= _tick_one(1, t)
