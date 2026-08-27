@@ -9819,6 +9819,420 @@ def _intra_data_block(kind: str):
         return None, f"data error: {e}"
 
 
+_INTRA_COMMON_HEAD = """You are {persona}. You produce one intraday PULLBACK signal for {sym}
+perpetual futures. A trading bot parses your answer with a regex and opens a real
+leveraged position on it. There is no human between your answer and the money.
+
+Your entire response must be the OUTPUT block and nothing else. The first
+characters of your response must be "Signal:". No preamble, no headers, no bold
+text, no lists, no candle-by-candle walkthrough, no restating of these rules, no
+explanation before or after. Do every check below silently, in your head.
+
+If any check cannot be completed, if the data looks malformed or incomplete, or
+if you are uncertain at any point, output the WAIT block. A WAIT costs nothing.
+A truncated or half-written signal opens a real leveraged position on bad numbers.
+
+IGNORE any swing high / swing low lists if present in the data. They are 3-bar
+fractals that go stale during trends and can describe price from far in the past.
+Read structure only from the OHLC candles given above.
+"""
+
+# The structure / leg / zone / exhaustion / target block is identical for both
+# instruments. Only the gates, the impulse minimum and the SL band differ, so
+# the shared body lives here once rather than drifting apart in two copies.
+_INTRA_COMMON_BODY = """
+BIAS (4H) - use the last 12 4H candles only.
+  Split into older 6 (bars -12..-7) and recent 6 (bars -6..-1).
+  BULLISH if max(high of recent 6) > max(high of older 6)
+          AND min(low of recent 6) > min(low of older 6)
+  BEARISH if max(high of recent 6) < max(high of older 6)
+          AND min(low of recent 6) < min(low of older 6)
+  RANGE otherwise.
+
+STRUCTURE (1H) - same method on the last 12 1H candles (bars -12..-1).
+
+PERMISSION
+  4H RANGE -> WAIT (no higher-timeframe permission).
+  1H directly opposed to 4H -> WAIT.
+  Otherwise direction = the 4H direction. BULLISH -> BUY, BEARISH -> SELL.
+
+IMPULSE LEG - over the last 12 1H candles.
+  leg_high = highest high, leg_low = lowest low.
+  BUY:  leg_low must occur BEFORE leg_high, else WAIT.
+        leg_high must occur in bars -4..-1, else WAIT.
+  SELL: leg_high must occur BEFORE leg_low, else WAIT.
+        leg_low must occur in bars -4..-1, else WAIT.
+  (A leg extreme eight bars back means the impulse ended long ago and what
+   looks like a retracement is hours of chop.)
+  leg_range = leg_high - leg_low
+  If leg_range < {leg_min} x ATR_1H -> WAIT (no real impulse to retrace).
+
+RUNAWAY CHECK - the setup is valid only while price is still near the leg.
+  BUY:  if price > leg_high + 0.5 x ATR_1H -> WAIT
+  SELL: if price < leg_low - 0.5 x ATR_1H -> WAIT
+  (Price has left the leg behind, a new impulse is underway, and the
+   retracement levels below describe a move that is already over. Without
+   this check TP1 can be issued behind the current market price.)
+
+PULLBACK ZONE
+  BUY:  z38 = leg_high - 0.382 x leg_range
+        z62 = leg_high - 0.618 x leg_range
+        z79 = leg_high - 0.786 x leg_range
+  SELL: z38 = leg_low + 0.382 x leg_range
+        z62 = leg_low + 0.618 x leg_range
+        z79 = leg_low + 0.786 x leg_range
+
+ENTRY
+  BUY:  price > z38          -> Entry = z38 (pending, wait for the retrace)
+        z62 <= price <= z38  -> Entry = current price (retrace already here)
+        price < z62          -> WAIT (retrace too deep, continuation weakening)
+  SELL: price < z38          -> Entry = z38
+        z38 <= price <= z62  -> Entry = current price
+        price > z62          -> WAIT
+
+EXHAUSTION CHECK (5M) - over the last 6 5M candles.
+  range5 = highest high - lowest low
+  BUY:  if range5 > 2.5 x ATR_5M AND close[-1] < close[-6] -> WAIT
+        (this is a breakdown in progress, not a pullback)
+  SELL: if range5 > 2.5 x ATR_5M AND close[-1] > close[-6] -> WAIT
+        (this is a squeeze in progress, not a pullback)
+
+STOP LOSS
+  BUY:  sl_raw = z79 - 0.25 x ATR_1H
+  SELL: sl_raw = z79 + 0.25 x ATR_1H
+  sl_dist = absolute distance from Entry to sl_raw
+  If sl_dist > {sl_hi}% of Entry -> WAIT (do not trade a clamped-down stop)
+  If sl_dist < {sl_lo}% of Entry -> set sl_dist = {sl_lo}% of Entry
+  BUY:  SL = Entry - sl_dist
+  SELL: SL = Entry + sl_dist
+
+TARGETS
+  BUY:  TP1 = Entry + 1.5 x sl_dist ; TP2 = Entry + 2.5 x sl_dist
+  SELL: TP1 = Entry - 1.5 x sl_dist ; TP2 = Entry - 2.5 x sl_dist
+  If distance from Entry to TP1 > leg_range -> WAIT
+    (you would be asking price to travel further than the impulse that set this up)
+  If distance from Entry to TP1, as a % of Entry,
+     < 3 x (2 x taker fee + spread) -> WAIT (costs eat the target)
+
+INVALIDATION - the level at which the pending entry is stale and must be cancelled.
+  This is a runaway level, not a loss level. It sits on the opposite side to SL.
+  BUY:  Invalidation = leg_high + 0.8 x ATR_1H
+  SELL: Invalidation = leg_low - 0.8 x ATR_1H
+"""
+
+_INTRA_OUTPUT_BLOCK = """
+PRECISION - full decimal precision on every price, matching the precision of the
+input data. Never round to a clean number.
+
+OUTPUT - this block and nothing else.
+
+Signal: BUY / SELL / WAIT
+Entry: [number only]
+Entry_Type: PULLBACK
+Entry_Note: [one line - what price to wait for]
+Invalidation: [number only]
+SL: [number only]
+TP1: [number only]
+TP2: [number only]
+R:R: 2.5
+Leg_High: [number only]
+Leg_Low: [number only]
+Confidence: HIGH / MEDIUM / LOW
+Reasoning: [one line]
+
+On WAIT, output exactly:
+
+Signal: WAIT
+Entry: 0
+Entry_Type: PULLBACK
+Entry_Note: No valid setup
+Invalidation: 0
+SL: 0
+TP1: 0
+TP2: 0
+R:R: 0
+Leg_High: 0
+Leg_Low: 0
+Confidence: LOW
+Reasoning: [one line]
+"""
+
+_INTRA_BTC_GATES = """
+GATES - check first. Any failure means output the WAIT block immediately.
+G1. Data age > 300 s -> WAIT
+G2. Spread > 0.06% of price -> WAIT
+G3. ATR_1H < 0.25% of price -> WAIT (dead tape, targets unreachable)
+G4. ATR_1H > 2.00% of price -> WAIT (too violent for a defined intraday stop)
+G5. Fewer than 12x4H, 24x1H or 12x5M candles present -> WAIT
+G6. Session is OFF -> WAIT
+"""
+
+_INTRA_BTC_CONF = """
+CONFIDENCE - start at HIGH, drop one level for each that applies.
+  - 1H structure is RANGE rather than agreeing with 4H
+  - sl_dist was raised to the 1.00% floor
+  - Funding > +0.05% on a BUY, or < -0.05% on a SELL
+  - OI fell more than 3% over 4H while price moved in the signal direction
+  - Session is ASIA
+  - Entry equals current price (no price improvement, taking the retrace late)
+  HIGH -> MEDIUM -> LOW. If it would fall below LOW, output WAIT instead.
+  Write the literal word MEDIUM, never MED.
+  Treat any field marked UNAVAILABLE as not triggering its downgrade.
+"""
+
+# XAUT's gates are the reason this instrument is a different prompt rather than
+# a parameter change. G1/G2 exist because spot gold shuts on Friday night while
+# the token keeps trading, and a stop order does not survive the Sunday gap.
+_INTRA_XAUT_GATES = """
+HARD GATES - check in this order. Any failure means output the WAIT block immediately.
+G1. WEEKEND. Day is SAT; or Day is FRI and UTC time >= 20:30; or Day is SUN and
+    UTC time < 22:00 -> WAIT. Spot gold is closed; XAUT trades on crypto flow
+    alone and re-prices violently at the Sunday reopen.
+G2. WEEKEND APPROACH. Day is FRI; or Day is THU and UTC time >= 17:00 -> WAIT.
+G3. SESSION. Tradeable only in London 07:00-11:00 UTC or New York 12:30-17:00 UTC.
+    Asia 01:00-07:00 UTC is tradeable only if Peg_source is LIVE, and caps
+    Confidence at MEDIUM. All other hours -> WAIT.
+G4. PEG.
+    Peg_source LIVE and Peg_age <= 600 s:
+        deviation = |Price - XAU_spot| / XAU_spot
+        deviation > 0.50% -> WAIT
+        deviation 0.25-0.50% -> cap Confidence at MEDIUM
+    Peg_source STALE or UNAVAILABLE, or Peg_age > 600 s:
+        tradeable only inside London or New York hours above,
+        and cap Confidence at MEDIUM.
+G5. CONTAGION. |BTC 4H move| > 3.5% -> WAIT. Crypto-wide deleveraging drags XAUT
+    off its gold anchor and its own structure stops meaning anything.
+    If BTC 4H move is UNAVAILABLE -> WAIT.
+G6. SPREAD. Spread > 0.06% of price -> WAIT.
+G7. VOLATILITY FLOOR. ATR_4H < 0.45% of price -> WAIT. Gold is not moving enough
+    for an intraday target to be reachable after costs.
+G8. VOLATILITY CEILING. ATR_1H > 0.80% of price -> WAIT. Gold does not normally
+    move this fast; treat it as a depeg or a crypto event, not a gold trend.
+G9. Data age > 300 s -> WAIT.
+G10. Fewer than 12x4H, 24x1H or 12x5M candles present -> WAIT.
+G11. ATR_1H < 0.06% of price -> WAIT. The 1H tape is flat; there is no move to
+     join, and every level below would be derived from noise.
+"""
+
+_INTRA_XAUT_CONF = """
+CONFIDENCE - start at HIGH, drop one level for each that applies.
+  - 1H structure is RANGE rather than agreeing with 4H
+  - sl_dist was raised to the 0.45% floor
+  - Peg deviation between 0.25% and 0.50%, or Peg_source not LIVE
+  - Session is ASIA
+  - Entry equals current price (no price improvement)
+  - Entry would fall within 60 minutes of the session close
+  Apply any MEDIUM cap imposed by G3 or G4.
+  HIGH -> MEDIUM -> LOW. If it would fall below LOW, output WAIT instead.
+  Write the literal word MEDIUM, never MED.
+"""
+
+
+def _intra_prompt(kind: str, block: str) -> str:
+    """Assembles the full prompt for one intraday slot.
+
+    The gates, the impulse minimum and the SL band are the only per-instrument
+    parts; everything from BIAS down to INVALIDATION is shared text, so the two
+    strategies cannot silently drift apart through a one-sided edit."""
+    spec = _intra_spec(kind)
+    if kind == "btcint":
+        persona, gates, conf = "CLEXER-BTC", _INTRA_BTC_GATES, _INTRA_BTC_CONF
+    else:
+        persona, gates, conf = "CLEXER-XAUT", _INTRA_XAUT_GATES, _INTRA_XAUT_CONF
+    head = _INTRA_COMMON_HEAD.format(persona=persona, sym=spec["symbol"] + ".P")
+    if kind == "xaut":
+        head += ("XAUT is tokenised gold: it tracks XAU/USD but trades 24/7 on a thin\n"
+                 "crypto order book, while the gold market it tracks does not.\n")
+    body = _INTRA_COMMON_BODY.format(
+        leg_min=f"{spec['leg_min_atr']:.1f}",
+        sl_lo=f"{spec['sl_lo']:.2f}", sl_hi=f"{spec['sl_hi']:.2f}")
+    return block + "\n" + head + gates + body + conf + _INTRA_OUTPUT_BLOCK
+
+
+_INTRA_FIELDS = ("entry", "invalidation", "sl", "tp1", "tp2", "leg_high", "leg_low")
+
+
+def _intra_parse(raw: str):
+    """Parses the intraday OUTPUT block -> dict, or None if unparseable.
+
+    Reads the signal word FIRST and returns immediately on WAIT. The WAIT block
+    carries zeroes in every numeric field, and any code that reads SL before
+    checking the signal word opens a position with no stop."""
+    if not raw:
+        return None
+    try:
+        m = re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", raw, re.IGNORECASE)
+        if not m:
+            return None
+        side = m.group(1).upper()
+        if side == "WAIT":
+            rm = re.search(r"Reasoning[:\s]+(.+)", raw, re.IGNORECASE)
+            return {"signal": "WAIT", "reasoning": (rm.group(1).strip()[:200] if rm else "no setup")}
+
+        clean = raw.replace(",", "")
+        out = {"signal": side}
+        # Leg_High / Leg_Low must be matched before the bare-word patterns, and
+        # every key is anchored so "SL:" cannot swallow "SwingLevel:"-style keys
+        # or match inside "Invalidation".
+        pats = {
+            "entry":        r"(?<![A-Za-z_])Entry[:\s]+([0-9.]+)",
+            "invalidation": r"(?<![A-Za-z_])Invalidation[:\s]+([0-9.]+)",
+            "sl":           r"(?<![A-Za-z_])SL[:\s]+([0-9.]+)",
+            "tp1":          r"(?<![A-Za-z_])TP1[:\s]+([0-9.]+)",
+            "tp2":          r"(?<![A-Za-z_])TP2[:\s]+([0-9.]+)",
+            "leg_high":     r"(?<![A-Za-z_])Leg_High[:\s]+([0-9.]+)",
+            "leg_low":      r"(?<![A-Za-z_])Leg_Low[:\s]+([0-9.]+)",
+        }
+        for key, pat in pats.items():
+            mm = re.search(pat, clean, re.IGNORECASE)
+            if not mm:
+                print(f"  [INTRA PARSE] missing field: {key}")
+                return None
+            try:
+                out[key] = float(mm.group(1))
+            except ValueError:
+                print(f"  [INTRA PARSE] non-numeric {key}: {mm.group(1)!r}")
+                return None
+
+        cm = re.search(r"Confidence[:\s]+(HIGH|MEDIUM|MED|LOW)", raw, re.IGNORECASE)
+        conf = (cm.group(1).upper() if cm else "LOW")
+        # MED is not a value anything downstream understands; normalise rather
+        # than silently scoring a MEDIUM signal as LOW.
+        out["confidence"] = "MEDIUM" if conf == "MED" else conf
+
+        nm = re.search(r"Entry_Note[:\s]+(.+)", raw, re.IGNORECASE)
+        out["entry_note"] = (nm.group(1).strip()[:160] if nm else "")
+        rm = re.search(r"Reasoning[:\s]+(.+)", raw, re.IGNORECASE)
+        out["reasoning"] = (rm.group(1).strip()[:200] if rm else "")
+        return out
+    except Exception as e:
+        print(f"  [INTRA PARSE] {e}")
+        return None
+
+
+def _intra_validate(kind: str, sig: dict, scan_price: float):
+    """The gate between the parser and a real order. Returns (ok, reason).
+
+    A regex will happily parse a syntactically perfect block describing an
+    inverted trade, so every geometric relationship the strategy assumes is
+    asserted here rather than trusted. The checks are ordered cheapest-first
+    and each failure names itself, so the skip log says what was actually
+    wrong instead of just refusing."""
+    spec = _intra_spec(kind)
+    if not spec:
+        return False, "unknown slot"
+    if not sig or sig.get("signal") not in ("BUY", "SELL"):
+        return False, "not a tradeable signal"
+    if not scan_price or scan_price <= 0:
+        return False, "no scan price"
+
+    side = sig["signal"]
+    for f in _INTRA_FIELDS:
+        v = sig.get(f)
+        if v is None or not isinstance(v, (int, float)) or v != v:   # v != v catches NaN
+            return False, f"{f} missing or not a number"
+        if v <= 0:
+            return False, f"{f} is {v} - zero or negative price"
+
+    entry = sig["entry"]; sl = sig["sl"]; tp1 = sig["tp1"]; tp2 = sig["tp2"]
+    inval = sig["invalidation"]; lhi = sig["leg_high"]; llo = sig["leg_low"]
+
+    if llo >= lhi:
+        return False, f"leg_low {llo:g} >= leg_high {lhi:g}"
+
+    if side == "BUY":
+        if not (sl < entry < tp1 < tp2):
+            return False, f"BUY ordering broken: SL {sl:g} / Entry {entry:g} / TP1 {tp1:g} / TP2 {tp2:g}"
+        if entry > scan_price:
+            return False, f"BUY entry {entry:g} above market {scan_price:g} - that is a chase, not a pullback"
+        if scan_price >= tp1:
+            return False, f"market {scan_price:g} already at or past TP1 {tp1:g}"
+        if scan_price >= inval:
+            return False, f"market {scan_price:g} already past invalidation {inval:g}"
+        if inval <= entry:
+            return False, f"BUY invalidation {inval:g} must sit ABOVE entry {entry:g} (it is a runaway level, not a stop)"
+    else:
+        if not (sl > entry > tp1 > tp2):
+            return False, f"SELL ordering broken: SL {sl:g} / Entry {entry:g} / TP1 {tp1:g} / TP2 {tp2:g}"
+        if entry < scan_price:
+            return False, f"SELL entry {entry:g} below market {scan_price:g} - that is a chase, not a pullback"
+        if scan_price <= tp1:
+            return False, f"market {scan_price:g} already at or past TP1 {tp1:g}"
+        if scan_price <= inval:
+            return False, f"market {scan_price:g} already past invalidation {inval:g}"
+        if inval >= entry:
+            return False, f"SELL invalidation {inval:g} must sit BELOW entry {entry:g} (it is a runaway level, not a stop)"
+
+    sl_dist = abs(entry - sl)
+    sl_pct = sl_dist / entry * 100.0
+    # Epsilon on both edges: when sl_dist is raised to the floor it lands on
+    # exactly 1.000% / 0.450%, and recomputing it from the parsed Entry and SL
+    # in floating point can land a hair under. A strict comparison rejects
+    # every floored signal, which is roughly a third of them.
+    eps = 0.001
+    if sl_pct < spec["sl_lo"] - eps:
+        return False, f"SL {sl_pct:.3f}% below the {spec['sl_lo']:.2f}% floor"
+    if sl_pct > spec["sl_hi"] + eps:
+        return False, f"SL {sl_pct:.3f}% above the {spec['sl_hi']:.2f}% ceiling"
+
+    # The entry must be a plausible retrace away, not somewhere else entirely.
+    drift = abs(entry - scan_price) / scan_price * 100.0
+    drift_cap = max(2.0 * sl_pct, 0.5)
+    if drift > drift_cap:
+        return False, f"entry {drift:.2f}% from market, cap is {drift_cap:.2f}%"
+
+    # TP1 must not ask price to travel further than the impulse that set it up.
+    if abs(tp1 - entry) > (lhi - llo):
+        return False, f"TP1 distance {abs(tp1-entry):g} exceeds leg range {(lhi-llo):g}"
+
+    if sig.get("confidence") not in ("HIGH", "MEDIUM", "LOW"):
+        return False, f"bad confidence {sig.get('confidence')!r}"
+    return True, "ok"
+
+
+def _intra_apply_targets(kind: str, sig: dict) -> dict:
+    """Recompute TP1/TP2 from the model's Entry and SL using this slot's own
+    multipliers, and record what the model said before overwriting it.
+
+    The bot already owns this arithmetic everywhere else, and a subtly wrong
+    target does not look wrong - it looks like a signal. Keeping the delta is
+    the only direct measurement of whether the model can do the arithmetic at
+    all; once the overwrite is in, an ordering check on the recomputed values
+    is a tautology and the model's own errors become invisible."""
+    spec = _intra_spec(kind)
+    entry = sig["entry"]; sl = sig["sl"]
+    sl_dist = abs(entry - sl)
+    t1m, t2m = spec["tp1_mult"], spec["tp2_mult"]
+    if sig["signal"] == "BUY":
+        tp1 = entry + sl_dist * t1m
+        tp2 = entry + sl_dist * t2m
+    else:
+        tp1 = entry - sl_dist * t1m
+        tp2 = entry - sl_dist * t2m
+    sig["model_tp1"], sig["model_tp2"] = sig["tp1"], sig["tp2"]
+    sig["tp1_delta"] = round(sig["tp1"] - tp1, 10)
+    sig["tp2_delta"] = round(sig["tp2"] - tp2, 10)
+    sig["tp1"], sig["tp2"] = tp1, tp2
+    sig["sl_dist"] = sl_dist
+    sig["sl_pct"] = sl_dist / entry * 100.0 if entry else 0.0
+    if sig["tp1_delta"] or sig["tp2_delta"]:
+        print(f"  [INTRA {kind}] model TP drift - tp1 {sig['tp1_delta']:+g} tp2 {sig['tp2_delta']:+g}")
+    return sig
+
+
+def _intra_dedupe_key(kind: str, sig: dict) -> tuple:
+    """(slot, direction, leg_high, leg_low) - the identity of one setup.
+
+    Both prompts derive entry from the 12x1H impulse leg, so while both leg
+    extremes stay inside that window the leg is byte-identical every scan and
+    every scan emits the same Entry and SL. A leg formed at bar -1 stays in
+    window for 12 hours; without this key that is a dozen identical resting
+    orders alive at once, all filling on one retrace, for twelve times the
+    intended size. Rounded to 6 significant figures so float noise in the
+    model's echo of the level cannot split one setup into two keys."""
+    return (kind, sig["signal"], _sig_round(sig["leg_high"], 6), _sig_round(sig["leg_low"], 6))
+
+
 def run_scan_tick_check() -> bool:
     any_closed = False
     for t in list(scan1_trades): any_closed |= _tick_one(1, t)
