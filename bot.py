@@ -5133,6 +5133,10 @@ def _slot_day_track(kind: str, hm: tuple, is_win: bool, when=None):
     day = str(_wd_from_epoch(when))
     st = _slot_day_stats.setdefault(key, {}).setdefault(day, {"tp": 0, "sl": 0})
     st["tp" if is_win else "sl"] += 1
+    # Logged because a missing credit is otherwise invisible: /st and /st week
+    # would simply disagree with no way to tell which half failed.
+    print(f"  [SLOT DAY] {key} {WD_NAMES[int(day)]} {'+tp' if is_win else '+sl'} "
+          f"-> {st['tp']}/{st['sl']}  (signal epoch {when})")
 
 
 def _slot_day_rate(kind: str, hm: tuple, day: int):
@@ -13434,6 +13438,43 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         # /st week  — the per-weekday grid the gate actually decides on.
+        if len(parts) > 2 and parts[1].lower() in ("check", "why") and is_admin:
+            # Diagnostic: does the weekday store agree with the lifetime store
+            # for one slot, and what does the gate say about today?
+            _ck_map = {"s1": "scan1", "scan1": "scan1", "s2": "scan2", "scan2": "scan2",
+                       "t1": "demo1", "ts1": "demo1", "t2": "demo2", "ts2": "demo2"}
+            _ck_kind = _ck_map.get(parts[2].lower())
+            _ck_t = parts[3] if len(parts) > 3 else ""
+            if not _ck_kind or "." not in _ck_t:
+                send_reply(chat_id, "<code>/st check s1 10.45</code>", skip_smallcaps=True); return
+            _ck_h, _ck_m = _ck_t.split(".")
+            _ck_hm = (int(_ck_h), int(_ck_m))
+            _ck_life = _slot_stats.get(_slot_key(_ck_kind, _ck_hm)) or {}
+            _ck_days = _slot_day_stats.get(_slot_key(_ck_kind, _ck_hm)) or {}
+            _ck_sum_tp = sum(v.get("tp", 0) for v in _ck_days.values())
+            _ck_sum_sl = sum(v.get("sl", 0) for v in _ck_days.values())
+            _ck_rows = []
+            for _di in range(7):
+                _v = _ck_days.get(str(_di))
+                _ck_rows.append(f"{WD_NAMES[_di]}: {_v['tp']}/{_v['sl']}" if _v else f"{WD_NAMES[_di]}: -")
+            _ck_sched = _SLOT_SCHEDULE_KIND.get(_ck_kind, _ck_kind)
+            send_reply(chat_id,
+                f"🔎 <b>{_ck_kind} {_ck_hm[0]}:{_ck_hm[1]:02d}</b>\n\n"
+                f"<b>Lifetime (/st):</b> {_ck_life.get('tp',0)}/{_ck_life.get('sl',0)}\n"
+                f"<b>Weekday total:</b> {_ck_sum_tp}/{_ck_sum_sl}\n"
+                + ("<i>They should differ only by trades the backfill could not match "
+                   "to this slot's exact minute. A GROWING gap means live weekday "
+                   "tracking is dropping closes.</i>\n\n"
+                   if (_ck_life.get('tp',0)+_ck_life.get('sl',0)) != (_ck_sum_tp+_ck_sum_sl) else "\n")
+                + "<pre>" + "\n".join(_ck_rows) + "</pre>\n"
+                f"special: {_ck_hm in _SCAN_SPECIAL.get(_ck_sched, set())}  |  "
+                f"auto-demoted: {_ck_hm in _SCAN_SPECIAL_NO_COPY.get(_ck_sched, set())}  |  "
+                f"hand-locked: {_ck_hm in _SLOT_MANUAL_LOCK.get(_ck_sched, set())}\n"
+                f"<b>today ({WD_NAMES[_wd_from_epoch()]}):</b> "
+                f"{'VERIFIED' if _slot_day_verified(_ck_kind, _ck_hm) else 'LOCKED'} "
+                f"— {_slot_day_reason(_ck_kind, _ck_hm)}",
+                skip_smallcaps=True)
+            return
         if len(parts) > 1 and parts[1].lower() in ("rebuild", "reseed") and is_admin:
             # Force a re-seed without waiting for a redeploy. Safe to run any
             # time: it clears and rebuilds from trade_history.csv, which holds
@@ -17035,7 +17076,7 @@ _SCAN_SUBCATS = {
         ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
         ("/settime", "🕐", "Set Time Verified/Unverified", "Manually force one specific hour:minute slot to Verified, Unverified, or back to Normal — independent of the auto promote/demote system."),
         ("/timepanel", "🕐", "Time Panel (Paper Tracking)", "Track win-rate/streak for admin-picked times against S1/S2/TS1/TS2 — pulls existing data if already scheduled there, else runs its own paper-only scan (never real money)."),
-        ("/st",   "⭐", "Special Times Performance", "Win rate for every special-time slot, per scan kind. `/st week` shows the same slots broken out Sunday to Saturday — that grid is what decides whether a slot reaches VIP/Free and copy trade on any given day. Add a kind to narrow it: `/st week scan1`. `/st rebuild` re-seeds those weekday counters from the trade history."),
+        ("/st",   "⭐", "Special Times Performance", "Win rate for every special-time slot, per scan kind. `/st week` shows the same slots broken out Sunday to Saturday — that grid is what decides whether a slot reaches VIP/Free and copy trade on any given day. Add a kind to narrow it: `/st week scan1`. `/st rebuild` re-seeds those weekday counters from the trade history, and `/st check s1 10.45` shows one slot's lifetime total beside its weekday total so you can see whether a close was recorded."),
         ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
         ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
     ]),
