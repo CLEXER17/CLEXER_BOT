@@ -10843,6 +10843,62 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
     _close_sig_snapshot(sig_id, result)
 
 
+def _force_close_intraday_trade(kind: str, symbol: str, result: str) -> str:
+    """Admin /fc for the intraday slots — same idea as _force_close_scan_trade,
+    but these slots can also be sitting on a PENDING entry that never filled.
+
+    Closing a pending trade as tp1/tp2/sl would be a lie: nothing was ever
+    opened, so there is no result to record. Those are cancelled instead, which
+    also pulls the resting limit order off the exchange."""
+    spec = _intra_spec(kind)
+    if not spec:
+        return "❌ Slot must be btc or xaut."
+    result = (result or "").lower()
+    want = (symbol or "").upper().replace("-USDT", "").replace("USDT", "")
+
+    with _intraday_lock:
+        match = [t for t in _intraday_trades
+                 if t.get("kind") == kind and
+                 t["symbol"].replace("-USDT", "").upper() == (want or spec["coin"])]
+    if not match:
+        _open = ", ".join(f"{_intra_spec(t['kind']).get('coin','?')}" for t in _intraday_trades) or "none"
+        return f"❌ No open {spec['label']} trade for {want or spec['coin']}. Currently open: {_open}"
+    t = match[0]
+
+    if not t.get("entry_hit"):
+        if result in ("cancel", "cx", "x"):
+            _intra_cancel_pending(t, "force-cancelled by admin")
+            with _intraday_lock:
+                if t in _intraday_trades:
+                    _intraday_trades.remove(t)
+            save_state()
+            return f"✅ {spec['label']} pending entry cancelled and the resting order pulled."
+        return (f"⚠️ That {spec['label']} trade is still PENDING — the entry at "
+                f"{t['entry']:,.6g} never filled, so there is no tp1/tp2/sl/be result to record.\n\n"
+                f"Use <code>/fc {('btc' if kind == 'btcint' else 'xaut')} {spec['coin']} cancel</code> "
+                f"to drop it and pull the resting order.")
+
+    cp = get_bingx_price(t["symbol"]) or t["entry"]
+    if result in ("tp1",):
+        if t.get("tp1_hit"):
+            return f"⚠️ {spec['label']} already has TP1 recorded."
+        t["tp1_hit"] = True
+        t["be_sl"] = round(t["entry"] * (0.999 if t["signal"] == "BUY" else 1.001), 8)
+        _intra_close_partial(t, cp)
+        save_state()
+        return (f"✅ {spec['label']} force-marked TP1 @ {cp:,.6g} — SL moved to breakeven, "
+                f"trade stays open for TP2.")
+    if result in ("tp2", "sl", "be"):
+        lbl = result.upper()
+        _intra_close(t, lbl, cp, note="force-closed by admin")
+        with _intraday_lock:
+            if t in _intraday_trades:
+                _intraday_trades.remove(t)
+        save_state()
+        return f"✅ {spec['label']} force-closed as {lbl} @ {cp:,.6g} — announced and recorded."
+    return "❌ Result must be tp1, tp2, sl, be, or cancel (cancel only for an unfilled pending entry)."
+
+
 def _intraday_monitor_loop():
     """Own 30s thread. Handles pending fills, cancellations and open-position
     exits for the intraday slots only — it never touches scan1/scan2/BTC state."""
@@ -12480,8 +12536,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 "For when a redeploy made the bot lose track of a trade that already "
                 "closed on BingX — runs the exact same close path as if the bot had "
                 "caught it live (channel announcement, recap, win-rate tracking).\n\n"
-                "Usage: <code>/fc s1|s2|t1|t2 SYMBOL tp1|tp2|sl|be</code>\n"
-                "Example: <code>/fc s2 home tp2</code>")
+                "Usage: <code>/fc s1|s2|t1|t2|btc|xaut SYMBOL tp1|tp2|sl|be</code>\n"
+                "Example: <code>/fc s2 home tp2</code>\n"
+                "Example: <code>/fc btc BTC sl</code>\n\n"
+                "The intraday slots can also be sitting on a pending entry that "
+                "never filled. Those take <code>cancel</code> instead of a result — "
+                "it drops the trade and pulls the resting limit order:\n"
+                "<code>/fc xaut XAUT cancel</code>")
             return
         _fc_kind = parts[1].lower(); _fc_symbol = parts[2]; _fc_result = parts[3]
         _fc_map = {
@@ -12489,12 +12550,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             "scan2": (2, "scan"), "s2": (2, "scan"),
             "ts1": (1, "demo"), "t1": (1, "demo"),
             "ts2": (2, "demo"), "t2": (2, "demo"),
+            "btc": ("btcint", "intra"), "btcint": ("btcint", "intra"), "bi": ("btcint", "intra"),
+            "xaut": ("xaut", "intra"), "xa": ("xaut", "intra"),
         }
         if _fc_kind not in _fc_map:
-            send_reply(chat_id, "First arg must be s1, s2, t1, or t2 (or scan1/scan2/ts1/ts2)."); return
+            send_reply(chat_id, "First arg must be s1, s2, t1, t2, btc, or xaut."); return
         _fc_ver, _fc_type = _fc_map[_fc_kind]
-        _fc_result_text = (_force_close_scan_trade(_fc_ver, _fc_symbol, _fc_result) if _fc_type == "scan"
-            else _force_close_demo_trade(_fc_ver, _fc_symbol, _fc_result))
+        if _fc_type == "intra":
+            _fc_result_text = _force_close_intraday_trade(_fc_ver, _fc_symbol, _fc_result)
+        else:
+            _fc_result_text = (_force_close_scan_trade(_fc_ver, _fc_symbol, _fc_result) if _fc_type == "scan"
+                else _force_close_demo_trade(_fc_ver, _fc_symbol, _fc_result))
         send_reply(chat_id, _fc_result_text)
 
     if cmd == "/synccheck" and is_admin:
@@ -16488,7 +16554,7 @@ _COPYADMIN_SUBCATS = {
         ("/ctclose",   "❌", "Close Positions",   "Force-closes a user's copy-traded positions."),
         ("/synccheck", "🔄", "BingX vs Bot Sync", "Compares live BingX positions against what the bot thinks is open."),
         ("/un", "↩️", "Undo Slot Result", "Reverses a wrongly-recorded win/loss for one schedule slot. `/un s1|s2|t1|t2 H.MM` — e.g. `/un s1 3.09`."),
-        ("/forceclose", "🛠", "Force Close Stuck Trade", "Manually close a Scan1/Scan2/TS1/TS2 trade the bot lost track of, with the real TP1/TP2/SL/BE result. (/fc is the same command.)"),
+        ("/forceclose", "🛠", "Force Close Stuck Trade", "Manually close a Scan1/Scan2/TS1/TS2/BTC-INTRADAY/XAUT trade the bot lost track of, with the real TP1/TP2/SL/BE result. `/fc btc BTC sl`, `/fc xaut XAUT tp2`. An intraday entry still pending takes `cancel` instead, which also pulls the resting limit order. (/fc is the same command.)"),
         ("/syncup",    "☁️", "Push to Central Store", "Force-pushes this server's current users, settings, trade state, and CSVs to the shared multi-server store."),
         ("/server",    "🖥️", "Server Status / Switch", "Shows which server is currently active, or switch which one is (/server &lt;name&gt;)."),
     ]),
