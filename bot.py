@@ -11783,7 +11783,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -16051,6 +16051,11 @@ _SCAN_SUBCATS = {
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected."),
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade."),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
+        ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan."),
+        ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both."),
+        ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
+        ("/intrastatus", "📋", "Intraday Trades", "Open and pending intraday trades with entry, SL band %, targets and age."),
+        ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
         ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
         ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
         ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
