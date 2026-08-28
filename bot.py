@@ -11182,6 +11182,11 @@ def _intraday_monitor_loop():
     exits for the intraday slots only — it never touches scan1/scan2/BTC state."""
     while True:
         try:
+            # /pause freezes everything and a standby server must never act on
+            # a trade the active one owns. /stop is deliberately NOT here: it
+            # blocks new scans but keeps managing positions already open.
+            if (CLEXER_API_URL and not is_active_server()) or bot_paused.is_set():
+                time.sleep(30); continue
             with _intraday_lock:
                 snapshot = list(_intraday_trades)
             remove = []
@@ -11297,6 +11302,18 @@ def _intraday_scan_loop():
     time.sleep(60)   # let startup settle before the first attempt
     while True:
         try:
+            # Same gates every other scheduled scan honours. The bot boots
+            # PAUSED on purpose so a redeploy cannot resume trading on its own
+            # — these slots were firing straight after a deploy without /go
+            # because this loop was checking none of it (admin report
+            # 2026-08-28).
+            #   standby server  — only the active server may act, or a rotated
+            #                     deploy double-fires every signal
+            #   /pause          — freezes everything
+            #   /stop           — blocks new scans, monitoring continues below
+            #   weekend sleep   — admin-level quiet window
+            if (CLEXER_API_URL and not is_active_server())                or bot_paused.is_set() or bot_stopped.is_set() or is_weekend_sleep():
+                time.sleep(30); continue
             for kind in ("btcint", "xaut"):
                 if not _intra_slot_live(kind):
                     continue
