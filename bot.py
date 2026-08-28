@@ -4944,6 +4944,8 @@ def _load_slot_state():
             _SCAN_SPECIAL[kind] = set(tuple(hm) for hm in times)
         for kind, times in d.get("no_copy", {}).items():
             _SCAN_SPECIAL_NO_COPY[kind] = set(tuple(hm) for hm in times)
+        for kind, times in d.get("manual_lock", {}).items():
+            _SLOT_MANUAL_LOCK[kind] = set(tuple(hm) for hm in times)
         for kind, times in d.get("blacklist", {}).items():
             _SLOT_BLACKLIST[kind] = set(tuple(hm) for hm in times)
         for kind, times in d.get("relocated", {}).items():
@@ -4957,6 +4959,7 @@ def _save_slot_state():
         "stats": _slot_stats,
         "day_stats": _slot_day_stats,
         "day_stats_v": _slot_day_seed_v,
+        "manual_lock": {k: sorted(list(v)) for k, v in _SLOT_MANUAL_LOCK.items()},
         "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
         "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
         "blacklist": {k: sorted(list(v)) for k, v in _SLOT_BLACKLIST.items()},
@@ -5090,6 +5093,16 @@ _slot_day_stats: dict = {}     # "kind|H.M" -> {"0".."6": {"tp": int, "sl": int}
 # without this a corrected rule can never take effect: the "already populated,
 # don't double count" guard sees the old numbers and skips forever. v1 dropped
 # timeouts and had to be thrown away (see _backfill_slot_days).
+# Locks the ADMIN set by hand, kept apart from _SCAN_SPECIAL_NO_COPY.
+#
+# That set mixes two very different things: locks the admin chose, and demotions
+# _evaluate_slot applied automatically when a slot's LIFETIME rate slipped below
+# threshold. Treating both as absolute made the weekday rule pointless for the
+# slots it exists to help - S1 10:45 sits at 54.5% lifetime, so it was locked
+# every single day even though its Fridays are 2/0 (admin report 2026-08-28).
+# The weekday record now outranks a lifetime auto-demotion; only an entry here
+# is final.
+_SLOT_MANUAL_LOCK = {"scan1": set(), "scan2": set(), "test1": set(), "test2": set()}
 _SLOT_DAY_SEED_VERSION = 2
 _slot_day_seed_v: int = 0
 WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -5139,7 +5152,7 @@ def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
 
     Order matters: the manual lock is checked first and is final, so a slot the
     admin excluded by hand can never be let back in by a good weekday."""
-    if hm in _SCAN_SPECIAL_NO_COPY.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
+    if hm in _SLOT_MANUAL_LOCK.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
         return False
     pct, tp, sl = _slot_day_rate(kind, hm, _wd_from_epoch(when))
     if pct is None:
@@ -5150,8 +5163,8 @@ def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
 def _slot_day_reason(kind: str, hm: tuple, when=None) -> str:
     """Short human explanation of the gate's verdict, for the skip log and /st."""
     day = _wd_from_epoch(when)
-    if hm in _SCAN_SPECIAL_NO_COPY.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
-        return "manually unverified"
+    if hm in _SLOT_MANUAL_LOCK.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
+        return "locked by hand"
     pct, tp, sl = _slot_day_rate(kind, hm, day)
     th = _SLOT_EVAL_THRESHOLD.get(kind, 55)
     if pct is None:
@@ -13457,7 +13470,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _hdr = f"<b>{_st_labels[_kind]}</b> ({_th}%)\n<pre>"
                 _rows = ["      " + "  ".join(_cp(_d[:2]) for _d in WD_NAMES)]
                 for _hm in _times:
-                    _manual = _hm in _SCAN_SPECIAL_NO_COPY.get(_sk, set())
+                    _manual = _hm in _SLOT_MANUAL_LOCK.get(_sk, set())
                     _cells = []
                     for _di in range(7):
                         _pct, _tp, _sl = _slot_day_rate(_kind, _hm, _di)
@@ -14500,16 +14513,19 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if _st_status == "verified":
             _SCAN_SPECIAL.setdefault(_st_sched, set()).add(_st_hm)
             _SCAN_SPECIAL_NO_COPY.get(_st_sched, set()).discard(_st_hm)
+            _SLOT_MANUAL_LOCK.get(_st_sched, set()).discard(_st_hm)
             _SLOT_BLACKLIST.get(_st_orig, set()).discard(_st_hm)
             _st_label = "⭐ VERIFIED (copytrade enabled)"
         elif _st_status == "unverified":
             _SCAN_SPECIAL.setdefault(_st_sched, set()).add(_st_hm)
             _SCAN_SPECIAL_NO_COPY.setdefault(_st_sched, set()).add(_st_hm)
+            _SLOT_MANUAL_LOCK.setdefault(_st_sched, set()).add(_st_hm)
             _SLOT_BLACKLIST.get(_st_orig, set()).discard(_st_hm)
-            _st_label = "⚠️ UNVERIFIED (no copytrade)"
+            _st_label = "⚠️ UNVERIFIED (no copytrade, every day)"
         else:
             _SCAN_SPECIAL.get(_st_sched, set()).discard(_st_hm)
             _SCAN_SPECIAL_NO_COPY.get(_st_sched, set()).discard(_st_hm)
+            _SLOT_MANUAL_LOCK.get(_st_sched, set()).discard(_st_hm)
             _st_label = "NORMAL (regular grid)"
         _rebuild_schedules()
         _save_slot_state()
@@ -16131,6 +16147,22 @@ Reasoning: [one line]"""
                         # a [VST] tag in the message so it's still visible as "was actually
                         # verified" rather than a genuinely nonspecial run. Off by default;
                         # when off this is always False and changes nothing.
+                        # WEEKDAY PROMOTION. The weekday record outranks a
+                        # LIFETIME auto-demotion: a slot _evaluate_slot demoted
+                        # on its overall average can still be cleared on a day
+                        # it has actually earned. Without this the rule could
+                        # only ever lock a good slot's bad day, never rescue a
+                        # weak slot's good day, which is the case the admin
+                        # raised (S1 10:45, 54.5% lifetime, 2/0 on Fridays).
+                        # Deliberately placed BEFORE the VST gate so that gate
+                        # still gets to demote whatever this promotes.
+                        _wd_ok = _is_special and _slot_day_verified(_kind, _trigger_hm)
+                        _wd_promoted = False
+                        if _wd_ok and not _tier_routed:
+                            _tier_routed = True
+                            _wd_promoted = True
+                            print(f"  [SLOT DAY] {_kind} {_trigger_hm} cleared by its weekday record "
+                                  f"despite the lifetime demotion — {_slot_day_reason(_kind, _trigger_hm)}")
                         _vst_downgraded = _tier_routed and not _vst_copy_allowed(_kind, _trigger_hm)
                         if _vst_downgraded:
                             _tier_routed = False
@@ -16140,7 +16172,7 @@ Reasoning: [one line]"""
                         # the same slot at 40% on Mondays drops to Signal-channel
                         # only. Demotes exactly like _vst_downgraded above, so the
                         # whole lifecycle keys off the one tier_routed flag.
-                        _wd_locked = _tier_routed and not _slot_day_verified(_kind, _trigger_hm)
+                        _wd_locked = _tier_routed and not _wd_ok
                         if _wd_locked:
                             _tier_routed = False
                             _wd_why = _slot_day_reason(_kind, _trigger_hm)
@@ -16161,6 +16193,7 @@ Reasoning: [one line]"""
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["vst_downgraded"] = _vst_downgraded  # fmt_scan_signal tags [VST] when set
                         slot_data["wd_locked"] = _wd_locked
+                        slot_data["wd_promoted"] = _wd_promoted
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
