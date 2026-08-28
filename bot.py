@@ -9584,7 +9584,7 @@ INTRADAY_SPECS = {
         "leg_min_atr": 2.0,                # impulse must span this many ATR_1H
         "ttl_hours": 6.0,                  # pending order lifetime
         "session_ttl": False,
-        "atr1_min_pct": 0.25, "atr1_max_pct": 2.00,
+        "atr1_min_pct": 0.25, "atr1_max_pct": 2.00, "price_dp": 1,
         "spread_max_pct": 0.06,
     },
     "xaut": {
@@ -9594,7 +9594,7 @@ INTRADAY_SPECS = {
         "leg_min_atr": 3.0,                # thinner book needs a bigger impulse to clear costs
         "ttl_hours": None,                 # expires at its session close instead
         "session_ttl": True,
-        "atr1_min_pct": 0.06, "atr1_max_pct": 0.80,
+        "atr1_min_pct": 0.06, "atr1_max_pct": 0.80, "price_dp": 2,
         "spread_max_pct": 0.06,
     },
 }
@@ -10036,7 +10036,10 @@ def _intra_engine_block(kind: str, meta: dict) -> str:
             return _intra_wait_text("confidence below LOW: " + ", ".join(drops))
         confidence = conf[idx]
 
-        note = (f"wait for a retrace to {_engine_fmt(entry)}" if not at_market
+        # Human prose, so a readable number — the machine-readable Entry field
+        # above keeps full precision. _engine_fmt here produced things like
+        # "80620.876799999998" in the middle of a sentence.
+        note = (f"wait for a retrace to {entry:,.6g}" if not at_market
                 else "retrace already here — enter at market")
         why = (f"{bias[:4]} 4H + {struct1[:4]} 1H, {leg_range/atr1:.1f}x ATR impulse, "
                f"38.2% retrace entry" + (f" ({', '.join(drops)})" if drops else ""))
@@ -10571,6 +10574,59 @@ def _intra_apply_targets(kind: str, sig: dict) -> dict:
     return sig
 
 
+_intra_dp_cache = {}
+
+
+def _intra_price_dp(kind: str) -> int:
+    """Decimal places BingX accepts for this instrument's order prices.
+
+    Not cosmetic rounding — an order priced finer than the venue's
+    pricePrecision is rejected, and _place_alt rounds to 6dp which is far
+    finer than BTC allows (1dp) or XAUT (2dp). Scan1/Scan2 never trade these
+    two, so nothing had exercised that limit before. Fetched once and cached,
+    with the spec value as the fallback so a failed lookup cannot make orders
+    unplaceable."""
+    spec = _intra_spec(kind)
+    if kind in _intra_dp_cache:
+        return _intra_dp_cache[kind]
+    dp = spec.get("price_dp", 2)
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts",
+                         timeout=12).json()
+        for d in (r.get("data") or []):
+            if d.get("symbol") == spec.get("symbol"):
+                v = d.get("pricePrecision")
+                if v is not None:
+                    dp = int(v)
+                break
+    except Exception as e:
+        print(f"  [INTRA] pricePrecision {kind}: {e} — using {dp}")
+    _intra_dp_cache[kind] = dp
+    return dp
+
+
+def _intra_quantize(kind: str, sig: dict) -> dict:
+    """Snap every price to what the exchange will actually accept, then rebuild
+    the targets from the snapped entry and stop so the R multiples stay exact.
+
+    This is venue compliance, not the round-number rounding that was banned —
+    it is the difference between an order the exchange takes and one it
+    refuses."""
+    dp = _intra_price_dp(kind)
+    spec = _intra_spec(kind)
+    q = lambda v: round(float(v), dp)
+    sig["entry"] = q(sig["entry"])
+    sig["sl"] = q(sig["sl"])
+    sl_dist = abs(sig["entry"] - sig["sl"])
+    buy = sig["signal"] == "BUY"
+    sig["tp1"] = q(sig["entry"] + sl_dist * spec["tp1_mult"] * (1 if buy else -1))
+    sig["tp2"] = q(sig["entry"] + sl_dist * spec["tp2_mult"] * (1 if buy else -1))
+    sig["invalidation"] = q(sig["invalidation"])
+    sig["sl_dist"] = sl_dist
+    sig["sl_pct"] = sl_dist / sig["entry"] * 100.0 if sig["entry"] else 0.0
+    return sig
+
+
 def _intra_dedupe_key(kind: str, sig: dict) -> tuple:
     """(slot, direction, leg_high, leg_low) - the identity of one setup.
 
@@ -10747,6 +10803,15 @@ def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
         return f"{label}: rejected — {why}"
 
     sig = _intra_apply_targets(kind, sig)
+    # Snap to the venue's price precision BEFORE anything is posted or ordered,
+    # so the channel card, the stored trade and the resting limit order all
+    # carry the identical number. Re-validated afterwards because snapping
+    # moves the levels, however slightly.
+    sig = _intra_quantize(kind, sig)
+    ok, why = _intra_validate(kind, sig, scan_price)
+    if not ok:
+        print(f"  [INTRA {kind}] REJECTED after price snap: {why}")
+        return f"{label}: rejected after price snap — {why}"
 
     key = _intra_dedupe_key(kind, sig)
     with _intraday_lock:
@@ -13354,7 +13419,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"TP1:   <b>{_it['tp1']:,.6g}</b> {'✅ HIT' if _it.get('tp1_hit') else '⏳ pending'}\n"
                 f"TP2:   <b>{_it['tp2']:,.6g}</b>\nType:  {_it.get('entry_type','PULLBACK')}\n"
                 f"{_istate}"
-                + (f"\n<i>{_it['entry_note']}</i>" if _it.get("entry_note") else ""))
+                # Only while pending. Once the entry has filled, "wait for a
+                # retrace to X" is stale and contradicts the ✅ on the line above.
+                + (f"\n<i>{_it['entry_note']}</i>"
+                   if (_it.get("entry_note") and not _it.get("entry_hit")) else ""))
         if parts_out:
             send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
         else:
