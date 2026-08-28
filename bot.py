@@ -4920,6 +4920,7 @@ def _load_slot_state():
         if d is None:
             return
         _slot_stats = d.get("stats", {})
+        _slot_day_stats.clear(); _slot_day_stats.update(d.get("day_stats", {}) or {})
         VST_COPY_ALLOWLIST_ENABLED = bool(d.get("vst_copy_allowlist_on", False))
         for kind, times in d.get("vst_copy_allowed", {}).items():
             _VST_COPY_ALLOWED[kind] = set(tuple(hm) for hm in times)
@@ -4945,6 +4946,7 @@ def _load_slot_state():
 def _save_slot_state():
     d = {
         "stats": _slot_stats,
+        "day_stats": _slot_day_stats,
         "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
         "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
         "blacklist": {k: sorted(list(v)) for k, v in _SLOT_BLACKLIST.items()},
@@ -5030,9 +5032,14 @@ def _evaluate_slot(kind: str, hm: tuple):
         _rebuild_schedules()
         _save_slot_state()
 
-def _slot_track(kind: str, hm: tuple, is_win: bool):
+def _slot_track(kind: str, hm: tuple, is_win: bool, when=None):
     """Call once per trade, at its terminal outcome only (TP2 / BE / real-SL /
-    LOSS / timeout) — never at TP1 (not terminal here, the runner keeps going)."""
+    LOSS / timeout) — never at TP1 (not terminal here, the runner keeps going).
+
+    `when` is the epoch the SIGNAL fired, used to credit the per-weekday
+    counter. It has to be the signal's day, not this moment: a Sunday trade
+    that resolves on Monday is still evidence about Sundays."""
+    _slot_day_track(kind, hm, is_win, when)
     key = _slot_key(kind, hm)
     st = _slot_stats.setdefault(key, {"tp": 0, "sl": 0, "streak": 0})
     if is_win:
@@ -5044,6 +5051,149 @@ def _slot_track(kind: str, hm: tuple, is_win: bool):
     _save_slot_state()
     if not _check_slot_blacklist(kind, hm):
         _evaluate_slot(kind, hm)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PER-WEEKDAY SLOT GATING
+# ---------------------------------------------------------------------------
+# Admin rule (2026-08-28): a slot is no longer verified or unverified as a
+# whole. It is judged per DAY OF THE WEEK. S1 22:15 can be verified on Sunday
+# and locked on Monday, on the same slot, at the same time, because the two
+# days have different records.
+#
+# A locked (slot, weekday) still runs and still posts — it drops to the Signal
+# channel only, with no VIP/Free routing and no copy trade. Exactly the demotion
+# _vst_downgraded already performs, so the whole lifecycle keys off the single
+# tier_routed flag stored on the trade, same as before.
+#
+# Three admin decisions shape this, and they are deliberately strict:
+#   LOCKED UNTIL PROVEN GOOD — a weekday with no history is locked, not trusted.
+#   NO MINIMUM SAMPLE — one loss locks that weekday, one win can unlock it.
+#   MANUAL LOCK ALWAYS WINS — a slot in _SCAN_SPECIAL_NO_COPY stays locked every
+#     day regardless of its numbers. The weekday rule can only ever lock MORE.
+# Consequence, stated plainly: with 7 weekdays splitting each slot's samples,
+# most (slot, weekday) pairs are empty and therefore locked until each one
+# earns its way up. That is the intended behaviour, not a bug.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_slot_day_stats: dict = {}     # "kind|H.M" -> {"0".."6": {"tp": int, "sl": int}}
+WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def _wd_index(dt) -> int:
+    """Sunday = 0 .. Saturday = 6, matching how the admin reads the table."""
+    return (dt.weekday() + 1) % 7
+
+
+def _wd_from_epoch(epoch=None) -> int:
+    """Weekday of a signal, in IST — the same clock the slot times use."""
+    if epoch:
+        try:
+            return _wd_index(datetime.fromtimestamp(epoch, timezone.utc) + IST)
+        except Exception:
+            pass
+    return _wd_index(now_ist())
+
+
+def _slot_day_track(kind: str, hm: tuple, is_win: bool, when=None):
+    """Credit one terminal outcome to (slot, weekday-of-signal).
+
+    Keyed on the day the SIGNAL fired, not the day it closed — a slot's Sunday
+    record has to mean "what this slot does on Sundays", and a Sunday trade that
+    resolves on Monday is still a Sunday trade."""
+    key = _slot_key(kind, hm)
+    day = str(_wd_from_epoch(when))
+    st = _slot_day_stats.setdefault(key, {}).setdefault(day, {"tp": 0, "sl": 0})
+    st["tp" if is_win else "sl"] += 1
+
+
+def _slot_day_rate(kind: str, hm: tuple, day: int):
+    """(win_pct, tp, sl) for one (slot, weekday), or (None, 0, 0) with no data."""
+    st = (_slot_day_stats.get(_slot_key(kind, hm)) or {}).get(str(day))
+    if not st:
+        return None, 0, 0
+    tp, sl = st.get("tp", 0), st.get("sl", 0)
+    n = tp + sl
+    if not n:
+        return None, 0, 0
+    return tp / n * 100.0, tp, sl
+
+
+def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
+    """The gate. True = this slot may reach VIP/Free and copy trade TODAY.
+
+    Order matters: the manual lock is checked first and is final, so a slot the
+    admin excluded by hand can never be let back in by a good weekday."""
+    if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
+        return False
+    pct, tp, sl = _slot_day_rate(kind, hm, _wd_from_epoch(when))
+    if pct is None:
+        return False        # no history for this weekday — locked until proven good
+    return pct >= _SLOT_EVAL_THRESHOLD.get(kind, 55)
+
+
+def _slot_day_reason(kind: str, hm: tuple, when=None) -> str:
+    """Short human explanation of the gate's verdict, for the skip log and /st."""
+    day = _wd_from_epoch(when)
+    if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
+        return "manually unverified"
+    pct, tp, sl = _slot_day_rate(kind, hm, day)
+    th = _SLOT_EVAL_THRESHOLD.get(kind, 55)
+    if pct is None:
+        return f"no {WD_NAMES[day]} history yet"
+    if pct < th:
+        return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl}) below {th}%"
+    return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl})"
+
+
+def _backfill_slot_days() -> int:
+    """Seed the weekday counters from trade_history.csv, once, at startup.
+
+    Without this the rule would lock everything for weeks while the counters
+    filled from zero. Only rows whose signal minute matches a configured slot
+    are counted, and only terminal outcomes — an open trade has no result and a
+    timeout reached neither a target nor a stop, so neither is evidence."""
+    import csv as _csv
+    if _slot_day_stats:
+        return 0                      # already restored from disk; don't double count
+    if not os.path.exists(TRADE_LOG_CSV):
+        print("[SLOT DAY] no trade_history.csv — weekday counters start empty")
+        return 0
+    kindmap = {"scan1": "scan1", "scan2": "scan2", "demo1": "demo1", "demo2": "demo2"}
+    n = 0
+    try:
+        with open(TRADE_LOG_CSV, newline="", encoding="utf-8-sig") as f:
+            for row in _csv.DictReader(f):
+                kind = kindmap.get((row.get("type") or "").strip())
+                if not kind:
+                    continue
+                res = (row.get("result") or "").strip()
+                if res in ("TP2", "BE", "BREAKEVEN"):
+                    win = True
+                elif res in ("SL", "LOSS"):
+                    win = False
+                else:
+                    continue
+                try:
+                    dt = datetime.strptime((row.get("signal_time") or "").replace(" IST", "").strip(),
+                                           "%Y-%m-%d %H:%M")
+                except Exception:
+                    continue
+                hm = (dt.hour, dt.minute)
+                sched = _SLOT_SCHEDULE_KIND.get(kind, kind)
+                if hm not in _SCAN_SPECIAL.get(sched, set()):
+                    continue          # regular-grid time, not a tracked slot
+                key = _slot_key(kind, hm)
+                st = _slot_day_stats.setdefault(key, {}).setdefault(str(_wd_index(dt)), {"tp": 0, "sl": 0})
+                st["tp" if win else "sl"] += 1
+                n += 1
+    except Exception as e:
+        print(f"[SLOT DAY] backfill error: {e}")
+        return 0
+    print(f"[SLOT DAY] backfilled {n} outcomes across {len(_slot_day_stats)} slots")
+    if n:
+        _save_slot_state()
+    return n
+
 
 def _ist_hm_from_epoch(epoch):
     if not epoch:
@@ -8839,7 +8989,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
             entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
         _notify_free_late(sym, t, "TP2")
         _slot_hm = _slot_hm_for_trade(t)
-        if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
+        if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True, t.get("created_at"))
         _close_sig_snapshot(t.get("sig_id", ""), "TP2")
         _remove_scan_trade(ver, sym)
         return f"✅ {sym} force-closed as TP2 @ {price:,.4g} — announced, recorded, removed."
@@ -8896,7 +9046,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         # that also made the follow-up "reassurance" send a pure duplicate
         # for this call site specifically).
     _slot_hm = _slot_hm_for_trade(t)
-    if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE")
+    if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, close_result == "BE", t.get("created_at"))
     _close_sig_snapshot(t.get("sig_id", ""), close_result)
     _remove_scan_trade(ver, sym)
     return f"✅ {sym} force-closed as {close_result} @ {price:,.4g} — announced, recorded, removed."
@@ -9401,7 +9551,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 free_shown=bool(t.get("tier_routed")) and t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")), pnl=pnl)
             _slot_hm = _slot_hm_for_trade(t)
-            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0)
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, pnl >= 0, t.get("created_at"))
             _close_sig_snapshot(t.get("sig_id",""), f"TIMEOUT({pnl:+.2f}%)")
             _remove_scan_trade(ver, sym); return True
 
@@ -9468,7 +9618,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
             _notify_free_late(sym, t, "TP2")
             _slot_hm = _slot_hm_for_trade(t)
-            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True)
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, True, t.get("created_at"))
             _close_sig_snapshot(t.get("sig_id",""), "TP2")
             _remove_scan_trade(ver, sym); return True
 
@@ -9546,7 +9696,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 # is the live-monitor path that catches almost every real SL
                 # hit, so it's the one users actually saw double-post.
             _slot_hm = _slot_hm_for_trade(t)
-            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE")
+            if _slot_hm: _slot_track(f"scan{ver}", _slot_hm, result == "BE", t.get("created_at"))
             _close_sig_snapshot(t.get("sig_id",""), result)
             _remove_scan_trade(ver, sym); return True
 
@@ -13173,6 +13323,52 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
+        # /st week  — the per-weekday grid the gate actually decides on.
+        if len(parts) > 1 and parts[1].lower() in ("week", "w", "day", "days"):
+            _wk_only = parts[2].lower() if len(parts) > 2 else ""
+            _wk_msgs, _wk_cur = [], ""
+            for _kind in ("scan1", "scan2", "demo1", "demo2"):
+                if _wk_only and _wk_only not in _kind and _wk_only not in _st_labels[_kind].lower():
+                    continue
+                _sk = _SLOT_SCHEDULE_KIND[_kind]
+                _times = sorted(_SCAN_SPECIAL.get(_sk, set()))
+                if not _times:
+                    continue
+                _th = _SLOT_EVAL_THRESHOLD[_kind]
+                # Emoji occupy TWO monospace cells while len() counts them as one,
+                # so every cell is padded to a fixed VISUAL width instead. Without
+                # this the columns walk out of line row by row.
+                def _vw(x):
+                    return sum(2 if ord(c) > 0x2100 else 1 for c in x)
+                def _cp(x, w=5):
+                    _l = max(0, (w - _vw(x)) // 2)
+                    return " " * _l + x + " " * max(0, w - _vw(x) - _l)
+                _hdr = f"<b>{_st_labels[_kind]}</b> ({_th}%)\n<pre>"
+                _rows = ["      " + "  ".join(_cp(_d[:2]) for _d in WD_NAMES)]
+                for _hm in _times:
+                    _manual = _hm in _SCAN_SPECIAL_NO_COPY.get(_sk, set())
+                    _cells = []
+                    for _di in range(7):
+                        _pct, _tp, _sl = _slot_day_rate(_kind, _hm, _di)
+                        if _pct is None:
+                            _cells.append("-"); continue
+                        _ok = (not _manual) and _pct >= _th
+                        _cells.append(("✅" if _ok else "🔒") + f"{_tp}/{_sl}")
+                    _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6) + "  ".join(_cp(c) for c in _cells))
+                _blk = _hdr + "\n".join(_rows) + "</pre>"
+                if _wk_cur and len(_wk_cur) + len(_blk) > _TG_MSG_LIMIT - 120:
+                    _wk_msgs.append(_wk_cur); _wk_cur = ""
+                _wk_cur += ("\n\n" if _wk_cur else "") + _blk
+            if _wk_cur:
+                _wk_msgs.append(_wk_cur)
+            if not _wk_msgs:
+                send_reply(chat_id, "No special times configured."); return
+            for _i, _m in enumerate(_wk_msgs):
+                _h = ("📅 <b>Special Times — by weekday</b>\n"
+                      "<i>✅ verified that day · 🔒 locked, Signal channel only · - never ran</i>\n\n") if _i == 0 else ""
+                _f = f"\n\n<i>({_i + 1}/{len(_wk_msgs)})</i>" if len(_wk_msgs) > 1 else ""
+                send_reply(chat_id, _h + _m + _f, emoji_overrides={"✅": None, "🔒": None})
+            return
         _st_blocks = []
         for _kind in ("scan1", "scan2", "demo1", "demo2"):
             _sched_kind = _SLOT_SCHEDULE_KIND[_kind]   # demo1->test1, demo2->test2 — each independent
@@ -15825,6 +16021,18 @@ Reasoning: [one line]"""
                         _vst_downgraded = _tier_routed and not _vst_copy_allowed(_kind, _trigger_hm)
                         if _vst_downgraded:
                             _tier_routed = False
+                        # PER-WEEKDAY GATE (admin rule 2026-08-28). The same slot
+                        # can be verified on one day and locked on another: S1
+                        # 22:15 at 60% on Sundays reaches VIP/Free and copy trade,
+                        # the same slot at 40% on Mondays drops to Signal-channel
+                        # only. Demotes exactly like _vst_downgraded above, so the
+                        # whole lifecycle keys off the one tier_routed flag.
+                        _wd_locked = _tier_routed and not _slot_day_verified(_kind, _trigger_hm)
+                        if _wd_locked:
+                            _tier_routed = False
+                            _wd_why = _slot_day_reason(_kind, _trigger_hm)
+                            print(f"  [SLOT DAY] {_kind} {_trigger_hm} locked — {_wd_why}")
+                            skip_log.append(f"🔒 {chosen_sym}: Signal-only — {_wd_why}")
                         if _tier_routed:
                             vip_trade_stats[f"scan{scan_ver}_signals"] += 1
                         # Only verified/special-time (tier_routed) signals ever compete
@@ -15839,6 +16047,7 @@ Reasoning: [one line]"""
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["vst_downgraded"] = _vst_downgraded  # fmt_scan_signal tags [VST] when set
+                        slot_data["wd_locked"] = _wd_locked
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
                         slot_data["sig_id"] = _gen_signal_id()
                         slot_data["entry_time_str"] = (datetime.now(timezone.utc)+IST).strftime("%d.%m.%y %H:%M")
@@ -16680,7 +16889,7 @@ _SCAN_SUBCATS = {
         ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
         ("/settime", "🕐", "Set Time Verified/Unverified", "Manually force one specific hour:minute slot to Verified, Unverified, or back to Normal — independent of the auto promote/demote system."),
         ("/timepanel", "🕐", "Time Panel (Paper Tracking)", "Track win-rate/streak for admin-picked times against S1/S2/TS1/TS2 — pulls existing data if already scheduled there, else runs its own paper-only scan (never real money)."),
-        ("/st",   "⭐", "Special Times Performance", "Win rate for every verified/unverified special-time slot, per scan kind."),
+        ("/st",   "⭐", "Special Times Performance", "Win rate for every special-time slot, per scan kind. `/st week` shows the same slots broken out Sunday to Saturday — that grid is what decides whether a slot reaches VIP/Free and copy trade on any given day. Add a kind to narrow it: `/st week scan1`."),
         ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
         ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
     ]),
@@ -20331,7 +20540,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
         _slot_hm = _slot_hm_for_trade(t, created)
-        if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, True)
+        if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, True, created)
         _log_demo_history(t, "TP2", cp, dver)
         _close_sig_snapshot(sig_id, "TP2")
         demo_list.remove(t); save_state()
@@ -20390,7 +20599,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         # saw two SL messages for one close. Only the _send_sl_and_log one is
         # tracked for /clearslvip and /clearslfree.
     _slot_hm = _slot_hm_for_trade(t, created)
-    if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN")
+    if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, close_result == "BREAKEVEN", created)
     _log_demo_history(t, lbl, cp, dver)
     _close_sig_snapshot(sig_id, close_result)
     demo_list.remove(t); save_state()
@@ -20480,7 +20689,7 @@ def _demo_monitor_loop():
                         _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _slot_hm_for_trade(t, created)
-                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True)
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True, created)
                         _log_demo_history(t, "TP2", cp, _dver)
                         _close_sig_snapshot(sig_id, "TP2")
                         to_remove.append(t)
@@ -20527,7 +20736,7 @@ def _demo_monitor_loop():
                             # send bypasses _track_sl_ids, so /clearslvip and
                             # /clearslfree could never delete that second message.
                         _slot_hm = _slot_hm_for_trade(t, created)
-                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN")
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, result == "BREAKEVEN", created)
                         _log_demo_history(t, lbl, cp, _dver)
                         _close_sig_snapshot(sig_id, result)
                         to_remove.append(t)
@@ -20578,7 +20787,7 @@ def _demo_monitor_loop():
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _slot_hm_for_trade(t, created)
-                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0)
+                        if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, pnl >= 0, created)
                         _log_demo_history(t, f"TIMEOUT({pnl:+.2f}%)", cp, _dver)
                         _close_sig_snapshot(sig_id, f"TIMEOUT({pnl:+.2f}%)")
                         to_remove.append(t)
@@ -21348,6 +21557,7 @@ def main():
     _load_time_panel()
     threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
+    _backfill_slot_days()
     threading.Thread(target=_intraday_monitor_loop, daemon=True).start()
     threading.Thread(target=_intraday_scan_loop, daemon=True).start()
 
