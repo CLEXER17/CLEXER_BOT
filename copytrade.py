@@ -135,6 +135,8 @@ SCAN1_CT_ENABLED = True  # toggle with /ctpause scan1|on|off — copy trade for 
 SCAN2_CT_ENABLED = True  # toggle with /ctpause scan2|on|off — copy trade for Scan2 signals
 DEMO1_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan1 signals
 DEMO2_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan2 signals
+BTCINT_CT_ENABLED = False  # BTC-INTRADAY pullback slot (ver 5) — off until explicitly enabled
+XAUT_CT_ENABLED = False    # XAUT-INTRADAY pullback slot (ver 6) — off until explicitly enabled
 ORPHAN_ADOPT_ENABLED = False  # toggle from Copy Trade By Type screen — when OFF (default), monitor_sl_tp
                                # never adopts/adjusts SL+TP on a user's BingX position that didn't come
                                # from a real bot signal (i.e. one they opened themselves)
@@ -1769,6 +1771,10 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float, share_free: boo
         return ["[CT] Demo1 copy trade is OFF"]
     if ver == 4 and not DEMO2_CT_ENABLED:
         return ["[CT] Demo2 copy trade is OFF"]
+    if ver == 5 and not BTCINT_CT_ENABLED:
+        return ["[CT] BTC-INTRADAY copy trade is OFF"]
+    if ver == 6 and not XAUT_CT_ENABLED:
+        return ["[CT] XAUT-INTRADAY copy trade is OFF"]
 
     with _scan_signal_lock:
         return _on_scan_signal_inner(signal_dict, symbol, price, share_free)
@@ -2385,13 +2391,17 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
 def on_scan_entry_missed(symbol: str):
     """Scan PULLBACK entry missed — cancel ALL open orders for this symbol, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        if user.get("scan_symbol") != symbol:
-            # Also try users where scan_symbol might not match but have a limit order for this symbol
-            if not user.get("scan_limit_oid"): continue
+        _p = _pfx_for_symbol(user, symbol)
+        if not _p and user.get("scan_symbol") != symbol:
+            # Also try users where no slot matches but a limit order exists for this symbol
+            if not user.get("scan_limit_oid") and not user.get(f"{_p}limit_oid" if _p else "scan_limit_oid"):
+                continue
         try:
             cancelled = []
-            # Cancel by stored limit order ID first
-            stored_oid = str(user.get("scan_limit_oid", ""))
+            # Cancel by stored limit order ID first — check this symbol's own slot
+            # before the legacy scan_ key, so a pullback resting in bi_/xa_/s1b_
+            # is actually found instead of silently skipped.
+            stored_oid = str(user.get(f"{_p}limit_oid", "") if _p else "") or str(user.get("scan_limit_oid", ""))
             if stored_oid:
                 r = _bingx("DELETE", "/openApi/swap/v2/trade/order", api_key, api_secret,
                            {"symbol": symbol, "orderId": stored_oid})
@@ -2414,6 +2424,8 @@ _SCAN_SLOTS = {
     2: ["scan_", "s2b_", "s2c_", "s2d_", "s2e_", "s2f_"],   # scan2 — 6 slots
     3: ["d1_", "d1b_", "d1c_", "d1d_", "d1e_", "d1f_"],     # demo1 — 6 slots
     4: ["d2_", "d2b_", "d2c_", "d2d_", "d2e_", "d2f_"],     # demo2 — 6 slots
+    5: ["bi_", "bib_"],                                     # BTC-INTRADAY — 2 slots
+    6: ["xa_", "xab_"],                                     # XAUT-INTRADAY — 2 slots
 }
 _ALL_SLOT_PREFIXES = [p for _ver, _prefixes in _SCAN_SLOTS.items() for p in _prefixes]
 
@@ -2421,6 +2433,8 @@ def _pfx(ver: int) -> str:
     """Legacy — returns slot A prefix for scan version."""
     if ver == 3: return "d1_"
     if ver == 4: return "d2_"
+    if ver == 5: return "bi_"
+    if ver == 6: return "xa_"
     return "s1_" if ver == 1 else "scan_"
 
 def _free_slot(user: dict, ver: int) -> str:

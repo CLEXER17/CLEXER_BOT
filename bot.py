@@ -1824,6 +1824,9 @@ def _snapshot_scan_settings() -> dict:
         "scan_model": SCAN_MODEL, "use_aerolink": USE_AEROLINK,
         "aicfg_grid": {k: {t: dict(v) for t, v in tiers.items()} for k, tiers in AICFG_GRID.items()},
         "zone_entry_enabled": ZONE_ENTRY_ENABLED,
+        "intraday_enabled": dict(INTRADAY_ENABLED),
+        "btc_engine": BTC_ENGINE,
+        "intraday_prompt_dm": INTRADAY_PROMPT_DM,
         "tp1_close_pct": ct.TP1_CLOSE_PCT,
         "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
         "test_scan": TEST_SCAN_ENABLED, "btc_analysis": btc_analysis_enabled,
@@ -1862,6 +1865,7 @@ def _migrate_aicfg_grid_model_ids():
 
 def _apply_scan_settings(d: dict):
     global SCAN_MODEL, USE_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
+    global BTC_ENGINE, INTRADAY_PROMPT_DM
     global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
     if not d:
         return  # nothing snapshotted yet for this profile — leave current values as-is
@@ -1869,6 +1873,9 @@ def _apply_scan_settings(d: dict):
     _apply_aicfg_grid(d.get("aicfg_grid"))
     SCAN_MODEL = _migrate_opus_model_id(SCAN_MODEL)
     ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", ZONE_ENTRY_ENABLED)
+    INTRADAY_ENABLED.update(d.get("intraday_enabled", {}) or {})
+    BTC_ENGINE = d.get("btc_engine", BTC_ENGINE)
+    INTRADAY_PROMPT_DM = d.get("intraday_prompt_dm", INTRADAY_PROMPT_DM)
     ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
     SCAN1_AUTO_ENABLED = d.get("scan1_auto", SCAN1_AUTO_ENABLED); SCAN2_AUTO_ENABLED = d.get("scan2_auto", SCAN2_AUTO_ENABLED)
     TEST_SCAN_ENABLED = d.get("test_scan", TEST_SCAN_ENABLED); btc_analysis_enabled = d.get("btc_analysis", btc_analysis_enabled)
@@ -6092,6 +6099,7 @@ def save_state():
         "scan2_trades": scan2_trades,
         "demo1_trades": demo_scan1_trades,
         "demo2_trades": demo_scan2_trades,
+        "intraday_trades": _intraday_trades,
         "stats":        trade_stats,
         "vip_stats":    vip_trade_stats,
         "history":      signal_history,
@@ -6164,6 +6172,7 @@ def load_active_trade():
             scan2_trades[:] = [x for x in d.get("scan2_trades", []) if x.get("signal")]
             demo_scan1_trades[:] = [x for x in d.get("demo1_trades", []) if x.get("signal")]
             demo_scan2_trades[:] = [x for x in d.get("demo2_trades", []) if x.get("signal")]
+            _intraday_trades[:] = [x for x in d.get("intraday_trades", []) if x.get("signal") and x.get("kind")]
             if scan1_trades: print(f"[STATE] Restored scan1: {[t['symbol'] for t in scan1_trades]}")
             if scan2_trades: print(f"[STATE] Restored scan2: {[t['symbol'] for t in scan2_trades]}")
             if demo_scan1_trades: print(f"[STATE] Restored demo1: {[t['symbol'] for t in demo_scan1_trades]}")
@@ -7711,6 +7720,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
+    global BTC_ENGINE, INTRADAY_PROMPT_DM
     global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
     try:
         d = None
@@ -7742,6 +7752,9 @@ def load_settings():
             ZONE_ENTRY_ENABLED = d.get("zone_entry_enabled", False)
             CO_ADMIN_CHAT_ID = d.get("co_admin_chat_id", "")
             CO_ADMIN_ENABLED = d.get("co_admin_enabled", False)
+            INTRADAY_ENABLED.update(d.get("intraday_enabled", {}) or {})
+            BTC_ENGINE = d.get("btc_engine", BTC_ENGINE)
+            INTRADAY_PROMPT_DM = d.get("intraday_prompt_dm", INTRADAY_PROMPT_DM)
             ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
             ACTIVE_PROFILE = d.get("active_profile", "mine")
             _SETTINGS_PROFILES = d.get("settings_profiles", {"mine": {}, "coadmin": {}})
@@ -7810,6 +7823,9 @@ def save_settings():
             "model_registry": dict(MODEL_REGISTRY),
             "slot_eval_threshold": dict(_SLOT_EVAL_THRESHOLD),
             "zone_entry_enabled": ZONE_ENTRY_ENABLED,
+            "intraday_enabled": dict(INTRADAY_ENABLED),
+            "btc_engine": BTC_ENGINE,
+            "intraday_prompt_dm": INTRADAY_PROMPT_DM,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
             "tp1_close_pct": ct.TP1_CLOSE_PCT,
@@ -9561,6 +9577,7 @@ INTRADAY_TAKER_FEE = 0.05                             # % one side, BingX
 # other sleeps — never both, because two systems trading BTC at once means
 # copytrade sizes the same instrument twice (admin choice 2026-08-27).
 BTC_ENGINE = "classic"
+INTRADAY_PROMPT_DM = True   # DM the admin each intraday prompt (/intradaydm)
 
 _intraday_trades: list = []                  # pending AND open, split by entry_hit
 _intraday_lock = threading.Lock()
@@ -9648,7 +9665,7 @@ def _gold_spot():
             raise RuntimeError("chart busy")
         try:
             for tv_sym in ("OANDA:XAUUSD", "TVC:GOLD"):
-                if tv_load_symbol(tv_sym):
+                if tv_set_symbol(tv_sym):
                     df = tv_get_candles_for(tv_sym, "1h", 3)
                     if df is not None and len(df):
                         got = float(df["close"].values[-1])
@@ -10231,6 +10248,447 @@ def _intra_dedupe_key(kind: str, sig: dict) -> tuple:
     intended size. Rounded to 6 significant figures so float noise in the
     model's echo of the level cannot split one setup into two keys."""
     return (kind, sig["signal"], _sig_round(sig["leg_high"], 6), _sig_round(sig["leg_low"], 6))
+
+
+def _intra_slot_live(kind: str) -> bool:
+    """Whether this slot may produce a signal right now.
+
+    BTC has two engines and exactly one may run: the classic BTC scan
+    (SYMBOL/active_trade/JSON prompt) or this pullback slot. Never both — two
+    systems trading BTC at once means copytrade sizes the same instrument
+    twice, at double the intended exposure, with neither system aware of the
+    other's position."""
+    if not INTRADAY_ENABLED.get(kind):
+        return False
+    if kind == "btcint" and BTC_ENGINE != "intraday":
+        return False
+    return True
+
+
+def _intra_xaut_weekend_flat_due() -> bool:
+    """True once XAUT must be flat for the weekend: Friday 20:30 UTC onward,
+    all Saturday, and Sunday before 22:00 UTC.
+
+    This is the one control the prompt cannot provide. Spot gold shuts on
+    Friday night while the token keeps trading on crypto flow, and at the
+    Sunday reopen XAUT re-prices to wherever gold actually went — in one move,
+    with no prints in between. A stop order in a gapping thin book is not a
+    stop at your price, it is a market order at the first print on the other
+    side. At 2% risk on a 0.60% stop that is roughly 3.3x notional, so a 3%
+    gap is a ~10% account loss against an intended 2%. The prompt runs once,
+    at signal time; the risk arrives two days later. It has to be closed here."""
+    n = datetime.now(timezone.utc)
+    wd = n.weekday()                       # 0=Mon .. 6=Sun
+    mins = n.hour * 60 + n.minute
+    if wd == 5:                            # Saturday
+        return True
+    if wd == 4 and mins >= 20 * 60 + 30:   # Friday from 20:30 UTC
+        return True
+    if wd == 6 and mins < 22 * 60:         # Sunday before 22:00 UTC
+        return True
+    return False
+
+
+def _intra_pending_expired(t: dict) -> str:
+    """Reason a pending order should be cancelled, or '' to keep waiting.
+
+    A pending entry with no expiry sits forever. BTC gets a flat 6h TTL; XAUT
+    expires at the close of the session it was issued in, including Asia —
+    the peg gate lets Asia signals through, and an Asia order with no defined
+    expiry would otherwise fall through to whatever the default is."""
+    spec = _intra_spec(t.get("kind", ""))
+    if not spec:
+        return ""
+    age_h = (time.time() - t.get("created_at", 0)) / 3600.0
+    if spec.get("ttl_hours") and age_h >= spec["ttl_hours"]:
+        return f"expired after {spec['ttl_hours']:.0f}h unfilled"
+    if spec.get("session_ttl"):
+        n = datetime.now(timezone.utc)
+        mins = n.hour * 60 + n.minute
+        close_min = t.get("session_close_min")
+        if close_min is not None:
+            # A session that has already rolled past midnight cannot be
+            # compared by clock minutes alone, so age is the backstop.
+            if mins >= close_min or age_h >= 12:
+                return "session closed before the entry filled"
+    return ""
+
+
+def _intra_session_close_min():
+    """Minute-of-day (UTC) at which the CURRENT XAUT session ends, or None
+    outside a tradeable session. London 11:00, New York 17:00, Asia 07:00."""
+    n = datetime.now(timezone.utc)
+    mins = n.hour * 60 + n.minute
+    if 7 * 60 <= mins < 11 * 60:        return 11 * 60
+    if 12 * 60 + 30 <= mins < 17 * 60:  return 17 * 60
+    if 1 * 60 <= mins < 7 * 60:         return 7 * 60
+    return None
+
+
+def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
+    """One scan cycle for one intraday slot. Returns a short status string.
+
+    Runs entirely on its own state. It never reads or writes scan1_trades,
+    scan2_trades or active_trade, so a fault here cannot disturb a live VIP
+    trade or an existing copytrade position."""
+    spec = _intra_spec(kind)
+    if not spec:
+        return "unknown slot"
+    if not manual and not _intra_slot_live(kind):
+        return "slot off"
+
+    label = spec["label"]
+    sym = spec["symbol"]
+
+    with _intraday_lock:
+        open_here = [t for t in _intraday_trades if t.get("kind") == kind]
+    if open_here:
+        return f"{label}: already holding {len(open_here)} — skipping"
+
+    block, meta = _intra_data_block(kind)
+    if not block:
+        print(f"  [INTRA {kind}] no data: {meta}")
+        return f"{label}: {meta}"
+
+    prompt = _intra_prompt(kind, block)
+    if INTRADAY_PROMPT_DM:
+        _send_prompt_debug(ADMIN_CHAT_ID, f"📝 #{sym}.P {label} PROMPT", prompt)
+
+    model_id = SCAN_MODEL
+    use_aero = _ai_aerolink(kind)
+    raw = ""
+    for attempt in range(3):
+        try:
+            client = _claude_client(kind, attempt=attempt, use_aerolink=use_aero)
+            msg = _claude_create(
+                client, model=model_id, max_tokens=(50000 if use_aero else 5000),
+                messages=[{"role": "user", "content": prompt}],
+                **_thinking_kwarg(model_id))
+            _log_api_usage(f"intraday_{kind}", model_id,
+                           msg.usage.input_tokens, msg.usage.output_tokens,
+                           gateway="Aerolink" if use_aero else "Direct")
+            raw = _claude_text(msg)
+            if raw:
+                break
+        except Exception as e:
+            print(f"  [INTRA {kind}] attempt {attempt+1}: {e}")
+            if attempt < 2:
+                time.sleep(3)
+    if not raw:
+        return f"{label}: no response from Clex"
+
+    sig = _intra_parse(raw)
+    if not sig:
+        print(f"  [INTRA {kind}] unparseable:\n{raw[:400]}")
+        return f"{label}: unparseable response"
+    if sig.get("signal") == "WAIT":
+        print(f"  [INTRA {kind}] WAIT — {sig.get('reasoning','')[:120]}")
+        return f"{label}: WAIT — {sig.get('reasoning','')[:120]}"
+
+    scan_price = float(meta.get("price") or 0)
+    ok, why = _intra_validate(kind, sig, scan_price)
+    if not ok:
+        print(f"  [INTRA {kind}] REJECTED by validator: {why}")
+        try:
+            send_reply(ADMIN_CHAT_ID,
+                       f"⚠️ <b>{label} signal rejected</b>\n<code>{why}</code>",
+                       skip_smallcaps=True)
+        except Exception:
+            pass
+        return f"{label}: rejected — {why}"
+
+    sig = _intra_apply_targets(kind, sig)
+
+    key = _intra_dedupe_key(kind, sig)
+    with _intraday_lock:
+        if any(t.get("dedupe_key") == key for t in _intraday_trades):
+            return f"{label}: same impulse leg already live — skipping"
+
+    sig_id = _gen_signal_id()
+    entry = sig["entry"]
+    # PULLBACK is only honest while the entry sits away from the market. When
+    # the retrace has already arrived the prompt returns the current price, and
+    # that is a market fill, not a resting order.
+    at_market = abs(entry - scan_price) / scan_price < 0.0005
+    trade = {
+        "kind": kind, "symbol": sym, "signal": sig["signal"],
+        "entry": entry, "sl": sig["sl"], "tp1": sig["tp1"], "tp2": sig["tp2"],
+        "invalidation": sig["invalidation"],
+        "leg_high": sig["leg_high"], "leg_low": sig["leg_low"],
+        "entry_type": "MARKET" if at_market else "PULLBACK",
+        "entry_note": sig.get("entry_note", ""),
+        "entry_hit": at_market,           # honest here, unlike the scan monitor
+        "tp1_hit": False, "be_sl": None,
+        "sl_pct": sig.get("sl_pct", 0.0),
+        "confidence": sig.get("confidence", "LOW"),
+        "reasoning": sig.get("reasoning", ""),
+        "model_tp1": sig.get("model_tp1"), "tp1_delta": sig.get("tp1_delta"),
+        "dedupe_key": key, "sig_id": sig_id,
+        "created_at": time.time(),
+        "session_close_min": _intra_session_close_min() if kind == "xaut" else None,
+        "reply_map": {}, "ct_opened": False,
+    }
+
+    msg_text = _intra_entry_card(trade)
+    trade["reply_map"] = send_entry_signal(msg_text, include_ch2=True, tier_routed=True,
+                                           share_free=True, sig_id=sig_id,
+                                           react_category="entry")
+    with _intraday_lock:
+        _intraday_trades.append(trade)
+    save_state()
+
+    # Copytrade last, and never inside the lock: a slow exchange call must not
+    # hold up the monitor thread, and the trade is already recorded either way.
+    try:
+        ct_res = ct.on_scan_signal(
+            {"signal": trade["signal"], "entry": entry, "sl": trade["sl"],
+             "tp1": trade["tp1"], "tp2": trade["tp2"],
+             "entry_type": trade["entry_type"], "ver": _INTRA_CT_VER[kind]},
+            sym, scan_price, share_free=True)
+        trade["ct_opened"] = True
+        print(f"  [INTRA {kind}] copytrade: {ct_res}")
+    except Exception as e:
+        print(f"  [INTRA {kind}] copytrade error: {e}")
+
+    return (f"{label}: {trade['signal']} @ {entry:,.6g} "
+            f"({'market' if at_market else 'pending'}) SL {trade['sl_pct']:.2f}%")
+
+
+_INTRA_CT_VER = {"btcint": 5, "xaut": 6}
+
+
+def _intra_entry_card(t: dict) -> str:
+    spec = _intra_spec(t["kind"])
+    coin = spec["coin"]
+    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
+    wait_line = (f"⏳ {_smallcaps_title('Wait for')}: <code>{t['entry']:,.6g}</code>"
+                 if t["entry_type"] == "PULLBACK"
+                 else f"⚡ {_smallcaps_title('Market entry')}")
+    rows = [[
+        f"{arrow} {_smallcaps_title(t['signal'])}  <b>{coin}</b>",
+        wait_line,
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
+        f"🛑 {_smallcaps_title('SL')}: <code>{t['sl']:,.6g}</code>  ({t['sl_pct']:.2f}%)",
+        f"✅ TP1: <code>{t['tp1']:,.6g}</code>",
+        f"✅ TP2: <code>{t['tp2']:,.6g}</code>",
+        f"📊 {_smallcaps_title('Confidence')}: {t['confidence']}",
+    ]]
+    return _scan_box(f"#{coin} {spec['label']}", f"{arrow} {spec['symbol']}.P", rows,
+                     tag=t.get("sig_id", ""))
+
+
+def _intra_close(t: dict, result: str, price: float, note: str = ""):
+    """Announce and remove one intraday trade. result is TP1/TP2/SL/BE/CANCEL."""
+    spec = _intra_spec(t["kind"])
+    coin = spec["coin"]
+    sym = t["symbol"]
+    sig_id = t.get("sig_id", "")
+    icon = {"TP2": "🎯", "TP1": "✅", "SL": "❌", "BE": "🛡️", "CANCEL": "🚫"}.get(result, "•")
+    body = [[
+        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
+        f"📊 {_smallcaps_title('Price')}: <code>{price:,.6g}</code>",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
+    ]]
+    if note:
+        body[0].append(f"<i>{note}</i>")
+    text = _scan_box(f"#{coin} {result}", f"{icon} {spec['label']}", body, tag=sig_id)
+
+    if result in ("SL", "BE"):
+        _send_sl_and_log(text, t.get("reply_map"), sig_id, result, include_ch2=False,
+                         tier_routed=True, share_free=True)
+    else:
+        send_lifecycle_reply(text, t.get("reply_map"), include_ch2=False,
+                             tier_routed=True, share_free=True,
+                             react_category=("tp2" if result == "TP2" else "tp1"))
+
+    if t.get("ct_opened"):
+        try:
+            if result == "TP1":   ct.on_scan_tp1(sym)
+            elif result == "TP2": ct.on_scan_tp2(sym)
+            else:                 ct.on_scan_sl(sym, reason=result)
+        except Exception as e:
+            print(f"  [INTRA] ct close {sym}: {e}")
+    try:
+        ct.virtual_on_close(sym, price, result)
+    except Exception:
+        pass
+
+    log_trade_event({"type": f"intra_{t['kind']}", "coin": sym, "direction": t["signal"],
+                     "result": result, "entry_price": t["entry"], "sl_price": t["sl"],
+                     "tp1_price": t["tp1"], "tp2_price": t["tp2"]})
+    _close_sig_snapshot(sig_id, result)
+
+
+def _intraday_monitor_loop():
+    """Own 30s thread. Handles pending fills, cancellations and open-position
+    exits for the intraday slots only — it never touches scan1/scan2/BTC state."""
+    while True:
+        try:
+            with _intraday_lock:
+                snapshot = list(_intraday_trades)
+            remove = []
+            for t in snapshot:
+                kind = t.get("kind", "")
+                spec = _intra_spec(kind)
+                if not spec:
+                    remove.append(t); continue
+                cp = get_bingx_price(t["symbol"])
+                if not cp or cp <= 0:
+                    continue
+                buy = t["signal"] == "BUY"
+
+                # ── XAUT weekend flat — outranks everything, including an open
+                # position sitting in profit. The gap is not survivable by a stop.
+                if kind == "xaut" and _intra_xaut_weekend_flat_due():
+                    if t.get("entry_hit"):
+                        _intra_close(t, "BE" if t.get("tp1_hit") else "SL", cp,
+                                     note="weekend flat — gold market closed")
+                    else:
+                        _intra_cancel_pending(t, "weekend flat before fill")
+                    remove.append(t); continue
+
+                # ── Pending branch ────────────────────────────────────────
+                if not t.get("entry_hit"):
+                    # Pre-fill abort: a fast candle through the whole zone would
+                    # otherwise fill and stop out in the same minute.
+                    blown = (cp <= t["sl"]) if buy else (cp >= t["sl"])
+                    if blown:
+                        _intra_cancel_pending(t, "price traded through SL before the entry filled")
+                        remove.append(t); continue
+                    # Runaway: price left without ever retracing.
+                    gone = (cp >= t["invalidation"]) if buy else (cp <= t["invalidation"])
+                    if gone:
+                        _intra_cancel_pending(t, "invalidated — price ran away without retracing")
+                        remove.append(t); continue
+                    why = _intra_pending_expired(t)
+                    if why:
+                        _intra_cancel_pending(t, why)
+                        remove.append(t); continue
+                    filled = (cp <= t["entry"]) if buy else (cp >= t["entry"])
+                    if filled:
+                        t["entry_hit"] = True
+                        # Invalidation is a PENDING-only level. Left active on an
+                        # open position it sits between entry and TP1 and would
+                        # close every winner just short of target while losers
+                        # still ran to -1R, collapsing R:R with nothing malformed
+                        # to catch it.
+                        t["invalidation"] = None
+                        send_lifecycle_reply(
+                            _scan_box(f"#{spec['coin']} Entry Filled",
+                                      f"⚡ {spec['label']}",
+                                      [[f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
+                                        f"📊 {_smallcaps_title('Price')}: <code>{cp:,.6g}</code>"]],
+                                      tag=t.get("sig_id", "")),
+                            t.get("reply_map"), include_ch2=False,
+                            tier_routed=True, share_free=True)
+                        save_state()
+                    continue
+
+                # ── Open branch ───────────────────────────────────────────
+                sl_now = t.get("be_sl") if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
+                if buy:
+                    hit_tp2 = cp >= t["tp2"]; hit_tp1 = cp >= t["tp1"]; hit_sl = cp <= sl_now
+                else:
+                    hit_tp2 = cp <= t["tp2"]; hit_tp1 = cp <= t["tp1"]; hit_sl = cp >= sl_now
+
+                if hit_tp2:
+                    _intra_close(t, "TP2", cp); remove.append(t)
+                elif hit_sl:
+                    _intra_close(t, "BE" if t.get("tp1_hit") else "SL", cp); remove.append(t)
+                elif hit_tp1 and not t.get("tp1_hit"):
+                    t["tp1_hit"] = True
+                    t["be_sl"] = round(t["entry"] * (0.999 if buy else 1.001), 8)
+                    _intra_close_partial(t, cp)
+                    save_state()
+
+            if remove:
+                with _intraday_lock:
+                    for t in remove:
+                        if t in _intraday_trades:
+                            _intraday_trades.remove(t)
+                save_state()
+        except Exception as e:
+            print(f"[INTRA MONITOR] {e}")
+        time.sleep(30)
+
+
+INTRADAY_SCAN_INTERVAL = 1800   # seconds between intraday scan attempts (/intradayevery)
+_intraday_last_scan = {"btcint": 0.0, "xaut": 0.0}
+
+
+def _intraday_scan_loop():
+    """Own thread. Fires each enabled intraday slot on its own interval.
+
+    Interval-driven rather than schedule-slot driven: these are continuation
+    setups keyed to an impulse that can form at any hour, unlike the fixed
+    verified/unverified time grid Scan1/Scan2 run on. Each slot is skipped
+    while it already holds a trade, and the dedupe key stops one impulse leg
+    producing a second identical order on the next tick."""
+    time.sleep(60)   # let startup settle before the first attempt
+    while True:
+        try:
+            for kind in ("btcint", "xaut"):
+                if not _intra_slot_live(kind):
+                    continue
+                now = time.time()
+                if now - _intraday_last_scan.get(kind, 0) < INTRADAY_SCAN_INTERVAL:
+                    continue
+                _intraday_last_scan[kind] = now
+                try:
+                    res = _intra_run(kind)
+                    print(f"  [INTRA SCAN] {res}")
+                except Exception as e:
+                    print(f"  [INTRA SCAN] {kind}: {e}")
+        except Exception as e:
+            print(f"[INTRA SCAN LOOP] {e}")
+        time.sleep(30)
+
+
+def _intra_cancel_pending(t: dict, reason: str):
+    """A pending order that will never fill. Announce it and pull the resting
+    limit order off the book — leaving it there is how a stale level fills days
+    later against a setup that stopped existing."""
+    spec = _intra_spec(t["kind"])
+    text = _scan_box(f"#{spec['coin']} Cancelled", f"🚫 {spec['label']}",
+                     [[f"🚫 {_smallcaps_title('Pending entry cancelled')}",
+                       f"🎯 {_smallcaps_title('Entry was')}: <code>{t['entry']:,.6g}</code>",
+                       f"<i>{reason}</i>"]],
+                     tag=t.get("sig_id", ""))
+    send_lifecycle_reply(text, t.get("reply_map"), include_ch2=False,
+                         tier_routed=True, share_free=True)
+    if t.get("ct_opened"):
+        try:
+            ct.on_scan_entry_missed(t["symbol"])
+        except Exception as e:
+            print(f"  [INTRA] cancel ct {t['symbol']}: {e}")
+    _close_sig_snapshot(t.get("sig_id", ""), "CANCEL")
+    print(f"  [INTRA {t['kind']}] cancelled: {reason}")
+
+
+def _intra_close_partial(t: dict, price: float):
+    """TP1 hit — half off, stop to breakeven, trade stays open for TP2."""
+    spec = _intra_spec(t["kind"])
+    text = _scan_box(f"#{spec['coin']} TP1 Hit", f"✅ {spec['label']}",
+                     [[f"✅ TP1: <code>{t['tp1']:,.6g}</code>",
+                       f"📊 {_smallcaps_title('Price')}: <code>{price:,.6g}</code>",
+                       f"🛡️ {_smallcaps_title('SL moved to breakeven')}",
+                       f"🎯 TP2: <code>{t['tp2']:,.6g}</code>"]],
+                     tag=t.get("sig_id", ""))
+    send_lifecycle_reply(text, t.get("reply_map"), include_ch2=True,
+                         tier_routed=True, share_free=True, react_category="tp1")
+    if t.get("ct_opened"):
+        try:
+            ct.on_scan_tp1(t["symbol"])
+        except Exception as e:
+            print(f"  [INTRA] tp1 ct {t['symbol']}: {e}")
+    try:
+        ct.virtual_on_tp1(t["symbol"], t["tp1"])
+    except Exception:
+        pass
+    log_trade_event({"type": f"intra_{t['kind']}", "coin": t["symbol"],
+                     "direction": t["signal"], "tp1_hit_time": _ist_str_now(),
+                     "result": "TP1_partial", "entry_price": t["entry"],
+                     "tp1_price": t["tp1"], "tp2_price": t["tp2"]})
 
 
 def run_scan_tick_check() -> bool:
@@ -11666,7 +12124,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -12968,6 +13426,109 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/aiconfig" and is_scanadmin:
         send_aiconfig_screen(chat_id)
+
+    elif cmd in ("/intraday", "/intra") and is_scanadmin:
+        _slots = {"btc": "btcint", "btcint": "btcint", "xaut": "xaut", "xa": "xaut"}
+        if len(parts) < 3 or parts[1].lower() not in _slots:
+            _rows = []
+            for _k, _sp in INTRADAY_SPECS.items():
+                _on = "✅ ON" if INTRADAY_ENABLED.get(_k) else "❌ OFF"
+                _live = "" if _intra_slot_live(_k) else "  <i>(sleeping)</i>"
+                _held = len([t for t in _intraday_trades if t.get("kind") == _k])
+                _rows.append(f"• <b>{_sp['label']}</b> — {_on}{_live}\n"
+                             f"   SL band {_sp['sl_lo']:.2f}–{_sp['sl_hi']:.2f}%  |  open: {_held}")
+            send_reply(chat_id,
+                "🕐 <b>Intraday Pullback Slots</b>\n\n" + "\n".join(_rows) +
+                f"\n\nBTC engine: <b>{BTC_ENGINE}</b>  (/btcengine)\n"
+                f"Scan every: <b>{INTRADAY_SCAN_INTERVAL // 60}m</b>  (/intradayevery)\n\n"
+                "<code>/intraday btc on</code>\n<code>/intraday xaut off</code>\n"
+                "<code>/intraday btc now</code> — force one scan",
+                skip_smallcaps=True)
+        else:
+            _k = _slots[parts[1].lower()]
+            _v = parts[2].lower()
+            if _v == "now":
+                send_reply(chat_id, f"⏳ Running {INTRADAY_SPECS[_k]['label']} now…", skip_smallcaps=True)
+                threading.Thread(
+                    target=lambda: send_reply(chat_id, f"<code>{_intra_run(_k, manual=True)}</code>",
+                                              skip_smallcaps=True),
+                    daemon=True).start()
+            else:
+                INTRADAY_ENABLED[_k] = _v in ("on", "1", "yes", "true")
+                save_settings()
+                _warn = ""
+                if _k == "btcint" and INTRADAY_ENABLED[_k] and BTC_ENGINE != "intraday":
+                    _warn = ("\n\n⚠️ Still sleeping — <b>BTC engine is 'classic'</b>.\n"
+                             "Run <code>/btcengine intraday</code> to hand BTC over.")
+                send_reply(chat_id,
+                    f"✅ <b>{INTRADAY_SPECS[_k]['label']}</b> → "
+                    f"{'ON' if INTRADAY_ENABLED[_k] else 'OFF'}{_warn}", skip_smallcaps=True)
+
+    elif cmd in ("/btcengine", "/btceng") and is_scanadmin:
+        if len(parts) < 2 or parts[1].lower() not in ("classic", "intraday"):
+            _open_classic = "yes" if active_trade.get("signal") else "no"
+            _open_intra = len([t for t in _intraday_trades if t.get("kind") == "btcint"])
+            send_reply(chat_id,
+                f"₿ <b>BTC Engine</b> — <b>{BTC_ENGINE}</b>\n\n"
+                "Only one engine trades BTC. The other sleeps.\n\n"
+                f"• <b>classic</b> — the 4H scan on fixed IST times, JSON prompt, "
+                f"market entry.  <i>open trade: {_open_classic}</i>\n"
+                f"• <b>intraday</b> — the pullback slot, resting limit entry, "
+                f"per-symbol SL band.  <i>open: {_open_intra}</i>\n\n"
+                "<code>/btcengine classic</code>\n<code>/btcengine intraday</code>",
+                skip_smallcaps=True)
+        else:
+            _new = parts[1].lower()
+            _busy = (active_trade.get("signal") and _new == "intraday")
+            _busy_i = any(t.get("kind") == "btcint" for t in _intraday_trades) and _new == "classic"
+            if _busy or _busy_i:
+                # Switching engines while the outgoing one still holds BTC would
+                # orphan that position: the engine that owns the monitor for it
+                # is the one about to stop being consulted.
+                send_reply(chat_id,
+                    f"⛔ <b>Cannot switch yet</b>\n\nThe <b>{BTC_ENGINE}</b> engine still has an open "
+                    "BTC trade. Let it close (or force-close it) first — switching now would leave "
+                    "that position without the engine that manages it.", skip_smallcaps=True)
+            else:
+                BTC_ENGINE = _new
+                save_settings()
+                send_reply(chat_id,
+                    f"✅ <b>BTC engine</b> → <b>{_new}</b>\n\n"
+                    f"{'Classic 4H scan is now sleeping.' if _new == 'intraday' else 'Intraday slot is now sleeping.'}",
+                    skip_smallcaps=True)
+
+    elif cmd == "/intradayevery" and is_scanadmin:
+        if len(parts) < 2 or not parts[1].isdigit():
+            send_reply(chat_id,
+                f"⏱ <b>Intraday scan interval</b>: <b>{INTRADAY_SCAN_INTERVAL // 60}m</b>\n\n"
+                "<code>/intradayevery 30</code>  (minutes, 5–240)", skip_smallcaps=True)
+        else:
+            _m = max(5, min(240, int(parts[1])))
+            INTRADAY_SCAN_INTERVAL = _m * 60
+            save_settings()
+            send_reply(chat_id, f"✅ Intraday scans every <b>{_m}m</b>.", skip_smallcaps=True)
+
+    elif cmd in ("/intrastatus", "/intrast") and is_scanadmin:
+        if not _intraday_trades:
+            send_reply(chat_id, "🕐 <b>Intraday</b> — no open or pending trades.", skip_smallcaps=True)
+        else:
+            _ls = []
+            for t in _intraday_trades:
+                _sp = _intra_spec(t.get("kind", ""))
+                _state = "⏳ pending" if not t.get("entry_hit") else ("🛡️ TP1 hit" if t.get("tp1_hit") else "✅ open")
+                _age = (time.time() - t.get("created_at", 0)) / 3600.0
+                _ls.append(
+                    f"• <b>{_sp.get('label','?')}</b> {t['signal']} — {_state}\n"
+                    f"   entry <code>{t['entry']:,.6g}</code>  SL <code>{t['sl']:,.6g}</code> ({t.get('sl_pct',0):.2f}%)\n"
+                    f"   TP1 <code>{t['tp1']:,.6g}</code>  TP2 <code>{t['tp2']:,.6g}</code>\n"
+                    f"   {t.get('confidence','?')}  ·  {_age:.1f}h old  ·  <code>{t.get('sig_id','')}</code>")
+            send_reply(chat_id, "🕐 <b>Intraday Trades</b>\n\n" + "\n\n".join(_ls), skip_smallcaps=True)
+
+    elif cmd == "/intradaydm" and is_scanadmin:
+        INTRADAY_PROMPT_DM = not INTRADAY_PROMPT_DM
+        save_settings()
+        send_reply(chat_id, f"✅ Intraday prompt DM → <b>{'ON' if INTRADAY_PROMPT_DM else 'OFF'}</b>",
+                   skip_smallcaps=True)
 
     elif cmd == "/entrystyle" and is_scanadmin:
         send_entrystyle_screen(chat_id)
@@ -20172,6 +20733,8 @@ def main():
     _load_time_panel()
     threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
+    threading.Thread(target=_intraday_monitor_loop, daemon=True).start()
+    threading.Thread(target=_intraday_scan_loop, daemon=True).start()
 
     # Start SL/TP monitor — checks all copy users' positions every 1 hour
     ct.start_monitor_loop(notify_fn=send_admin, ghost_close_fn=_ghost_confirm_close, interval_hours=1)
@@ -20421,6 +20984,12 @@ def main():
                 _btc_ist.hour in _btc_scan_hours and
                 last_signal_scan_time < (now - 3600)  # once per window (don't re-run same minute)
             )
+            # Exactly one engine may own BTC. When BTC_ENGINE is "intraday" the
+            # pullback slot is trading it, and letting the classic 4H scan run
+            # too would have copytrade size the same instrument twice, with
+            # neither system aware of the other's position.
+            if BTC_ENGINE != "classic" and not forced:
+                time.sleep(MAIN_TICK); continue
             if not forced and (not _btc_scan_due or not btc_analysis_enabled or bot_stopped.is_set()):
                 time.sleep(MAIN_TICK); continue
 
