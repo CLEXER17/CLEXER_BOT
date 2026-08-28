@@ -5139,7 +5139,7 @@ def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
 
     Order matters: the manual lock is checked first and is final, so a slot the
     admin excluded by hand can never be let back in by a good weekday."""
-    if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
+    if hm in _SCAN_SPECIAL_NO_COPY.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
         return False
     pct, tp, sl = _slot_day_rate(kind, hm, _wd_from_epoch(when))
     if pct is None:
@@ -5150,7 +5150,7 @@ def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
 def _slot_day_reason(kind: str, hm: tuple, when=None) -> str:
     """Short human explanation of the gate's verdict, for the skip log and /st."""
     day = _wd_from_epoch(when)
-    if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()):
+    if hm in _SCAN_SPECIAL_NO_COPY.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
         return "manually unverified"
     pct, tp, sl = _slot_day_rate(kind, hm, day)
     th = _SLOT_EVAL_THRESHOLD.get(kind, 55)
