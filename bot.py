@@ -13203,11 +13203,38 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 # below, since a <tg-emoji> tag nested inside <pre> is invalid.
                 _cnt_paren = f"({_cnt})"
                 _rows.append(f"{_icon} {_hm_str:<6}{_wr:<6}{_cnt_paren:<7}s{_streak:<2}")
-            _st_blocks.append(f"<b>{_st_labels[_kind]}</b> ({_SLOT_EVAL_THRESHOLD[_kind]}%)\n<pre>" + "\n".join(_rows) + "</pre>")
+            _st_blocks.append((_st_labels[_kind], _SLOT_EVAL_THRESHOLD[_kind], _rows))
         if not _st_blocks:
             send_reply(chat_id, "No special times configured."); return
-        send_reply(chat_id, "⭐ <b>Special Times</b>\n\n" + "\n\n".join(_st_blocks) +
-            "", emoji_overrides={"✅": None, "🔒": None})
+        # Chunked across as many messages as needed. /nt has packed+chunked
+        # since 2026-07-28; /st was left whole and finally outgrew Telegram's
+        # 4096-char limit, at which point the command returned nothing at all
+        # rather than a truncated view (admin report: "message is too long").
+        # Stays one entry per line — the vertical layout is deliberate.
+        # Each message closes its own <pre>, because an unbalanced tag split
+        # across messages is rejected as invalid HTML.
+        _st_msgs, _cur, _margin = [], "", 60
+        for _label, _thresh, _rows in _st_blocks:
+            _hdr = f"<b>{_label}</b> ({_thresh}%)"
+            _open = f"{_hdr}\n<pre>"
+            if _cur and len(_cur) + len(_open) + 40 > _TG_MSG_LIMIT - _margin:
+                _st_msgs.append(_cur.rstrip()); _cur = ""
+            _cur += ("\n\n" if _cur else "") + _open
+            for _row in _rows:
+                if len(_cur) + len(_row) + 12 > _TG_MSG_LIMIT - _margin:
+                    # This block alone is bigger than one message: close the
+                    # tag, flush, and reopen under a continued header.
+                    _st_msgs.append(_cur.rstrip() + "</pre>")
+                    _cur = f"<b>{_label}</b> (cont.)\n<pre>"
+                _cur += _row + "\n"
+            _cur = _cur.rstrip() + "</pre>"
+        if _cur:
+            _st_msgs.append(_cur)
+        for _i, _msg in enumerate(_st_msgs):
+            _head = "⭐ <b>Special Times</b>\n\n" if _i == 0 else ""
+            _foot = f"\n\n<i>({_i + 1}/{len(_st_msgs)})</i>" if len(_st_msgs) > 1 else ""
+            send_reply(chat_id, _head + _msg + _foot,
+                       emoji_overrides={"✅": None, "🔒": None})
 
     elif cmd == "/nt":
         # Non-special (regular grid) times — same table shape as /st, but for
