@@ -9761,6 +9761,7 @@ INTRADAY_PROMPT_DM = True   # DM the admin each intraday prompt (/intradaydm)
 _intraday_trades: list = []                  # pending AND open, split by entry_hit
 _intraday_lock = threading.Lock()
 _intraday_oi_hist: dict = {}                 # symbol -> [(ts, open_interest)]
+_intraday_stats: dict = {}                   # kind -> {"tp","sl","streak"}
 _gold_cache = {"price": 0.0, "ts": 0.0}      # XAU/USD via TV bridge, 10-min TTL
 
 
@@ -11042,7 +11043,15 @@ def _intra_entry_card(t: dict) -> str:
 
 
 def _intra_close(t: dict, result: str, price: float, note: str = ""):
-    """Announce and remove one intraday trade. result is TP1/TP2/SL/BE/CANCEL."""
+    """Announce one intraday trade's close. result is TP1/TP2/SL/BE/CANCEL.
+
+    Removal is the CALLER's job and must already have happened — see
+    _intra_drop. The guard below is a second line of defence: even if a trade
+    somehow re-enters the loop, it can never announce the same close twice."""
+    if t.get("_announced"):
+        print(f"  [INTRA] {t.get('symbol')} close already announced — skipping duplicate")
+        return
+    t["_announced"] = result
     spec = _intra_spec(t["kind"])
     coin = spec["coin"]
     sym = t["symbol"]
@@ -11149,6 +11158,25 @@ def _force_close_intraday_trade(kind: str, symbol: str, result: str) -> str:
     return "❌ Result must be tp1, tp2, sl, be, or cancel (cancel only for an unfilled pending entry)."
 
 
+def _intra_drop(t: dict):
+    """Take a trade out of the live list, immediately and idempotently.
+
+    Called BEFORE the close is announced, never after. A failed announcement
+    costs one message; a trade left in the list because the announce path
+    raised gets re-closed on every 30s tick and spams the channels forever
+    (admin report 2026-08-28: one SL fired 15+ times, caused by a NameError
+    thrown after the message was sent but before the caller could remove it)."""
+    with _intraday_lock:
+        for i, x in enumerate(_intraday_trades):
+            if x is t:
+                _intraday_trades.pop(i)
+                break
+    try:
+        save_state()
+    except Exception as e:
+        print(f"  [INTRA] save after drop: {e}")
+
+
 def _intraday_monitor_loop():
     """Own 30s thread. Handles pending fills, cancellations and open-position
     exits for the intraday slots only — it never touches scan1/scan2/BTC state."""
@@ -11158,79 +11186,91 @@ def _intraday_monitor_loop():
                 snapshot = list(_intraday_trades)
             remove = []
             for t in snapshot:
-                kind = t.get("kind", "")
-                spec = _intra_spec(kind)
-                if not spec:
-                    remove.append(t); continue
-                cp = get_bingx_price(t["symbol"])
-                if not cp or cp <= 0:
-                    continue
-                buy = t["signal"] == "BUY"
+                try:
+                    kind = t.get("kind", "")
+                    spec = _intra_spec(kind)
+                    if not spec:
+                        remove.append(t); continue
+                    cp = get_bingx_price(t["symbol"])
+                    if not cp or cp <= 0:
+                        continue
+                    buy = t["signal"] == "BUY"
 
-                # ── XAUT weekend flat — outranks everything, including an open
-                # position sitting in profit. The gap is not survivable by a stop.
-                if kind == "xaut" and _intra_xaut_weekend_flat_due():
-                    if t.get("entry_hit"):
-                        _intra_close(t, "BE" if t.get("tp1_hit") else "SL", cp,
-                                     note="weekend flat — gold market closed")
+                    # ── XAUT weekend flat — outranks everything, including an open
+                    # position sitting in profit. The gap is not survivable by a stop.
+                    if kind == "xaut" and _intra_xaut_weekend_flat_due():
+                        _lbl = "BE" if t.get("tp1_hit") else "SL"
+                        _hit = t.get("entry_hit")
+                        _intra_drop(t)
+                        if _hit:
+                            _intra_close(t, _lbl, cp, note="weekend flat — gold market closed")
+                        else:
+                            _intra_cancel_pending(t, "weekend flat before fill")
+                        continue
+
+                    # ── Pending branch ────────────────────────────────────────
+                    if not t.get("entry_hit"):
+                        # Pre-fill abort: a fast candle through the whole zone would
+                        # otherwise fill and stop out in the same minute.
+                        blown = (cp <= t["sl"]) if buy else (cp >= t["sl"])
+                        if blown:
+                            _intra_drop(t)
+                            _intra_cancel_pending(t, "price traded through SL before the entry filled")
+                            continue
+                        # Runaway: price left without ever retracing.
+                        gone = (cp >= t["invalidation"]) if buy else (cp <= t["invalidation"])
+                        if gone:
+                            _intra_drop(t)
+                            _intra_cancel_pending(t, "invalidated — price ran away without retracing")
+                            continue
+                        why = _intra_pending_expired(t)
+                        if why:
+                            _intra_drop(t)
+                            _intra_cancel_pending(t, why)
+                            continue
+                        filled = (cp <= t["entry"]) if buy else (cp >= t["entry"])
+                        if filled:
+                            t["entry_hit"] = True
+                            # Invalidation is a PENDING-only level. Left active on an
+                            # open position it sits between entry and TP1 and would
+                            # close every winner just short of target while losers
+                            # still ran to -1R, collapsing R:R with nothing malformed
+                            # to catch it.
+                            t["invalidation"] = None
+                            send_lifecycle_reply(
+                                _scan_box(f"#{spec['coin']} Entry Filled",
+                                          f"⚡ {spec['label']}",
+                                          [[f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
+                                            f"📊 {_smallcaps_title('Price')}: <code>{cp:,.6g}</code>"]],
+                                          tag=t.get("sig_id", "")),
+                                t.get("reply_map"), include_ch2=False,
+                                tier_routed=True, share_free=True)
+                            save_state()
+                        continue
+
+                    # ── Open branch ───────────────────────────────────────────
+                    sl_now = t.get("be_sl") if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
+                    if buy:
+                        hit_tp2 = cp >= t["tp2"]; hit_tp1 = cp >= t["tp1"]; hit_sl = cp <= sl_now
                     else:
-                        _intra_cancel_pending(t, "weekend flat before fill")
-                    remove.append(t); continue
+                        hit_tp2 = cp <= t["tp2"]; hit_tp1 = cp <= t["tp1"]; hit_sl = cp >= sl_now
 
-                # ── Pending branch ────────────────────────────────────────
-                if not t.get("entry_hit"):
-                    # Pre-fill abort: a fast candle through the whole zone would
-                    # otherwise fill and stop out in the same minute.
-                    blown = (cp <= t["sl"]) if buy else (cp >= t["sl"])
-                    if blown:
-                        _intra_cancel_pending(t, "price traded through SL before the entry filled")
-                        remove.append(t); continue
-                    # Runaway: price left without ever retracing.
-                    gone = (cp >= t["invalidation"]) if buy else (cp <= t["invalidation"])
-                    if gone:
-                        _intra_cancel_pending(t, "invalidated — price ran away without retracing")
-                        remove.append(t); continue
-                    why = _intra_pending_expired(t)
-                    if why:
-                        _intra_cancel_pending(t, why)
-                        remove.append(t); continue
-                    filled = (cp <= t["entry"]) if buy else (cp >= t["entry"])
-                    if filled:
-                        t["entry_hit"] = True
-                        # Invalidation is a PENDING-only level. Left active on an
-                        # open position it sits between entry and TP1 and would
-                        # close every winner just short of target while losers
-                        # still ran to -1R, collapsing R:R with nothing malformed
-                        # to catch it.
-                        t["invalidation"] = None
-                        send_lifecycle_reply(
-                            _scan_box(f"#{spec['coin']} Entry Filled",
-                                      f"⚡ {spec['label']}",
-                                      [[f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
-                                        f"📊 {_smallcaps_title('Price')}: <code>{cp:,.6g}</code>"]],
-                                      tag=t.get("sig_id", "")),
-                            t.get("reply_map"), include_ch2=False,
-                            tier_routed=True, share_free=True)
+                    if hit_tp2:
+                        _intra_drop(t); _intra_close(t, "TP2", cp)
+                    elif hit_sl:
+                        _lbl = "BE" if t.get("tp1_hit") else "SL"
+                        _intra_drop(t); _intra_close(t, _lbl, cp)
+                    elif hit_tp1 and not t.get("tp1_hit"):
+                        t["tp1_hit"] = True
+                        t["be_sl"] = round(t["entry"] * (0.999 if buy else 1.001), 8)
+                        _intra_close_partial(t, cp)
                         save_state()
-                    continue
 
-                # ── Open branch ───────────────────────────────────────────
-                sl_now = t.get("be_sl") if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
-                if buy:
-                    hit_tp2 = cp >= t["tp2"]; hit_tp1 = cp >= t["tp1"]; hit_sl = cp <= sl_now
-                else:
-                    hit_tp2 = cp <= t["tp2"]; hit_tp1 = cp <= t["tp1"]; hit_sl = cp >= sl_now
-
-                if hit_tp2:
-                    _intra_close(t, "TP2", cp); remove.append(t)
-                elif hit_sl:
-                    _intra_close(t, "BE" if t.get("tp1_hit") else "SL", cp); remove.append(t)
-                elif hit_tp1 and not t.get("tp1_hit"):
-                    t["tp1_hit"] = True
-                    t["be_sl"] = round(t["entry"] * (0.999 if buy else 1.001), 8)
-                    _intra_close_partial(t, cp)
-                    save_state()
-
+                except Exception as _e:
+                    # One trade failing must not stall the others, and must not
+                    # leave it in the list to be retried on the next tick.
+                    print(f"[INTRA MONITOR] {t.get('symbol')} {t.get('kind')}: {_e}")
+                    _intra_drop(t)
             if remove:
                 with _intraday_lock:
                     for t in remove:
@@ -11277,7 +11317,12 @@ def _intraday_scan_loop():
 def _intra_cancel_pending(t: dict, reason: str):
     """A pending order that will never fill. Announce it and pull the resting
     limit order off the book — leaving it there is how a stale level fills days
-    later against a setup that stopped existing."""
+    later against a setup that stopped existing.
+
+    Guarded like _intra_close: one announcement per trade, ever."""
+    if t.get("_announced"):
+        return
+    t["_announced"] = "CANCEL"
     spec = _intra_spec(t["kind"])
     text = _scan_box(f"#{spec['coin']} Cancelled", f"🚫 {spec['label']}",
                      [[f"🚫 {_smallcaps_title('Pending entry cancelled')}",
