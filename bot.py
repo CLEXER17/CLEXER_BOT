@@ -1827,6 +1827,7 @@ def _snapshot_scan_settings() -> dict:
         "intraday_enabled": dict(INTRADAY_ENABLED),
         "btc_engine": BTC_ENGINE,
         "intraday_prompt_dm": INTRADAY_PROMPT_DM,
+        "intraday_mode": INTRADAY_MODE,
         "tp1_close_pct": ct.TP1_CLOSE_PCT,
         "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
         "test_scan": TEST_SCAN_ENABLED, "btc_analysis": btc_analysis_enabled,
@@ -1865,7 +1866,7 @@ def _migrate_aicfg_grid_model_ids():
 
 def _apply_scan_settings(d: dict):
     global SCAN_MODEL, USE_AEROLINK, ZONE_ENTRY_ENABLED, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED
-    global BTC_ENGINE, INTRADAY_PROMPT_DM
+    global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
     global TEST_SCAN_ENABLED, btc_analysis_enabled, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE
     if not d:
         return  # nothing snapshotted yet for this profile — leave current values as-is
@@ -1876,6 +1877,7 @@ def _apply_scan_settings(d: dict):
     INTRADAY_ENABLED.update(d.get("intraday_enabled", {}) or {})
     BTC_ENGINE = d.get("btc_engine", BTC_ENGINE)
     INTRADAY_PROMPT_DM = d.get("intraday_prompt_dm", INTRADAY_PROMPT_DM)
+    INTRADAY_MODE = d.get("intraday_mode", INTRADAY_MODE)
     ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
     SCAN1_AUTO_ENABLED = d.get("scan1_auto", SCAN1_AUTO_ENABLED); SCAN2_AUTO_ENABLED = d.get("scan2_auto", SCAN2_AUTO_ENABLED)
     TEST_SCAN_ENABLED = d.get("test_scan", TEST_SCAN_ENABLED); btc_analysis_enabled = d.get("btc_analysis", btc_analysis_enabled)
@@ -7720,7 +7722,7 @@ ct._pause_event = bot_paused
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global BTC_ENGINE, INTRADAY_PROMPT_DM
+    global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
     global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
     try:
         d = None
@@ -7755,6 +7757,7 @@ def load_settings():
             INTRADAY_ENABLED.update(d.get("intraday_enabled", {}) or {})
             BTC_ENGINE = d.get("btc_engine", BTC_ENGINE)
             INTRADAY_PROMPT_DM = d.get("intraday_prompt_dm", INTRADAY_PROMPT_DM)
+            INTRADAY_MODE = d.get("intraday_mode", INTRADAY_MODE)
             ct.TP1_CLOSE_PCT = d.get("tp1_close_pct", ct.TP1_CLOSE_PCT)
             ACTIVE_PROFILE = d.get("active_profile", "mine")
             _SETTINGS_PROFILES = d.get("settings_profiles", {"mine": {}, "coadmin": {}})
@@ -7826,6 +7829,7 @@ def save_settings():
             "intraday_enabled": dict(INTRADAY_ENABLED),
             "btc_engine": BTC_ENGINE,
             "intraday_prompt_dm": INTRADAY_PROMPT_DM,
+            "intraday_mode": INTRADAY_MODE,
             "co_admin_chat_id": CO_ADMIN_CHAT_ID,
             "co_admin_enabled": CO_ADMIN_ENABLED,
             "tp1_close_pct": ct.TP1_CLOSE_PCT,
@@ -9735,6 +9739,300 @@ def _intra_btc_4h_move():
         return None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# INTRADAY ENGINE — the same two strategies with no API call
+# ---------------------------------------------------------------------------
+# Both intraday prompts are fully mechanical: every rule in them is arithmetic
+# over the candles. Nothing asks for judgement — no "is this a real impulse",
+# no "does this look like a trend". That is what makes an engine possible here
+# and not for the older scan prompts, whose rules ("higher lows forming") have
+# no single correct answer.
+#
+# So this is not an approximation of the prompt. It IS the prompt, evaluated
+# directly, and it emits the identical OUTPUT text block — which then runs
+# through the same _intra_parse -> _intra_validate -> _intra_apply_targets
+# pipeline the API path uses. Every downstream check stays in force.
+# ═══════════════════════════════════════════════════════════════════════════
+
+INTRADAY_MODE = "engine"   # "engine" (no API call) | "ai" — /intraday mode
+
+
+def _intra_session_utc() -> str:
+    """UTC trading session for the intraday slots.
+
+    get_session() is IST-based and only ever returns LONDON / NEW_YORK / ASIA,
+    so the BTC prompt's "Session is OFF -> WAIT" gate could never fire against
+    it. These slots reason entirely in UTC, so they get their own."""
+    n = datetime.now(timezone.utc)
+    m = n.hour * 60 + n.minute
+    if m >= 21 * 60:              return "OFF"          # 21:00-24:00
+    if m < 7 * 60:                return "ASIA"         # 00:00-07:00
+    if m < 12 * 60 + 30:          return "LONDON"       # 07:00-12:30
+    if m < 17 * 60:               return "OVERLAP"      # 12:30-17:00
+    return "NEW_YORK"                                    # 17:00-21:00
+
+
+def _intra_struct12(df) -> str:
+    """BULLISH / BEARISH / RANGE from the last 12 bars.
+
+    Older 6 vs recent 6, exactly as both prompts specify. This replaces the
+    3-bar fractal lists the rest of the bot uses: fractals produce no new
+    pivots during a straight-line move, so their swing lists silently describe
+    a market that no longer exists. A fixed window bounds staleness at 12 bars.
+    """
+    h = df["high"].values[-12:]
+    l = df["low"].values[-12:]
+    if len(h) < 12:
+        return "RANGE"
+    oh, rh = float(h[:6].max()), float(h[6:].max())
+    ol, rl = float(l[:6].min()), float(l[6:].min())
+    if rh > oh and rl > ol:
+        return "BULLISH"
+    if rh < oh and rl < ol:
+        return "BEARISH"
+    return "RANGE"
+
+
+def _intra_wait_text(reason: str) -> str:
+    """The WAIT block, zeroes and all — identical to what the prompt specifies,
+    so the parser short-circuits on the signal word exactly as it would for a
+    model response."""
+    return ("Signal: WAIT\nEntry: 0\nEntry_Type: PULLBACK\nEntry_Note: No valid setup\n"
+            "Invalidation: 0\nSL: 0\nTP1: 0\nTP2: 0\nR:R: 0\nLeg_High: 0\nLeg_Low: 0\n"
+            f"Confidence: LOW\nReasoning: {reason}")
+
+
+def _intra_engine_gates(kind: str, meta: dict) -> str:
+    """Every hard gate for this slot. Returns a WAIT reason, or '' to proceed."""
+    spec = _intra_spec(kind)
+    price = meta.get("price") or 0
+    atr1 = meta.get("atr_1h") or 0
+    atr4 = meta.get("atr_4h") or 0
+    spread = meta.get("spread")
+    age = meta.get("data_age") or 0
+    sess = meta.get("session") or ""
+    if not price:
+        return "no price"
+    if age > 300:
+        return f"data {age}s stale (>300s)"
+    if spread is None or spread > spec["spread_max_pct"]:
+        return f"spread {spread if spread is not None else float('nan'):.4f}% > {spec['spread_max_pct']:.2f}%"
+    for df_key, need in (("df_4h", 12), ("df_1h", 24), ("df_5m", 12)):
+        df = meta.get(df_key)
+        if df is None or len(df) < need:
+            return f"{df_key} has fewer than {need} candles"
+    atr1_pct = atr1 / price * 100.0
+    if atr1_pct < spec["atr1_min_pct"]:
+        return f"ATR_1H {atr1_pct:.3f}% < {spec['atr1_min_pct']:.2f}% (dead tape)"
+    if atr1_pct > spec["atr1_max_pct"]:
+        return f"ATR_1H {atr1_pct:.3f}% > {spec['atr1_max_pct']:.2f}% (too violent)"
+
+    if kind == "btcint":
+        if sess == "OFF":
+            return "session OFF (21:00-00:00 UTC)"
+        return ""
+
+    # ── XAUT-only gates ───────────────────────────────────────────────────
+    n = datetime.now(timezone.utc)
+    wd, mins = n.weekday(), n.hour * 60 + n.minute
+    if wd == 5 or (wd == 4 and mins >= 20 * 60 + 30) or (wd == 6 and mins < 22 * 60):
+        return "weekend — spot gold closed, XAUT gaps at the Sunday reopen"
+    # Weekend approach. Removable only once a wall-clock flatten exists — which
+    # it now does (_intra_xaut_weekend_flat_due), but a position opened Thursday
+    # evening still has to survive to Friday, so the gate stays until there is
+    # data saying it should not.
+    if wd == 4 or (wd == 3 and mins >= 17 * 60):
+        return "weekend approach (Thu 17:00 UTC onward) — no new XAUT entries"
+    in_london = 7 * 60 <= mins < 11 * 60
+    in_ny = 12 * 60 + 30 <= mins < 17 * 60
+    in_asia = 1 * 60 <= mins < 7 * 60
+    peg_src = meta.get("peg_source") or "UNAVAILABLE"
+    peg_ok = peg_src == "LIVE" and (meta.get("peg_age") or 0) <= 600
+    if not (in_london or in_ny or in_asia):
+        return "outside London/NY/Asia gold hours"
+    if in_asia and not peg_ok:
+        return "Asia session requires a LIVE peg reference"
+    if peg_ok:
+        gold = meta.get("gold") or 0
+        if gold <= 0:
+            return "peg reference unusable"
+        dev = abs(price - gold) / gold * 100.0
+        meta["peg_dev"] = dev
+        if dev > 0.50:
+            return f"peg deviation {dev:.2f}% > 0.50% — that is Tether premium, not gold"
+    elif not (in_london or in_ny):
+        # Degrade rather than hard-fail: the peg check earns most of its keep
+        # OUTSIDE gold hours, because that is when arbitrage is absent. Inside
+        # London/NY the gold market is open and the session gate already
+        # substitutes for much of what the peg check buys.
+        return "no live peg reference outside gold hours"
+    btc4 = meta.get("btc_4h")
+    if btc4 is None:
+        return "BTC 4H move unavailable — contagion gate blind"
+    if abs(btc4) > 3.5:
+        return f"BTC 4H move {btc4:+.2f}% — crypto deleveraging drags XAUT off its anchor"
+    if atr4 / price * 100.0 < 0.45:
+        return f"ATR_4H {atr4/price*100:.3f}% < 0.45% — gold too quiet to clear costs"
+    return ""
+
+
+def _intra_engine_block(kind: str, meta: dict) -> str:
+    """Evaluates the slot's full ruleset and returns the OUTPUT text block.
+
+    Byte-compatible with what the prompt asks a model to produce, so the API
+    path and the engine path are interchangeable from the parser down."""
+    try:
+        spec = _intra_spec(kind)
+        gate = _intra_engine_gates(kind, meta)
+        if gate:
+            return _intra_wait_text(gate)
+
+        price = float(meta["price"])
+        atr1 = float(meta["atr_1h"])
+        atr5 = float(meta.get("atr_5m") or 0)
+        df1, df5 = meta["df_1h"], meta["df_5m"]
+
+        bias = _intra_struct12(meta["df_4h"])
+        if bias == "RANGE":
+            return _intra_wait_text("4H is RANGE — no higher-timeframe permission")
+        struct1 = _intra_struct12(df1)
+        if struct1 != "RANGE" and struct1 != bias:
+            return _intra_wait_text(f"1H {struct1} opposes 4H {bias}")
+        side = "BUY" if bias == "BULLISH" else "SELL"
+
+        # ── impulse leg over the last 12 1H bars ──────────────────────────
+        h = df1["high"].values[-12:]
+        l = df1["low"].values[-12:]
+        leg_high = float(h.max()); leg_low = float(l.min())
+        ih = int(h.argmax()); il = int(l.argmin())          # 0..11, 11 = newest
+        if side == "BUY":
+            if il >= ih:
+                return _intra_wait_text("leg low did not precede leg high")
+            if ih < 8:
+                return _intra_wait_text(f"leg high at bar -{12-ih}, needs -4..-1 — impulse ended too long ago")
+        else:
+            if ih >= il:
+                return _intra_wait_text("leg high did not precede leg low")
+            if il < 8:
+                return _intra_wait_text(f"leg low at bar -{12-il}, needs -4..-1 — impulse ended too long ago")
+        leg_range = leg_high - leg_low
+        if leg_range < spec["leg_min_atr"] * atr1:
+            return _intra_wait_text(
+                f"impulse {leg_range/atr1:.2f}x ATR_1H < {spec['leg_min_atr']:.1f}x — nothing to retrace")
+
+        # ── runaway: the levels below describe a move that is already over ──
+        if side == "BUY" and price > leg_high + 0.5 * atr1:
+            return _intra_wait_text("price ran past the leg high — new impulse underway")
+        if side == "SELL" and price < leg_low - 0.5 * atr1:
+            return _intra_wait_text("price ran past the leg low — new impulse underway")
+
+        # ── retracement zone ──────────────────────────────────────────────
+        if side == "BUY":
+            z38 = leg_high - 0.382 * leg_range
+            z62 = leg_high - 0.618 * leg_range
+            z79 = leg_high - 0.786 * leg_range
+            if price > z38:      entry = z38
+            elif price >= z62:   entry = price
+            else:                return _intra_wait_text("retrace deeper than 61.8% — continuation weakening")
+        else:
+            z38 = leg_low + 0.382 * leg_range
+            z62 = leg_low + 0.618 * leg_range
+            z79 = leg_low + 0.786 * leg_range
+            if price < z38:      entry = z38
+            elif price <= z62:   entry = price
+            else:                return _intra_wait_text("retrace deeper than 61.8% — continuation weakening")
+
+        # ── 5M exhaustion: a breakdown is not a pullback ───────────────────
+        c5 = df5["close"].values[-6:]
+        rng5 = float(df5["high"].values[-6:].max() - df5["low"].values[-6:].min())
+        if atr5 > 0 and rng5 > 2.5 * atr5:
+            if side == "BUY" and c5[-1] < c5[0]:
+                return _intra_wait_text("5M breakdown in progress, not a pullback")
+            if side == "SELL" and c5[-1] > c5[0]:
+                return _intra_wait_text("5M squeeze in progress, not a pullback")
+
+        # ── stop ──────────────────────────────────────────────────────────
+        sl_raw = z79 - 0.25 * atr1 if side == "BUY" else z79 + 0.25 * atr1
+        sl_dist = abs(entry - sl_raw)
+        floored = False
+        if sl_dist > spec["sl_hi"] / 100.0 * entry:
+            return _intra_wait_text(
+                f"structural stop {sl_dist/entry*100:.2f}% > {spec['sl_hi']:.2f}% — not trading a clamped stop")
+        if sl_dist < spec["sl_lo"] / 100.0 * entry:
+            sl_dist = spec["sl_lo"] / 100.0 * entry
+            floored = True
+        sl = entry - sl_dist if side == "BUY" else entry + sl_dist
+
+        # ── targets and the cost gate ─────────────────────────────────────
+        t1m, t2m = spec["tp1_mult"], spec["tp2_mult"]
+        tp1 = entry + sl_dist * t1m if side == "BUY" else entry - sl_dist * t1m
+        tp2 = entry + sl_dist * t2m if side == "BUY" else entry - sl_dist * t2m
+        if abs(tp1 - entry) > leg_range:
+            return _intra_wait_text("TP1 further than the impulse that set this up")
+        cost_gate = 3.0 * (2.0 * INTRADAY_TAKER_FEE + (meta.get("spread") or 0))
+        if abs(tp1 - entry) / entry * 100.0 < cost_gate:
+            return _intra_wait_text(f"TP1 {abs(tp1-entry)/entry*100:.3f}% below the {cost_gate:.3f}% cost gate")
+
+        inval = leg_high + 0.8 * atr1 if side == "BUY" else leg_low - 0.8 * atr1
+
+        # ── confidence ────────────────────────────────────────────────────
+        drops = []
+        if struct1 == "RANGE":
+            drops.append("1H RANGE")
+        if floored:
+            drops.append("stop at floor")
+        at_market = abs(entry - price) / price < 0.0005
+        if at_market:
+            drops.append("no price improvement")
+        sess = meta.get("session") or ""
+        if kind == "btcint":
+            fr = meta.get("funding")
+            if fr is not None and ((side == "BUY" and fr > 0.05) or (side == "SELL" and fr < -0.05)):
+                drops.append(f"funding {fr:+.3f}%")
+            oi = meta.get("oi_chg")
+            if oi is not None and oi < -3.0:
+                drops.append(f"OI {oi:+.1f}%")
+            if sess == "ASIA":
+                drops.append("Asia session")
+        else:
+            dev = meta.get("peg_dev")
+            if (meta.get("peg_source") != "LIVE") or (dev is not None and 0.25 <= dev <= 0.50):
+                drops.append("peg")
+            n = datetime.now(timezone.utc)
+            mins = n.hour * 60 + n.minute
+            if 1 * 60 <= mins < 7 * 60:
+                drops.append("Asia session")
+            close_min = _intra_session_close_min()
+            if close_min is not None and close_min - mins <= 60:
+                drops.append("inside 60m of session close")
+        conf = ["HIGH", "MEDIUM", "LOW"]
+        idx = len(drops)
+        if idx >= len(conf):
+            return _intra_wait_text("confidence below LOW: " + ", ".join(drops))
+        confidence = conf[idx]
+
+        note = (f"wait for a retrace to {_engine_fmt(entry)}" if not at_market
+                else "retrace already here — enter at market")
+        why = (f"{bias[:4]} 4H + {struct1[:4]} 1H, {leg_range/atr1:.1f}x ATR impulse, "
+               f"38.2% retrace entry" + (f" ({', '.join(drops)})" if drops else ""))
+        return (f"Signal: {side}\n"
+                f"Entry: {_engine_fmt(entry)}\n"
+                f"Entry_Type: PULLBACK\n"
+                f"Entry_Note: {note}\n"
+                f"Invalidation: {_engine_fmt(inval)}\n"
+                f"SL: {_engine_fmt(sl)}\n"
+                f"TP1: {_engine_fmt(tp1)}\n"
+                f"TP2: {_engine_fmt(tp2)}\n"
+                f"R:R: {t2m}\n"
+                f"Leg_High: {_engine_fmt(leg_high)}\n"
+                f"Leg_Low: {_engine_fmt(leg_low)}\n"
+                f"Confidence: {confidence}\n"
+                f"Reasoning: {why}")
+    except Exception as e:
+        print(f"  [INTRA ENGINE {kind}] {e}")
+        return _intra_wait_text(f"engine error: {e}")
+
+
 def _intra_data_block(kind: str):
     """Builds the data summary for one intraday slot.
 
@@ -9797,20 +10095,31 @@ def _intra_data_block(kind: str):
         b += f"UTC time: {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
         b += f"Day: {day_name}\n"
         if kind == "btcint":
-            b += f"Session: {get_session()}\n"
+            # UTC, not get_session(). That one is IST-based and only ever
+            # returns LONDON/NEW_YORK/ASIA, so the prompt's "Session is OFF"
+            # gate could never fire against it.
+            b += f"Session: {_intra_session_utc()}\n"
         b += f"24h Change: {chg:+.2f}%\n"
         b += f"Volume (24h): ${vol / 1e6:,.1f}M\n"
         b += f"Spread: {spread:.4f}%\n"
         b += f"Taker fee: {INTRADAY_TAKER_FEE:.2f}%\n"
 
+        # The engine evaluates the SAME numbers the prompt is shown, so the
+        # frames travel with the block rather than being refetched — otherwise
+        # the two paths could disagree about what the tape did.
         meta = {"price": price, "spread": spread, "atr_1h": atr_1h,
-                "atr_4h": atr_4h, "data_age": data_age, "day": day_name}
+                "atr_4h": atr_4h, "atr_5m": atr_5m, "data_age": data_age,
+                "day": day_name, "session": _intra_session_utc(),
+                "df_4h": df_4h, "df_1h": df_1h, "df_5m": df_5m,
+                "funding": None, "oi_chg": None}
 
         if kind == "btcint":
             fr = _bingx_funding(sym)
+            meta["funding"] = fr
             b += (f"Funding (current, 8h): {fr:.4f}%\n" if fr is not None
                   else "Funding (current, 8h): UNAVAILABLE\n")
             oi_chg = _intra_oi_change_4h(sym)
+            meta["oi_chg"] = oi_chg
             b += (f"OI change (4H): {oi_chg:+.2f}%\n" if oi_chg is not None
                   else "OI change (4H): UNAVAILABLE\n")
         else:
@@ -10325,6 +10634,30 @@ def _intra_session_close_min():
     return None
 
 
+def _intra_ai_call(kind: str, prompt: str) -> str:
+    """The API path — used only when INTRADAY_MODE is "ai"."""
+    model_id = SCAN_MODEL
+    use_aero = _ai_aerolink(kind)
+    for attempt in range(3):
+        try:
+            client = _claude_client(kind, attempt=attempt, use_aerolink=use_aero)
+            msg = _claude_create(
+                client, model=model_id, max_tokens=(50000 if use_aero else 5000),
+                messages=[{"role": "user", "content": prompt}],
+                **_thinking_kwarg(model_id))
+            _log_api_usage(f"intraday_{kind}", model_id,
+                           msg.usage.input_tokens, msg.usage.output_tokens,
+                           gateway="Aerolink" if use_aero else "Direct")
+            raw = _claude_text(msg)
+            if raw:
+                return raw
+        except Exception as e:
+            print(f"  [INTRA {kind}] attempt {attempt+1}: {e}")
+            if attempt < 2:
+                time.sleep(3)
+    return ""
+
+
 def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
     """One scan cycle for one intraday slot. Returns a short status string.
 
@@ -10350,30 +10683,21 @@ def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
         print(f"  [INTRA {kind}] no data: {meta}")
         return f"{label}: {meta}"
 
-    prompt = _intra_prompt(kind, block)
-    if INTRADAY_PROMPT_DM:
-        _send_prompt_debug(ADMIN_CHAT_ID, f"📝 #{sym}.P {label} PROMPT", prompt)
-
-    model_id = SCAN_MODEL
-    use_aero = _ai_aerolink(kind)
-    raw = ""
-    for attempt in range(3):
-        try:
-            client = _claude_client(kind, attempt=attempt, use_aerolink=use_aero)
-            msg = _claude_create(
-                client, model=model_id, max_tokens=(50000 if use_aero else 5000),
-                messages=[{"role": "user", "content": prompt}],
-                **_thinking_kwarg(model_id))
-            _log_api_usage(f"intraday_{kind}", model_id,
-                           msg.usage.input_tokens, msg.usage.output_tokens,
-                           gateway="Aerolink" if use_aero else "Direct")
-            raw = _claude_text(msg)
-            if raw:
-                break
-        except Exception as e:
-            print(f"  [INTRA {kind}] attempt {attempt+1}: {e}")
-            if attempt < 2:
-                time.sleep(3)
+    # ENGINE MODE — no API call at all. Both prompts are pure arithmetic over
+    # the candles, so the engine evaluates the identical ruleset and emits the
+    # identical OUTPUT block. Everything from _intra_parse down is unchanged,
+    # so the validator still stands between this and a real order.
+    if INTRADAY_MODE == "engine":
+        raw = _intra_engine_block(kind, meta)
+        print(f"  [INTRA {kind}] engine (no API): {raw.splitlines()[0]}")
+        if INTRADAY_PROMPT_DM:
+            _send_prompt_debug(ADMIN_CHAT_ID, f"⚙️ #{sym}.P {label} ENGINE",
+                               block + "\n\n--- ENGINE OUTPUT (no API call) ---\n" + raw)
+    else:
+        prompt = _intra_prompt(kind, block)
+        if INTRADAY_PROMPT_DM:
+            _send_prompt_debug(ADMIN_CHAT_ID, f"📝 #{sym}.P {label} PROMPT", prompt)
+        raw = _intra_ai_call(kind, prompt)
     if not raw:
         return f"{label}: no response from Clex"
 
@@ -12124,7 +12448,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -13429,7 +13753,23 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd in ("/intraday", "/intra") and is_scanadmin:
         _slots = {"btc": "btcint", "btcint": "btcint", "xaut": "xaut", "xa": "xaut"}
-        if len(parts) < 3 or parts[1].lower() not in _slots:
+        if len(parts) >= 3 and parts[1].lower() == "mode":
+            _m = parts[2].lower()
+            if _m in ("engine", "eng", "noapi", "ai"):
+                INTRADAY_MODE = "ai" if _m == "ai" else "engine"
+                save_settings()
+                send_reply(chat_id,
+                    f"✅ <b>Intraday mode</b> → <b>{INTRADAY_MODE}</b>\n\n"
+                    + ("⚙️ Rules computed in Python. <b>No API call, no cost.</b>\n"
+                       "Same ruleset, same output format, same validator."
+                       if INTRADAY_MODE == "engine" else
+                       "🤖 Prompt sent to Clex each scan — one call per scan per slot."),
+                    skip_smallcaps=True)
+            else:
+                send_reply(chat_id,
+                    "<code>/intraday mode engine</code>  or  <code>/intraday mode ai</code>",
+                    skip_smallcaps=True)
+        elif len(parts) < 3 or parts[1].lower() not in _slots:
             _rows = []
             for _k, _sp in INTRADAY_SPECS.items():
                 _on = "✅ ON" if INTRADAY_ENABLED.get(_k) else "❌ OFF"
@@ -13440,7 +13780,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id,
                 "🕐 <b>Intraday Pullback Slots</b>\n\n" + "\n".join(_rows) +
                 f"\n\nBTC engine: <b>{BTC_ENGINE}</b>  (/btcengine)\n"
-                f"Scan every: <b>{INTRADAY_SCAN_INTERVAL // 60}m</b>  (/intradayevery)\n\n"
+                f"Scan every: <b>{INTRADAY_SCAN_INTERVAL // 60}m</b>  (/intradayevery)\n"
+                f"Mode: <b>{INTRADAY_MODE}</b>"
+                + ("  ⚙️ <i>no API call</i>" if INTRADAY_MODE == "engine" else "  🤖 <i>API call per scan</i>")
+                + "  (/intraday mode engine|ai)\n\n"
                 "<code>/intraday btc on</code>\n<code>/intraday xaut off</code>\n"
                 "<code>/intraday btc now</code> — force one scan",
                 skip_smallcaps=True)
@@ -16057,7 +16400,7 @@ _SCAN_SUBCATS = {
         ("/benchtable", "📊", "Benchmark Table", "Shows the benchmark win/loss/streak comparison collected by /benchmark. `/bt think on` or `/bt think off` for a single group. (/bt is the same command.)"),
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
-        ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. (/intra is the same command.)"),
+        ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
         ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
         ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
         ("/intrastatus", "📋", "Intraday Trades", "Open and pending intraday trades with entry, SL band %, targets and age. (/intrast is the same command.)"),
