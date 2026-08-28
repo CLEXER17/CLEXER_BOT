@@ -8744,6 +8744,31 @@ def _log_scan_history(t: dict, result: str, close_price: float):
     if len(scan_history) > 30: scan_history.pop(0)
     save_state()
 
+def _log_intraday_history(t: dict, result: str, close_price: float):
+    """Closed intraday trade -> scan_history, so /history and every downstream
+    reader see it alongside the scan slots instead of the trade vanishing on
+    close. Tagged with kind/label because "ver" means scan1/scan2 and these are
+    neither; readers that only understand ver still render them safely."""
+    _sp = _intra_spec(t.get("kind", ""))
+    scan_history.append({
+        "time":        ist_str(),
+        "symbol":      t.get("symbol", "?"),
+        "signal":      t.get("signal", "?"),
+        "entry":       t.get("entry", 0),
+        "sl":          t.get("sl", 0),
+        "tp1":         t.get("tp1", 0),
+        "tp2":         t.get("tp2", 0),
+        "result":      result,
+        "close_price": close_price,
+        "tp1_hit":     t.get("tp1_hit", False),
+        "ver":         0,                       # 0 = not a scan slot
+        "kind":        t.get("kind", ""),
+        "label":       _sp.get("label", "INTRADAY"),
+    })
+    if len(scan_history) > 30: scan_history.pop(0)
+    save_state()
+
+
 def _log_demo_history(t: dict, result: str, close_price: float, dver: int):
     """Append a closed TS1/TS2 (demo) trade to demo_history (max 30) — same
     shape as _log_scan_history, keyed by 'dver' instead of 'ver' since demo
@@ -10840,6 +10865,16 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
     log_trade_event({"type": f"intra_{t['kind']}", "coin": sym, "direction": t["signal"],
                      "result": result, "entry_price": t["entry"], "sl_price": t["sl"],
                      "tp1_price": t["tp1"], "tp2_price": t["tp2"]})
+    if result != "CANCEL":
+        # A cancelled pending order never opened, so it is not a result and
+        # must not land in history as one.
+        _log_intraday_history(t, result, price)
+    _intraday_stats.setdefault(t["kind"], {"tp": 0, "sl": 0, "streak": 0})
+    _st = _intraday_stats[t["kind"]]
+    if result in ("TP1", "TP2", "BE"):
+        _st["tp"] += 1; _st["streak"] = max(0, _st["streak"]) + 1
+    elif result == "SL":
+        _st["sl"] += 1; _st["streak"] = min(0, _st["streak"]) - 1
     _close_sig_snapshot(sig_id, result)
 
 
@@ -12850,11 +12885,32 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 scan_lines += _status_line(f"TS{_dver}", dc['signal'], dc.get('symbol','?'), dc.get('entry',0), dc.get('sl',0), dc.get('tp1',0),
                     True, dc.get('tp1_hit'), dc.get('share_free', True), dc.get('tier_routed', True),
                     f"demo{_dver}", dc.get('created_at'), extra=f"  P/L:{_pnl:+.2f}%", reply_map=dc.get('reply_map'))
+        for _it in _intraday_trades:
+            _isp = _intra_spec(_it.get("kind", ""))
+            _icp = get_bingx_price(_it.get("symbol", "")) if _it.get("symbol") else 0
+            _ipnl = ((_icp - _it["entry"]) / _it["entry"] * 100 *
+                     (1 if _it["signal"] == "BUY" else -1)) if _icp and _it.get("entry") else 0
+            _iextra = (f"  P/L:{_ipnl:+.2f}%" if _it.get("entry_hit")
+                       else f"  ⏳ waiting for {_it['entry']:,.6g}")
+            scan_lines += _status_line(_isp.get("label", "INTRADAY"), _it["signal"], _it.get("symbol", "?"),
+                _it.get("entry", 0), _it.get("sl", 0), _it.get("tp1", 0),
+                _it.get("entry_hit"), _it.get("tp1_hit"), True, True,
+                f"intra_{_it.get('kind','')}", _it.get("created_at"),
+                extra=_iextra, reply_map=_it.get("reply_map"))
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
         _next_test1 = _next_special_time("test1")
         _next_test2 = _next_special_time("test2")
+        _intra_line = ""
+        for _ik, _isp in INTRADAY_SPECS.items():
+            _iflag = ("ON" if _intra_slot_live(_ik) else
+                      ("sleeping — BTC engine is classic"
+                       if (_ik == "btcint" and INTRADAY_ENABLED.get(_ik)) else "OFF"))
+            _ist = _intraday_stats.get(_ik, {})
+            _iwl = (f"  {_ist.get('tp', 0)}W/{_ist.get('sl', 0)}L"
+                    if (_ist.get('tp') or _ist.get('sl')) else "")
+            _intra_line += f"🕐 {_isp['label']}: <b>{_iflag}</b> ({INTRADAY_MODE}){_iwl}\n"
         _next_btc_line = f"⏰ Next BTC scan:   <b>{_next_btc_scan} IST</b>\n" if btc_analysis_enabled else "⏰ Next BTC scan:   <b>OFF</b>\n"
         _next_s1_line  = f"⏰ Next Scan1:      <b>{_next_scan1}{_next_special_tag('scan1')}</b>\n" if (not bot_paused.is_set() and SCAN1_AUTO_ENABLED) else "⏰ Next Scan1:      <b>OFF</b>\n"
         _next_s2_line  = f"⏰ Next Scan2:      <b>{_next_scan2}{_next_special_tag('scan2')}</b>\n" if (not bot_paused.is_set() and SCAN2_AUTO_ENABLED) else "⏰ Next Scan2:      <b>OFF</b>\n"
@@ -12903,6 +12959,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"{_next_s2_line}"
                 f"{_next_ts1_line}"
                 f"{_next_ts2_line}"
+                f"{_intra_line}"
                 if is_admin else ""
             )
             + f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
@@ -13275,6 +13332,29 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     f"BE SL: <b>{dc.get('be_sl',0):,.4g}</b>" + (" (active)" if dc.get('tp1_hit') and dc.get('be_sl') else "") + "\n"
                     f"P/L:   <b>{_dpnl:+.2f}%</b> | move_age: {dc.get('scan_ver','?')}"
                 )
+        # Intraday pullback slots. These can be PENDING — an entry that has not
+        # filled yet — which no other slot can be, so say so plainly rather than
+        # showing a position the user does not actually hold.
+        for _it in _intraday_trades:
+            _isp = _intra_spec(_it.get("kind", ""))
+            try:
+                _icp = get_bingx_price(_it.get("symbol", ""))
+                _icpl = f"Current: <b>{_icp:,.6g}</b>\n" if _icp else ""
+            except Exception:
+                _icp, _icpl = 0, ""
+            _ipnl = ((_icp - _it["entry"]) / _it["entry"] * 100 *
+                     (1 if _it["signal"] == "BUY" else -1)) if _icp and _it.get("entry") else 0
+            _isl = f"<b>{_it['sl']:,.6g}</b>" + (" ← BE" if _it.get("tp1_hit") else "")
+            _istate = ("⏳ <b>PENDING</b> — waiting for price to reach the entry"
+                       if not _it.get("entry_hit") else f"P/L:   <b>{_ipnl:+.2f}%</b>")
+            parts_out.append(
+                f"<b>{_isp.get('label','INTRADAY')}</b>\n\n{_it['signal']} - {_it.get('symbol','?')}\n{_icpl}"
+                f"Entry: <b>{_it['entry']:,.6g}</b> {'✅' if _it.get('entry_hit') else '⏳ pending'}\n"
+                f"SL:    {_isl}  ({_it.get('sl_pct',0):.2f}%)\n"
+                f"TP1:   <b>{_it['tp1']:,.6g}</b> {'✅ HIT' if _it.get('tp1_hit') else '⏳ pending'}\n"
+                f"TP2:   <b>{_it['tp2']:,.6g}</b>\nType:  {_it.get('entry_type','PULLBACK')}\n"
+                f"{_istate}"
+                + (f"\n<i>{_it['entry_note']}</i>" if _it.get("entry_note") else ""))
         if parts_out:
             send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
         else:
@@ -13288,6 +13368,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             {"text": "🔍 Scan2", "callback_data": "history_scan2"}],
             [{"text": "🧪 TS1", "callback_data": "history_ts1"},
              {"text": "🧪 TS2", "callback_data": "history_ts2"}],
+            [{"text": "₿ BTC-Intra", "callback_data": "history_btci"},
+             {"text": "🪙 XAUT",     "callback_data": "history_xaut"}],
         ]
         if is_admin:
             _hist_btns_rows.append([{"text": "🗑 Reset History", "callback_data": "reset_signal_history"}])
@@ -13316,6 +13398,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, f"📜 <b>Scan{ver} History</b>\n\nNo wins yet.", reply_markup=_hist_btns); return
             _entries = list(reversed(_sh[-5:]))
             lines = [f"📜 <b>Scan{ver} History</b>", ""]
+            for i, s in enumerate(_entries):
+                lines += _fmt_hist_entry(s)
+                if i < len(_entries) - 1: lines.append("──────────────")
+            send_reply(chat_id, "\n".join(lines), reply_markup=_hist_btns)
+        elif sub in ("btci", "xaut", "xauti"):
+            # Intraday closes live in scan_history tagged with kind and ver=0,
+            # so they never leak into the Scan1/Scan2 tabs, which filter on ver.
+            _ik = "btcint" if sub == "btci" else "xaut"
+            _il = _intra_spec(_ik).get("label", "INTRADAY")
+            _ih = [s for s in scan_history
+                   if s.get("kind") == _ik and _is_shown_result(s.get("result", "?"))]
+            if not _ih:
+                send_reply(chat_id, f"📜 <b>{_il} History</b>\n\nNo wins yet.",
+                           reply_markup=_hist_btns); return
+            _entries = list(reversed(_ih[-5:]))
+            lines = [f"📜 <b>{_il} History</b>", ""]
             for i, s in enumerate(_entries):
                 lines += _fmt_hist_entry(s)
                 if i < len(_entries) - 1: lines.append("──────────────")
@@ -18710,7 +18808,7 @@ def command_listener():
                             json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
                                   "text": _apply_premium_emojis(_btca_text), "parse_mode": "HTML",
                                   "reply_markup": _style_keyboard(_btca_mkp)}, timeout=10)
-                    elif cb_data in ("history_btc", "history_scan1", "history_scan2", "history_ts1", "history_ts2"):
+                    elif cb_data in ("history_btc", "history_scan1", "history_scan2", "history_ts1", "history_ts2", "history_btci", "history_xaut"):
                         sub = cb_data.replace("history_", "")
                         _toggle_cmd(f"/history {sub}", cb_chat_id, cb_cid, cb_msg_id, "monitor")
                     elif cb_data == "stats_win":
