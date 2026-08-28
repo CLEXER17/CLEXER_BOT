@@ -5148,10 +5148,17 @@ def _slot_day_reason(kind: str, hm: tuple, when=None) -> str:
 def _backfill_slot_days() -> int:
     """Seed the weekday counters from trade_history.csv, once, at startup.
 
-    Without this the rule would lock everything for weeks while the counters
-    filled from zero. Only rows whose signal minute matches a configured slot
-    are counted, and only terminal outcomes — an open trade has no result and a
-    timeout reached neither a target nor a stop, so neither is evidence."""
+    Only rows whose signal minute matches a configured slot are counted, and
+    the win/loss rule must match _slot_track's EXACTLY or the weekday numbers
+    contradict the lifetime numbers printed beside them.
+
+    That includes timeouts. The live tracker resolves a timeout by its P/L —
+    _slot_track(kind, hm, pnl >= 0) — so a timeout that finished in profit is
+    a win and one that finished down is a loss. Skipping them here as "neither
+    a target nor a stop" dropped 17% of every resolved trade, 443 of which were
+    wins, and left slots showing an empty weekday row next to a populated /st
+    row (admin report 2026-08-28: TS2 12:24 reads 1/1 in /st and blank in the
+    grid). Only genuinely unresolved rows — result "open" — are skipped."""
     import csv as _csv
     if _slot_day_stats:
         return 0                      # already restored from disk; don't double count
@@ -5171,8 +5178,17 @@ def _backfill_slot_days() -> int:
                     win = True
                 elif res in ("SL", "LOSS"):
                     win = False
+                elif res.startswith("TIMEOUT"):
+                    # Same rule as the live path: win if it timed out in profit.
+                    _m = re.search(r"\(([+-]?[0-9.]+)%\)", res)
+                    if not _m:
+                        continue
+                    try:
+                        win = float(_m.group(1)) >= 0
+                    except ValueError:
+                        continue
                 else:
-                    continue
+                    continue        # "open" — not resolved, so not evidence
                 try:
                     dt = datetime.strptime((row.get("signal_time") or "").replace(" IST", "").strip(),
                                            "%Y-%m-%d %H:%M")
