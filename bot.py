@@ -13397,14 +13397,16 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 if not _times:
                     continue
                 _th = _SLOT_EVAL_THRESHOLD[_kind]
-                # Emoji occupy TWO monospace cells while len() counts them as one,
-                # so every cell is padded to a fixed VISUAL width instead. Without
-                # this the columns walk out of line row by row.
-                def _vw(x):
-                    return sum(2 if ord(c) > 0x2100 else 1 for c in x)
+                # Pure ASCII, five characters per cell, no exceptions. Emoji
+                # were tried here and cannot work: they are not exactly two
+                # monospace cells in Telegram and the width varies by device,
+                # so rows carrying one drift against rows that do not and the
+                # grid visibly bends (admin report 2026-08-28). Brackets mark
+                # the VERIFIED cells - the days this slot is actually cleared
+                # for VIP/Free and copy trade - so the eye lands on what is
+                # live rather than on what is excluded.
                 def _cp(x, w=5):
-                    _l = max(0, (w - _vw(x)) // 2)
-                    return " " * _l + x + " " * max(0, w - _vw(x) - _l)
+                    return x.center(w)
                 _hdr = f"<b>{_st_labels[_kind]}</b> ({_th}%)\n<pre>"
                 _rows = ["      " + "  ".join(_cp(_d[:2]) for _d in WD_NAMES)]
                 for _hm in _times:
@@ -13413,9 +13415,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     for _di in range(7):
                         _pct, _tp, _sl = _slot_day_rate(_kind, _hm, _di)
                         if _pct is None:
-                            _cells.append("-"); continue
+                            _cells.append("·"); continue
                         _ok = (not _manual) and _pct >= _th
-                        _cells.append(("✅" if _ok else "🔒") + f"{_tp}/{_sl}")
+                        _cells.append(f"[{_tp}/{_sl}]" if _ok else f"{_tp}/{_sl}")
                     _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6) + "  ".join(_cp(c) for c in _cells))
                 _blk = _hdr + "\n".join(_rows) + "</pre>"
                 if _wk_cur and len(_wk_cur) + len(_blk) > _TG_MSG_LIMIT - 120:
@@ -13427,9 +13429,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "No special times configured."); return
             for _i, _m in enumerate(_wk_msgs):
                 _h = ("📅 <b>Special Times — by weekday</b>\n"
-                      "<i>✅ verified that day · 🔒 locked, Signal channel only · - never ran</i>\n\n") if _i == 0 else ""
+                      "<i>[4/1] = verified that day, goes to VIP/Free + copy trade\n"
+                      "4/1 = below the bar, Signal channel only\n"
+                      "· = never ran that day</i>\n\n") if _i == 0 else ""
                 _f = f"\n\n<i>({_i + 1}/{len(_wk_msgs)})</i>" if len(_wk_msgs) > 1 else ""
-                send_reply(chat_id, _h + _m + _f, emoji_overrides={"✅": None, "🔒": None})
+                send_reply(chat_id, _h + _m + _f)
             return
         _st_blocks = []
         for _kind in ("scan1", "scan2", "demo1", "demo2"):
