@@ -4907,7 +4907,7 @@ def _load_slot_state():
     """Restores _slot_stats AND any runtime-promoted/demoted _SCAN_SPECIAL /
     _SCAN_SPECIAL_NO_COPY changes — checks the central store first (survives
     redeploys even if local disk doesn't), falls back to local disk."""
-    global _slot_stats, VST_COPY_ALLOWLIST_ENABLED
+    global _slot_stats, VST_COPY_ALLOWLIST_ENABLED, _slot_day_seed_v
     try:
         d = None
         if CLEXER_API_URL:
@@ -4920,7 +4920,16 @@ def _load_slot_state():
         if d is None:
             return
         _slot_stats = d.get("stats", {})
-        _slot_day_stats.clear(); _slot_day_stats.update(d.get("day_stats", {}) or {})
+        _slot_day_seed_v = int(d.get("day_stats_v", 0) or 0)
+        _slot_day_stats.clear()
+        if _slot_day_seed_v == _SLOT_DAY_SEED_VERSION:
+            _slot_day_stats.update(d.get("day_stats", {}) or {})
+        else:
+            # Built by an older, wrong rule — leave it empty so the backfill
+            # rebuilds it. Nothing is lost: every closed trade is written to
+            # trade_history.csv, so a full re-seed reconstructs the live
+            # outcomes too, not just the historical ones.
+            print(f"[SLOT DAY] seed v{_slot_day_seed_v} != v{_SLOT_DAY_SEED_VERSION} — rebuilding from trade history")
         VST_COPY_ALLOWLIST_ENABLED = bool(d.get("vst_copy_allowlist_on", False))
         for kind, times in d.get("vst_copy_allowed", {}).items():
             _VST_COPY_ALLOWED[kind] = set(tuple(hm) for hm in times)
@@ -4947,6 +4956,7 @@ def _save_slot_state():
     d = {
         "stats": _slot_stats,
         "day_stats": _slot_day_stats,
+        "day_stats_v": _slot_day_seed_v,
         "special": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL.items()},
         "no_copy": {k: sorted(list(v)) for k, v in _SCAN_SPECIAL_NO_COPY.items()},
         "blacklist": {k: sorted(list(v)) for k, v in _SLOT_BLACKLIST.items()},
@@ -5076,6 +5086,12 @@ def _slot_track(kind: str, hm: tuple, is_win: bool, when=None):
 # ═══════════════════════════════════════════════════════════════════════════
 
 _slot_day_stats: dict = {}     # "kind|H.M" -> {"0".."6": {"tp": int, "sl": int}}
+# Bump whenever the backfill's win/loss RULE changes. The seed is persisted, so
+# without this a corrected rule can never take effect: the "already populated,
+# don't double count" guard sees the old numbers and skips forever. v1 dropped
+# timeouts and had to be thrown away (see _backfill_slot_days).
+_SLOT_DAY_SEED_VERSION = 2
+_slot_day_seed_v: int = 0
 WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 
@@ -5160,12 +5176,14 @@ def _backfill_slot_days() -> int:
     row (admin report 2026-08-28: TS2 12:24 reads 1/1 in /st and blank in the
     grid). Only genuinely unresolved rows — result "open" — are skipped."""
     import csv as _csv
-    if _slot_day_stats:
-        return 0                      # already restored from disk; don't double count
+    global _slot_day_seed_v
+    if _slot_day_stats and _slot_day_seed_v == _SLOT_DAY_SEED_VERSION:
+        return 0                      # current-rule seed already on disk
     if not os.path.exists(TRADE_LOG_CSV):
         print("[SLOT DAY] no trade_history.csv — weekday counters start empty")
         return 0
     kindmap = {"scan1": "scan1", "scan2": "scan2", "demo1": "demo1", "demo2": "demo2"}
+    _slot_day_stats.clear()           # full rebuild, never an increment
     n = 0
     try:
         with open(TRADE_LOG_CSV, newline="", encoding="utf-8-sig") as f:
@@ -5205,9 +5223,10 @@ def _backfill_slot_days() -> int:
     except Exception as e:
         print(f"[SLOT DAY] backfill error: {e}")
         return 0
-    print(f"[SLOT DAY] backfilled {n} outcomes across {len(_slot_day_stats)} slots")
-    if n:
-        _save_slot_state()
+    _slot_day_seed_v = _SLOT_DAY_SEED_VERSION
+    print(f"[SLOT DAY] backfilled {n} outcomes across {len(_slot_day_stats)} slots "
+          f"(seed v{_SLOT_DAY_SEED_VERSION})")
+    _save_slot_state()
     return n
 
 
@@ -12832,7 +12851,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE, _slot_day_seed_v
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -13402,6 +13421,18 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         # /st week  — the per-weekday grid the gate actually decides on.
+        if len(parts) > 1 and parts[1].lower() in ("rebuild", "reseed") and is_admin:
+            # Force a re-seed without waiting for a redeploy. Safe to run any
+            # time: it clears and rebuilds from trade_history.csv, which holds
+            # every closed trade, so nothing is lost by wiping first.
+            _slot_day_seed_v = 0
+            _n = _backfill_slot_days()
+            send_reply(chat_id,
+                f"♻️ <b>Weekday counters rebuilt</b>\n\n"
+                f"{_n} outcomes across {len(_slot_day_stats)} slots, "
+                f"seed v{_SLOT_DAY_SEED_VERSION}.\n\n<i>/st week to view.</i>",
+                skip_smallcaps=True)
+            return
         if len(parts) > 1 and parts[1].lower() in ("week", "w", "day", "days"):
             _wk_only = parts[2].lower() if len(parts) > 2 else ""
             _wk_msgs, _wk_cur = [], ""
@@ -16971,7 +17002,7 @@ _SCAN_SUBCATS = {
         ("/altdemo2","⏰", "TS2 Times",   "Edit the exact hour:minute slots TS2 (demo scan2) fires at."),
         ("/settime", "🕐", "Set Time Verified/Unverified", "Manually force one specific hour:minute slot to Verified, Unverified, or back to Normal — independent of the auto promote/demote system."),
         ("/timepanel", "🕐", "Time Panel (Paper Tracking)", "Track win-rate/streak for admin-picked times against S1/S2/TS1/TS2 — pulls existing data if already scheduled there, else runs its own paper-only scan (never real money)."),
-        ("/st",   "⭐", "Special Times Performance", "Win rate for every special-time slot, per scan kind. `/st week` shows the same slots broken out Sunday to Saturday — that grid is what decides whether a slot reaches VIP/Free and copy trade on any given day. Add a kind to narrow it: `/st week scan1`."),
+        ("/st",   "⭐", "Special Times Performance", "Win rate for every special-time slot, per scan kind. `/st week` shows the same slots broken out Sunday to Saturday — that grid is what decides whether a slot reaches VIP/Free and copy trade on any given day. Add a kind to narrow it: `/st week scan1`. `/st rebuild` re-seeds those weekday counters from the trade history."),
         ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
         ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
     ]),
