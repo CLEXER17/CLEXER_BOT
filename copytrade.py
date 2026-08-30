@@ -1697,6 +1697,16 @@ def set_demo2_ct(enabled: bool):
     global DEMO2_CT_ENABLED
     DEMO2_CT_ENABLED = enabled
 
+
+def set_btcint_ct(enabled: bool):
+    global BTCINT_CT_ENABLED
+    BTCINT_CT_ENABLED = enabled
+
+
+def set_xaut_ct(enabled: bool):
+    global XAUT_CT_ENABLED
+    XAUT_CT_ENABLED = enabled
+
 def set_orphan_adopt(enabled: bool):
     global ORPHAN_ADOPT_ENABLED
     ORPHAN_ADOPT_ENABLED = enabled

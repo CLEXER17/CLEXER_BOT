@@ -359,6 +359,8 @@ TRAIL_SL_SCAN1 = False
 TRAIL_SL_SCAN2 = False
 TRAIL_SL_DEMO1 = False
 TRAIL_SL_DEMO2 = False
+TRAIL_SL_BTCINT = False   # BTC-INTRADAY pullback slot
+TRAIL_SL_XAUT   = False   # XAUT-INTRADAY pullback slot
 
 def _apply_trail_sl(ver: int, t: dict, price: float):
     """Fixed 50/50 rule, two phases:
@@ -373,10 +375,12 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
     ver: 1=Scan1, 2=Scan2, 3=Demo1, 4=Demo2 — ct.update_scan_sl() looks the symbol
     up across all slot prefixes (including demo1/demo2), so this also moves any
     real copy-user SL that's mirroring a demo trade."""
-    enabled = {1: TRAIL_SL_SCAN1, 2: TRAIL_SL_SCAN2, 3: TRAIL_SL_DEMO1, 4: TRAIL_SL_DEMO2}.get(ver, False)
+    enabled = {1: TRAIL_SL_SCAN1, 2: TRAIL_SL_SCAN2, 3: TRAIL_SL_DEMO1, 4: TRAIL_SL_DEMO2,
+               5: TRAIL_SL_BTCINT, 6: TRAIL_SL_XAUT}.get(ver, False)
     if not enabled:
         return
-    sig = t["signal"]; tag = f"S{ver}" if ver <= 2 else f"TS{ver - 2}"
+    sig = t["signal"]
+    tag = {5: "BTCi", 6: "XAUT"}.get(ver) or (f"S{ver}" if ver <= 2 else f"TS{ver - 2}")
     if not t.get("tp1_hit"):
         if t.get("trail_sl_moved"):
             return
@@ -8134,7 +8138,7 @@ _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
     global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -8179,6 +8183,10 @@ def load_settings():
             TRAIL_SL_SCAN2 = d.get("trail_sl_scan2", False)
             TRAIL_SL_DEMO1 = d.get("trail_sl_demo1", False)
             TRAIL_SL_DEMO2 = d.get("trail_sl_demo2", False)
+            TRAIL_SL_BTCINT = d.get("trail_sl_btcint", False)
+            TRAIL_SL_XAUT = d.get("trail_sl_xaut", False)
+            ct.BTCINT_CT_ENABLED = d.get("btcint_ct", False)
+            ct.XAUT_CT_ENABLED = d.get("xaut_ct", False)
             WEEKEND_SLEEP_ENABLED = d.get("weekend_sleep_enabled", True)
             VIP_MONTHLY_PRICE = d.get("vip_monthly_price", VIP_MONTHLY_PRICE)
             CHAT_MODEL = d.get("chat_model", CHAT_MODEL)
@@ -8253,6 +8261,10 @@ def save_settings():
             "trail_sl_scan2": TRAIL_SL_SCAN2,
             "trail_sl_demo1": TRAIL_SL_DEMO1,
             "trail_sl_demo2": TRAIL_SL_DEMO2,
+            "trail_sl_btcint": TRAIL_SL_BTCINT,
+            "trail_sl_xaut": TRAIL_SL_XAUT,
+            "btcint_ct": ct.BTCINT_CT_ENABLED,
+            "xaut_ct": ct.XAUT_CT_ENABLED,
             "weekend_sleep_enabled": WEEKEND_SLEEP_ENABLED,
             "vip_monthly_price": VIP_MONTHLY_PRICE,
             "chat_model": CHAT_MODEL,
@@ -11515,6 +11527,14 @@ def _intraday_monitor_loop():
                         continue
 
                     # ── Open branch ───────────────────────────────────────────
+                    # Trailing SL runs before the exit checks so a move it makes
+                    # is honoured on this same tick. A pending entry has no
+                    # position to trail, which is why this sits here and not
+                    # above. ver 5/6 are the two intraday slots.
+                    try:
+                        _apply_trail_sl(_INTRA_CT_VER.get(kind, 5), t, cp)
+                    except Exception as _te:
+                        print(f"  [INTRA TRAIL] {t.get('symbol')}: {_te}")
                     sl_now = t.get("be_sl") if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
                     if buy:
                         hit_tp2 = cp >= t["tp2"]; hit_tp1 = cp >= t["tp1"]; hit_sl = cp <= sl_now
@@ -13396,45 +13416,6 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 ti = None
         else:
             ti = "No active trade"
-        def _status_line(label, sig, sym, entry, sl, tp1, entry_hit, tp1_hit, share_free, tier_routed, kind, created_at, extra="", reply_map=None):
-            _cat = _status_trade_cat(kind, created_at)
-            _dir = "🟢" if sig == "BUY" else "🔴"
-            _reveal, _locked = _trade_reveal(_cat, share_free, tier_routed, _tier_val, _full_status_view,
-                                              actually_shared=_reply_map_reached_tier(reply_map))
-            _prefix = f"{_CAT_TAG.get(_cat,'➖')} " if (_reveal and _full_status_view) else ""
-            if _reveal:
-                return (f"\n\n<b>{label}:</b> {_prefix}{_dir} {sig} {sym}\n"
-                        f"Entry:{entry:,.4g} {'✅' if entry_hit else '⏳'}  "
-                        f"SL:{sl:,.4g}  TP1:{tp1:,.4g} {'✔️' if tp1_hit else ''}{extra}")
-            if _locked:
-                return f"\n\n<b>{label}:</b> {sym}\n{_locked_tp_line(tp1_hit)}\n🔒 VIP-exclusive signal — upgrade to view"
-            return ""
-        scan_lines = ""
-        for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
-            for sc in _lst:
-                scan_lines += _status_line(f"Scan{_ver}", sc['signal'], sc['symbol'], sc['entry'], sc['sl'], sc['tp1'],
-                    sc.get('entry_hit'), sc.get('tp1_hit'), sc.get('share_free', True), sc.get('tier_routed', True),
-                    f"scan{_ver}", sc.get('created_at'), reply_map=sc.get('reply_map'))
-        for _dlst in (demo_scan1_trades, demo_scan2_trades):
-            for dc in _dlst:
-                _cp = get_bingx_price(dc.get("symbol","")) if dc.get("symbol") else 0
-                _pnl = (_cp - dc["entry"]) / dc["entry"] * 100 * (1 if dc["signal"]=="BUY" else -1) if _cp and dc.get("entry") else 0
-                _dver = dc.get('scan_ver', 1)
-                scan_lines += _status_line(f"TS{_dver}", dc['signal'], dc.get('symbol','?'), dc.get('entry',0), dc.get('sl',0), dc.get('tp1',0),
-                    True, dc.get('tp1_hit'), dc.get('share_free', True), dc.get('tier_routed', True),
-                    f"demo{_dver}", dc.get('created_at'), extra=f"  P/L:{_pnl:+.2f}%", reply_map=dc.get('reply_map'))
-        for _it in _intraday_trades:
-            _isp = _intra_spec(_it.get("kind", ""))
-            _icp = get_bingx_price(_it.get("symbol", "")) if _it.get("symbol") else 0
-            _ipnl = ((_icp - _it["entry"]) / _it["entry"] * 100 *
-                     (1 if _it["signal"] == "BUY" else -1)) if _icp and _it.get("entry") else 0
-            _iextra = (f"  P/L:{_ipnl:+.2f}%" if _it.get("entry_hit")
-                       else f"  ⏳ waiting for {_it['entry']:,.6g}")
-            scan_lines += _status_line(_isp.get("label", "INTRADAY"), _it["signal"], _it.get("symbol", "?"),
-                _it.get("entry", 0), _it.get("sl", 0), _it.get("tp1", 0),
-                _it.get("entry_hit"), _it.get("tp1_hit"), True, True,
-                f"intra_{_it.get('kind','')}", _it.get("created_at"),
-                extra=_iextra, reply_map=_it.get("reply_map"))
         _next_btc_scan, _, _ = _next_schedule_times()
         _next_scan1 = _next_special_time("scan1")
         _next_scan2 = _next_special_time("scan2")
@@ -13504,11 +13485,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
-            + (f"\n<b>BTC Trade:</b>\n{ti}" if ti is not None else "")
-            + scan_lines,
+            # Positions and trades removed from /status (admin request 2026-08-30):
+            # /trade already lists every one in full, and repeating them here made
+            # the status view scroll past the bot state it exists to show.
+            ,
             emoji_overrides={"🟢": "5262747715552438702", "🔴": "5809816842713174497", "✔️": "5206607081334906820"})
 
-    elif cmd == "/price":
         try:
             tk = get_ticker()
             send_reply(chat_id, f"<b>BTCUSDT</b>\n\nPrice: <b>{tk['price']:,.2f}</b>\n"
@@ -14089,7 +14071,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # Last 5 only ever shows wins (TP1/TP2/BE) — SL and any TIMEOUT result
         # (win or loss) are excluded entirely, per admin request.
         def _is_shown_result(res: str) -> bool:
-            return not (res.startswith("SL") or res.startswith("TIMEOUT"))
+            # Wins only: TP1/TP2/BE always, plus a TIMEOUT that closed in PROFIT
+            # (admin request 2026-08-30 - a timeout finishing up is a win the
+            # channel should see, and hiding it made TS1/TS2 look emptier than
+            # they were). Negative or unparseable timeouts stay hidden, as does
+            # every SL.
+            if res.startswith("SL"):
+                return False
+            if res.startswith("TIMEOUT"):
+                _m = re.search(r"\(([+-]?[0-9.]+)%\)", res)
+                if not _m:
+                    return False
+                try:
+                    return float(_m.group(1)) > 0
+                except ValueError:
+                    return False
+            return True
         def _fmt_hist_entry(s: dict) -> list:
             res = s.get("result", "?")
             em = "🏆" if res == "TP2" else "💰"
@@ -17233,7 +17230,7 @@ def _send_broadcast_picker(chat_id, message_id=None):
 _HELP_CATS = {
     "monitor": (
         "📊 Status & Info", False, [
-            ("/status",   "📊", "Full bot status & positions"),
+            ("/status",   "📊", "Full bot status"),
             ("/trade",    "📈", "Active BTC + all scan trades"),
             ("/price",    "💲", "Current BTC price"),
             ("/session",  "🕐", "London / NY / Sleep session"),
@@ -18212,6 +18209,8 @@ def send_trailsl_screen(chat_id, message_id=None):
     _scan2_flag = "✅ ON" if TRAIL_SL_SCAN2 else "❌ OFF"
     _demo1_flag = "✅ ON" if TRAIL_SL_DEMO1 else "❌ OFF"
     _demo2_flag = "✅ ON" if TRAIL_SL_DEMO2 else "❌ OFF"
+    _btcint_flag = "✅ ON" if TRAIL_SL_BTCINT else "❌ OFF"
+    _xaut_flag   = "✅ ON" if TRAIL_SL_XAUT   else "❌ OFF"
     rows = [
         [{"text": f"₿ BTC  {_btc_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "trailsl_btc_on"},
@@ -18228,6 +18227,12 @@ def send_trailsl_screen(chat_id, message_id=None):
         [{"text": f"🧪 Demo2  {_demo2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "trailsl_demo2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "trailsl_demo2_off"}],
+        [{"text": f"₿ BTC-Intraday  {_btcint_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_btcint_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_btcint_off"}],
+        [{"text": f"🪙 XAUT  {_xaut_flag}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "trailsl_xaut_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "trailsl_xaut_off"}],
         [{"text": "◀️  Back", "callback_data": "tradecontrol_sub:levels"}],
     ]
     _help_edit_or_send(chat_id,
@@ -18235,7 +18240,7 @@ def send_trailsl_screen(chat_id, message_id=None):
         "<blockquote>Once price reaches the halfway point to TP1, SL automatically moves to the halfway "
         "point between the original SL and entry — locking in more capital before TP1 even hits.\n\n"
         "Example: Entry 10, TP1 18, SL 6 → at price 14, SL moves to 8.\n\n"
-        "Turn on independently for BTC, Scan1, Scan2, Demo1, and Demo2.</blockquote>",
+        "Turn on independently for BTC, Scan1, Scan2, Demo1, Demo2, BTC-Intraday and XAUT.</blockquote>",
         {"inline_keyboard": rows}, message_id=message_id)
 
 def send_coadmin_screen(chat_id, message_id=None):
@@ -18327,6 +18332,8 @@ def send_ctpause_screen(chat_id, message_id=None):
     _scan2_flag = "✅ ON" if ct.SCAN2_CT_ENABLED else "❌ OFF"
     _demo1_flag = "✅ ON" if ct.DEMO1_CT_ENABLED else "❌ OFF"
     _demo2_flag = "✅ ON" if ct.DEMO2_CT_ENABLED else "❌ OFF"
+    _btcint_ct = "✅ ON" if ct.BTCINT_CT_ENABLED else "❌ OFF"
+    _xaut_ct   = "✅ ON" if ct.XAUT_CT_ENABLED   else "❌ OFF"
     _orphan_flag = "✅ ON" if ct.ORPHAN_ADOPT_ENABLED else "❌ OFF"
     _sltp_flag = "✅ ON" if ct.AUTO_SLTP_GLOBAL_ENABLED else "❌ OFF"
     rows = [
@@ -18345,6 +18352,12 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🧪 Demo2 Copy Trade  {_demo2_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctdemo2_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctdemo2_off"}],
+        [{"text": f"₿ BTC-Intraday Copy Trade  {_btcint_ct}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctbtcint_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctbtcint_off"}],
+        [{"text": f"🪙 XAUT Copy Trade  {_xaut_ct}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctxaut_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctxaut_off"}],
         [{"text": f"🛡️ Orphan Position Adjust  {_orphan_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctorphan_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctorphan_off"}],
@@ -18355,7 +18368,7 @@ def send_ctpause_screen(chat_id, message_id=None):
     ]
     _help_edit_or_send(chat_id,
         "<b>📋 Copy Trade — By Type</b>\n\n"
-        "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, Scan2, Demo1 and Demo2 signals.\n"
+        "<blockquote>Turn auto-copy on or off separately for BTC, Scan1, Scan2, Demo1, Demo2, BTC-Intraday and XAUT signals.\n"
         "OFF for a type means no user's account copies those trades — analysis/signals still post as normal.\n"
         "Demo1/Demo2 are OFF by default — turning them ON places REAL orders on users' accounts for demo signals too.\n\n"
         "🛡️ <b>Orphan Position Adjust</b>: OFF by default. When a connected user has a position on BingX "
@@ -19468,6 +19481,14 @@ def command_listener():
                         ct.set_demo2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctdemo2_off" and cb_is_scanadmin:
                         ct.set_demo2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctbtcint_on" and cb_is_scanadmin:
+                        ct.set_btcint_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctbtcint_off" and cb_is_scanadmin:
+                        ct.set_btcint_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctxaut_on" and cb_is_scanadmin:
+                        ct.set_xaut_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "ctxaut_off" and cb_is_scanadmin:
+                        ct.set_xaut_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctorphan_on" and cb_is_scanadmin:
                         ct.set_orphan_adopt(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctorphan_off" and cb_is_scanadmin:
@@ -19634,6 +19655,16 @@ def command_listener():
                         TRAIL_SL_DEMO2 = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "trailsl_demo2_off" and cb_is_scanadmin:
                         TRAIL_SL_DEMO2 = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_btcint_on" and cb_is_scanadmin:
+                        global TRAIL_SL_BTCINT
+                        TRAIL_SL_BTCINT = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_btcint_off" and cb_is_scanadmin:
+                        TRAIL_SL_BTCINT = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_xaut_on" and cb_is_scanadmin:
+                        global TRAIL_SL_XAUT
+                        TRAIL_SL_XAUT = True; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data == "trailsl_xaut_off" and cb_is_scanadmin:
+                        TRAIL_SL_XAUT = False; save_settings(); send_trailsl_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_open" and cb_is_admin:
                         send_coadmin_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "coadmin_on" and cb_is_admin:
