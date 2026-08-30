@@ -5232,7 +5232,7 @@ _slot_day_stats: dict = {}     # "kind|H.M" -> {"0".."6": {"tp": int, "sl": int}
 # The weekday record now outranks a lifetime auto-demotion; only an entry here
 # is final.
 _SLOT_MANUAL_LOCK = {"scan1": set(), "scan2": set(), "test1": set(), "test2": set()}
-_SLOT_DAY_SEED_VERSION = 2
+_SLOT_DAY_SEED_VERSION = 3   # v3 adds the per-cell streak
 _slot_day_seed_v: int = 0
 WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
@@ -5260,8 +5260,13 @@ def _slot_day_track(kind: str, hm: tuple, is_win: bool, when=None):
     resolves on Monday is still a Sunday trade."""
     key = _slot_key(kind, hm)
     day = str(_wd_from_epoch(when))
-    st = _slot_day_stats.setdefault(key, {}).setdefault(day, {"tp": 0, "sl": 0})
+    st = _slot_day_stats.setdefault(key, {}).setdefault(day, {"tp": 0, "sl": 0, "streak": 0})
+    st.setdefault("streak", 0)
     st["tp" if is_win else "sl"] += 1
+    # Admin rule 2026-08-29: a profit adds one, a loss takes one away, and it
+    # never goes below zero. Not reset-to-zero on a loss - a slot that has won
+    # six times running should not be knocked all the way back by one miss.
+    st["streak"] = max(0, st["streak"] + (1 if is_win else -1))
     # Logged because a missing credit is otherwise invisible: /st and /st week
     # would simply disagree with no way to tell which half failed.
     print(f"  [SLOT DAY] {key} {WD_NAMES[int(day)]} {'+tp' if is_win else '+sl'} "
@@ -5280,6 +5285,12 @@ def _slot_day_rate(kind: str, hm: tuple, day: int):
     return tp / n * 100.0, tp, sl
 
 
+def _slot_day_streak(kind: str, hm: tuple, day: int) -> int:
+    """Current profit streak for one (slot, weekday). Floored at zero."""
+    st = (_slot_day_stats.get(_slot_key(kind, hm)) or {}).get(str(day)) or {}
+    return max(0, int(st.get("streak", 0) or 0))
+
+
 def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
     """The gate. True = this slot may reach VIP/Free and copy trade TODAY.
 
@@ -5287,9 +5298,17 @@ def _slot_day_verified(kind: str, hm: tuple, when=None) -> bool:
     admin excluded by hand can never be let back in by a good weekday."""
     if hm in _SLOT_MANUAL_LOCK.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
         return False
-    pct, tp, sl = _slot_day_rate(kind, hm, _wd_from_epoch(when))
+    day = _wd_from_epoch(when)
+    pct, tp, sl = _slot_day_rate(kind, hm, day)
     if pct is None:
         return False        # no history for this weekday — locked until proven good
+    # BOTH must hold (admin choice 2026-08-29). The win rate says the slot is
+    # sound on this weekday; the streak says it is sound RIGHT NOW. A strong
+    # lifetime record sitting on a fresh loss is exactly the moment to stand
+    # aside, and a lucky one-trade streak on a poor record is not a reason to
+    # trade it.
+    if _slot_day_streak(kind, hm, day) < 1:
+        return False
     return pct >= _SLOT_EVAL_THRESHOLD.get(kind, 55)
 
 
@@ -5300,11 +5319,14 @@ def _slot_day_reason(kind: str, hm: tuple, when=None) -> str:
         return "locked by hand"
     pct, tp, sl = _slot_day_rate(kind, hm, day)
     th = _SLOT_EVAL_THRESHOLD.get(kind, 55)
+    stk = _slot_day_streak(kind, hm, day)
     if pct is None:
         return f"no {WD_NAMES[day]} history yet"
     if pct < th:
         return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl}) below {th}%"
-    return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl})"
+    if stk < 1:
+        return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl}) but streak 0"
+    return f"{WD_NAMES[day]} {pct:.0f}% ({tp}/{sl}) S{stk}"
 
 
 def _backfill_slot_days() -> int:
@@ -5330,6 +5352,10 @@ def _backfill_slot_days() -> int:
         return 0
     kindmap = {"scan1": "scan1", "scan2": "scan2", "demo1": "demo1", "demo2": "demo2"}
     _slot_day_stats.clear()           # full rebuild, never an increment
+    # Collected first and replayed in chronological order. A streak is a
+    # sequence, so applying rows in whatever order the file happens to hold
+    # them would produce a number that means nothing.
+    _pending = []
     n = 0
     try:
         with open(TRADE_LOG_CSV, newline="", encoding="utf-8-sig") as f:
@@ -5362,13 +5388,15 @@ def _backfill_slot_days() -> int:
                 sched = _SLOT_SCHEDULE_KIND.get(kind, kind)
                 if hm not in _SCAN_SPECIAL.get(sched, set()):
                     continue          # regular-grid time, not a tracked slot
-                key = _slot_key(kind, hm)
-                st = _slot_day_stats.setdefault(key, {}).setdefault(str(_wd_index(dt)), {"tp": 0, "sl": 0})
-                st["tp" if win else "sl"] += 1
-                n += 1
+                _pending.append((dt, kind, hm, win))
     except Exception as e:
         print(f"[SLOT DAY] backfill error: {e}")
         return 0
+    for _dt, _kind, _hm, _win in sorted(_pending, key=lambda r: r[0]):
+        _st = _slot_day_stats.setdefault(_slot_key(_kind, _hm), {})                              .setdefault(str(_wd_index(_dt)), {"tp": 0, "sl": 0, "streak": 0})
+        _st["tp" if _win else "sl"] += 1
+        _st["streak"] = max(0, _st.get("streak", 0) + (1 if _win else -1))
+        n += 1
     _slot_day_seed_v = _SLOT_DAY_SEED_VERSION
     print(f"[SLOT DAY] backfilled {n} outcomes across {len(_slot_day_stats)} slots "
           f"(seed v{_SLOT_DAY_SEED_VERSION})")
@@ -13635,20 +13663,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 # the VERIFIED cells - the days this slot is actually cleared
                 # for VIP/Free and copy trade - so the eye lands on what is
                 # live rather than on what is excluded.
-                def _cp(x, w=5):
+                def _cp(x, w=9):
                     return x.center(w)
-                _hdr = f"<b>{_st_labels[_kind]}</b> ({_th}%)\n<pre>"
-                _rows = ["      " + "  ".join(_cp(_d[:2]) for _d in WD_NAMES)]
+                _hdr = f"📊 <b>{_st_labels[_kind]} — {_th}%</b>\n<pre>"
+                # Cells read "tp/sl [Sn]". Width is measured, not assumed, so a
+                # two-digit streak cannot push the columns out of line.
+                _cellmap = {}
                 for _hm in _times:
-                    _manual = _hm in _SLOT_MANUAL_LOCK.get(_sk, set())
-                    _cells = []
                     for _di in range(7):
-                        _pct, _tp, _sl = _slot_day_rate(_kind, _hm, _di)
-                        if _pct is None:
-                            _cells.append("·"); continue
-                        _ok = (not _manual) and _pct >= _th
-                        _cells.append(f"[{_tp}/{_sl}]" if _ok else f"{_tp}/{_sl}")
-                    _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6) + "  ".join(_cp(c) for c in _cells))
+                        _p, _t, _l = _slot_day_rate(_kind, _hm, _di)
+                        _cellmap[(_hm, _di)] = ("." if _p is None
+                                                else f"{_t}/{_l} [S{_slot_day_streak(_kind, _hm, _di)}]")
+                _cw = max(9, max(len(v) for v in _cellmap.values())) if _cellmap else 9
+                _rows = ["      " + " ".join(_cp(_d[:2], _cw) for _d in WD_NAMES)]
+                for _hm in _times:
+                    _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6)
+                                 + " ".join(_cp(_cellmap[(_hm, _di)], _cw) for _di in range(7)))
                 _blk = _hdr + "\n".join(_rows) + "</pre>"
                 if _wk_cur and len(_wk_cur) + len(_blk) > _TG_MSG_LIMIT - 120:
                     _wk_msgs.append(_wk_cur); _wk_cur = ""
@@ -13659,9 +13689,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "No special times configured."); return
             for _i, _m in enumerate(_wk_msgs):
                 _h = ("📅 <b>Special Times — by weekday</b>\n"
-                      "<i>[4/1] = verified that day, goes to VIP/Free + copy trade\n"
-                      "4/1 = below the bar, Signal channel only\n"
-                      "· = never ran that day</i>\n\n") if _i == 0 else ""
+                      "<i>tp/sl [S] where S is the profit streak for that slot on that day.\n"
+                      "A slot reaches VIP/Free + copy trade only when its streak is 1 or more\n"
+                      "AND its win rate for that day is at or above the bar. Otherwise it\n"
+                      "posts to the Signal channel only. BE counts as a profit, never a loss.\n"
+                      ". = never ran that day · streak floor is S0, never negative</i>\n\n") if _i == 0 else ""
                 _f = f"\n\n<i>({_i + 1}/{len(_wk_msgs)})</i>" if len(_wk_msgs) > 1 else ""
                 send_reply(chat_id, _h + _m + _f)
             return
