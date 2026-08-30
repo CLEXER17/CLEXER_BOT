@@ -1572,30 +1572,113 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
             _send_plain_reply(cid, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
-def _build_recap_text(trades: list, date_str: str, include_sl: bool = True) -> str:
-    tp2_list  = [t for t in trades if t["result"] == "TP2"]
-    tp1_list  = [t for t in trades if t["result"] == "TP1"]
-    sl_list   = [t for t in trades if t["result"] == "SL"] if include_sl else []
-    to_list   = [t for t in trades if t["result"] == "TIMEOUT"]
-    lines = [f"📊 <b>Daily Recap — {date_str}</b>\n"]
-    if tp2_list:
-        lines.append("🏆 <b>TP2 Hit:</b>")
-        lines += [f"✅ {t['symbol']} — {t['time']}" for t in tp2_list]
-        lines.append("")
-    if tp1_list:
-        lines.append("💰 <b>TP1 Hit:</b>")
-        lines += [f"🎯 {t['symbol']} — {t['time']}" for t in tp1_list]
-        lines.append("")
-    if sl_list:
-        lines.append("🛑 <b>SL Hit:</b>")
-        lines += [f"❌ {t['symbol']} — {t['time']}" for t in sl_list]
-        lines.append("")
-    if to_list:
-        lines.append("⏰ <b>Timeout:</b>")
-        lines += [f"➖ {t['symbol']} — {t['time']}" +
-                  (f" ({t['pnl']:+.2f}%)" if t.get("pnl") is not None else "")
-                  for t in to_list]
+_RECAP_ICON = {"TP2": "🏆", "TP1": "🎯", "SL": "🛑", "TIMEOUT": "⏰"}
+_RECAP_ORDER = ["TP2", "TP1", "SL", "TIMEOUT"]
+
+
+def _recap_pnl(t: dict):
+    """This trade's percentage move, or None if none was recorded."""
+    v = t.get("pnl")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _rcp_row(cells, widths, aligns) -> str:
+    """One table row. Header, data and separator rows are all built from the
+    same widths here, which is the only way they stay in step - hand-writing
+    each row is how a column ends up one character out."""
+    out = []
+    for c, w, a in zip(cells, widths, aligns):
+        c = str(c)
+        pad = w - _rcp_vw(c)
+        if pad < 0:
+            c, pad = c[:w], 0
+        if a == "<":   out.append(c + " " * pad)
+        elif a == ">": out.append(" " * pad + c)
+        else:
+            l = pad // 2
+            out.append(" " * l + c + " " * (pad - l))
+    return "│ " + " │ ".join(out) + " │"
+
+
+def _rcp_vw(s: str) -> int:
+    """Visual width. Emoji take two monospace cells while len() counts one, so
+    a RESULT cell like "⏰ TIMEOUT" is 10 wide, not 9.
+
+    Uses east_asian_width rather than a codepoint threshold: every emoji here
+    reports "W", while the box-drawing characters the table is built from
+    report "A" and are single width. A naive `ord(c) > 0x2100` test counts
+    ─ │ ┌ as double and inflates every border by its own length."""
+    import unicodedata as _ud
+    return sum(2 if _ud.east_asian_width(c) == "W" else 1 for c in s)
+
+
+def _rcp_rule(widths, l, m, r) -> str:
+    return l + m.join("─" * (w + 2) for w in widths) + r
+
+
+def _recap_table(trades: list) -> str:
+    """The bordered result table, ordered TP2 -> TP1 -> SL -> TIMEOUT."""
+    rows = [(res, t) for res in _RECAP_ORDER for t in trades if t.get("result") == res]
+    if not rows:
+        return ""
+    sym_w = max(6, min(12, max(_rcp_vw(str(t.get("symbol", "")).replace("-USDT", "")) for _, t in rows)))
+    W = [10, sym_w, 10, 8]          # RESULT fits "⏰ TIMEOUT" exactly
+    A = ["<", "<", "^", ">"]
+    out = [_rcp_rule(W, "┌", "┬", "┐"),
+           _rcp_row(["RESULT", "SYMBOL", "TIME", "P&L"], W, ["<", "<", "^", "^"]),
+           _rcp_rule(W, "├", "┼", "┤")]
+    for res, t in rows:
+        p = _recap_pnl(t)
+        out.append(_rcp_row([
+            f"{_RECAP_ICON.get(res, '•')} {res}",
+            str(t.get("symbol", "?")).replace("-USDT", "").replace("USDT", ""),
+            str(t.get("time", "")),
+            f"{p:+.2f}%" if p is not None else "—",
+        ], W, A))
+    out.append(_rcp_rule(W, "└", "┴", "┘"))
+    return "\n".join(out)
+
+
+def _recap_summary(trades: list, include_sl: bool = True) -> str:
+    """Counts and totalled P&L per outcome, then the net.
+
+    A trade with no recorded percentage contributes nothing and is called out
+    rather than quietly folded in as zero - a recap that invents numbers is
+    worse than one that admits a gap."""
+    bar = "━" * 24
+    lines = [bar, "📊 <b>Summary</b>"]
+    net, missing = 0.0, 0
+    for res in _RECAP_ORDER:
+        if res == "SL" and not include_sl:
+            continue
+        grp = [t for t in trades if t.get("result") == res]
+        if not grp:
+            continue
+        vals = [_recap_pnl(t) for t in grp]
+        missing += sum(1 for v in vals if v is None)
+        tot = sum(v for v in vals if v is not None)
+        net += tot
+        lines.append(f"{_RECAP_ICON.get(res, '•')} {res} <b>{len(grp)}</b> | {tot:+.2f}%")
+    lines += [bar, f"📈 <b>NET P&amp;L: {net:+.2f}%</b>"]
+    if missing:
+        lines.append(f"<i>{missing} trade{'s' if missing != 1 else ''} had no recorded % — excluded from the net.</i>")
+    lines.append(bar)
     return "\n".join(lines)
+
+
+def _build_recap_text(trades: list, date_str: str, include_sl: bool = True) -> str:
+    """Daily recap — every trade in a bordered table, then the summary."""
+    shown = [t for t in trades if include_sl or t.get("result") != "SL"]
+    parts = [f"📊 <b>Daily Recap — {date_str}</b>", ""]
+    tbl = _recap_table(shown)
+    if tbl:
+        parts.append(f"<pre>{tbl}</pre>")
+    parts.append(_recap_summary(shown, include_sl=include_sl))
+    return "\n".join(parts)
+
 
 def _send_daily_summary(tracker: dict):
     """End-of-day recap for one specific day's tracker snapshot — every TP1/TP2/SL
@@ -1655,26 +1738,48 @@ def _gather_period_trades(date_strs: list) -> list:
     return trades
 
 def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) -> str:
-    """Weekly/monthly recap text — summarized (counts + win rate) rather than
-    the daily recap's itemized per-trade list, since a week or month of
-    trades listed individually would make an unreadably long Telegram
-    message. Same TP2/TP1/SL/TIMEOUT split as _build_recap_text."""
-    tp2 = [t for t in trades if t["result"] == "TP2"]
-    tp1 = [t for t in trades if t["result"] == "TP1"]
-    sl  = [t for t in trades if t["result"] == "SL"] if include_sl else []
-    to  = [t for t in trades if t["result"] == "TIMEOUT"]
-    wins = len(tp1) + len(tp2)
-    decided = wins + len(sl)
-    lines = [f"📊 <b>{title}</b>\n"]
-    lines.append(f"🏆 TP2 Hit: <b>{len(tp2)}</b>")
-    lines.append(f"💰 TP1 Hit: <b>{len(tp1)}</b>")
-    if include_sl:
-        lines.append(f"🛑 SL Hit: <b>{len(sl)}</b>")
-    if to:
-        lines.append(f"⏰ Timeout: <b>{len(to)}</b>")
-    lines.append("")
-    lines.append(f"✅ Win Rate: <b>{wins / decided * 100:.0f}%</b> ({wins}/{decided})" if decided else "✅ Win Rate: —")
-    return "\n".join(lines)
+    """Weekly/monthly recap — the same summary block, plus a per-symbol table
+    and a win rate.
+
+    Deliberately not the full per-trade list: a month of trades row by row
+    runs to thousands of characters and would split across several messages.
+    The busiest symbols carry the detail instead."""
+    shown = [t for t in trades if include_sl or t.get("result") != "SL"]
+    wins = len([t for t in shown if t.get("result") in ("TP1", "TP2")])
+    losses = len([t for t in shown if t.get("result") == "SL"])
+    decided = wins + losses
+    parts = [f"📊 <b>{title}</b>", ""]
+
+    by_sym = {}
+    for t in shown:
+        s = str(t.get("symbol", "?")).replace("-USDT", "").replace("USDT", "")
+        d = by_sym.setdefault(s, {"n": 0, "w": 0, "l": 0, "pnl": 0.0})
+        d["n"] += 1
+        if t.get("result") in ("TP1", "TP2"): d["w"] += 1
+        elif t.get("result") == "SL":         d["l"] += 1
+        p = _recap_pnl(t)
+        if p is not None:
+            d["pnl"] += p
+    top = sorted(by_sym.items(), key=lambda kv: (-kv[1]["n"], kv[0]))[:12]
+    if top:
+        sym_w = max(6, min(12, max(_rcp_vw(s) for s, _ in top)))
+        W = [sym_w, 6, 7, 8]
+        A = ["<", "^", "^", ">"]
+        rows = [_rcp_rule(W, "┌", "┬", "┐"),
+                _rcp_row(["SYMBOL", "TRADES", "W / L", "P&L"], W, ["<", "^", "^", "^"]),
+                _rcp_rule(W, "├", "┼", "┤")]
+        for s, d in top:
+            rows.append(_rcp_row([s, d["n"], f"{d['w']} / {d['l']}", f"{d['pnl']:+.2f}%"], W, A))
+        rows.append(_rcp_rule(W, "└", "┴", "┘"))
+        parts.append("<pre>" + "\n".join(rows) + "</pre>")
+        if len(by_sym) > len(top):
+            parts.append(f"<i>+{len(by_sym) - len(top)} more symbols</i>")
+
+    parts.append(_recap_summary(shown, include_sl=include_sl))
+    parts.append(f"✅ <b>Win Rate: {wins / decided * 100:.0f}%</b> ({wins}/{decided})"
+                 if decided else "✅ <b>Win Rate:</b> —")
+    return "\n".join(parts)
+
 
 def _send_period_summary(trades: list, title: str, tag: str):
     """Sends a weekly/monthly recap — same channel routing + pin behavior as
@@ -1710,6 +1815,29 @@ def _send_period_summary(trades: list, title: str, tag: str):
                 except Exception as e: print(f"  [{tag.upper()} SUMMARY] free {cid}: {e}")
             if isinstance(_mid, int):
                 _pin_message(cid, _mid)
+
+def _trade_outcome_pct(t: dict, result: str):
+    """The percentage move a finished trade actually produced, from its own
+    levels. Returns None when they are missing rather than guessing.
+
+    Only TIMEOUT rows ever carried a figure before, because a timeout closes
+    at an arbitrary price that has to be measured. TP/SL rows never did - but
+    their outcome is fully determined by the levels the signal was posted
+    with, so the recap should state it rather than print a dash."""
+    try:
+        entry = float(t.get("entry") or 0)
+        if not entry:
+            return None
+        lvl = {"TP1": t.get("tp1"), "TP2": t.get("tp2"), "SL": t.get("sl")}.get(result)
+        if lvl in (None, 0, ""):
+            return None
+        pct = (float(lvl) - entry) / entry * 100.0
+        # A SELL profits when price falls, so its sign is inverted.
+        side = str(t.get("signal") or t.get("direction") or "BUY").upper()
+        return pct if side.startswith("B") else -pct
+    except Exception:
+        return None
+
 
 def _track_daily_result(symbol: str, result: str, tier_routed: bool = False, free_shown: bool = False,
                          tp1_detail: dict = None, entry_date: str = None, sig_id: str = None, pnl: float = None):
@@ -8813,7 +8941,7 @@ def run_tick_check():
             send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                 react_category="tp2")
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
+            _track_daily_result(SYMBOL, "TP2", pnl=_trade_outcome_pct(active_trade, "TP2"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
             _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             ct.on_tp2(entry, tp2); ct.virtual_on_close(SYMBOL, tp2, "TP2"); reset_trade(); return True
@@ -8835,7 +8963,7 @@ def run_tick_check():
                 send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
-                _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
+                _track_daily_result(SYMBOL, "TP1", pnl=_trade_outcome_pct(active_trade, "TP1"), tier_routed=True, free_shown=active_trade.get("share_free", True),
                     tp1_detail={"tag": "BTC", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": active_trade.get("sig_id","")},
                     entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
                 _notify_free_late(SYMBOL, active_trade, "TP1")
@@ -8874,7 +9002,7 @@ def run_tick_check():
                 _sl_msg = fmt_update("SL_HIT")
                 _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", pnl=_trade_outcome_pct(active_trade, "SL"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
@@ -9037,7 +9165,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
             "entry_price": entry, "sl_price": t.get("sl", 0), "tp2_price": tp2})
-        _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
+        _track_daily_result(sym, "TP2", pnl=_trade_outcome_pct(t, "TP2"), tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
             entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
         _notify_free_late(sym, t, "TP2")
         _slot_hm = _slot_hm_for_trade(t)
@@ -9062,7 +9190,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
             "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
         _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
-        _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
+        _track_daily_result(sym, "TP1", pnl=_trade_outcome_pct(t, "TP1"), tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
             tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": t.get("sig_id", "")},
             entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id", ""))
         _notify_free_late(sym, t, "TP1")
@@ -9088,7 +9216,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": t.get("sl", 0)})
     if close_result == "SL":
-        _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
+        _track_daily_result(sym, "SL", pnl=_trade_outcome_pct(t, "SL"), tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
         # No separate _send_sl_reassurance call here (admin report 2026-08-12:
         # "sending sl 2 times") - unlike BTC/demo's SL paths, this scan
         # _send_sl_and_log call above already passes tier_routed explicitly,
@@ -9666,7 +9794,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
                 "entry_price": entry, "sl_price": t.get("sl",0), "tp2_price": tp2})
-            _track_daily_result(sym, "TP2", tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
+            _track_daily_result(sym, "TP2", pnl=_trade_outcome_pct(t, "TP2"), tier_routed=bool(t.get("tier_routed")), free_shown=t.get("share_free", True),
                 entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
             _notify_free_late(sym, t, "TP2")
             _slot_hm = _slot_hm_for_trade(t)
@@ -9695,7 +9823,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
                     "entry_price": entry, "sl_price": entry, "tp1_price": tp1})
                 _free_shown = bool(t.get("tier_routed")) and t.get("share_free", True)
-                _track_daily_result(sym, "TP1", tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
+                _track_daily_result(sym, "TP1", pnl=_trade_outcome_pct(t, "TP1"), tier_routed=bool(t.get("tier_routed")), free_shown=_free_shown,
                     tp1_detail={"tag": f"S{ver}", "side": sig, "tp1": tp1, "sl_be": entry, "tp2": tp2, "sig_id": t.get("sig_id","")},
                     entry_date=_ist_date_str(t.get("created_at")), sig_id=t.get("sig_id",""))
                 _notify_free_late(sym, t, "TP1")
@@ -9739,7 +9867,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 "sl_hit_time": _ist_str_now(), "result": result,
                 "entry_price": entry, "sl_price": t.get("sl",0)})
             if result == "SL":
-                _track_daily_result(sym, "SL", tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
+                _track_daily_result(sym, "SL", pnl=_trade_outcome_pct(t, "SL"), tier_routed=bool(t.get("tier_routed")), free_shown=bool(t.get("tier_routed")) and t.get("share_free", True), entry_date=_ist_date_str(t.get("created_at")))
                 # No separate _send_sl_reassurance here (admin report
                 # 2026-08-12: "sending sl 2 times", $BEAT) - _send_sl_and_log
                 # above already passes tier_routed explicitly and reached
@@ -11509,7 +11637,7 @@ def run_price_check():
             _tp2_msg = fmt_update("TP2_HIT")
             _tp2_ids = send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
-            _track_daily_result(SYMBOL, "TP2", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
+            _track_daily_result(SYMBOL, "TP2", pnl=_trade_outcome_pct(active_trade, "TP2"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
             reset_trade(); return True
         elif status == "SL_HIT":
@@ -11539,7 +11667,7 @@ def run_price_check():
                 _sl_msg = fmt_update("SL_HIT")
                 _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
-                _track_daily_result(SYMBOL, "SL", tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
+                _track_daily_result(SYMBOL, "SL", pnl=_trade_outcome_pct(active_trade, "SL"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL,
                     _sl_reassurance_channels(True, active_trade.get("share_free", True)), active_trade.get("reply_map"), active_trade.get("sig_id",""))
             _close_sig_snapshot(active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL")
@@ -11556,7 +11684,7 @@ def run_price_check():
             _tp1_msg = fmt_update("TP1_HIT")
             send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                 react_category="tp1")
-            _track_daily_result(SYMBOL, "TP1", tier_routed=True, free_shown=active_trade.get("share_free", True),
+            _track_daily_result(SYMBOL, "TP1", pnl=_trade_outcome_pct(active_trade, "TP1"), tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
                     "tp1": active_trade.get("tp1",0), "sl_be": active_trade.get("entry",0),
                     "tp2": active_trade.get("tp2",0), "sig_id": active_trade.get("sig_id","")},
@@ -20724,7 +20852,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             react_category="tp2")
         if t.get("ct_opened"): ct.on_scan_tp2(sym)
         ct.virtual_on_close(sym, cp, "TP2")
-        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
+        _track_daily_result(sym, "TP2", pnl=_trade_outcome_pct(t, "TP2"), tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
         _slot_hm = _slot_hm_for_trade(t, created)
         if _slot_hm: _slot_track(f"demo{dver}", _slot_hm, True, created)
@@ -20753,7 +20881,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             react_category="tp1")
         if t.get("ct_opened"): ct.on_scan_tp1(sym)
         ct.virtual_on_tp1(sym, tp1)
-        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
+        _track_daily_result(sym, "TP1", pnl=_trade_outcome_pct(t, "TP1"), tier_routed=tier_routed, free_shown=share_free,
             tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
             entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP1")
@@ -20779,7 +20907,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     if t.get("ct_opened"): ct.on_scan_sl(sym)
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
-        _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
+        _track_daily_result(sym, "SL", pnl=_trade_outcome_pct(t, "SL"), tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
         # No _send_sl_reassurance here either. This site builds the detailed
         # _scan_box rather than the minimal template, so the two posts were not
         # byte-identical - but they still both went to VIP/Free, so the channel
@@ -20873,7 +21001,7 @@ def _demo_monitor_loop():
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp2"] += 1
                             vip_trade_stats[f"demo{_dver}_tp1"] += (0 if tp1hit else 1)
-                        _track_daily_result(sym, "TP2", tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
+                        _track_daily_result(sym, "TP2", pnl=_trade_outcome_pct(t, "TP2"), tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP2")
                         _slot_hm = _slot_hm_for_trade(t, created)
                         if _slot_hm: _slot_track(f"demo{_dver}", _slot_hm, True, created)
@@ -20907,7 +21035,7 @@ def _demo_monitor_loop():
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_sl"] += 1
                         if lbl == "SL":
-                            _track_daily_result(sym, "SL", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
+                            _track_daily_result(sym, "SL", pnl=_trade_outcome_pct(t, "SL"), tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
                             # No _send_sl_reassurance here (admin report 2026-08-25,
                             # "sending sl hit 2 times"). On a real SL the ternary above
                             # already swapped _msg to the minimal "Position Closed /
@@ -20948,7 +21076,7 @@ def _demo_monitor_loop():
                         ct.virtual_on_tp1(sym, tp1)
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp1"] += 1
-                        _track_daily_result(sym, "TP1", tier_routed=tier_routed, free_shown=share_free,
+                        _track_daily_result(sym, "TP1", pnl=_trade_outcome_pct(t, "TP1"), tier_routed=tier_routed, free_shown=share_free,
                             tp1_detail={"tag": f"TS{_dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
                             entry_date=_ist_date_str(created), sig_id=sig_id)
                         _notify_free_late(sym, t, "TP1")
