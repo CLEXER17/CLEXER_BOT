@@ -3788,11 +3788,15 @@ def _kb_verified_system():
         "trade got entered or is live on the exchange:\n"
         "- Each scan type (Scan1, Scan2, TS1, TS2) runs its own grid of scheduled hour:minute "
         "slots. A brand-new slot starts NONSPECIAL (regular, unproven yet — shown in /nt).\n"
-        f"- A nonspecial slot auto-PROMOTES to SPECIAL + VERIFIED once it has banked at least "
-        f"{_SLOT_MIN_WINS_FOR_NEW_PROMOTION} wins AND its win rate is at/above that kind's threshold "
+        f"- A nonspecial slot auto-PROMOTES to SPECIAL once it has {_SLOT_MIN_STREAK_FOR_PROMOTION} "
+        f"wins IN A ROW AND its win rate is at/above that kind's threshold "
         f"(/winrate, set independently per kind — currently Scan1 {_SLOT_EVAL_THRESHOLD['scan1']}%, "
         f"Scan2 {_SLOT_EVAL_THRESHOLD['scan2']}%, TS1 {_SLOT_EVAL_THRESHOLD['demo1']}%, "
-        f"TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Verified slots are copytrade-enabled and shown in /st.\n"
+        f"TS2 {_SLOT_EVAL_THRESHOLD['demo2']}%). Promoted slots appear in /st.\n"
+        "- Being in /st is not enough to reach VIP/Free. Each slot is then judged PER "
+        "WEEKDAY (/st week): a day with no track record, or with a streak of zero, posts "
+        "to the Signal channel only. It reaches the tier channels and copy trade only when "
+        "that weekday has a streak of 1 or more AND a win rate at/above the same threshold.\n"
         "- A verified slot auto-DEMOTES to UNVERIFIED if its win rate later drops below "
         "threshold — it stays special/tracked but copytrade pauses there until it recovers.\n"
         f"- An unverified slot auto-REVERIFIES back to verified once its win rate is back at/above "
@@ -4879,6 +4883,10 @@ _demo_tried_verified_now = {1: set(), 2: set()}  # same idea as _scan_tried_veri
 # it's not tracked as its own event — only these 4 terminal outcomes are.
 _SLOT_EVAL_THRESHOLD = {"scan1": 55, "scan2": 55, "demo1": 50, "demo2": 50}
 _SLOT_MIN_WINS_FOR_NEW_PROMOTION = 4
+# Promotion from the /nt grid into /st needs a STREAK, not just a count of
+# wins (admin rule 2026-08-30). Four scattered wins among ten losses says
+# nothing; four in a row is a slot that is actually working.
+_SLOT_MIN_STREAK_FOR_PROMOTION = 4
 _SLOT_MIN_STREAK_FOR_REVERIFY = 3  # was 2 (admin request 2026-08-04)
 # demo1/demo2 each map to their own independent schedule kind (test1/test2).
 _SLOT_SCHEDULE_KIND = {"scan1": "scan1", "scan2": "scan2", "demo1": "test1", "demo2": "test2"}
@@ -5152,11 +5160,14 @@ def _evaluate_slot(kind: str, hm: tuple):
     hm_str = f"{hm[0]}:{hm[1]:02d}"
 
     if not is_special:
-        if win_pct >= threshold and st["tp"] >= _SLOT_MIN_WINS_FOR_NEW_PROMOTION:
+        if win_pct >= threshold and st.get("streak", 0) >= _SLOT_MIN_STREAK_FOR_PROMOTION:
             _SCAN_SPECIAL.setdefault(sched_kind, set()).add(hm)
             changed = True
             send_admin(f"⭐ <b>Auto-promoted</b> {kind} {hm_str} → SPECIAL + VERIFIED\n\n"
-                       f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl) — copytrade now enabled here.", pin=True)
+                       f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl), "
+                       f"{st.get('streak', 0)} in a row — now in /st.\n\n"
+                       f"<i>It still has to earn each weekday separately before it "
+                       f"reaches VIP/Free — see /st week.</i>", pin=True)
     elif is_special and not is_unverified:
         if win_pct < threshold:
             _SCAN_SPECIAL_NO_COPY.setdefault(sched_kind, set()).add(hm)
