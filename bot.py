@@ -13693,19 +13693,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                                                 else (f"{_t}/{_l} [S{_stk}]" if _stk >= 1
                                                       else f"{_t}/{_l}"))
                 _cw = max(9, max(len(v) for v in _cellmap.values())) if _cellmap else 9
-                # The upcoming slot is marked with the emoji at the END of its
-                # row, never in the gutter. A leading marker whose glyph is not
-                # exactly two monospace cells shifts that whole row against the
-                # others and bends the grid - which is what happened the first
-                # time emoji were tried in these cells. Nothing follows the
-                # marker here, so any width the client gives it costs nothing.
-                # It is the plain glyph, not <tg-emoji>: that tag is invalid
-                # inside <pre>, so the animated one rides the header line above.
+                # Two leading spaces set the time column off from the left edge,
+                # and the third position carries ">" on the slot that fires next.
                 _rows = ["   " + " " * 7 + " ".join(_cp(_d[:2], _cw) for _d in WD_NAMES)]
                 for _hm in _times:
-                    _rows.append("   " + f"{_hm[0]}:{_hm[1]:02d}".ljust(7)
-                                 + " ".join(_cp(_cellmap[(_hm, _di)], _cw) for _di in range(7))
-                                 + ("  ⏭️" if (_nxt and _hm == _nxt) else ""))
+                    _mk = ">" if (_nxt and _hm == _nxt) else " "
+                    _rows.append(f"  {_mk}" + f"{_hm[0]}:{_hm[1]:02d}".ljust(7)
+                                 + " ".join(_cp(_cellmap[(_hm, _di)], _cw) for _di in range(7)))
                 # Split by ROW, not just between kinds. At the wider cell size a
                 # single kind can exceed 4096 on its own - DEMO TS1's 54 slots
                 # come to ~4220 - and a between-kinds-only split can never break
