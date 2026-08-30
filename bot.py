@@ -520,6 +520,34 @@ CHANNELS: list = []  # [{"id": str, "tier": "vip"/"free", "label": str}, ...] �
 FREE_SIGNAL_DAILY_LIMIT = 40   # % of each day's verified/special signals also shared to Free (0-100)
 _free_signal_tracker = {"date": "", "total": 0, "shared": 0}  # resets automatically when the IST date rolls over
 
+def _daily_streak_slot_count(when=None) -> int:
+    """How many slots can actually reach the tier channels TODAY.
+
+    The Free quota used to be a percentage of the day's SCHEDULED verified
+    slots - a fixed number from the admin's config that was the same on a
+    Sunday as on a Tuesday. Since slots are now judged per weekday, that
+    number no longer describes what is really on offer: a slot verified in
+    /st may still be Signal-only today because this weekday has no record or
+    a zero streak.
+
+    So the denominator is now the count of slots passing BOTH weekday gates
+    for today - streak >= 1 AND that weekday's win rate at/above the kind's
+    threshold - which is exactly _slot_day_verified. Counting slots that
+    cannot reach Free would shrink everyone's share for nothing.
+
+    Respects the /vsttimes allowlist the same way _daily_verified_slot_count
+    does, so turning that gate on still narrows the basis."""
+    _day = _wd_from_epoch(when)
+    _n = 0
+    for _stat_kind, _sched in _SLOT_SCHEDULE_KIND.items():
+        for _hm in _SCAN_SPECIAL.get(_sched, set()):
+            if VST_COPY_ALLOWLIST_ENABLED and _hm not in _VST_COPY_ALLOWED.get(_sched, set()):
+                continue
+            if _slot_day_verified(_stat_kind, _hm, when):
+                _n += 1
+    return _n
+
+
 def _daily_verified_slot_count() -> int:
     """Fixed count of the day's SCHEDULED 'verified' slot times across
     Scan1/Scan2/TS1/TS2 (admin-configured special times minus the no-copy
@@ -603,11 +631,17 @@ def _free_quota_available() -> bool:
         _free_signal_tracker = {"date": today, "total": 0, "shared": 0}
     _free_signal_tracker["total"] += 1
     _save_free_tracker()
-    _quota = round(_daily_verified_slot_count() * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
+    # Basis is today's qualifying slots, not the static schedule count. On a
+    # day where nothing qualifies the quota is genuinely 0 and Free shares
+    # nothing (admin choice 2026-08-30) - the percentage is of what is real.
+    _basis = _daily_streak_slot_count()
+    _quota = round(_basis * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
     _win = _in_free_window()
     _decision = _win and (_free_signal_tracker["shared"] < _quota)
-    print(f"[FREE QUOTA] total={_free_signal_tracker['total']} shared={_free_signal_tracker['shared']} "
-          f"quota={_quota} in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
+    print(f"[FREE QUOTA] {WD_NAMES[_wd_from_epoch()]}: {_basis} qualifying slots x "
+          f"{FREE_SIGNAL_DAILY_LIMIT}% = quota {_quota} | "
+          f"total={_free_signal_tracker['total']} shared={_free_signal_tracker['shared']} "
+          f"in_window={_win} -> {'SHARE' if _decision else 'LOCK'}")
     return _decision
 
 def _consume_free_quota():
@@ -13738,7 +13772,14 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 # Legend removed at admin request 2026-08-29 - it cost ~400
                 # characters on every page of an output already tight against
                 # Telegram's limit.
-                _h = "📅 <b>Special Times — by weekday</b>\n\n" if _i == 0 else ""
+                if _i == 0:
+                    _q_basis = _daily_streak_slot_count()
+                    _q_n = round(_q_basis * (FREE_SIGNAL_DAILY_LIMIT / 100.0))
+                    _h = (f"📅 <b>Special Times — by weekday</b>\n"
+                          f"<i>{WD_NAMES[_wd_from_epoch()]}: {_q_basis} slot(s) qualify — "
+                          f"Free gets {_q_n} of them ({FREE_SIGNAL_DAILY_LIMIT}%)</i>\n\n")
+                else:
+                    _h = ""
                 _f = f"\n\n<i>({_i + 1}/{len(_wk_msgs)})</i>" if len(_wk_msgs) > 1 else ""
                 send_reply(chat_id, _h + _m + _f)
             return
