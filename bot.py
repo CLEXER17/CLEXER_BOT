@@ -13673,8 +13673,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 for _hm in _times:
                     for _di in range(7):
                         _p, _t, _l = _slot_day_rate(_kind, _hm, _di)
+                        _stk = _slot_day_streak(_kind, _hm, _di)
+                        # The bracket is only worn by cells that actually hold a
+                        # streak, so it marks the half of the gate a slot has
+                        # passed rather than sitting on every cell as [S0] noise.
                         _cellmap[(_hm, _di)] = ("." if _p is None
-                                                else f"{_t}/{_l} [S{_slot_day_streak(_kind, _hm, _di)}]")
+                                                else (f"{_t}/{_l} [S{_stk}]" if _stk >= 1
+                                                      else f"{_t}/{_l}"))
                 _cw = max(9, max(len(v) for v in _cellmap.values())) if _cellmap else 9
                 _rows = ["      " + " ".join(_cp(_d[:2], _cw) for _d in WD_NAMES)]
                 for _hm in _times:
