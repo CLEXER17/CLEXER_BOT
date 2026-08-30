@@ -761,6 +761,12 @@ _REPLY_KB_CMD_MAP = {
     "📋 Trade Log": "/tradelog",
     "🧠 AI Gateway": "/aiconfig",
     "👥 Users": "/users",
+    # Admin keyboard only — the row carrying these is built solely for
+    # ADMIN_CHAT_ID below, so no other tier can reach them from a button.
+    # The commands themselves already gate on is_admin, so a non-admin typing
+    # the label by hand still gets nothing.
+    "🧹 Clear SL Free": "/clearslfree",
+    "🧹 Clear SL VIP": "/clearslvip",
 }
 
 def _reply_keyboard_for_chat(chat_id) -> dict:
@@ -768,7 +774,8 @@ def _reply_keyboard_for_chat(chat_id) -> dict:
     admin, co-admin, VIP user, or free user. Sent on /start."""
     cid_str = str(chat_id)
     if ADMIN_CHAT_ID and cid_str == str(ADMIN_CHAT_ID):
-        rows = [["📊 Status", "⏸ Pause/Resume"], ["🧠 AI Gateway", "📋 Trade Log"], ["👥 Users"]]
+        rows = [["📊 Status", "⏸ Pause/Resume"], ["🧠 AI Gateway", "📋 Trade Log"],
+                ["👥 Users"], ["🧹 Clear SL Free", "🧹 Clear SL VIP"]]
     elif is_co_admin(chat_id):
         rows = [["🧠 AI Gateway", "🛠 Trade Control"], ["📋 Trade Log", "📊 Status"]]
     else:
