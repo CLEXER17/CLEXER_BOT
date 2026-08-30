@@ -1642,14 +1642,14 @@ def _recap_table(trades: list) -> str:
     return "\n".join(out)
 
 
-def _recap_summary(trades: list, include_sl: bool = True) -> str:
+def _recap_summary(trades: list, include_sl: bool = True, period: str = "Daily") -> str:
     """Counts and totalled P&L per outcome, then the net.
 
     A trade with no recorded percentage contributes nothing and is called out
     rather than quietly folded in as zero - a recap that invents numbers is
     worse than one that admits a gap."""
     bar = "━" * 24
-    lines = [bar, "📊 <b>Summary</b>"]
+    lines = [bar, f"📊 <b>{period} Summary</b>"]
     net, missing = 0.0, 0
     for res in _RECAP_ORDER:
         if res == "SL" and not include_sl:
@@ -1676,7 +1676,7 @@ def _build_recap_text(trades: list, date_str: str, include_sl: bool = True) -> s
     tbl = _recap_table(shown)
     if tbl:
         parts.append(f"<pre>{tbl}</pre>")
-    parts.append(_recap_summary(shown, include_sl=include_sl))
+    parts.append(_recap_summary(shown, include_sl=include_sl, period="Daily"))
     return "\n".join(parts)
 
 
@@ -1775,7 +1775,8 @@ def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) 
         if len(by_sym) > len(top):
             parts.append(f"<i>+{len(by_sym) - len(top)} more symbols</i>")
 
-    parts.append(_recap_summary(shown, include_sl=include_sl))
+    parts.append(_recap_summary(shown, include_sl=include_sl,
+                                period=(title.split()[0] if title.split() else "Period")))
     parts.append(f"✅ <b>Win Rate: {wins / decided * 100:.0f}%</b> ({wins}/{decided})"
                  if decided else "✅ <b>Win Rate:</b> —")
     return "\n".join(parts)
