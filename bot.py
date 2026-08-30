@@ -13656,6 +13656,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 if not _times:
                     continue
                 _th = _SLOT_EVAL_THRESHOLD[_kind]
+                # Which of THIS kind's slots fires next. Each table marks its
+                # own schedule's upcoming time, not one shared across all four.
+                _now_hm = (now_ist().hour, now_ist().minute)
+                _fut = [t for t in _times if t > _now_hm]
+                _nxt = _fut[0] if _fut else (_times[0] if _times else None)
+                _nxt_tom = not _fut and bool(_times)
                 # Pure ASCII, five characters per cell, no exceptions. Emoji
                 # were tried here and cannot work: they are not exactly two
                 # monospace cells in Telegram and the width varies by device,
@@ -13666,7 +13672,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 # live rather than on what is excluded.
                 def _cp(x, w=9):
                     return x.center(w)
-                _hdr = f"📊 <b>{_st_labels[_kind]} — {_th}%</b>\n<pre>"
+                _nxt_line = ""
+                if _nxt:
+                    _nxt_line = (f'<tg-emoji emoji-id="6282650728632687319">⏭️</tg-emoji> '
+                                 f"next <b>{_nxt[0]}:{_nxt[1]:02d}</b>"
+                                 + (" (tomorrow)" if _nxt_tom else "") + "\n")
+                _hdr = (f"📊 <b>{_st_labels[_kind]} — {_th}%</b>\n"
+                        + _nxt_line + "<pre>")
                 # Cells read "tp/sl [Sn]". Width is measured, not assumed, so a
                 # two-digit streak cannot push the columns out of line.
                 _cellmap = {}
@@ -13681,9 +13693,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                                                 else (f"{_t}/{_l} [S{_stk}]" if _stk >= 1
                                                       else f"{_t}/{_l}"))
                 _cw = max(9, max(len(v) for v in _cellmap.values())) if _cellmap else 9
-                _rows = ["      " + " ".join(_cp(_d[:2], _cw) for _d in WD_NAMES)]
+                # Two leading spaces set the time column off from the left edge,
+                # and the third position carries ">" on the slot that fires next.
+                _rows = ["   " + " " * 7 + " ".join(_cp(_d[:2], _cw) for _d in WD_NAMES)]
                 for _hm in _times:
-                    _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6)
+                    _mk = ">" if (_nxt and _hm == _nxt) else " "
+                    _rows.append(f"  {_mk}" + f"{_hm[0]}:{_hm[1]:02d}".ljust(7)
                                  + " ".join(_cp(_cellmap[(_hm, _di)], _cw) for _di in range(7)))
                 # Split by ROW, not just between kinds. At the wider cell size a
                 # single kind can exceed 4096 on its own - DEMO TS1's 54 slots
