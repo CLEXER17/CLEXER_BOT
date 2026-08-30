@@ -18612,13 +18612,39 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
         chunks.append(cur)
     chunks[-1] += footer
 
-    for i, chunk in enumerate(chunks):
-        tag = f"<i>(part {i+1}/{len(chunks)})</i>\n\n" if len(chunks) > 1 else ""
-        # skip_smallcaps: same reason as /timepanel's chunked send — this
-        # relies on real <b>/<i> formatting, which smallcaps flattens into
-        # unicode caps that are harder to read, not easier (admin report
-        # 2026-08-12).
-        send_reply(chat_id, tag + chunk, skip_smallcaps=True)
+    # ONE message with page buttons, not N messages in a row. Sending six or
+    # seven back to back trips Telegram's flood control, which silently drops
+    # everything after the first - the admin only ever saw page 1 (report
+    # 2026-08-30). Paging also keeps the list in one place instead of burying
+    # itself under its own continuation messages.
+    _CMD_PAGES[str(chat_id)] = chunks
+    _send_cmd_page(chat_id, 0)
+
+
+_CMD_PAGES: dict = {}   # chat_id -> rendered pages, so a tap re-renders without
+                        # rebuilding the whole command registry
+
+
+def _send_cmd_page(chat_id, idx: int, message_id=None):
+    """Render one /cmd page, with prev/next buttons when there is more than one."""
+    pages = _CMD_PAGES.get(str(chat_id)) or []
+    if not pages:
+        send_reply(chat_id, "Run /cmd again — that list has expired.", skip_smallcaps=True)
+        return
+    idx = max(0, min(idx, len(pages) - 1))
+    tag = f"<i>(page {idx+1}/{len(pages)})</i>\n\n" if len(pages) > 1 else ""
+    rows = []
+    if len(pages) > 1:
+        nav = []
+        if idx > 0:
+            nav.append({"text": "◀️ Prev", "callback_data": f"cmdpage:{idx-1}"})
+        nav.append({"text": f"{idx+1}/{len(pages)}", "callback_data": "noop"})
+        if idx < len(pages) - 1:
+            nav.append({"text": "Next ▶️", "callback_data": f"cmdpage:{idx+1}"})
+        rows.append(nav)
+    _help_edit_or_send(chat_id, tag + pages[idx],
+                       {"inline_keyboard": rows} if rows else None,
+                       message_id=message_id)
 
 def _find_back_target(cmd_text):
     """Find the correct 'Back' callback_data for a command — the immediate
@@ -19481,6 +19507,13 @@ def command_listener():
                         ct.set_demo2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctdemo2_off" and cb_is_scanadmin:
                         ct.set_demo2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("cmdpage:"):
+                        # Page taps are open to whoever ran /cmd - the list they were shown
+                        # was already filtered to their own access level when it was built.
+                        try:
+                            _send_cmd_page(cb_chat_id, int(cb_data.split(":", 1)[1]), message_id=cb_msg_id)
+                        except Exception as _ce:
+                            print(f"[CMD PAGE] {_ce}")
                     elif cb_data == "ctbtcint_on" and cb_is_scanadmin:
                         ct.set_btcint_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctbtcint_off" and cb_is_scanadmin:
