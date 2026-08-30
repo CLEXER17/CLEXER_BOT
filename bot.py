@@ -13647,6 +13647,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if len(parts) > 1 and parts[1].lower() in ("week", "w", "day", "days"):
             _wk_only = parts[2].lower() if len(parts) > 2 else ""
             _wk_msgs, _wk_cur = [], ""
+            _wk_margin = 120   # room for the title line and the (n/N) footer
             for _kind in ("scan1", "scan2", "demo1", "demo2"):
                 if _wk_only and _wk_only not in _kind and _wk_only not in _st_labels[_kind].lower():
                     continue
@@ -13679,21 +13680,34 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 for _hm in _times:
                     _rows.append(f"{_hm[0]}:{_hm[1]:02d}".ljust(6)
                                  + " ".join(_cp(_cellmap[(_hm, _di)], _cw) for _di in range(7)))
-                _blk = _hdr + "\n".join(_rows) + "</pre>"
-                if _wk_cur and len(_wk_cur) + len(_blk) > _TG_MSG_LIMIT - 120:
+                # Split by ROW, not just between kinds. At the wider cell size a
+                # single kind can exceed 4096 on its own - DEMO TS1's 54 slots
+                # come to ~4220 - and a between-kinds-only split can never break
+                # that up, so Telegram rejected the whole message (admin report
+                # 2026-08-29). Each message closes its own <pre>, because an
+                # unbalanced tag split across two messages is invalid HTML.
+                _open = _hdr
+                _cont = f"<b>{_st_labels[_kind]}</b> (cont.)\n<pre>"
+                if _wk_cur and len(_wk_cur) + len(_open) + len(_rows[0]) + 60 > _TG_MSG_LIMIT - _wk_margin:
                     _wk_msgs.append(_wk_cur); _wk_cur = ""
-                _wk_cur += ("\n\n" if _wk_cur else "") + _blk
+                _wk_cur += ("\n\n" if _wk_cur else "") + _open
+                _hdr_row = _rows[0]
+                for _ri, _row in enumerate(_rows):
+                    if len(_wk_cur) + len(_row) + 20 > _TG_MSG_LIMIT - _wk_margin:
+                        _wk_msgs.append(_wk_cur.rstrip() + "</pre>")
+                        # Repeat the day header so a continued page is readable.
+                        _wk_cur = _cont + _hdr_row + "\n"
+                    _wk_cur += _row + "\n"
+                _wk_cur = _wk_cur.rstrip() + "</pre>"
             if _wk_cur:
                 _wk_msgs.append(_wk_cur)
             if not _wk_msgs:
                 send_reply(chat_id, "No special times configured."); return
             for _i, _m in enumerate(_wk_msgs):
-                _h = ("📅 <b>Special Times — by weekday</b>\n"
-                      "<i>tp/sl [S] where S is the profit streak for that slot on that day.\n"
-                      "A slot reaches VIP/Free + copy trade only when its streak is 1 or more\n"
-                      "AND its win rate for that day is at or above the bar. Otherwise it\n"
-                      "posts to the Signal channel only. BE counts as a profit, never a loss.\n"
-                      ". = never ran that day · streak floor is S0, never negative</i>\n\n") if _i == 0 else ""
+                # Legend removed at admin request 2026-08-29 - it cost ~400
+                # characters on every page of an output already tight against
+                # Telegram's limit.
+                _h = "📅 <b>Special Times — by weekday</b>\n\n" if _i == 0 else ""
                 _f = f"\n\n<i>({_i + 1}/{len(_wk_msgs)})</i>" if len(_wk_msgs) > 1 else ""
                 send_reply(chat_id, _h + _m + _f)
             return
