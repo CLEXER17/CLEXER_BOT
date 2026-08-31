@@ -11723,21 +11723,28 @@ def _test_monitor_loop():
 
 
 def _test_cycle_report(results: list) -> str:
-    """Posted after every pass, so a quiet channel is explained rather than
-    silent. A cycle where nothing fires is the normal case for a 2-of-4 rule
-    plus a 1M confirmation, and without this the admin cannot tell that from
-    the system being broken.
+    """Posted after every pass so a quiet channel is explained rather than
+    silent. A cycle where nothing fires is normal for a 2-of-4 rule plus a 1M
+    confirmation, and without this the admin cannot tell that from the system
+    being broken.
 
-    One message per cycle, not one per pair - five separate posts every
-    fifteen minutes would bury the actual signals."""
+    Pairs already holding a trade are counted in the header but NOT listed:
+    a pair stays open for hours, so a line for it every fifteen minutes is
+    pure repetition that buries the pairs actually being evaluated (admin
+    2026-08-30). Returns "" when there is nothing to say at all, and the
+    caller skips the post entirely."""
     took = [r for r in results if r[1]]
-    lines = []
-    for sym, ok, why in results:
-        coin = sym.replace("-USDT", "")
-        lines.append(f"{'✅' if ok else '⏸'} <b>{coin}</b> — {why}")
-    head = (f"🧪 <b>Test cycle</b> · {now_ist().strftime('%H:%M')} IST\n"
-            f"<i>{len(took)} trade(s) taken of {len(results)} pairs</i>\n\n")
-    return head + "\n".join(lines)
+    busy = [r for r in results if not r[1] and r[2] == "already in a trade"]
+    show = [r for r in results if r[1] or r[2] != "already in a trade"]
+    if not show:
+        return ""      # every pair already trading - nothing to report
+    lines = [f"{'✅' if ok else '⏸'} <b>{sym.replace('-USDT','')}</b> — {why}"
+             for sym, ok, why in show]
+    _hdr = f"{len(took)} taken · {len(show) - len(took)} skipped"
+    if busy:
+        _hdr += f" · {len(busy)} already open"
+    return (f"🧪 <b>Test cycle</b> · {now_ist().strftime('%H:%M')} IST\n"
+            f"<i>{_hdr}</i>\n\n" + "\n".join(lines))
 
 
 def _test_scan_loop():
@@ -11757,7 +11764,9 @@ def _test_scan_loop():
                     except Exception as e:
                         _results.append((sym, False, f"error: {e}"))
                         print(f"  [TEST] {sym}: {e}")
-                _test_post(_test_cycle_report(_results))
+                _rep = _test_cycle_report(_results)
+                if _rep:
+                    _test_post(_rep)
         except Exception as e:
             print(f"[TEST SCAN LOOP] {e}")
         time.sleep(20)
