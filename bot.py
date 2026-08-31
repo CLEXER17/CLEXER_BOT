@@ -968,6 +968,7 @@ _coin_chart_lock = threading.Lock()
 _coin_chart_pending_event = None
 _coin_chart_pending_result: dict = {}
 _userbot_starting = False   # a start is in flight; see _start_userbot
+_userbot_last_error = ""    # last connect failure, surfaced by /userbot
 
 def _start_userbot():
     """Call once at startup (see main()). No-op if TG_USER_* isn't configured
@@ -1016,6 +1017,7 @@ def _start_userbot():
             # or an awaitable is required", since there's nothing left to
             # await by the time it returns. Just call it directly.
             _userbot_client.start()
+            globals()["_userbot_last_error"] = ""
             print("[USERBOT] Connected.")
 
             # Force a dialog-list sync so Telethon caches the access_hash for
@@ -1068,6 +1070,10 @@ def _start_userbot():
             _userbot_ready.set()
             loop.run_forever()
         except Exception as e:
+            # Kept so /userbot can show it. Without this the only record was a
+            # log line, and a revoked session or a network refusal looked
+            # identical to "never tried".
+            globals()["_userbot_last_error"] = f"{type(e).__name__}: {e}"[:300]
             print(f"[USERBOT] connect error: {e}")
         finally:
             _userbot_starting = False
@@ -1086,16 +1092,28 @@ def _stop_userbot_if_running():
     disconnecting on demotion). Self-guarding: sets _userbot_client back to
     None so repeated calls on later ticks are harmless no-ops."""
     global _userbot_client, _userbot_loop
+    global _userbot_starting
     if _userbot_client is not None and _userbot_loop is not None:
         try:
             import asyncio
             asyncio.run_coroutine_threadsafe(_userbot_client.disconnect(), _userbot_loop)
+            # Stop the loop too, not just the client. run_forever() blocks the
+            # worker thread for the whole life of the connection, so without
+            # this the thread never unwinds, never reaches the finally that
+            # clears _userbot_starting, and the restart guard then refuses
+            # every future start - including a manual /userbot restart. The
+            # guard was added to stop two logins racing; left like this it
+            # would have stopped ALL of them.
+            _userbot_loop.call_soon_threadsafe(_userbot_loop.stop)
             print("[USERBOT] Disconnected — no longer the active server.")
         except Exception as e:
             print(f"[USERBOT] disconnect error: {e}")
         _userbot_client = None
         _userbot_loop = None
         _userbot_ready.clear()
+    # Cleared unconditionally: if the worker is wedged somewhere the finally
+    # cannot reach, a stuck flag must not lock the feature out permanently.
+    _userbot_starting = False
 
 def _send_via_userbot(chat_id, text: str, timeout: float = 10.0):
     """Sends `text` into `chat_id` as the real user account. Synchronous
@@ -15039,7 +15057,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"Connected: {'✅' if _conn else '❌'}"
             + ("  <i>(starting…)</i>" if _userbot_starting else "") + "\n"
             f"Active server: {'✅' if (not CLEXER_API_URL or is_active_server()) else '❌ standby'}\n"
-            f"Charts enabled: {'✅' if SEND_CHARTS else '❌ /images on'}\n\n"
+            f"Charts enabled: {'✅' if SEND_CHARTS else '❌ /images on'}\n"
+            + (f"\n⚠️ <b>Last error:</b> <code>{_userbot_last_error}</code>\n"
+               if _userbot_last_error else "") + "\n"
             f"<b>Groups</b>\n<pre>" + "\n".join(_grp) + "</pre>\n"
             f"<code>/userbot restart</code> to force a reconnect.",
             skip_smallcaps=True)
