@@ -1016,9 +1016,30 @@ def _start_userbot():
             # run_until_complete() fails with "An asyncio.Future, a coroutine
             # or an awaitable is required", since there's nothing left to
             # await by the time it returns. Just call it directly.
+            # Re-verify ownership IMMEDIATELY before logging in, and claim it
+            # centrally. AuthKeyDuplicatedError is permanent: Telegram revokes
+            # the session for good the moment two IPs use it at once, so the
+            # cost of one racing connect is a dead session string and a manual
+            # re-login (admin report 2026-08-30). The wait loop above can be
+            # satisfied seconds before start() actually runs, which is a wide
+            # enough window for two servers mid-rotation to both pass it.
+            if CLEXER_API_URL:
+                if not is_active_server():
+                    raise RuntimeError("no longer the active server at connect time")
+                try:
+                    _kv_push("userbot_owner", {"server": SERVER_NAME, "ts": time.time()})
+                    time.sleep(2)
+                    _own = _central_get("/kv/userbot_owner")
+                    _who = (_own.json() or {}).get("server") if (_own is not None and _own.ok) else None
+                    if _who and _who != SERVER_NAME:
+                        raise RuntimeError(f"userbot session claimed by '{_who}' — standing down")
+                except RuntimeError:
+                    raise
+                except Exception as _ce:
+                    print(f"[USERBOT] ownership claim check failed (continuing): {_ce}")
             _userbot_client.start()
             globals()["_userbot_last_error"] = ""
-            print("[USERBOT] Connected.")
+            print(f"[USERBOT] Connected as server '{SERVER_NAME}'.")
 
             # Force a dialog-list sync so Telethon caches the access_hash for
             # every chat Kaito's account currently sits in — without this, a
@@ -15059,7 +15080,15 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"Active server: {'✅' if (not CLEXER_API_URL or is_active_server()) else '❌ standby'}\n"
             f"Charts enabled: {'✅' if SEND_CHARTS else '❌ /images on'}\n"
             + (f"\n⚠️ <b>Last error:</b> <code>{_userbot_last_error}</code>\n"
-               if _userbot_last_error else "") + "\n"
+               if _userbot_last_error else "")
+            + ("\n🛑 <b>This session is permanently revoked.</b> Telegram kills a session "
+               "for good once two IPs use it at once — reconnecting cannot help. Run "
+               "<code>userbot_login.py</code> locally on the second account and put the new "
+               "TG_USER_SESSION_STRING in Railway. Stop any old/abandoned deploys first, or the "
+               "new one dies the same way.\n"
+               if "AuthKeyDuplicated" in _userbot_last_error
+               or "AuthKeyUnregistered" in _userbot_last_error
+               or "SessionRevoked" in _userbot_last_error else "") + "\n"
             f"<b>Groups</b>\n<pre>" + "\n".join(_grp) + "</pre>\n"
             f"<code>/userbot restart</code> to force a reconnect.",
             skip_smallcaps=True)
