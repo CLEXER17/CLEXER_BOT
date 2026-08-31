@@ -11532,14 +11532,14 @@ def _test_scan_one(symbol: str) -> str:
     """One symbol, one pass. Returns a short status line for the log."""
     with _test_lock:
         if any(t["symbol"] == symbol for t in _test_trades):
-            return f"{symbol}: already open here — skip"
+            return (symbol, False, "already in a trade")
 
     px = get_bingx_price(symbol)
     if not px or px <= 0:
-        return f"{symbol}: no price"
+        return (symbol, False, "no price from the exchange")
     df5 = bingx_klines(symbol, "5m", 30)
     if df5 is None or len(df5) < 10:
-        return f"{symbol}: not enough 5M candles"
+        return (symbol, False, "not enough 5M candles")
 
     # Same engine Scan1 uses in /switch engine mode - direction, stop and
     # targets all from its deterministic rules, no API call anywhere.
@@ -11549,18 +11549,28 @@ def _test_scan_one(symbol: str) -> str:
     r = _engine_signal(H, L, C, float(px), TEST_TP1_MULT, TEST_TP2_MULT,
                        TEST_SL_LO, TEST_SL_HI)
     if not r or r["signal"] == "WAIT":
-        return f"{symbol}: WAIT ({(r or {}).get('reason','no data')})"
+        # Say WHICH of the two things stopped it, and by how much, rather than
+        # a bare "WAIT" that gives the admin nothing to act on.
+        _rs = (r or {}).get("reason", "no data")
+        if _rs == "no_stop":
+            return (symbol, False,
+                    f"direction found, but no stop inside {TEST_SL_LO}-{TEST_SL_HI}% "
+                    f"(nearest {r.get('sl_pct', 0):.2f}%)")
+        _b, _s = (r or {}).get("score_buy", 0), (r or {}).get("score_sell", 0)
+        return (symbol, False, f"no clear direction — buy {_b}/4, sell {_s}/4 (needs 2+ and a winner)")
 
     side = r["signal"]
     if not _test_1m_confirms(symbol, side):
-        return f"{symbol}: {side} blocked — 1M not confirming"
+        return (symbol, False,
+                f"engine said {side} (b{r['score_buy']}/s{r['score_sell']}) but the last "
+                f"{TEST_1M_CONFIRM} 1M candles are not moving that way")
 
     dp = _test_dp(symbol)
     q = lambda v: round(float(v), dp)
     entry, sl = q(r["entry"]), q(r["sl"])
     d = abs(entry - sl)
     if d <= 0:
-        return f"{symbol}: degenerate stop after rounding"
+        return (symbol, False, "stop collapsed onto entry after rounding to venue precision")
     tp1 = q(entry + d * TEST_TP1_MULT * (1 if side == "BUY" else -1))
     tp2 = q(entry + d * TEST_TP2_MULT * (1 if side == "BUY" else -1))
     sl_pct = d / entry * 100
@@ -11572,11 +11582,11 @@ def _test_scan_one(symbol: str) -> str:
          "score": f"{r.get('score_buy',0)}b/{r.get('score_sell',0)}s"}
     with _test_lock:
         if any(x["symbol"] == symbol for x in _test_trades):
-            return f"{symbol}: raced another pass — skip"
+            return (symbol, False, "another pass opened it first")
         _test_trades.append(t)
     _test_save()
     _test_post(_test_entry_card(t))
-    return f"{symbol}: {side} @ {entry} SL {sl_pct:.2f}%"
+    return (symbol, True, f"{side} @ {entry} · SL {sl_pct:.2f}%")
 
 
 def _test_post(text: str, reply_to=None):
@@ -11685,6 +11695,24 @@ def _test_monitor_loop():
         time.sleep(30)
 
 
+def _test_cycle_report(results: list) -> str:
+    """Posted after every pass, so a quiet channel is explained rather than
+    silent. A cycle where nothing fires is the normal case for a 2-of-4 rule
+    plus a 1M confirmation, and without this the admin cannot tell that from
+    the system being broken.
+
+    One message per cycle, not one per pair - five separate posts every
+    fifteen minutes would bury the actual signals."""
+    took = [r for r in results if r[1]]
+    lines = []
+    for sym, ok, why in results:
+        coin = sym.replace("-USDT", "")
+        lines.append(f"{'✅' if ok else '⏸'} <b>{coin}</b> — {why}")
+    head = (f"🧪 <b>Test cycle</b> · {now_ist().strftime('%H:%M')} IST\n"
+            f"<i>{len(took)} trade(s) taken of {len(results)} pairs</i>\n\n")
+    return head + "\n".join(lines)
+
+
 def _test_scan_loop():
     """Own thread. One pass over all five symbols every 15 minutes."""
     time.sleep(45)
@@ -11693,11 +11721,16 @@ def _test_scan_loop():
         try:
             if TEST_ENABLED and (time.time() - _last) >= TEST_CYCLE_SECS:
                 _last = time.time()
+                _results = []
                 for sym in TEST_SYMBOLS:
                     try:
-                        print(f"  [TEST] {_test_scan_one(sym)}")
+                        _res = _test_scan_one(sym)
+                        _results.append(_res)
+                        print(f"  [TEST] {_res[0]}: {'TRADE ' if _res[1] else ''}{_res[2]}")
                     except Exception as e:
+                        _results.append((sym, False, f"error: {e}"))
                         print(f"  [TEST] {sym}: {e}")
+                _test_post(_test_cycle_report(_results))
         except Exception as e:
             print(f"[TEST SCAN LOOP] {e}")
         time.sleep(20)
