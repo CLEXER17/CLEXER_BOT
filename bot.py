@@ -967,18 +967,28 @@ def _clean_cointrendz_group():
 _coin_chart_lock = threading.Lock()
 _coin_chart_pending_event = None
 _coin_chart_pending_result: dict = {}
+_userbot_starting = False   # a start is in flight; see _start_userbot
 
 def _start_userbot():
     """Call once at startup (see main()). No-op if TG_USER_* isn't configured
     — chart-image requests just won't get a reply from CoinTrendzBot until
     it is (see userbot_login.py for how to generate TG_USER_SESSION_STRING)."""
-    global _userbot_loop, _userbot_client
+    global _userbot_loop, _userbot_client, _userbot_starting
+    # The client is only assigned inside the thread below, and only AFTER the
+    # active-server wait, so a caller polling `_userbot_client is None` would
+    # otherwise start a second one every tick until the first finished - and
+    # two logins on one session is the exact "used under two different IP
+    # addresses" error this whole area exists to avoid.
+    if _userbot_starting:
+        return
     if not (TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING):
         print("[USERBOT] Not configured (TG_USER_API_ID/API_HASH/SESSION_STRING) — "
               "CoinTrendzBot chart requests won't work until it is.")
         return
+    _userbot_starting = True
+
     def _run():
-        global _userbot_loop, _userbot_client
+        global _userbot_loop, _userbot_client, _userbot_starting
         import asyncio
         from telethon import TelegramClient, events
         from telethon.sessions import StringSession
@@ -1059,6 +1069,8 @@ def _start_userbot():
             loop.run_forever()
         except Exception as e:
             print(f"[USERBOT] connect error: {e}")
+        finally:
+            _userbot_starting = False
     threading.Thread(target=_run, daemon=True).start()
 
 def _stop_userbot_if_running():
@@ -2507,6 +2519,21 @@ def _server_heartbeat_loop():
                     _check_active_server_failover()
                     _stop_userbot_if_running()
                 else:
+                    # Restart the userbot if a demotion stopped it.
+                    # _start_userbot() only ever ran once at boot, while the
+                    # stop above runs every 20s on any standby tick - so a
+                    # single blip (a slow central-store read, a moment during
+                    # a server rotation) disconnected the session permanently
+                    # and every chart request silently returned None until the
+                    # next redeploy. The bot looked completely healthy
+                    # otherwise, which is why this went unexplained (admin
+                    # report 2026-08-30). Self-guarding: _start_userbot no-ops
+                    # when unconfigured, and _userbot_client is only None here
+                    # if the stop path actually cleared it.
+                    if (TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING
+                            and _userbot_client is None):
+                        print("[USERBOT] Active again but not connected — restarting.")
+                        _start_userbot()
                     _self_heartbeat_if_due()
                     _maintenance_live_if_due()
                     _push_public_status_if_due()
@@ -13114,7 +13141,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -14981,6 +15008,32 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/aiconfig" and is_scanadmin:
         send_aiconfig_screen(chat_id)
+
+    elif cmd == "/userbot" and is_admin:
+        _cfg = bool(TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING)
+        _conn = _userbot_client is not None and _userbot_ready.is_set()
+        if len(parts) > 1 and parts[1].lower() in ("restart", "reconnect"):
+            _stop_userbot_if_running(); time.sleep(1); _start_userbot()
+            send_reply(chat_id, "🔄 Userbot restart requested — "
+                                "run <code>/userbot</code> in a few seconds to confirm.",
+                       skip_smallcaps=True); return
+        _grp = []
+        for _g in COINTRENDZ_GROUP_IDS:
+            _bu = _cointrendz_group_blocked_until.get(str(_g), 0)
+            _n = len([t for t in _cointrendz_group_requests.get(str(_g), [])
+                      if time.time() - t < 86400])
+            _grp.append(f"  {_g}  {_n}/{COINTRENDZ_GROUP_LIMIT} today"
+                        + (f"  ⛔ blocked {int((_bu-time.time())/60)}m" if _bu > time.time() else ""))
+        send_reply(chat_id,
+            f"👤 <b>Userbot (CoinTrendz charts)</b>\n\n"
+            f"Configured: {'✅' if _cfg else '❌ TG_USER_* missing'}\n"
+            f"Connected: {'✅' if _conn else '❌'}"
+            + ("  <i>(starting…)</i>" if _userbot_starting else "") + "\n"
+            f"Active server: {'✅' if (not CLEXER_API_URL or is_active_server()) else '❌ standby'}\n"
+            f"Charts enabled: {'✅' if SEND_CHARTS else '❌ /images on'}\n\n"
+            f"<b>Groups</b>\n<pre>" + "\n".join(_grp) + "</pre>\n"
+            f"<code>/userbot restart</code> to force a reconnect.",
+            skip_smallcaps=True)
 
     elif cmd == "/test" and is_admin:
         _ta = parts[1].lower() if len(parts) > 1 else ""
@@ -17696,6 +17749,7 @@ _SCAN_SUBCATS = {
         ("/benchtable", "📊", "Benchmark Table", "Shows the benchmark win/loss/streak comparison collected by /benchmark. `/bt think on` or `/bt think off` for a single group. (/bt is the same command.)"),
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
+        ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
         ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, or `/test` alone for status."),
         ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
         ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
