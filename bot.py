@@ -11575,6 +11575,7 @@ def _test_dp(symbol: str) -> int:
 
 
 _test_dp_cache: dict = {}
+_test_last_post_error = ""   # last Telegram rejection, surfaced by /test
 
 
 def _test_1m_confirms(symbol: str, side: str) -> bool:
@@ -11669,10 +11670,16 @@ def _test_post(text: str, reply_to=None):
                           json=payload, timeout=10)
         j = r.json()
         if not j.get("ok"):
+            # Kept, not just logged. The usual cause is the bot not being an
+            # admin of the channel, and Telegram says so plainly - but only in
+            # a log line nobody reads at the moment the channel looks silent.
+            globals()["_test_last_post_error"] = str(j.get("description"))[:200]
             print(f"  [TEST] post rejected: {j.get('description')}")
             return None
+        globals()["_test_last_post_error"] = ""
         return j.get("result", {}).get("message_id")
     except Exception as e:
+        globals()["_test_last_post_error"] = f"{type(e).__name__}: {e}"[:200]
         print(f"  [TEST] post: {e}")
         return None
 
@@ -15095,6 +15102,19 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/test" and is_admin:
         _ta = parts[1].lower() if len(parts) > 1 else ""
+        if _ta == "ping":
+            _mid = _test_post("🧪 <b>Test channel check</b> — if you can read "
+                              "this, the bot can post here.")
+            send_reply(chat_id,
+                (f"✅ Posted to <code>{TEST_CHANNEL_ID}</code> (message {_mid})."
+                 if _mid else
+                 f"❌ Could not post to <code>{TEST_CHANNEL_ID}</code>\n\n"
+                 f"<code>{_test_last_post_error or 'no response'}</code>\n\n"
+                 f"<i>Almost always this means the bot is not an ADMIN of that "
+                 f"channel. Add @{_get_bot_username() or 'the bot'} to the channel "
+                 f"and give it Post Messages permission.</i>"),
+                skip_smallcaps=True)
+            return
         if _ta in ("run", "on", "start"):
             TEST_ENABLED = True; _test_save()
             send_reply(chat_id,
@@ -15121,9 +15141,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}\n\n"
                 f"Pairs: {', '.join(x.replace('-USDT','') for x in TEST_SYMBOLS)}\n"
                 f"Cycle: every {TEST_CYCLE_SECS//60} min\n"
-                f"Closed: {_n}  ({_w} win / {_n-_w} loss)\n\n"
+                f"Closed: {_n}  ({_w} win / {_n-_w} loss)\n"
+                + (f"\n⚠️ <b>Last post error:</b> <code>{_test_last_post_error}</code>\n"
+                   f"<i>The bot likely is not an admin of that channel.</i>\n"
+                   if _test_last_post_error else "") + "\n"
                 f"<b>Open:</b>\n<pre>{_open}</pre>\n"
-                f"<code>/test run</code>  <code>/test stop</code>", skip_smallcaps=True)
+                f"<code>/test run</code>  <code>/test stop</code>  <code>/test ping</code>", skip_smallcaps=True)
 
     elif cmd in ("/intraday", "/intra") and is_scanadmin:
         _slots = {"btc": "btcint", "btcint": "btcint", "xaut": "xaut", "xa": "xaut"}
@@ -17808,7 +17831,7 @@ _SCAN_SUBCATS = {
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, or `/test` alone for status."),
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
         ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
         ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
         ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
