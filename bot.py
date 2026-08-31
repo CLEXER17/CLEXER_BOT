@@ -11450,6 +11450,331 @@ def _intra_drop(t: dict):
         print(f"  [INTRA] save after drop: {e}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# TEST SYSTEM — a completely separate paper channel
+# ---------------------------------------------------------------------------
+# Admin rule 2026-08-30: this shares NOTHING with the main bot. It is not a
+# scan slot, not a tier, not a copytrade source. Specifically it must never
+# touch:
+#   scan1_trades / scan2_trades / demo_* / active_trade / _intraday_trades
+#   trade_history.csv          - its trades are not logged there
+#   _log_api_usage             - it makes no API calls at all, by design
+#   copytrade                  - it never places a real order
+#   _track_daily_result        - it keeps its own tracker for its own recaps
+#   _slot_stats / _slot_day_*  - it does not promote, demote or gate anything
+# A SOL trade open on the main system has no bearing on a SOL trade here, and
+# vice versa. The only thing the two share is the exchange they read prices
+# from and the engine maths, which is copied by call, not by state.
+#
+# Direction comes from the same deterministic engine Scan1 uses in /switch
+# engine mode, so there is no AI call and therefore no cost. The difference is
+# a 1-MINUTE entry confirmation on top: the measured failure on Scan1 is that
+# 24% of stops are hit inside the first candle, which is price reversing the
+# moment the trade opens, so this system refuses to enter unless the newest
+# 1M candles are already moving the signal's way.
+# ═══════════════════════════════════════════════════════════════════════════
+
+TEST_CHANNEL_ID = -1003876909932
+TEST_SYMBOLS = ["BTC-USDT", "XAUT-USDT", "ETH-USDT", "SOL-USDT", "HYPE-USDT"]
+TEST_ENABLED = False              # /test run | /test stop
+TEST_CYCLE_SECS = 15 * 60         # one pass over all five, every 15 minutes
+TEST_TP1_MULT, TEST_TP2_MULT = 1.5, 3.0     # same as Scan1
+TEST_SL_LO, TEST_SL_HI = 1.5, 4.0           # same band the Scan1 engine targets
+TEST_1M_CONFIRM = 2               # newest 1M candles that must agree
+
+_test_trades: list = []           # its own open trades, never the shared lists
+_test_lock = threading.Lock()
+_test_history: list = []          # closed trades, for its own recaps only
+_test_stats = {"tp2": 0, "tp1": 0, "sl": 0, "be": 0}
+_TEST_STATE_FILE = os.path.join(DATA_DIR, "test_system.json")
+
+
+def _test_dp(symbol: str) -> int:
+    """Venue price precision, cached. Same reason as the intraday slots: an
+    order or a posted level finer than the venue accepts is wrong even though
+    it looks right."""
+    if symbol in _test_dp_cache:
+        return _test_dp_cache[symbol]
+    dp = 4
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts",
+                         timeout=12).json()
+        for d in (r.get("data") or []):
+            if d.get("symbol") == symbol and d.get("pricePrecision") is not None:
+                dp = int(d["pricePrecision"]); break
+    except Exception as e:
+        print(f"  [TEST] precision {symbol}: {e}")
+    _test_dp_cache[symbol] = dp
+    return dp
+
+
+_test_dp_cache: dict = {}
+
+
+def _test_1m_confirms(symbol: str, side: str) -> bool:
+    """True when the newest 1M candles are moving the signal's way.
+
+    This is the whole reason the system exists. On Scan1, 24% of stops are hit
+    within one 5M candle and 36% within two - price reversing immediately after
+    entry, not drifting against the trade. Requiring the last few 1M closes to
+    already agree filters exactly that case. It can only ever REMOVE a trade the
+    engine would have taken, never add one."""
+    df = bingx_klines(symbol, "1m", 10)
+    if df is None or len(df) < TEST_1M_CONFIRM + 1:
+        return False              # no confirmation available means no entry
+    c = [float(x) for x in df["close"].values[-(TEST_1M_CONFIRM + 1):]]
+    if side == "BUY":
+        return all(c[i] > c[i - 1] for i in range(1, len(c)))
+    return all(c[i] < c[i - 1] for i in range(1, len(c)))
+
+
+def _test_scan_one(symbol: str) -> str:
+    """One symbol, one pass. Returns a short status line for the log."""
+    with _test_lock:
+        if any(t["symbol"] == symbol for t in _test_trades):
+            return f"{symbol}: already open here — skip"
+
+    px = get_bingx_price(symbol)
+    if not px or px <= 0:
+        return f"{symbol}: no price"
+    df5 = bingx_klines(symbol, "5m", 30)
+    if df5 is None or len(df5) < 10:
+        return f"{symbol}: not enough 5M candles"
+
+    # Same engine Scan1 uses in /switch engine mode - direction, stop and
+    # targets all from its deterministic rules, no API call anywhere.
+    H = [float(x) for x in df5["high"].values[-10:]]
+    L = [float(x) for x in df5["low"].values[-10:]]
+    C = [float(x) for x in df5["close"].values[-10:]]
+    r = _engine_signal(H, L, C, float(px), TEST_TP1_MULT, TEST_TP2_MULT,
+                       TEST_SL_LO, TEST_SL_HI)
+    if not r or r["signal"] == "WAIT":
+        return f"{symbol}: WAIT ({(r or {}).get('reason','no data')})"
+
+    side = r["signal"]
+    if not _test_1m_confirms(symbol, side):
+        return f"{symbol}: {side} blocked — 1M not confirming"
+
+    dp = _test_dp(symbol)
+    q = lambda v: round(float(v), dp)
+    entry, sl = q(r["entry"]), q(r["sl"])
+    d = abs(entry - sl)
+    if d <= 0:
+        return f"{symbol}: degenerate stop after rounding"
+    tp1 = q(entry + d * TEST_TP1_MULT * (1 if side == "BUY" else -1))
+    tp2 = q(entry + d * TEST_TP2_MULT * (1 if side == "BUY" else -1))
+    sl_pct = d / entry * 100
+
+    t = {"symbol": symbol, "signal": side, "entry": entry, "sl": sl,
+         "tp1": tp1, "tp2": tp2, "tp1_hit": False, "be_sl": None,
+         "sl_pct": sl_pct, "created_at": time.time(),
+         "sig_id": _gen_signal_id(), "reply_map": {},
+         "score": f"{r.get('score_buy',0)}b/{r.get('score_sell',0)}s"}
+    with _test_lock:
+        if any(x["symbol"] == symbol for x in _test_trades):
+            return f"{symbol}: raced another pass — skip"
+        _test_trades.append(t)
+    _test_save()
+    _test_post(_test_entry_card(t))
+    return f"{symbol}: {side} @ {entry} SL {sl_pct:.2f}%"
+
+
+def _test_post(text: str, reply_to=None):
+    """Posts to the test channel and nowhere else. Deliberately a plain
+    sendMessage rather than the tier helpers - those fan out to VIP/Free and
+    would drag this system into the main routing it is supposed to be outside
+    of."""
+    try:
+        payload = {"chat_id": TEST_CHANNEL_ID, "text": _apply_premium_emojis(text),
+                   "parse_mode": "HTML", "disable_web_page_preview": True}
+        if reply_to:
+            payload["reply_to_message_id"] = reply_to
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json=payload, timeout=10)
+        j = r.json()
+        if not j.get("ok"):
+            print(f"  [TEST] post rejected: {j.get('description')}")
+            return None
+        return j.get("result", {}).get("message_id")
+    except Exception as e:
+        print(f"  [TEST] post: {e}")
+        return None
+
+
+def _test_entry_card(t: dict) -> str:
+    coin = t["symbol"].replace("-USDT", "")
+    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
+    return _scan_box(f"#{coin} TEST", f"{arrow} {t['symbol']}", [[
+        f"{arrow} {_smallcaps_title(t['signal'])} — {_smallcaps_title('market entry')}",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
+        f"🛑 SL: <code>{t['sl']}</code>  ({t['sl_pct']:.2f}%)",
+        f"💰 TP1: <code>{t['tp1']}</code>",
+        f"🏆 TP2: <code>{t['tp2']}</code>",
+    ]], tag=t.get("sig_id", ""))
+
+
+def _test_close(t: dict, result: str, price: float):
+    """Announce a close and record it for this system's own recaps only."""
+    coin = t["symbol"].replace("-USDT", "")
+    icon = {"TP2": "🏆", "TP1": "✅", "SL": "🛑", "BE": "🛡️"}.get(result, "•")
+    pnl = None
+    try:
+        lvl = {"TP1": t["tp1"], "TP2": t["tp2"], "SL": t["sl"], "BE": t["entry"]}.get(result)
+        if lvl:
+            pnl = (float(lvl) - t["entry"]) / t["entry"] * 100
+            if t["signal"] != "BUY":
+                pnl = -pnl
+    except Exception:
+        pnl = None
+    _test_post(_scan_box(f"#{coin} {result}", f"{icon} {t['symbol']}", [[
+        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
+        f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
+    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
+        tag=t.get("sig_id", "")))
+    _test_history.append({"time": ist_str(), "symbol": coin, "signal": t["signal"],
+                          "entry": t["entry"], "result": result,
+                          "close_price": price, "pnl": pnl,
+                          "date": _ist_date_str(time.time())})
+    if len(_test_history) > 2000:
+        del _test_history[:-2000]
+    _test_stats[result.lower()] = _test_stats.get(result.lower(), 0) + 1
+    _test_save()
+
+
+def _test_monitor_loop():
+    """Own 30s thread. Only ever reads _test_trades."""
+    while True:
+        try:
+            if TEST_ENABLED:
+                with _test_lock:
+                    snap = list(_test_trades)
+                drop = []
+                for t in snap:
+                    try:
+                        cp = get_bingx_price(t["symbol"])
+                        if not cp or cp <= 0:
+                            continue
+                        buy = t["signal"] == "BUY"
+                        sl_now = t["be_sl"] if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
+                        hit_tp2 = cp >= t["tp2"] if buy else cp <= t["tp2"]
+                        hit_tp1 = cp >= t["tp1"] if buy else cp <= t["tp1"]
+                        hit_sl = cp <= sl_now if buy else cp >= sl_now
+                        if hit_tp2:
+                            drop.append(t); _test_close(t, "TP2", cp)
+                        elif hit_sl:
+                            _lbl = "BE" if t.get("tp1_hit") else "SL"
+                            drop.append(t); _test_close(t, _lbl, cp)
+                        elif hit_tp1 and not t.get("tp1_hit"):
+                            t["tp1_hit"] = True
+                            t["be_sl"] = round(t["entry"], _test_dp(t["symbol"]))
+                            _test_close(t, "TP1", cp)   # announced, trade stays open
+                            _test_save()
+                    except Exception as e:
+                        print(f"  [TEST MONITOR] {t.get('symbol')}: {e}")
+                        drop.append(t)
+                if drop:
+                    with _test_lock:
+                        for t in drop:
+                            for i, x in enumerate(_test_trades):
+                                if x is t:
+                                    _test_trades.pop(i); break
+                    _test_save()
+        except Exception as e:
+            print(f"[TEST MONITOR] {e}")
+        time.sleep(30)
+
+
+def _test_scan_loop():
+    """Own thread. One pass over all five symbols every 15 minutes."""
+    time.sleep(45)
+    _last = 0.0
+    while True:
+        try:
+            if TEST_ENABLED and (time.time() - _last) >= TEST_CYCLE_SECS:
+                _last = time.time()
+                for sym in TEST_SYMBOLS:
+                    try:
+                        print(f"  [TEST] {_test_scan_one(sym)}")
+                    except Exception as e:
+                        print(f"  [TEST] {sym}: {e}")
+        except Exception as e:
+            print(f"[TEST SCAN LOOP] {e}")
+        time.sleep(20)
+
+
+def _test_save():
+    try:
+        with open(_TEST_STATE_FILE, "w") as f:
+            json.dump({"enabled": TEST_ENABLED, "trades": _test_trades,
+                       "history": _test_history, "stats": _test_stats}, f)
+    except Exception as e:
+        print(f"[TEST] save: {e}")
+
+
+def _test_load():
+    global TEST_ENABLED
+    try:
+        if not os.path.exists(_TEST_STATE_FILE):
+            return
+        with open(_TEST_STATE_FILE) as f:
+            d = json.load(f)
+        TEST_ENABLED = bool(d.get("enabled", False))
+        _test_trades[:] = d.get("trades", []) or []
+        _test_history[:] = d.get("history", []) or []
+        _test_stats.update(d.get("stats", {}) or {})
+        print(f"[TEST] loaded {len(_test_trades)} open, {len(_test_history)} closed, "
+              f"enabled={TEST_ENABLED}")
+    except Exception as e:
+        print(f"[TEST] load: {e}")
+
+
+def _test_recap(period: str, dates: list) -> str:
+    """Recap built from this system's OWN history, in the same table style as
+    the main recaps but never sharing their data."""
+    rows = [h for h in _test_history if h.get("date") in dates]
+    if not rows:
+        return ""
+    title = f"{period} Recap — TEST"
+    if period == "Daily":
+        return _build_recap_text(rows, dates[0])
+    return _build_period_recap_text(rows, title)
+
+
+def _test_recap_loop():
+    """Own daily/weekly/monthly recaps, posted only to the test channel."""
+    _sent = {"d": "", "w": "", "m": ""}
+    while True:
+        try:
+            if TEST_ENABLED:
+                now = now_ist()
+                if now.hour == 0 and now.minute < 5:
+                    y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+                    if _sent["d"] != y:
+                        txt = _test_recap("Daily", [y])
+                        if txt:
+                            _test_post(txt)
+                        _sent["d"] = y
+                    if now.weekday() == 0:
+                        wk = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
+                        if _sent["w"] != wk[-1]:
+                            txt = _test_recap("Weekly", wk)
+                            if txt:
+                                _test_post(txt)
+                            _sent["w"] = wk[-1]
+                    if now.day == 1:
+                        mk = (now - timedelta(days=1)).strftime("%Y-%m")
+                        if _sent["m"] != mk:
+                            days = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 32)]
+                            txt = _test_recap("Monthly", [d for d in days if d.startswith(mk)])
+                            if txt:
+                                _test_post(txt)
+                            _sent["m"] = mk
+        except Exception as e:
+            print(f"[TEST RECAP] {e}")
+        time.sleep(60)
+
+
 def _intraday_monitor_loop():
     """Own 30s thread. Handles pending fills, cancellations and open-position
     exits for the intraday slots only — it never touches scan1/scan2/BTC state."""
@@ -12756,7 +13081,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -13097,7 +13422,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
-    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE, _slot_day_seed_v
+    global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE, _slot_day_seed_v, TEST_ENABLED
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
     parts = text.strip().split(); cmd = parts[0].lower().split("@")[0]
@@ -14623,6 +14948,38 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/aiconfig" and is_scanadmin:
         send_aiconfig_screen(chat_id)
+
+    elif cmd == "/test" and is_admin:
+        _ta = parts[1].lower() if len(parts) > 1 else ""
+        if _ta in ("run", "on", "start"):
+            TEST_ENABLED = True; _test_save()
+            send_reply(chat_id,
+                f"▶️ <b>Test system RUNNING</b>\n\n"
+                f"{', '.join(x.replace('-USDT','') for x in TEST_SYMBOLS)}\n"
+                f"Every {TEST_CYCLE_SECS//60} min · 1M entry confirm · no API calls\n\n"
+                f"<i>Separate from everything else — own channel, own trades, "
+                f"no CSV, no copy trade.</i>", skip_smallcaps=True)
+        elif _ta in ("stop", "off"):
+            TEST_ENABLED = False; _test_save()
+            send_reply(chat_id,
+                f"⏹ <b>Test system STOPPED</b>\n\n"
+                f"<i>{len(_test_trades)} open trade(s) stay open and keep being "
+                f"monitored — no NEW ones will be taken.</i>", skip_smallcaps=True)
+        else:
+            _open = "\n".join(
+                f"  {t['symbol'].replace('-USDT','')}  {t['signal']}  @{t['entry']}  "
+                f"SL {t['sl_pct']:.2f}%" + ("  ✅TP1" if t.get("tp1_hit") else "")
+                for t in _test_trades) or "  none"
+            _n = len(_test_history)
+            _w = sum(1 for h in _test_history if h.get("result") in ("TP1","TP2","BE"))
+            send_reply(chat_id,
+                f"🧪 <b>Test System</b> — "
+                f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}\n\n"
+                f"Pairs: {', '.join(x.replace('-USDT','') for x in TEST_SYMBOLS)}\n"
+                f"Cycle: every {TEST_CYCLE_SECS//60} min\n"
+                f"Closed: {_n}  ({_w} win / {_n-_w} loss)\n\n"
+                f"<b>Open:</b>\n<pre>{_open}</pre>\n"
+                f"<code>/test run</code>  <code>/test stop</code>", skip_smallcaps=True)
 
     elif cmd in ("/intraday", "/intra") and is_scanadmin:
         _slots = {"btc": "btcint", "btcint": "btcint", "xaut": "xaut", "xa": "xaut"}
@@ -17306,6 +17663,7 @@ _SCAN_SUBCATS = {
         ("/benchtable", "📊", "Benchmark Table", "Shows the benchmark win/loss/streak comparison collected by /benchmark. `/bt think on` or `/bt think off` for a single group. (/bt is the same command.)"),
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, or `/test` alone for status."),
         ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
         ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
         ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
@@ -22063,6 +22421,10 @@ def main():
     threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
     _backfill_slot_days()
+    _test_load()
+    threading.Thread(target=_test_scan_loop, daemon=True).start()
+    threading.Thread(target=_test_monitor_loop, daemon=True).start()
+    threading.Thread(target=_test_recap_loop, daemon=True).start()
     threading.Thread(target=_intraday_monitor_loop, daemon=True).start()
     threading.Thread(target=_intraday_scan_loop, daemon=True).start()
 
