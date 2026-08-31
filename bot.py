@@ -11545,7 +11545,15 @@ TEST_SYMBOLS = ["BTC-USDT", "XAUT-USDT", "ETH-USDT", "SOL-USDT", "HYPE-USDT"]
 TEST_ENABLED = False              # /test run | /test stop
 TEST_CYCLE_SECS = 15 * 60         # one pass over all five, every 15 minutes
 TEST_TP1_MULT, TEST_TP2_MULT = 1.5, 3.0     # same as Scan1
-TEST_SL_LO, TEST_SL_HI = 1.5, 4.0           # same band the Scan1 engine targets
+# Measured, not inherited. Scan1's 1.5-4.0% band is tuned for volatile alts;
+# on these five majors the engine's own last-5 stop rule produces a MEDIAN of
+# 0.46% and a maximum of 1.04% - so under that band 0.0% of stops were usable
+# and the system could never take a trade at all. Every cycle reported
+# "direction found, but no stop inside 1.5-4.0%" (admin 2026-08-30).
+# 0.4-2.5% makes 74% of stops usable while keeping the smallest TP1 (0.60%)
+# comfortably above the ~0.33% cost gate. Going to 0.3% would reach 100% but
+# leaves TP1 only 1.4x costs, which is not worth trading.
+TEST_SL_LO, TEST_SL_HI = 0.4, 2.5
 TEST_1M_CONFIRM = 2               # newest 1M candles that must agree
 
 _test_trades: list = []           # its own open trades, never the shared lists
