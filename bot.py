@@ -9708,7 +9708,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     replaced with lock placeholders. Same _scan_box template every other
     lifecycle message uses, so it looks native rather than bolted-on."""
     return _scan_box(
-        "VIP Signal", f"📣 #{coin}-USDT  |  {tag_label}",
+        "VIP Signal", f"📣 ${coin}-USDT  |  {tag_label}",
         [[f"🔒 {_smallcaps_title('Direction')}: Locked",
           f"🔒 {_smallcaps_title('Entry')}: Locked",
           "🔒 SL: Locked", "🔒 TP1: Locked", "🔒 TP2: Locked"],
@@ -9789,7 +9789,7 @@ def fmt_scan_signal(t: dict) -> str:
     arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
     return _scan_box(
         "Scan Signal",
-        f"📣 #{coin}-USDT  |  S{ver} {_gw_tag}{_vst_tag}",
+        f"📣 ${coin}-USDT  |  S{ver} {_gw_tag}{_vst_tag}",
         [
             [f"{arrow} — {_smallcaps_title('Market Entry')}"],
             [f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>",
@@ -21793,7 +21793,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
             "entry_price": entry, "sl_price": sl, "tp1_price": tp1, "tp2_price": tp2})
         _msg = _scan_box(
-            f"#{coin} TP2 Hit", f"🏆 TS{dver} {coin}-USDT",
+            f"#{coin} TP2 Hit", f"🏆 TS{dver} ${coin}-USDT",
             [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
               f"🏆 TP2: <code>{tp2:,.6g}</code>",
@@ -21822,7 +21822,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
             "entry_price": entry, "sl_price": be_sl_price, "tp1_price": tp1, "tp2_price": tp2})
         _msg = _scan_box(
-            f"#{coin} TP1 Hit", f"🎯 TS{dver} {coin}-USDT",
+            f"#{coin} TP1 Hit", f"🎯 TS{dver} ${coin}-USDT",
             [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
               f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
@@ -21848,7 +21848,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": _sl_exit, "tp1_price": tp1, "tp2_price": tp2})
     _msg = _scan_box(
-        f"#{coin} {lbl} Hit", f"🚨 TS{dver} {coin}-USDT",
+        f"#{coin} {lbl} Hit", f"🚨 TS{dver} ${coin}-USDT",
         [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
           f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
           f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
@@ -21939,7 +21939,7 @@ def _demo_monitor_loop():
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} TP2 Hit", f"🏆 TS{_dver} {coin}-USDT",
+                            f"#{coin} TP2 Hit", f"🏆 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
@@ -21969,7 +21969,7 @@ def _demo_monitor_loop():
                             "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} {coin}-USDT",
+                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
@@ -22015,7 +22015,7 @@ def _demo_monitor_loop():
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} TP1 Hit", f"🎯 TS{_dver} {coin}-USDT",
+                            f"#{coin} TP1 Hit", f"🎯 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
                               f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
@@ -22041,7 +22041,7 @@ def _demo_monitor_loop():
                         _timeout_line = (f"1ʜ ᴇʟᴀᴘꜱᴇᴅ ꜱɪɴᴄᴇ TP1 — {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% runner closed')}"
                                          if tp1hit else f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}")
                         _msg = _scan_box(
-                            f"#{coin} Timeout", f"⏰ TS{_dver} {coin}-USDT",
+                            f"#{coin} Timeout", f"⏰ TS{_dver} ${coin}-USDT",
                             [[_timeout_line,
                               f"📊 {_smallcaps_title('Exit')}: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
@@ -22497,7 +22497,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             coin  = chosen_sym.replace("-USDT","")
             _demo_sig_id = _gen_signal_id()
             demo_msg = _scan_box(
-                "Alt Signal", f"📣 {coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
+                "Alt Signal", f"📣 ${coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
                 [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
                  [f"🎯 {_smallcaps_title('Entry')}: <code>{scan_entry:,.4g}</code>",
                   f"🛑 SL: <code>{scan_sl:,.4g}</code>  ({sl_pct:.1f}%)",
