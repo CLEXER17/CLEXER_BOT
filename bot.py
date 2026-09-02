@@ -10112,7 +10112,11 @@ INTRADAY_TAKER_FEE = 0.05                             # % one side, BingX
 # other sleeps — never both, because two systems trading BTC at once means
 # copytrade sizes the same instrument twice (admin choice 2026-08-27).
 BTC_ENGINE = "classic"
-INTRADAY_PROMPT_DM = True   # DM the admin each intraday prompt (/intradaydm)
+INTRADAY_PROMPT_DM = False  # DM the admin each intraday prompt (/intradaydm)
+# Off by default: this is a debug echo, and both slots fire on their own
+# schedule all day, so leaving it on buries the actual signal DMs under
+# full data blocks nobody reads (admin 2026-09-02). The saved setting
+# still wins on an existing deploy - /intradaydm flips it there.
 
 _intraday_trades: list = []                  # pending AND open, split by entry_hit
 _intraday_lock = threading.Lock()
