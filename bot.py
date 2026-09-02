@@ -17864,22 +17864,27 @@ def _send_broadcast_picker(chat_id, message_id=None):
 # Each category: (label, admin_only, [(cmd, emoji, short_description), ...])
 _HELP_CATS = {
     "monitor": (
+        # 4-tuple like every other section: (cmd, emoji, BUTTON LABEL, description).
+        # This was the only 3-tuple category, and its single text field had to be
+        # both things at once - so the buttons carried full sentences, stacked 15
+        # rows deep and truncating on the narrow side (admin 2026-09-02). Splitting
+        # them lets the button stay short while /cmd keeps the real explanation.
         "📊 Status & Info", False, [
-            ("/status",   "📊", "Full bot status"),
-            ("/trade",    "📈", "Active BTC + all scan trades"),
-            ("/price",    "💲", "Current BTC price"),
-            ("/session",  "🕐", "London / NY / Sleep session"),
-            ("/history",  "📜", "Last 5 signals"),
-            ("/stats",    "🏆", "Win rate & trade statistics"),
-            ("/cmd",      "📖", "This list — every command, its use, and how to run it"),
-            ("/chat",     "💬", "Start an AI chat session with the bot"),
-            ("/endchat",  "🚪", "End the current AI chat session"),
-            ("/start",    "👋", "Welcome message and the quick-actions keyboard"),
-            ("/help",     "❓", "Button menu — the browsable version of this list"),
-            ("/hidekeyboard", "⌨️", "Hide the quick-actions keyboard (/start brings it back)"),
-            ("/cancel",   "🚫", "Cancel whatever the bot is currently waiting for you to type"),
-            ("/vip",      "⭐", "See VIP plans and pricing"),
-            ("/addfunds", "💵", "Top up your copy-trade wallet"),
+            ("/status",   "📊", "Bot Status",     "Full bot status"),
+            ("/trade",    "📈", "Active Trades",  "Active BTC + all scan trades"),
+            ("/price",    "💲", "BTC Price",      "Current BTC price"),
+            ("/session",  "🕐", "Session",        "London / NY / Sleep session"),
+            ("/history",  "📜", "Last 5 Signals", "Last 5 signals"),
+            ("/stats",    "🏆", "Win Rate",       "Win rate & trade statistics"),
+            ("/vip",      "⭐", "VIP Plans",      "See VIP plans and pricing"),
+            ("/addfunds", "💵", "Add Funds",      "Top up your copy-trade wallet"),
+            ("/chat",     "💬", "AI Chat",        "Start an AI chat session with the bot"),
+            ("/endchat",  "🚪", "End Chat",       "End the current AI chat session"),
+            ("/cmd",      "📖", "All Commands",   "This list — every command, its use, and how to run it"),
+            ("/help",     "❓", "Button Menu",    "Button menu — the browsable version of this list"),
+            ("/start",    "👋", "Start",          "Welcome message and the quick-actions keyboard"),
+            ("/hidekeyboard", "⌨️", "Hide Keyboard", "Hide the quick-actions keyboard (/start brings it back)"),
+            ("/cancel",   "🚫", "Cancel",         "Cancel whatever the bot is currently waiting for you to type"),
         ]
     ),
     # copyuser, tradecontrol, scan, copyadmin, settings, tv, and broadcast are all
@@ -19215,8 +19220,8 @@ def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
     for cat_id, (cat_label, admin_only, entries) in _HELP_CATS.items():
         if admin_only and not (is_admin_view or (is_co_admin_view and cat_id in _CO_ADMIN_CAT_IDS)):
             continue
-        for cmd, emoji, desc in entries:
-            out.append((cat_label, cmd, emoji, None, desc))
+        for cmd, emoji, title, desc in entries:
+            out.append((cat_label, cmd, emoji, title, desc))
         if cat_id in _NESTED_CATS:
             subcats, _cb_prefix = _NESTED_CATS[cat_id]
             for _sub_id, (_sub_label, sub_entries) in subcats.items():
@@ -19305,7 +19310,7 @@ def _find_back_target(cmd_text):
             if any(c == cmd_text for c, _, _, _ in cmds):
                 return f"{cb_prefix}:{sub_id}", cat_id
     cat_id = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
-                   if any(c == cmd_text for c, _, _ in cmds_)), "monitor")
+                   if any(c == cmd_text for c, _, _, _ in cmds_)), "monitor")
     return f"help_cat:{cat_id}", cat_id
 
 def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
@@ -19380,11 +19385,15 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
         _help_edit_or_send(chat_id, text, markup, message_id)
         return
 
-    rows = []
-    for cmd, emoji, desc in cmds:
-        if cmd == "/stats" and not STATS_VISIBLE_TO_USERS and not is_admin and not is_co_admin(chat_id):
-            continue
-        rows.append([{"text": f"{emoji}  {desc}", "callback_data": f"help_cmd:{cmd}"}])
+    # Two per row, same as the section pickers. "Status & Info" is the only
+    # category rendered here and it holds 15 commands - one per row made it a
+    # 15-row full-width wall (admin 2026-09-02). Built as a flat list first so
+    # a command hidden by the /stats rule can't leave a hole in the grid.
+    _btns = [{"text": f"{emoji}  {label}", "callback_data": f"help_cmd:{cmd}"}
+             for cmd, emoji, label, _desc in cmds
+             if not (cmd == "/stats" and not STATS_VISIBLE_TO_USERS
+                     and not is_admin and not is_co_admin(chat_id))]
+    rows = [_btns[i:i + 2] for i in range(0, len(_btns), 2)]
     rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<blockquote>Tap any command to run it instantly 👇</blockquote>"
@@ -19579,7 +19588,7 @@ def command_listener():
                     if cb_data.startswith("help_cmd:"):
                         _ct = cb_data.split(":", 1)[1]
                         for _, (_cl, _cadm, _ccmds) in _HELP_CATS.items():
-                            if _cadm and any(_ct == _c for _c, _, _ in _ccmds):
+                            if _cadm and any(_ct == _c for _c, _, _, _ in _ccmds):
                                 _is_admin_btn = True; break
 
                     if _is_admin_btn and not cb_is_admin:
