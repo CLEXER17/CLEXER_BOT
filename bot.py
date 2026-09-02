@@ -22563,6 +22563,9 @@ def main():
     print(f"  Starting PAUSED - send /go to start scanning")
     load_users()
     ct.set_username_resolver(lambda uid: user_usernames.get(str(uid)))
+    # /users lists every registered user, not just those with a copy-trade
+    # record - copytrade.py has no view of registered_users on its own.
+    ct.set_registered_users_resolver(lambda: list(registered_users))
     ct.load()
     load_settings()
     _start_userbot()

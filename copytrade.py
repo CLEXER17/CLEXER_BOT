@@ -2929,6 +2929,32 @@ def set_username_resolver(fn):
     global _uname_resolver
     _uname_resolver = fn
 
+_registered_resolver = None  # set by bot.py after import — returns every chat_id that has
+# ever messaged the bot (bot.py's registered_users). _db only ever holds users who reached
+# the copy-trade screens far enough for _default_user() to be created, which is a strict
+# and much smaller subset: 14 of 28 on the live bot. /users listed _db alone, so the other
+# 14 were invisible to the admin everywhere (admin 2026-09-02).
+
+def set_registered_users_resolver(fn):
+    global _registered_resolver
+    _registered_resolver = fn
+
+def _all_known_users() -> list:
+    """Every user id the bot knows about, copy-trade record or not.
+
+    Union rather than either side alone: bot.py can miss a copy-trade user
+    whose registration predates that tracking, and _db misses everyone who
+    never opened the copy-trade screens. Sorted so the order is stable
+    between calls instead of following dict insertion."""
+    ids = set(str(k) for k in _db.keys())
+    if _registered_resolver:
+        try:
+            ids |= {str(x) for x in (_registered_resolver() or [])}
+        except Exception as e:
+            print(f"[CT] registered resolver error: {e}")
+    # Negative ids are groups/channels the bot was added to, not people.
+    return sorted((i for i in ids if i.lstrip("-").isdigit() and int(i) > 0), key=int)
+
 def _display_uname(uid: str, user: dict) -> str:
     """Best available display name for a copy-trade user: bot.py's live-tracked
     Telegram username first (freshest, works even if never BingX-connected),
@@ -3479,10 +3505,22 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             f"<i>🛡️ Capital protected</i></blockquote>")
 
     elif cmd == "/users" and is_admin:
-        if not _db:
-            send_reply_fn(chat_id, "No copy trade users yet."); return
-        lines = [f"<b>Copy Trade Users ({len(_db)})</b>\n"]
-        for i, (uid, user) in enumerate(_db.items(), 1):
+        # EVERY registered user, not just those with a copy-trade record.
+        _all = _all_known_users()
+        if not _all:
+            send_reply_fn(chat_id, "No users yet."); return
+        _with_ct = sum(1 for u in _all if u in _db)
+        lines = [f"<b>Users ({len(_all)})</b> — {_with_ct} with a copy-trade record\n"]
+        for i, uid in enumerate(_all, 1):
+            user = _db.get(uid)
+            if not user:
+                # Registered but never opened the copy-trade screens, so there
+                # is no record to report settings from. Said plainly rather
+                # than printed as defaults, which would read as a real $50 10x
+                # configuration they never chose.
+                lines.append(f"{i}. {_display_uname_link(uid, {})} | <code>{uid}</code>\n"
+                             f"   <i>no copy-trade record</i>\n")
+                continue
             uname    = _display_uname_link(uid, user)
             bingx_ok = "✅" if user.get("connected") else "❌"
             copy_s   = "ON" if user.get("copy_on") else "OFF"
@@ -3497,7 +3535,16 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"   Exch:{bingx_ok} Copy:{copy_s} | "
                 f"${user.get('size_usdt',0):.0f} {lev_str}"
                 f"{pos_line}\n")
-        send_reply_fn(chat_id, "\n".join(lines))
+        # Chunked: this is now the whole user base rather than the copy-trade
+        # subset, so it grows past Telegram's 4096 limit on its own. Split by
+        # whole entries so a user is never cut in half across two messages.
+        _buf = ""
+        for _ln in lines:
+            if len(_buf) + len(_ln) > 3800:
+                send_reply_fn(chat_id, _buf.rstrip()); _buf = ""
+            _buf += _ln + "\n"
+        if _buf.strip():
+            send_reply_fn(chat_id, _buf.rstrip())
 
     elif cmd == "/user" and is_admin:
         def _user_btns(cb_prefix):
