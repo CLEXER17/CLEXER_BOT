@@ -1212,16 +1212,23 @@ def _request_coin_chart_image(coin: str, timeout: float = 30.0):
             return _coin_chart_pending_result.get("photo_bytes")
         return None
 
-def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes):
+def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes) -> dict:
     """Uploads an already-downloaded chart image (raw bytes, from the
     userbot) to every destination a signal's entry text just went to, as a
     genuine reply-threaded follow-up to that entry message — reply_map is
     exactly what send_entry_signal returned, so this reuses both its keys
     (which chat) and values (which message_id to thread under) instead of
     re-deriving the tier-routing logic. Multipart upload, not a file_id —
-    see _request_coin_chart_image's docstring for why."""
+    see _request_coin_chart_image's docstring for why.
+
+    Returns {reply_map_key: message_id} for what actually posted, keyed
+    identically to reply_map so _track_sl_ids can consume it directly. The
+    return value used to be dropped, which meant /clearslfree and
+    /clearslvip deleted a losing signal's text but left its chart picture
+    sitting in the channel with nothing above it (admin 2026-09-02)."""
+    ids = {}
     if not photo_bytes:
-        return
+        return ids
     for key, mid in (reply_map or {}).items():
         if key == "ch1": cid = TELEGRAM_CHANNEL_ID
         elif ":" in key: cid = key.split(":", 1)[1]
@@ -1231,19 +1238,29 @@ def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes):
             _data = {"chat_id": cid}
             if mid:
                 _data["reply_parameters"] = json.dumps({"message_id": mid, "allow_sending_without_reply": True})
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                 data=_data, files={"photo": ("chart.png", photo_bytes)}, timeout=20)
+            _mid = (r.json().get("result") or {}).get("message_id")
+            if _mid:
+                ids[key] = _mid
         except Exception as e:
             print(f"  [CHART IMG] send to {cid} failed: {e}")
+    return ids
 
-def _attach_chart_image_async(coin: str, reply_map: dict):
+def _attach_chart_image_async(coin: str, reply_map: dict, sig_id: str = None):
     """Fires off the chart fetch+attach in its own background thread — the
     real trade signal (already sent by the time this is called) must never
-    wait on a third-party bot's reply."""
+    wait on a third-party bot's reply.
+
+    sig_id is what lets the picture be cleaned up later: the upload finishes
+    long after the entry send returned, so it has to register itself against
+    the signal rather than the caller collecting an id it cannot wait for."""
     def _run():
         _img = _request_coin_chart_image(coin)
         if _img:
-            _send_chart_image_for_reply_map(reply_map, _img)
+            _ids = _send_chart_image_for_reply_map(reply_map, _img)
+            if sig_id and _ids:
+                _track_sl_ids(sig_id, "chart_mid", _ids)
     threading.Thread(target=_run, daemon=True).start()
 
 def send_entry_signal(text: str, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True,
@@ -8977,7 +8994,7 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
         share_free=share_free, locked_text=_locked_signal_text(SYMBOL.replace("USDT",""), f"BTC {_gw_model_tag('btc')}", signal["sig_id"]), sig_id=signal["sig_id"],
         react_category="entry")
     _track_sl_ids(signal["sig_id"], "entry_mid", _ids)
-    _attach_chart_image_async(SYMBOL.replace("USDT", ""), _ids)
+    _attach_chart_image_async(SYMBOL.replace("USDT", ""), _ids, signal["sig_id"])
     return _ids
 
 def fmt_update(status, price=None):
@@ -9477,7 +9494,7 @@ def _load_sig_snapshots():
 # exactly its own entry + trailing-SL + SL-hit messages from Free — not every
 # trailing-SL message site-wide, and never anything from a BE-outcome trade.
 _FREE_SL_LOG_FILE = os.path.join(DATA_DIR, "free_sl_log.json")
-_free_sl_log: dict = {}   # sig_id -> {"cid": str, "entry_mid": int|None, "trailing_mid": int|None, "sl_mid": int|None, "result": "SL"|"BE"|None}
+_free_sl_log: dict = {}   # sig_id -> {"cid": str, "entry_mid": int|None, "trailing_mid": int|None, "sl_mid": int|None, "chart_mid": int|None, "result": "SL"|"BE"|None}
 
 def _save_free_sl_log():
     try:
@@ -9497,7 +9514,7 @@ def _track_free_sl(sig_id: str, cid: str, field: str, message_id: int):
     result turns out to be a real SL (see _finalize_free_sl)."""
     if not sig_id or not message_id:
         return
-    entry = _free_sl_log.setdefault(sig_id, {"cid": cid, "entry_mid": None, "trailing_mid": None, "sl_mid": None, "result": None})
+    entry = _free_sl_log.setdefault(sig_id, {"cid": cid, "entry_mid": None, "trailing_mid": None, "sl_mid": None, "chart_mid": None, "result": None})
     entry["cid"] = cid
     entry[field] = message_id
     if len(_free_sl_log) > 500:
@@ -9556,7 +9573,7 @@ def _clear_free_sl_messages() -> tuple:
         # that second trailing notice stranded in Free forever. Included here
         # since a "delete this signal's messages" action should mean all of
         # them, not just the first three.
-        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid"):
+        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid", "chart_mid"):
             mid = entry.get(field)
             if not mid:
                 continue
@@ -9580,7 +9597,7 @@ def _clear_free_sl_messages() -> tuple:
 # tracked in one log without the other (e.g. share_free=False, entry_mid
 # only ever posted to VIP, never Free).
 _VIP_SL_LOG_FILE = os.path.join(DATA_DIR, "vip_sl_log.json")
-_vip_sl_log: dict = {}   # sig_id -> {"cid": str, "entry_mid": int|None, "trailing_mid": int|None, "trailing_mid2": int|None, "sl_mid": int|None, "result": "SL"|"BE"|None}
+_vip_sl_log: dict = {}   # sig_id -> {"cid": str, "entry_mid": int|None, "trailing_mid": int|None, "trailing_mid2": int|None, "sl_mid": int|None, "chart_mid": int|None, "result": "SL"|"BE"|None}
 
 def _save_vip_sl_log():
     try:
@@ -9600,7 +9617,7 @@ def _track_vip_sl(sig_id: str, cid: str, field: str, message_id: int):
     signal's result turns out to be a real SL (see _finalize_vip_sl)."""
     if not sig_id or not message_id:
         return
-    entry = _vip_sl_log.setdefault(sig_id, {"cid": cid, "entry_mid": None, "trailing_mid": None, "trailing_mid2": None, "sl_mid": None, "result": None})
+    entry = _vip_sl_log.setdefault(sig_id, {"cid": cid, "entry_mid": None, "trailing_mid": None, "trailing_mid2": None, "sl_mid": None, "chart_mid": None, "result": None})
     entry["cid"] = cid
     entry[field] = message_id
     if len(_vip_sl_log) > 500:
@@ -9651,7 +9668,7 @@ def _clear_vip_sl_messages() -> tuple:
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
             continue
         cid = entry.get("cid")
-        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid"):
+        for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid", "chart_mid"):
             mid = entry.get(field)
             if not mid:
                 continue
@@ -11561,6 +11578,10 @@ _test_lock = threading.Lock()
 _test_history: list = []          # closed trades, for its own recaps only
 _test_stats = {"tp2": 0, "tp1": 0, "sl": 0, "be": 0}
 _TEST_STATE_FILE = os.path.join(DATA_DIR, "test_system.json")
+# Last scan pass's per-pair reasons. Deliberately in memory only and not in
+# the state file - it describes one 15-minute pass, so a stale one restored
+# from disk after a redeploy would be actively misleading.
+_test_last_cycle: dict = {"at": 0.0, "results": []}
 
 
 def _test_dp(symbol: str) -> int:
@@ -11659,8 +11680,12 @@ def _test_scan_one(symbol: str) -> str:
         if any(x["symbol"] == symbol for x in _test_trades):
             return (symbol, False, "another pass opened it first")
         _test_trades.append(t)
+    # Entry message id is kept so every later message for this trade (TP1, TP2,
+    # SL, BE) threads under it. Without it the channel is a flat stream where
+    # an "SL" card two hours later sits next to an unrelated pair's entry and
+    # you cannot tell at a glance which trade it belongs to (admin 2026-09-02).
+    t["entry_mid"] = _test_post(_test_entry_card(t))
     _test_save()
-    _test_post(_test_entry_card(t))
     return (symbol, True, f"{side} @ {entry} · SL {sl_pct:.2f}%")
 
 
@@ -11690,6 +11715,29 @@ def _test_post(text: str, reply_to=None):
         globals()["_test_last_post_error"] = f"{type(e).__name__}: {e}"[:200]
         print(f"  [TEST] post: {e}")
         return None
+
+
+def _test_pin(mid):
+    """Pins one test-channel message, replacing whatever was pinned before.
+
+    disable_notification because a pin otherwise alerts every member, and
+    these fire at midnight. unpin_all first so the channel always shows the
+    newest recap rather than accumulating pins nobody clears - Telegram keeps
+    every pin and shows the OLDEST in the header bar, so pinning without
+    unpinning would leave the first recap ever posted stuck at the top."""
+    if not mid:
+        return
+    for _ep, _pl in (("unpinAllChatMessages", {"chat_id": TEST_CHANNEL_ID}),
+                     ("pinChatMessage", {"chat_id": TEST_CHANNEL_ID,
+                                         "message_id": mid,
+                                         "disable_notification": True})):
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{_ep}",
+                              json=_pl, timeout=10)
+            if not r.json().get("ok"):
+                print(f"  [TEST PIN] {_ep}: {r.json().get('description')}")
+        except Exception as e:
+            print(f"  [TEST PIN] {_ep}: {e}")
 
 
 def _test_entry_card(t: dict) -> str:
@@ -11722,7 +11770,7 @@ def _test_close(t: dict, result: str, price: float):
         f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
-        tag=t.get("sig_id", "")))
+        tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
     _test_history.append({"time": ist_str(), "symbol": coin, "signal": t["signal"],
                           "entry": t["entry"], "result": result,
                           "close_price": price, "pnl": pnl,
@@ -11777,16 +11825,13 @@ def _test_monitor_loop():
 
 
 def _test_cycle_report(results: list) -> str:
-    """Posted after every pass so a quiet channel is explained rather than
-    silent. A cycle where nothing fires is normal for a 2-of-4 rule plus a 1M
-    confirmation, and without this the admin cannot tell that from the system
-    being broken.
+    """Why each pair did or didn't trade on the last pass.
 
-    Pairs already holding a trade are counted in the header but NOT listed:
-    a pair stays open for hours, so a line for it every fifteen minutes is
-    pure repetition that buries the pairs actually being evaluated (admin
-    2026-08-30). Returns "" when there is nothing to say at all, and the
-    caller skips the post entirely."""
+    No longer posted to the channel — a "no clear direction" line every
+    fifteen minutes for five pairs is most of what the channel says, and it
+    buries the actual trades (admin 2026-09-02). Kept because the reasons are
+    still the only way to tell "working, nothing qualified" from "broken", so
+    /test trade shows the latest one on demand instead."""
     took = [r for r in results if r[1]]
     busy = [r for r in results if not r[1] and r[2] == "already in a trade"]
     show = [r for r in results if r[1] or r[2] != "already in a trade"]
@@ -11797,8 +11842,7 @@ def _test_cycle_report(results: list) -> str:
     _hdr = f"{len(took)} taken · {len(show) - len(took)} skipped"
     if busy:
         _hdr += f" · {len(busy)} already open"
-    return (f"🧪 <b>Test cycle</b> · {now_ist().strftime('%H:%M')} IST\n"
-            f"<i>{_hdr}</i>\n\n" + "\n".join(lines))
+    return (f"<i>{_hdr}</i>\n" + "\n".join(lines))
 
 
 def _test_scan_loop():
@@ -11818,9 +11862,9 @@ def _test_scan_loop():
                     except Exception as e:
                         _results.append((sym, False, f"error: {e}"))
                         print(f"  [TEST] {sym}: {e}")
-                _rep = _test_cycle_report(_results)
-                if _rep:
-                    _test_post(_rep)
+                # Held for /test trade rather than posted — see
+                # _test_cycle_report's docstring.
+                globals()["_test_last_cycle"] = {"at": time.time(), "results": _results}
         except Exception as e:
             print(f"[TEST SCAN LOOP] {e}")
         time.sleep(20)
@@ -11876,14 +11920,14 @@ def _test_recap_loop():
                     if _sent["d"] != y:
                         txt = _test_recap("Daily", [y])
                         if txt:
-                            _test_post(txt)
+                            _test_pin(_test_post(txt))
                         _sent["d"] = y
                     if now.weekday() == 0:
                         wk = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
                         if _sent["w"] != wk[-1]:
                             txt = _test_recap("Weekly", wk)
                             if txt:
-                                _test_post(txt)
+                                _test_pin(_test_post(txt))
                             _sent["w"] = wk[-1]
                     if now.day == 1:
                         mk = (now - timedelta(days=1)).strftime("%Y-%m")
@@ -11891,7 +11935,7 @@ def _test_recap_loop():
                             days = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 32)]
                             txt = _test_recap("Monthly", [d for d in days if d.startswith(mk)])
                             if txt:
-                                _test_post(txt)
+                                _test_pin(_test_post(txt))
                             _sent["m"] = mk
         except Exception as e:
             print(f"[TEST RECAP] {e}")
@@ -15137,6 +15181,54 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"⏹ <b>Test system STOPPED</b>\n\n"
                 f"<i>{len(_test_trades)} open trade(s) stay open and keep being "
                 f"monitored — no NEW ones will be taken.</i>", skip_smallcaps=True)
+        elif _ta in ("trade", "trades", "t"):
+            # Live status of this system only. Prices are fetched here rather
+            # than read off the trade dicts: the monitor stores levels, not the
+            # last price it saw, so anything cached would be up to 30s stale.
+            with _test_lock:
+                _snap = list(_test_trades)
+            _parts = [f"🧪 <b>Test Trades</b> — "
+                      f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}"]
+            if _snap:
+                _rows = []
+                for t in _snap:
+                    _cp = get_bingx_price(t["symbol"]) or 0
+                    _buy = t["signal"] == "BUY"
+                    _pnl = ((_cp - t["entry"]) / t["entry"] * 100 * (1 if _buy else -1)) if _cp else 0.0
+                    _age = int((time.time() - t.get("created_at", time.time())) / 60)
+                    _sl_now = t["be_sl"] if (t.get("tp1_hit") and t.get("be_sl")) else t["sl"]
+                    _to = lambda lvl: (abs(lvl - _cp) / _cp * 100) if _cp else 0.0
+                    _rows.append(
+                        f"{t['symbol'].replace('-USDT',''):<5} {t['signal']:<4} "
+                        f"{_pnl:+6.2f}%  {_age//60}h{_age%60:02d}m"
+                        + ("  ✅TP1→BE" if t.get("tp1_hit") else "")
+                        + f"\n   entry {t['entry']}  now {_cp or '?'}"
+                        + f"\n   SL {_sl_now} ({_to(_sl_now):.2f}% away)"
+                        + f"  TP1 {t['tp1']} ({_to(t['tp1']):.2f}%)"
+                        + f"  TP2 {t['tp2']} ({_to(t['tp2']):.2f}%)")
+                _parts.append(f"<b>Open ({len(_snap)}):</b>\n<pre>" +
+                              "\n\n".join(_rows) + "</pre>")
+            else:
+                _parts.append("<b>Open:</b> <i>none</i>")
+            _lc = _test_last_cycle
+            if _lc.get("results"):
+                _rep = _test_cycle_report(_lc["results"])
+                _mins = int((time.time() - _lc["at"]) / 60)
+                _parts.append(f"<b>Last pass</b> ({_mins}m ago):\n{_rep}"
+                              if _rep else
+                              f"<b>Last pass</b> ({_mins}m ago): every pair already open")
+            else:
+                _parts.append("<i>No scan pass has run yet since the last restart.</i>")
+            _recent = _test_history[-5:]
+            if _recent:
+                _cl = []
+                for h in _recent:
+                    _p = h.get("pnl")
+                    _ps = f"{_p:+.2f}%" if _p is not None else "—"
+                    _cl.append(f"{h.get('symbol',''):<5} {h.get('result',''):<4} "
+                               f"{_ps:>8}  {h.get('time','')}")
+                _parts.append("<b>Last closed:</b>\n<pre>" + "\n".join(_cl) + "</pre>")
+            send_reply(chat_id, "\n\n".join(_parts), skip_smallcaps=True)
         else:
             _open = "\n".join(
                 f"  {t['symbol'].replace('-USDT','')}  {t['signal']}  @{t['entry']}  "
@@ -15154,7 +15246,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                    f"<i>The bot likely is not an admin of that channel.</i>\n"
                    if _test_last_post_error else "") + "\n"
                 f"<b>Open:</b>\n<pre>{_open}</pre>\n"
-                f"<code>/test run</code>  <code>/test stop</code>  <code>/test ping</code>", skip_smallcaps=True)
+                f"<code>/test run</code>  <code>/test stop</code>  <code>/test trade</code>  <code>/test ping</code>", skip_smallcaps=True)
 
     elif cmd in ("/intraday", "/intra") and is_scanadmin:
         _slots = {"btc": "btcint", "btcint": "btcint", "xaut": "xaut", "xa": "xaut"}
@@ -17029,7 +17121,7 @@ Reasoning: [one line]"""
                             locked_text=_locked_signal_text(chosen_sym.replace("-USDT","").replace("USDT",""), f"S{scan_ver} {_gw_model_tag(_kind)}", slot_data["sig_id"]),
                             sig_id=slot_data["sig_id"], react_category="entry")
                         _track_sl_ids(slot_data["sig_id"], "entry_mid", slot_data["reply_map"])
-                        _attach_chart_image_async(chosen_sym.replace("-USDT", "").replace("USDT", ""), slot_data["reply_map"])
+                        _attach_chart_image_async(chosen_sym.replace("-USDT", "").replace("USDT", ""), slot_data["reply_map"], slot_data["sig_id"])
                         log_trade_event({"type": f"scan{scan_ver}", "coin": chosen_sym,
                             "direction": scan_signal_val, "signal_time": _ist_str_now(),
                             "entry_price": scan_entry, "sl_price": scan_sl,
@@ -17839,7 +17931,7 @@ _SCAN_SUBCATS = {
         ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
         ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
         ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
         ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
         ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
         ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
@@ -22306,7 +22398,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             _demo_reply_map = send_entry_signal(demo_msg, include_ch2=False, tier_routed=_demo1_tier_routed, share_free=_demo_share_free,
                 locked_text=_locked_signal_text(coin, f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}", _demo_sig_id), sig_id=_demo_sig_id, react_category="entry")
             _track_sl_ids(_demo_sig_id, "entry_mid", _demo_reply_map)
-            _attach_chart_image_async(coin, _demo_reply_map)
+            _attach_chart_image_async(coin, _demo_reply_map, _demo_sig_id)
 
             slot_data = {
                 "symbol": chosen_sym, "signal": scan_signal_val,
