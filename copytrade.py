@@ -3535,16 +3535,29 @@ def handle(cmd: str, parts: list, chat_id, username: str,
                 f"   Exch:{bingx_ok} Copy:{copy_s} | "
                 f"${user.get('size_usdt',0):.0f} {lev_str}"
                 f"{pos_line}\n")
+        # Sent with smallcaps OFF so every @handle stays literal ASCII.
+        # _smallcaps_title leaves a word alone only when ALL its letters are
+        # uppercase (its acronym rule), so @CLEXER17 survived and stayed
+        # tappable while @nargesrajabi1 became @ɴᴀʀɢᴇꜱʀᴀᴊᴀʙɪ1 - and Telegram's
+        # auto-mention-linking only recognises a literal ASCII handle, so
+        # exactly the mixed-case usernames came out dead (admin 2026-09-02).
+        # The tg://user link stays too: it is the only thing that can link a
+        # user who has no username at all.
+        def _send(txt):
+            try:
+                send_reply_fn(chat_id, txt, skip_smallcaps=True)
+            except TypeError:
+                send_reply_fn(chat_id, txt)   # caller without the kwarg
         # Chunked: this is now the whole user base rather than the copy-trade
         # subset, so it grows past Telegram's 4096 limit on its own. Split by
         # whole entries so a user is never cut in half across two messages.
         _buf = ""
         for _ln in lines:
             if len(_buf) + len(_ln) > 3800:
-                send_reply_fn(chat_id, _buf.rstrip()); _buf = ""
+                _send(_buf.rstrip()); _buf = ""
             _buf += _ln + "\n"
         if _buf.strip():
-            send_reply_fn(chat_id, _buf.rstrip())
+            _send(_buf.rstrip())
 
     elif cmd == "/user" and is_admin:
         def _user_btns(cb_prefix):
