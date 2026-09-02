@@ -765,6 +765,7 @@ _REPLY_KB_CMD_MAP = {
     "📋 Trade Log": "/tradelog",
     "🧠 AI Gateway": "/aiconfig",
     "👥 Users": "/users",
+    "🧪 Test System": "/test",
     # Admin keyboard only — the row carrying these is built solely for
     # ADMIN_CHAT_ID below, so no other tier can reach them from a button.
     # The commands themselves already gate on is_admin, so a non-admin typing
@@ -778,8 +779,14 @@ def _reply_keyboard_for_chat(chat_id) -> dict:
     admin, co-admin, VIP user, or free user. Sent on /start."""
     cid_str = str(chat_id)
     if ADMIN_CHAT_ID and cid_str == str(ADMIN_CHAT_ID):
-        rows = [["📊 Status", "⏸ Pause/Resume"], ["🧠 AI Gateway", "📋 Trade Log"],
-                ["👥 Users"], ["🧹 Clear SL Free", "🧹 Clear SL VIP"]]
+        # Even 2-wide grid. "👥 Users" used to sit alone at full width between
+        # two paired rows, which read as a heading rather than a button. The
+        # two destructive Clear SL actions stay together on the last row, away
+        # from Status/Pause at the top where the thumb lands by default.
+        rows = [["📊 Status", "⏸ Pause/Resume"],
+                ["🧠 AI Gateway", "📋 Trade Log"],
+                ["👥 Users", "🧪 Test System"],
+                ["🧹 Clear SL Free", "🧹 Clear SL VIP"]]
     elif is_co_admin(chat_id):
         rows = [["🧠 AI Gateway", "🛠 Trade Control"], ["📋 Trade Log", "📊 Status"]]
     else:
@@ -6302,7 +6309,7 @@ def send_aerolinkkeys_screen(chat_id, message_id=None):
     _configured = [i for i, k in enumerate(_aerolink_all_key_slots(), start=1) if k]
     if not _configured:
         _help_edit_or_send(chat_id, "⚠️ No Aerolink keys configured.",
-            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "scan_sub:system"}]]}, message_id=message_id)
+            {"inline_keyboard": [[{"text": "◀️  Back", "callback_data": "scan_sub:ai"}]]}, message_id=message_id)
         return
     rows = []
     row = []
@@ -6313,7 +6320,7 @@ def send_aerolinkkeys_screen(chat_id, message_id=None):
             rows.append(row); row = []
     if row:
         rows.append(row)
-    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:ai"}])
     _n_paused = len(PAUSED_AEROLINK_KEYS & set(_configured))
     _help_edit_or_send(chat_id,
         f"🔑 <b>Aerolink Keys</b>  ({len(_configured)} configured, {_n_paused} paused)\n\n"
@@ -6386,7 +6393,7 @@ def send_chatmodel_screen(chat_id, message_id=None):
         {"text": ("✅ " if CHAT_USE_AEROLINK else "") + "🆓 Aerolink (free)", "callback_data": "chatgw:aerolink"},
     ]]
     rows = _gw_row + _text_rows + _img_rows
-    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "settings_sub:feeds"}])
     _text_label = ("🤖 Auto (smart routing)" if CHAT_MODEL == "auto" else
                    "🟢 Google (Gemini)" if CHAT_MODEL == "google" else
                    _AEROLINK_MODEL_CATALOG.get(CHAT_MODEL, {}).get("label", CHAT_MODEL))
@@ -17914,41 +17921,12 @@ _COPYUSER_SUBCATS = {
 
 # ─── "Scan Control" is split into sub-sections (main gate → door) ─────────────
 _SCAN_SUBCATS = {
-    "toggles": ("⚙️ On/Off Switches", [
-        ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
-        ("/btcanalysis", "📡", "BTC Analysis",       "Turn the scheduled BTC signal analysis on or off."),
-        ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals. (/ctpause is the same command.)"),
-        ("/vst",    "⭐", "Verified Auto-Scans",   "Turn VERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2. Manual runs always still work."),
-        ("/vsttimes", "🔐", "VST Allowlist (Copy Trade + VIP/Free)", "Global ON/OFF gate for which verified times reach VIP/Free and place real copy trade orders. OFF (default): every verified time behaves as normal. ON: only times you explicitly add (and that are CURRENTLY verified) post to VIP/Free and copy-trade — every other verified time is demoted to Channel 1 only, tagged [VST]. A time auto-drops out if it demotes and auto-returns if it's re-verified, with no action needed. Free-channel quota is also based on the allowlist count while this is on."),
-        ("/unst",   "🔒", "Unverified Auto-Scans", "Turn UNVERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
-        ("/stopnt", "📋", "Regular-Grid Auto-Scans", "Turn NONSPECIAL (regular-grid) auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
-    ]),
-    "system": ("🧠 AI & Gateway", [
-        ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
-        ("/model",   "🤖", "Default Scan Model", "Set the BTC/default scan AI model (Opus 5, Fable 5, etc.) — separate from /aiconfig's per-tier grid."),
-        ("/gateway", "🔀", "Default Scan Gateway", "Switch the main scan gateway (BTC's default) between Direct and Aerolink."),
-        ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
-        ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat. (/think is the same command.)"),
-        ("/effort", "🎚", "Effort — Trade Analysis", "Sets low/medium/high/xhigh/max effort for every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more cost. Doesn't affect /chat. (/eff is the same command.)"),
-        ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
-        ("/benchtable", "📊", "Benchmark Table", "Shows the benchmark win/loss/streak comparison collected by /benchmark. `/bt think on` or `/bt think off` for a single group. (/bt is the same command.)"),
-        ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
-        ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
-        ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
-        ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
-        ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
-        ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
-        ("/intrastatus", "📋", "Intraday Trades", "Open and pending intraday trades with entry, SL band %, targets and age. (/intrast is the same command.)"),
-        ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
-        ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
-        ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
-        ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
-        ("/aerolinktest", "🧪", "Test Aerolink Keys", "Pings every configured Aerolink key slot and shows which are responding right now."),
-        ("/aerolinkkeys", "🔑", "Pause/Resume Aerolink Keys", "Tap a key slot to pause or resume it — paused keys are skipped entirely during rotation."),
-        ("/promptvst",   "📤", "Debug DM — Verified",   "Toggle whether verified-tier scan runs send you the raw prompt/response debug DM."),
-        ("/promptunst",  "📤", "Debug DM — Unverified", "Toggle whether unverified-tier scan runs send you the raw prompt/response debug DM."),
-        ("/promptnt",    "📤", "Debug DM — Nonspecial", "Toggle whether regular-grid scan runs send you the raw prompt/response debug DM."),
+    "run": ("🔍 Run Now", [
+        ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
+        ("/scan1",  "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
+        ("/scan2",  "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
+        ("/signal", "⚡", "Force BTC Scan",       "Runs a BTC signal analysis immediately, outside the schedule."),
+        ("/demo",   "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
     ]),
     "schedule": ("⏰ Schedule Editor", [
         ("/alt",     "⏰", "Scan1 Times",       "Edit the exact hour:minute slots Scan1 fires at."),
@@ -17961,13 +17939,49 @@ _SCAN_SUBCATS = {
         ("/nt",   "📊", "Regular Times Performance", "Win rate for every tracked regular (non-special) grid slot."),
         ("/list", "🚫", "Blacklisted Times",         "Shows every time slot auto-retired for underperforming, with /un to reverse one."),
     ]),
-    "run": ("🔍 Run Now", [
-        ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
-        ("/scan1",  "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
-        ("/scan2",  "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
-        ("/signal", "⚡", "Force BTC Scan",       "Runs a BTC signal analysis immediately, outside the schedule."),
-        ("/test",   "🧪", "Run Demo Scan",       "Fires a demo/test scan now — signals only, no real trades."),
-        ("/demo",   "🎭", "Simulate Demo Trade", "Manually simulate one demo trade for testing."),
+    "toggles": ("⚙️ On/Off Switches", [
+        ("/scantoggle",  "⚙️", "Scan1/Scan2/Demo",  "Turn each of the three auto-scan pipelines on or off individually."),
+        ("/scancopy",    "📋", "Copy Trade By Type", "Turn auto-copy on or off separately for BTC, Scan1, and Scan2 signals. (/ctpause is the same command.)"),
+        ("/vst",    "⭐", "Verified Auto-Scans",   "Turn VERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2. Manual runs always still work."),
+        ("/vsttimes", "🔐", "VST Allowlist (Copy Trade + VIP/Free)", "Global ON/OFF gate for which verified times reach VIP/Free and place real copy trade orders. OFF (default): every verified time behaves as normal. ON: only times you explicitly add (and that are CURRENTLY verified) post to VIP/Free and copy-trade — every other verified time is demoted to Channel 1 only, tagged [VST]. A time auto-drops out if it demotes and auto-returns if it's re-verified, with no action needed. Free-channel quota is also based on the allowlist count while this is on."),
+        ("/unst",   "🔒", "Unverified Auto-Scans", "Turn UNVERIFIED special-time auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
+        ("/stopnt", "📋", "Regular-Grid Auto-Scans", "Turn NONSPECIAL (regular-grid) auto-scans on or off, across Scan1/Scan2/TS1/TS2."),
+    ]),
+    "intraday": ("🕐 Intraday Slots", [
+        ("/intraday", "🕐", "Intraday Slots", "BTC-INTRADAY / XAUT-INTRADAY pullback slots. `/intraday btc on`, `/intraday xaut off`, `/intraday btc now` to force one scan. `/intraday mode engine` runs the rules in Python with no API call (default); `mode ai` sends the prompt to Clex instead. (/intra is the same command.)"),
+        ("/intradayevery", "⏱", "Intraday Interval", "Minutes between intraday scan attempts. `/intradayevery 30`."),
+        ("/intrastatus", "📋", "Intraday Trades", "Open and pending intraday trades with entry, SL band %, targets and age. (/intrast is the same command.)"),
+        ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
+    ]),
+    "testsys": ("🧪 Test System", [
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
+    ]),
+    "source": ("🔀 Signal Source", [
+        ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
+        ("/btcengine", "₿", "BTC Engine", "Pick which engine trades BTC — `classic` (4H scan, market entry) or `intraday` (pullback slot). The other sleeps; never both. (/btceng is the same command.)"),
+        ("/entrystyle", "🎯", "Scan Entry Style", "Choose Market (instant) or Zone (limit order at a price range) entries for Scan1/Scan2."),
+    ]),
+    "ai": ("🧠 AI Model & Gateway", [
+        ("/aiconfig", "🧠", "AI Model & Gateway", "Set model + gateway for Scan1/Scan2/TS1/TS2, each split by Verified/Unverified/Nonspecial."),
+        ("/model",   "🤖", "Default Scan Model", "Set the BTC/default scan AI model (Opus 5, Fable 5, etc.) — separate from /aiconfig's per-tier grid."),
+        ("/gateway", "🔀", "Default Scan Gateway", "Switch the main scan gateway (BTC's default) between Direct and Aerolink."),
+        ("/directnu", "🔌", "Direct 4.8 — Normal+Unverified", "ON forces Scan1/Scan2's nonspecial (regular hourly grid) + unverified tiers onto Direct gateway + claude-opus-4-8, overriding /aiconfig for just those two tiers."),
+        ("/models",      "📋", "List AI Models",   "Shows every model registered in /aiconfig's picker, with its short tag."),
+        ("/addmodel",    "➕", "Add AI Model",     "Register a new model ID (GPT, GLM, Kimi, Claude, etc.) so it shows up in /aiconfig."),
+        ("/removemodel", "➖", "Remove AI Model",  "Un-register a model from /aiconfig's picker."),
+        ("/aerolinktest", "🧪", "Test Aerolink Keys", "Pings every configured Aerolink key slot and shows which are responding right now."),
+        ("/aerolinkkeys", "🔑", "Pause/Resume Aerolink Keys", "Tap a key slot to pause or resume it — paused keys are skipped entirely during rotation."),
+    ]),
+    "reasoning": ("🎚 Reasoning & Benchmark", [
+        ("/thinking", "🧠", "Extended Thinking — Trade Analysis", "ON gives every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2) a separate extended-thinking reasoning budget instead of narrating inline in the output. Doesn't affect /chat. (/think is the same command.)"),
+        ("/effort", "🎚", "Effort — Trade Analysis", "Sets low/medium/high/xhigh/max effort for every trade-analysis Claude call (BTC, Scan1/Scan2, TS1/TS2). Higher = deeper reasoning, more cost. Doesn't affect /chat. (/eff is the same command.)"),
+        ("/benchmark", "🧪", "Benchmark — Thinking x Effort", "ON fires 10 extra read-only Aerolink calls (thinking on/off x all 5 efforts) alongside every real trigger, tracked to a win/loss table via /benchtable. Never affects the real trade, VIP/Free, or copy trade. (/bench is the same command.)"),
+        ("/benchtable", "📊", "Benchmark Table", "Shows the benchmark win/loss/streak comparison collected by /benchmark. `/bt think on` or `/bt think off` for a single group. (/bt is the same command.)"),
+    ]),
+    "promptdm": ("📝 Prompt Debug DMs", [
+        ("/promptvst",   "📤", "Debug DM — Verified",   "Toggle whether verified-tier scan runs send you the raw prompt/response debug DM."),
+        ("/promptunst",  "📤", "Debug DM — Unverified", "Toggle whether unverified-tier scan runs send you the raw prompt/response debug DM."),
+        ("/promptnt",    "📤", "Debug DM — Nonspecial", "Toggle whether regular-grid scan runs send you the raw prompt/response debug DM."),
     ]),
     "lookup": ("🪙 Coin Lookup", [
         ("/coin",   "🪙", "Coin Lookup", "Type any coin's name and the bot finds and analyzes it for you."),
@@ -18063,24 +18077,31 @@ _SETTINGS_SUBCATS = {
         ("/chartsoff", "🚫", "Disable Charts",  "Turn off chart snapshots — saves API credits."),
         ("/charts",    "🖼", "Chart Snapshot Status", "Shows whether chart snapshots are currently on or off, with a preview."),
         ("/images",    "🖼", "Images On/Off",   "Enable or disable chart images being sent at all."),
+        ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
-    "extras": ("📰 Extras", [
+    "feeds": ("📰 Feeds & App", [
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
-        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged real-SL signal's messages from the Free channel(s) — BE trades are never touched."),
-        ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every logged real-SL signal's messages from the VIP channel(s) — BE trades are never touched."),
-        ("/resetspins", "🎰", "Reset All VIP Spins", "Clear every user's locked VIP spin price so everyone can spin again immediately."),
-        ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
-        ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
+        ("/chatmodel", "💬", "Chat AI Model", "Pick which AI model/gateway powers /chat's own replies — separate from the scan AI."),
+    ]),
+    "winrate": ("🎯 Win Rate Targets", [
         ("/winrate", "🎯", "Win Rate Targets", "Set the promote/demote win-rate target independently for Scan1, Scan2, TS1, and TS2."),
         ("/wrscan1", "🎯", "Scan1 Win Rate Target", "Direct shortcut to set Scan1's own win-rate target, e.g. /wrscan1 65 — same setting /winrate's picker changes."),
         ("/wrscan2", "🎯", "Scan2 Win Rate Target", "Direct shortcut to set Scan2's own win-rate target."),
         ("/wrts1",   "🎯", "TS1 Win Rate Target",   "Direct shortcut to set TS1's own win-rate target."),
         ("/wrts2",   "🎯", "TS2 Win Rate Target",   "Direct shortcut to set TS2's own win-rate target."),
+        ("/statsaccess", "🏆", "Win Rate Access", "Turn /stats (win rate & trade statistics) on or off for regular users."),
+    ]),
+    "vip": ("⭐ VIP & Free Limits", [
+        ("/setvipprice", "💰", "Set VIP Price", "Change the flat VIP monthly price (currently used for the full-price button on /vip)."),
+        ("/resetspins", "🎰", "Reset All VIP Spins", "Clear every user's locked VIP spin price so everyone can spin again immediately."),
         ("/freelimit", "🆓", "Free Daily Signal Limit", "Set how many signals the Free channel gets shown per day before locking further reveals."),
-        ("/chatmodel", "💬", "Chat AI Model", "Pick which AI model/gateway powers /chat's own replies — separate from the scan AI."),
+    ]),
+    "cleanup": ("🧹 Channel Cleanup", [
+        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged real-SL signal's messages from the Free channel(s) — BE trades are never touched."),
+        ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every logged real-SL signal's messages from the VIP channel(s) — BE trades are never touched."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -18656,7 +18677,7 @@ def send_winrate_screen(chat_id, message_id=None):
     ]
     rows = [[{"text": f"{label}: {_SLOT_EVAL_THRESHOLD[kind]}%", "callback_data": f"winrate_open:{np_key}"}]
             for kind, label, np_key in _wr_rows]
-    rows.append([{"text": "◀️  Back", "callback_data": "settings_sub:extras"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "settings_sub:winrate"}])
     _help_edit_or_send(chat_id,
         "<b>🎯 Win Rate Targets</b>\n\n"
         "<blockquote>The % win rate a time slot needs to hit (with at least 4 wins) to auto-promote to "
@@ -18672,7 +18693,7 @@ def send_aiconfig_screen(chat_id, message_id=None):
     _btc_mdl = "Opus 5" if SCAN_MODEL == "claude-opus-5" else "Fable 5"
     rows = [[{"text": f"₿ BTC: {_btc_gw} · {_btc_mdl}", "callback_data": "aicfg_open2:btc:verified"}]]
     rows += [[{"text": label, "callback_data": f"aicfg_open:{kind}"}] for kind, label in _AICFG_KIND_LABELS.items()]
-    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:system"}])
+    rows.append([{"text": "◀️  Back", "callback_data": "scan_sub:ai"}])
     _help_edit_or_send(chat_id,
         "<b>🧠 AI Model & Gateway — By Scan Type & Trade Type</b>\n\n"
         "<blockquote>Each scan type (Scan1, Scan2, TS1, TS2) picks its own model + gateway "
@@ -18728,7 +18749,7 @@ def send_entrystyle_screen(chat_id, message_id=None):
     rows = [
         [{"text": f"{'✅ ' if _is_market else ''}📍 Market Entry", "callback_data": "entrystyle:market"}],
         [{"text": f"{'✅ ' if not _is_market else ''}📩 Zone Entry",  "callback_data": "entrystyle:zone"}],
-        [{"text": "◀️  Back", "callback_data": "scan_sub:system"}],
+        [{"text": "◀️  Back", "callback_data": "scan_sub:source"}],
     ]
     _help_edit_or_send(chat_id,
         "<b>🎯 Scan Entry Style</b>\n\n"
@@ -19345,8 +19366,14 @@ def send_help_category(chat_id, cat_id, is_admin, message_id=None):
 
     if cat_id in _NESTED_CATS:
         subcats, cb_prefix = _NESTED_CATS[cat_id]
-        rows = [[{"text": sub_label, "callback_data": f"{cb_prefix}:{sub_id}"}]
-                for sub_id, (sub_label, _) in subcats.items()]
+        # Two per row. These are short section labels, not commands — one per
+        # row left them stretched full-width in a tall stack, and Scan now has
+        # ten sections rather than five, which as a single column runs off the
+        # screen before the Back button (admin 2026-09-02). An odd count puts
+        # the last one alone on its own row, which reads as the end of the list.
+        _btns = [{"text": sub_label, "callback_data": f"{cb_prefix}:{sub_id}"}
+                 for sub_id, (sub_label, _) in subcats.items()]
+        rows = [_btns[i:i + 2] for i in range(0, len(_btns), 2)]
         rows.append([{"text": "◀️  Back to Menu", "callback_data": "help_main"}])
         markup = {"inline_keyboard": rows}
         text = f"<b>{label}</b>\n\n<blockquote>Pick a section 👇</blockquote>"
