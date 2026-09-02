@@ -17863,30 +17863,7 @@ def _send_broadcast_picker(chat_id, message_id=None):
 # ─── HELP BUTTON MENU ────────────────────────────────────────────────────────
 # Each category: (label, admin_only, [(cmd, emoji, short_description), ...])
 _HELP_CATS = {
-    "monitor": (
-        # 4-tuple like every other section: (cmd, emoji, BUTTON LABEL, description).
-        # This was the only 3-tuple category, and its single text field had to be
-        # both things at once - so the buttons carried full sentences, stacked 15
-        # rows deep and truncating on the narrow side (admin 2026-09-02). Splitting
-        # them lets the button stay short while /cmd keeps the real explanation.
-        "📊 Status & Info", False, [
-            ("/status",   "📊", "Bot Status",     "Full bot status"),
-            ("/trade",    "📈", "Active Trades",  "Active BTC + all scan trades"),
-            ("/price",    "💲", "BTC Price",      "Current BTC price"),
-            ("/session",  "🕐", "Session",        "London / NY / Sleep session"),
-            ("/history",  "📜", "Last 5 Signals", "Last 5 signals"),
-            ("/stats",    "🏆", "Win Rate",       "Win rate & trade statistics"),
-            ("/vip",      "⭐", "VIP Plans",      "See VIP plans and pricing"),
-            ("/addfunds", "💵", "Add Funds",      "Top up your copy-trade wallet"),
-            ("/chat",     "💬", "AI Chat",        "Start an AI chat session with the bot"),
-            ("/endchat",  "🚪", "End Chat",       "End the current AI chat session"),
-            ("/cmd",      "📖", "All Commands",   "This list — every command, its use, and how to run it"),
-            ("/help",     "❓", "Button Menu",    "Button menu — the browsable version of this list"),
-            ("/start",    "👋", "Start",          "Welcome message and the quick-actions keyboard"),
-            ("/hidekeyboard", "⌨️", "Hide Keyboard", "Hide the quick-actions keyboard (/start brings it back)"),
-            ("/cancel",   "🚫", "Cancel",         "Cancel whatever the bot is currently waiting for you to type"),
-        ]
-    ),
+    "monitor":     ("📊 Status & Info",        False, []),
     # copyuser, tradecontrol, scan, copyadmin, settings, tv, and broadcast are all
     # registered in _NESTED_CATS below — their command lists live in the matching
     # _XXX_SUBCATS dict (rooms), not here. Only the label/admin-only flag is used
@@ -19192,7 +19169,92 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
 
 # Categories that are a "main gate" — show sub-sections instead of a flat list.
 # Maps cat_id -> (subcats dict, callback prefix used for that subcat's buttons)
-_NESTED_CATS = {"copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_SUBCATS, "scan_sub"),
+# ─── "Status & Info" sub-rooms (room → sub-room → bed) ───────────────────────
+# This was the one room with no sub-rooms: 15 commands opened straight onto the
+# room floor. Same shape as every other room now (admin 2026-09-02).
+_MONITOR_SUBCATS = {
+    "live": ("📊 Live Status", [
+        ("/status",  "📊", "Bot Status",     "Full bot status"),
+        ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
+        ("/price",   "💲", "BTC Price",      "Current BTC price"),
+        ("/session", "🕐", "Session",        "London / NY / Sleep session"),
+    ]),
+    "record": ("📜 History & Stats", [
+        ("/history", "📜", "Last 5 Signals", "Last 5 signals"),
+        ("/stats",   "🏆", "Win Rate",       "Win rate & trade statistics"),
+    ]),
+    "vipwallet": ("⭐ VIP & Wallet", [
+        ("/vip",      "⭐", "VIP Plans", "See VIP plans and pricing"),
+        ("/addfunds", "💵", "Add Funds", "Top up your copy-trade wallet"),
+    ]),
+    "aichat": ("💬 AI Chat", [
+        ("/chat",    "💬", "Start Chat", "Start an AI chat session with the bot"),
+        ("/endchat", "🚪", "End Chat",   "End the current AI chat session"),
+    ]),
+    "basics": ("⚙️ Bot Basics", [
+        ("/start", "👋", "Start",        "Welcome message and the quick-actions keyboard"),
+        ("/help",  "❓", "Button Menu",  "Button menu — the browsable version of this list"),
+        ("/cmd",   "📖", "All Commands", "This list — every command, its use, and how to run it"),
+        ("/hidekeyboard", "⌨️", "Hide Keyboard", "Hide the quick-actions keyboard (/start brings it back)"),
+        ("/cancel", "🚫", "Cancel",      "Cancel whatever the bot is currently waiting for you to type"),
+    ]),
+}
+
+# ─── Mini-rooms: one level deeper, for sub-rooms too big to open onto beds ───
+# A view over the sub-room's own command list, keyed by command name - NOT a
+# second copy. /cmd, _find_back_target and the co-admin permission set all keep
+# reading the sub-room lists, so adding a mini-room cannot change what a command
+# is or who may run it. A sub-room with no entry here opens straight onto beds.
+_MINI_ROOMS = {
+    ("scan", "ai"): {
+        "cfg":  ("⚙️ Model & Gateway", ["/aiconfig", "/model", "/gateway", "/directnu"]),
+        "reg":  ("📋 Model Registry",  ["/models", "/addmodel", "/removemodel"]),
+        "aero": ("🔑 Aerolink Keys",   ["/aerolinktest", "/aerolinkkeys"]),
+    },
+    ("scan", "schedule"): {
+        "times": ("⏰ Slot Times",   ["/alt", "/alt2", "/altdemo", "/altdemo2", "/settime"]),
+        "view":  ("📋 View & Stats", ["/list", "/st", "/nt", "/timepanel"]),
+    },
+    ("copyadmin", "sync"): {
+        "ct":  ("🔄 Copy Trade",    ["/ctstatus", "/ctretry", "/ctclose"]),
+        "srv": ("🖥 Server & Sync", ["/server", "/syncup", "/synccheck", "/un", "/forceclose"]),
+    },
+}
+
+def _mini_rows(cat_id, sub_id):
+    """Mini-room buttons for a sub-room, or None if it opens straight onto beds."""
+    mini = _MINI_ROOMS.get((cat_id, sub_id))
+    if not mini:
+        return None
+    btns = [{"text": lbl, "callback_data": f"mini:{cat_id}:{sub_id}:{mid}"}
+            for mid, (lbl, _) in mini.items()]
+    return [btns[i:i + 2] for i in range(0, len(btns), 2)]
+
+def send_mini_room(chat_id, cat_id, sub_id, mini_id, message_id=None):
+    """The deepest level: the beds inside one mini-room."""
+    subcats = _NESTED_CATS.get(cat_id, (None, None))[0] or {}
+    entry = subcats.get(sub_id)
+    mini = (_MINI_ROOMS.get((cat_id, sub_id)) or {}).get(mini_id)
+    if not entry or not mini:
+        return
+    _sub_label, cmds = entry
+    mlabel, wanted = mini
+    by_cmd = {c[0]: c for c in cmds}
+    rows, desc_lines = [], []
+    for want in wanted:
+        c = by_cmd.get(want)
+        if not c:
+            continue          # command moved out of the sub-room - skip, never crash
+        cmd, emoji, title, desc = c
+        rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
+        desc_lines.append(f"<b>{emoji} {title}</b>\n<i>{desc}</i>")
+    _pfx = _NESTED_CATS[cat_id][1]
+    rows.append([{"text": "◀️  Back", "callback_data": f"{_pfx}:{sub_id}"}])
+    _text = f"<b>{mlabel}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
+    _help_edit_or_send(chat_id, _text, {"inline_keyboard": rows}, message_id)
+
+_NESTED_CATS = {"monitor": (_MONITOR_SUBCATS, "monitor_sub"),
+                 "copyuser": (_COPYUSER_SUBCATS, "copyuser_sub"), "scan": (_SCAN_SUBCATS, "scan_sub"),
                  "tradecontrol": (_TRADECONTROL_SUBCATS, "tradecontrol_sub"),
                  "copyadmin": (_COPYADMIN_SUBCATS, "copyadmin_sub"),
                  "settings": (_SETTINGS_SUBCATS, "settings_sub"),
@@ -19308,6 +19370,13 @@ def _find_back_target(cmd_text):
     for cat_id, (subcats, cb_prefix) in _NESTED_CATS.items():
         for sub_id, (_, cmds) in subcats.items():
             if any(c == cmd_text for c, _, _, _ in cmds):
+                # If this sub-room is split into mini-rooms, Back belongs to the
+                # mini-room the command actually sits in - returning the sub-room
+                # would skip a level and drop the user on the picker they just
+                # came through, which reads as the Back button losing its place.
+                for _mid, (_mlabel, _want) in (_MINI_ROOMS.get((cat_id, sub_id)) or {}).items():
+                    if cmd_text in _want:
+                        return f"mini:{cat_id}:{sub_id}:{_mid}", cat_id
                 return f"{cb_prefix}:{sub_id}", cat_id
     cat_id = next((cid_ for cid_, (_, _, cmds_) in _HELP_CATS.items()
                    if any(c == cmd_text for c, _, _, _ in cmds_)), "monitor")
@@ -19322,6 +19391,12 @@ def _navigate_to(back_cb, chat_id, cid, msg_id, is_admin):
         send_help_category(chat_id, back_cb.split(":", 1)[1], is_admin, message_id=msg_id)
     elif back_cb.startswith("copyuser_sub:"):
         send_copyuser_subcat(chat_id, back_cb.split(":", 1)[1], cid, message_id=msg_id)
+    elif back_cb.startswith("mini:"):
+        _, _mc, _ms, _mi = back_cb.split(":", 3)
+        send_mini_room(chat_id, _mc, _ms, _mi, message_id=msg_id)
+    elif back_cb.startswith("monitor_sub:"):
+        _send_generic_subcat(chat_id, _MONITOR_SUBCATS, back_cb.split(":", 1)[1],
+                             "monitor", message_id=msg_id)
     elif back_cb.startswith("scan_sub:"):
         send_scan_subcat(chat_id, back_cb.split(":", 1)[1], message_id=msg_id)
     elif back_cb.startswith("tradecontrol_sub:"):
@@ -19455,6 +19530,12 @@ def send_scan_subcat(chat_id, sub_id, message_id=None):
     if not entry:
         return
     label, cmds = entry
+    _mr = _mini_rows("scan", sub_id)
+    if _mr:
+        _mr = list(_mr) + [[{"text": "◀️  Back", "callback_data": "help_cat:scan"}]]
+        _txt = f"<b>{label}</b>\n\n<blockquote>Pick a section 👇</blockquote>"
+        _help_edit_or_send(chat_id, _txt, {"inline_keyboard": _mr}, message_id)
+        return
     rows = []
     desc_lines = []
     for cmd, emoji, title, desc in cmds:
@@ -19485,6 +19566,12 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
     if not entry:
         return
     label, cmds = entry
+    _mr = _mini_rows(back_cat, sub_id)
+    if _mr:
+        _mr = list(_mr) + [[{"text": "◀️  Back", "callback_data": f"help_cat:{back_cat}"}]]
+        _txt = f"<b>{label}</b>\n\n<blockquote>Pick a section 👇</blockquote>"
+        _help_edit_or_send(chat_id, _txt, {"inline_keyboard": _mr}, message_id)
+        return
     rows = []
     desc_lines = []
     for cmd, emoji, title, desc in cmds:
@@ -19611,6 +19698,14 @@ def command_listener():
                     elif cb_data.startswith("help_cat:"):
                         cat_id = cb_data.split(":", 1)[1]
                         send_help_category(cb_chat_id, cat_id, cb_is_admin, message_id=cb_msg_id)
+                    elif cb_data.startswith("monitor_sub:"):
+                        _send_generic_subcat(cb_chat_id, _MONITOR_SUBCATS,
+                                             cb_data.split(":", 1)[1], "monitor", message_id=cb_msg_id)
+                    elif cb_data.startswith("mini:"):
+                        _, _mc, _ms, _mi = cb_data.split(":", 3)
+                        if _mc in ("monitor", "copyuser") or cb_is_admin or (
+                                _mc in ("scan", "tradecontrol") and cb_is_scanadmin):
+                            send_mini_room(cb_chat_id, _mc, _ms, _mi, message_id=cb_msg_id)
                     elif cb_data.startswith("copyuser_sub:"):
                         sub_id = cb_data.split(":", 1)[1]
                         send_copyuser_subcat(cb_chat_id, sub_id, cb_cid, message_id=cb_msg_id)
