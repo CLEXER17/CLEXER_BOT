@@ -22383,6 +22383,23 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # VERIFIED special-time signals (admin request 2026-07-27) — unverified
             # special-time slots stay Channel-1-only too, same as Scan1/Scan2.
             _demo1_tier_routed = is_special and _ai_category(_kind) == "verified"
+            # WEEKDAY GATE — the same rule the live Scan1/Scan2 path applies
+            # (admin 2026-08-28), which this path was missing entirely. TS1/TS2
+            # slots are shown and evaluated per weekday in /st week, but nothing
+            # here ever consulted that verdict, so a slot with NO record for
+            # today still reached VIP/Free and copy trade (admin 2026-09-02).
+            # The stat kind is demo1/demo2 — _kind here is the SCHEDULE kind
+            # (test1/test2), and _slot_day_stats is keyed by the stat kind.
+            _demo_stat_kind = f"demo{scan_ver}"
+            _demo_wd_ok = is_special and _slot_day_verified(_demo_stat_kind, trigger_hm)
+            # Promotion runs BEFORE the VST gate, exactly as on the live path,
+            # so that gate still gets to demote whatever this promotes.
+            _demo_wd_promoted = False
+            if _demo_wd_ok and not _demo1_tier_routed:
+                _demo1_tier_routed = True
+                _demo_wd_promoted = True
+                print(f"  [SLOT DAY] {_demo_stat_kind} {trigger_hm} cleared by its weekday "
+                      f"record — {_slot_day_reason(_demo_stat_kind, trigger_hm)}")
             # See the matching /vsttimes downgrade on the live Scan1/Scan2 path —
             # demo_msg was already built above with the plain header, so the [VST]
             # tag is spliced in here rather than reordering the whole build.
@@ -22392,6 +22409,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 demo_msg = demo_msg.replace(
                     f"TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
                     f"TS{scan_ver} {_gw_model_tag('test', scan_ver)} [VST]", 1)
+            _demo_wd_locked = _demo1_tier_routed and not _demo_wd_ok
+            if _demo_wd_locked:
+                _demo1_tier_routed = False
+                print(f"  [SLOT DAY] {_demo_stat_kind} {trigger_hm} locked — "
+                      f"{_slot_day_reason(_demo_stat_kind, trigger_hm)}")
             # Used to hardcode share_free=True (bypassing the daily quota entirely
             # for every TS1 special-time signal) — now respects the same quota as
             # everything else: within quota -> real signal to Free; exhausted ->
@@ -22410,6 +22432,8 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 "tp1_hit": False, "be_sl": 0, "created_at": time.time(), "entry_hit": True,
                 "scan_ver": scan_ver,
                 "tier_routed": _demo1_tier_routed,
+                "wd_locked": _demo_wd_locked,
+                "wd_promoted": _demo_wd_promoted,
                 "share_free": _demo_share_free,
                 "is_d48": _demo_is_d48,
                 "sig_id": _demo_sig_id,
