@@ -13259,7 +13259,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -15162,6 +15162,62 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"<b>Groups</b>\n<pre>" + "\n".join(_grp) + "</pre>\n"
             f"<code>/userbot restart</code> to force a reconnect.",
             skip_smallcaps=True)
+
+    elif cmd == "/secretary" and is_admin:
+        global SECRETARY_ENABLED, SECRETARY_AI, SECRETARY_MSG
+        _sa = parts[1].lower() if len(parts) > 1 else ""
+        if _sa in ("on", "start"):
+            SECRETARY_ENABLED = True; _sec_save()
+            send_reply(chat_id, "\n".join([
+                "💼 <b>Secretary Mode ON</b>", "",
+                f"Connected business accounts: <b>{len(_biz_conns)}</b>",
+                ("<i>No account is connected yet - link the bot in Telegram "
+                 "Settings > Telegram Business > Chatbots.</i>" if not _biz_conns else
+                 "<i>Incoming messages to that account get one automatic reply "
+                 "per chat every 6 hours.</i>")]), skip_smallcaps=True)
+        elif _sa in ("off", "stop"):
+            SECRETARY_ENABLED = False; _sec_save()
+            send_reply(chat_id, "⏹ <b>Secretary Mode OFF</b>\n\n"
+                       "<i>The connection stays linked - nothing is auto-answered.</i>",
+                       skip_smallcaps=True)
+        elif _sa == "ai":
+            _v = parts[2].lower() if len(parts) > 2 else ""
+            if _v not in ("on", "off"):
+                send_reply(chat_id, "<code>/secretary ai on</code>  <code>/secretary ai off</code>",
+                           skip_smallcaps=True); return
+            SECRETARY_AI = (_v == "on"); _sec_save()
+            send_reply(chat_id, f"🧠 AI replies <b>{_v.upper()}</b>\n\n" +
+                       ("<i>Clex writes each reply (free gateways only). It is told to stay "
+                        "brief and never quote prices or promise returns.</i>" if SECRETARY_AI
+                        else "<i>The fixed message below is sent instead.</i>"),
+                       skip_smallcaps=True)
+        elif _sa == "msg":
+            _new = message.get("text", "").split(None, 2)
+            if len(_new) < 3:
+                send_reply(chat_id, "<code>/secretary msg Your reply text here</code>",
+                           skip_smallcaps=True); return
+            SECRETARY_MSG = _new[2].strip()[:900]; _sec_save()
+            send_reply(chat_id, "✅ <b>Reply message saved</b>\n\n"
+                       f"<blockquote>{_html.escape(SECRETARY_MSG)}</blockquote>",
+                       skip_smallcaps=True)
+        else:
+            _rows = []
+            for _ci, _c in _biz_conns.items():
+                _rows.append(f"  <code>{_ci[:12]}</code>  owner {_biz_owner_id(_c)}  "
+                             f"reply:{'yes' if _biz_can_reply(_c) else 'NO'}")
+            send_reply(chat_id, "\n".join([
+                f"💼 <b>Secretary Mode</b> - "
+                f"{'▶️ ON' if SECRETARY_ENABLED else '⏹ OFF'}", "",
+                f"Reply engine: <b>{'Clex AI' if SECRETARY_AI else 'Fixed message'}</b>",
+                f"Cooldown: one reply per chat per {SECRETARY_COOLDOWN // 3600}h", "",
+                f"<b>Connections ({len(_biz_conns)}):</b>",
+                ("\n".join(_rows) if _rows else
+                 "  <i>none - link the bot in Telegram Settings &gt; Telegram Business &gt; Chatbots</i>"),
+                "", "<b>Fixed reply:</b>",
+                f"<blockquote>{_html.escape(SECRETARY_MSG)}</blockquote>",
+                "<code>/secretary on</code>  <code>/secretary off</code>",
+                "<code>/secretary ai on</code>  <code>/secretary msg &lt;text&gt;</code>"]),
+                skip_smallcaps=True)
 
     elif cmd == "/test" and is_admin:
         _ta = parts[1].lower() if len(parts) > 1 else ""
@@ -18063,6 +18119,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
+        ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>`."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
@@ -19585,6 +19642,156 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
 # ─── END HELP MENU ────────────────────────────────────────────────────────────
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SECRETARY MODE — Telegram Business chat automation
+#
+# Telegram Business (Premium accounts, Settings > Telegram Business > Chatbots)
+# lets an account hand its PRIVATE chats to a bot. Telegram then delivers those
+# chats here as business_message updates, and the bot answers as the account
+# owner by passing business_connection_id back on sendMessage.
+#
+# This is NOT the bot's own DMs. Every message a customer sends the OWNER's
+# personal account arrives here, so the rules below are deliberately cautious:
+#   - never answer a message the owner sent themselves (Telegram delivers the
+#     owner's own outgoing messages through the same update)
+#   - never answer without reply rights actually granted on the connection
+#   - one auto-reply per chat per cooldown, so a five-message burst gets one
+#     answer instead of five
+#   - text only; a sticker or photo is left for the owner
+# ═══════════════════════════════════════════════════════════════════════════
+
+SECRETARY_ENABLED = False          # /secretary on | off
+SECRETARY_AI = False               # canned text by default; AI reply is opt-in
+SECRETARY_COOLDOWN = 6 * 3600      # one auto-reply per chat per 6h
+SECRETARY_MSG = ("Thanks for the message. This is an automated reply - "
+                 "the account owner has been notified and will get back to you personally.")
+_biz_conns: dict = {}              # connection_id -> connection dict
+_biz_last: dict = {}               # "conn_id:chat_id" -> epoch of last auto-reply
+_SECRETARY_FILE = os.path.join(DATA_DIR, "secretary.json")
+
+
+def _sec_save():
+    try:
+        with open(_SECRETARY_FILE, "w") as f:
+            json.dump({"enabled": SECRETARY_ENABLED, "ai": SECRETARY_AI,
+                       "msg": SECRETARY_MSG, "conns": _biz_conns}, f)
+    except Exception as e:
+        print(f"[SECRETARY] save: {e}")
+
+
+def _sec_load():
+    global SECRETARY_ENABLED, SECRETARY_AI, SECRETARY_MSG
+    try:
+        if not os.path.exists(_SECRETARY_FILE):
+            return
+        with open(_SECRETARY_FILE) as f:
+            d = json.load(f)
+        SECRETARY_ENABLED = bool(d.get("enabled", False))
+        SECRETARY_AI = bool(d.get("ai", False))
+        SECRETARY_MSG = d.get("msg") or SECRETARY_MSG
+        _biz_conns.update(d.get("conns") or {})
+        print(f"[SECRETARY] loaded: enabled={SECRETARY_ENABLED} ai={SECRETARY_AI} "
+              f"connections={len(_biz_conns)}")
+    except Exception as e:
+        print(f"[SECRETARY] load: {e}")
+
+
+def _biz_can_reply(conn: dict) -> bool:
+    """Whether this connection actually lets the bot send.
+
+    Telegram replaced the flat can_reply boolean with a rights object, and
+    which one arrives depends on the API version serving the account - so both
+    are accepted and absence means NO, never a silent assumption of yes."""
+    if not conn or not conn.get("is_enabled", True):
+        return False
+    rights = conn.get("rights")
+    if isinstance(rights, dict):
+        return bool(rights.get("can_reply"))
+    return bool(conn.get("can_reply"))
+
+
+def _biz_owner_id(conn: dict):
+    """The account the bot is answering FOR - used to ignore its own messages."""
+    return (conn.get("user") or {}).get("id")
+
+
+def _biz_send(conn_id: str, chat_id, text: str) -> bool:
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json={"business_connection_id": conn_id, "chat_id": chat_id,
+                                "text": text, "disable_web_page_preview": True}, timeout=15)
+        j = r.json()
+        if not j.get("ok"):
+            print(f"  [SECRETARY] send rejected: {j.get('description')}")
+        return bool(j.get("ok"))
+    except Exception as e:
+        print(f"  [SECRETARY] send: {e}")
+        return False
+
+
+def _biz_on_connection(bc: dict):
+    """business_connection update - the owner connected, edited or removed us."""
+    cid_ = bc.get("id")
+    if not cid_:
+        return
+    if bc.get("is_enabled", True):
+        _biz_conns[cid_] = bc
+        _state = "connected" if _biz_can_reply(bc) else "connected (no reply rights)"
+    else:
+        _biz_conns.pop(cid_, None)
+        _state = "disconnected"
+    _sec_save()
+    _uid = _biz_owner_id(bc)
+    print(f"[SECRETARY] business connection {cid_} {_state} (owner {_uid})")
+    if ADMIN_CHAT_ID:
+        _lines = ["💼 <b>Secretary Mode</b>", "",
+                  f"Business account <b>{_state}</b>.",
+                  f"Owner id: <code>{_uid}</code>",
+                  f"Reply rights: <b>{'YES' if _biz_can_reply(bc) else 'NO'}</b>",
+                  "",
+                  ("<i>Auto-reply is ON.</i>" if SECRETARY_ENABLED
+                   else "<i>Auto-reply is OFF - send /secretary on to start.</i>")]
+        send_reply(ADMIN_CHAT_ID, "\n".join(_lines), skip_smallcaps=True)
+
+
+def _biz_on_message(msg: dict):
+    """business_message update - a message in one of the owner's private chats."""
+    if not SECRETARY_ENABLED:
+        return
+    conn_id = msg.get("business_connection_id")
+    conn = _biz_conns.get(conn_id)
+    if not conn or not _biz_can_reply(conn):
+        return
+    sender = (msg.get("from") or {}).get("id")
+    # Telegram delivers the OWNER's own outgoing messages through this same
+    # update. Replying to those would have the bot talking to itself in every
+    # chat the owner types in.
+    if sender is None or str(sender) == str(_biz_owner_id(conn)):
+        return
+    chat_id = (msg.get("chat") or {}).get("id")
+    text = msg.get("text")
+    if not chat_id or not text:
+        return                      # stickers/photos/voice are left for a human
+    key = f"{conn_id}:{chat_id}"
+    if time.time() - _biz_last.get(key, 0) < SECRETARY_COOLDOWN:
+        return                      # already answered this chat recently
+    reply = SECRETARY_MSG
+    if SECRETARY_AI:
+        try:
+            _sys = ("You are the assistant answering on behalf of the owner of a "
+                    "crypto trading signals service called Clex. Be brief (two "
+                    "sentences at most), polite, and never invent prices, returns "
+                    "or promises. If you are unsure, say the owner will follow up.")
+            _ai = _chat_boki_text_reply([], text, extra_system=_sys)
+            if _ai and _ai.strip():
+                reply = _ai.strip()[:1000]
+        except Exception as e:
+            print(f"  [SECRETARY] AI reply failed ({e}) - using the canned message")
+    if _biz_send(conn_id, chat_id, reply):
+        _biz_last[key] = time.time()
+        print(f"  [SECRETARY] auto-replied in chat {chat_id}")
+
+
 _last_getupdates_fail_alert = 0.0
 
 def command_listener():
@@ -19614,7 +19821,7 @@ def command_listener():
         _standby_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message"]}, timeout=25)
             data = r.json()
             if not data.get("ok"):
                 # This used to be completely silent — no print, no admin DM —
@@ -19648,6 +19855,19 @@ def command_listener():
                 time.sleep(5); continue
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
+
+                # Telegram Business (secretary mode) - the owner's own private
+                # chats, not the bot's. Handled first and independently: these
+                # updates carry no callback_query and must never fall through
+                # into the normal command path, which assumes the bot's own DMs.
+                if upd.get("business_connection"):
+                    try: _biz_on_connection(upd["business_connection"])
+                    except Exception as e: print(f"[SECRETARY] connection: {e}")
+                    continue
+                if upd.get("business_message"):
+                    try: _biz_on_message(upd["business_message"])
+                    except Exception as e: print(f"[SECRETARY] message: {e}")
+                    continue
 
                 # Handle inline button callbacks
                 cb = upd.get("callback_query")
@@ -22851,6 +23071,7 @@ def main():
     threading.Thread(target=_time_panel_trigger_loop, daemon=True).start()
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
     _backfill_slot_days()
+    _sec_load()
     _test_load()
     threading.Thread(target=_test_scan_loop, daemon=True).start()
     threading.Thread(target=_test_monitor_loop, daemon=True).start()
