@@ -11684,6 +11684,17 @@ TEST_TP1_MULT, TEST_TP2_MULT = 1.5, 3.0     # same as Scan1
 # leaves TP1 only 1.4x costs, which is not worth trading.
 TEST_SL_LO, TEST_SL_HI = 0.4, 2.5
 TEST_1M_CONFIRM = 2               # newest 1M candles that must agree
+# Which ruleset the test system trades. /test switch flips between them.
+#   "current" - 5M decides direction and stop, 1M confirms entry. No higher
+#               timeframe at all, so it will happily short into an uptrend if
+#               the last 50 minutes look bearish.
+#   "mtf"     - adds a 15M bias veto ABOVE that: the 5M signal must agree with
+#               15M structure or the trade is skipped. Measured on Scan1's own
+#               universe over 894 simulated trades, requiring higher-timeframe
+#               agreement took expectancy from +0.067R to +0.275R while keeping
+#               about half the trades; every "HTF opposes" bucket lost money.
+TEST_LOGIC = "current"            # "current" | "mtf"
+TEST_MTF_TF = "15m"               # the bias timeframe used by "mtf"
 
 _test_trades: list = []           # its own open trades, never the shared lists
 _test_lock = threading.Lock()
@@ -11768,6 +11779,21 @@ def _test_scan_one(symbol: str) -> str:
         return (symbol, False, f"no clear direction — buy {_b}/4, sell {_s}/4 (needs 2+ and a winner)")
 
     side = r["signal"]
+    # "mtf": the 5M signal must agree with 15M structure. Placed AFTER the 5M
+    # engine rather than before it so the skip reason can name both sides -
+    # "engine says SELL but 15M is BULLISH" is actionable, "no trade" is not.
+    if TEST_LOGIC == "mtf":
+        df15 = bingx_klines(symbol, TEST_MTF_TF, 30)
+        if df15 is None or len(df15) < 12:
+            return (symbol, False, f"not enough {TEST_MTF_TF.upper()} candles for the bias check")
+        _bias = _intra_struct12(df15)
+        _want = {"BULLISH": "BUY", "BEARISH": "SELL"}.get(_bias)
+        if _bias == "RANGE":
+            return (symbol, False,
+                    f"engine says {side}, but {TEST_MTF_TF.upper()} is RANGE — no bias to trade with")
+        if _want != side:
+            return (symbol, False,
+                    f"engine says {side}, but {TEST_MTF_TF.upper()} is {_bias} — opposing the bias")
     if not _test_1m_confirms(symbol, side):
         return (symbol, False,
                 f"engine said {side} (b{r['score_buy']}/s{r['score_sell']}) but the last "
@@ -11786,7 +11812,7 @@ def _test_scan_one(symbol: str) -> str:
     t = {"symbol": symbol, "signal": side, "entry": entry, "sl": sl,
          "tp1": tp1, "tp2": tp2, "tp1_hit": False, "be_sl": None,
          "sl_pct": sl_pct, "created_at": time.time(),
-         "sig_id": _gen_signal_id(), "reply_map": {},
+         "sig_id": _gen_signal_id(), "reply_map": {}, "logic": TEST_LOGIC,
          "score": f"{r.get('score_buy',0)}b/{r.get('score_sell',0)}s"}
     with _test_lock:
         if any(x["symbol"] == symbol for x in _test_trades):
@@ -11991,7 +12017,7 @@ def _test_save():
     system came back stopped and empty after each redeploy (admin 2026-09-03).
     """
     blob = {"enabled": TEST_ENABLED, "trades": _test_trades,
-            "history": _test_history, "stats": _test_stats}
+            "history": _test_history, "stats": _test_stats, "logic": TEST_LOGIC}
     try:
         with open(_TEST_STATE_FILE, "w") as f:
             json.dump(blob, f)
@@ -12006,7 +12032,7 @@ def _test_save():
 def _test_load():
     """Central store first, local file as the fallback - the same order every
     other shared piece of state uses (see _load_free_sl_log)."""
-    global TEST_ENABLED
+    global TEST_ENABLED, TEST_LOGIC
     try:
         d = None
         if CLEXER_API_URL:
@@ -12019,6 +12045,7 @@ def _test_load():
         if not d:
             return
         TEST_ENABLED = bool(d.get("enabled", False))
+        TEST_LOGIC = d.get("logic") if d.get("logic") in ("current", "mtf") else TEST_LOGIC
         _test_trades[:] = d.get("trades", []) or []
         _test_history[:] = d.get("history", []) or []
         _test_stats.update(d.get("stats", {}) or {})
@@ -15366,6 +15393,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 skip_smallcaps=True)
 
     elif cmd == "/test" and is_admin:
+        global TEST_LOGIC
         _ta = parts[1].lower() if len(parts) > 1 else ""
         if _ta == "ping":
             _mid = _test_post("🧪 <b>Test channel check</b> — if you can read "
@@ -15394,6 +15422,36 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"⏹ <b>Test system STOPPED</b>\n\n"
                 f"<i>{len(_test_trades)} open trade(s) stay open and keep being "
                 f"monitored — no NEW ones will be taken.</i>", skip_smallcaps=True)
+        elif _ta in ("switch", "logic", "sw"):
+            _want = parts[2].lower() if len(parts) > 2 else ""
+            if _want in ("current", "5m", "old"):
+                TEST_LOGIC = "current"
+            elif _want in ("mtf", "15m", "new"):
+                TEST_LOGIC = "mtf"
+            elif _want:
+                send_reply(chat_id, "<code>/test switch</code> to flip, or "
+                           "<code>/test switch current</code> / <code>/test switch mtf</code>",
+                           skip_smallcaps=True); return
+            else:
+                TEST_LOGIC = "mtf" if TEST_LOGIC == "current" else "current"
+            _test_save()
+            if TEST_LOGIC == "mtf":
+                _body = ["🔁 <b>Test logic → MTF (15M → 5M → 1M)</b>", "",
+                         "15M structure sets the bias.",
+                         "5M engine must agree with it, or the trade is skipped.",
+                         "1M still confirms the entry.", "",
+                         "<i>Fewer trades. Measured on Scan1's own universe over 894 "
+                         "simulated trades, requiring higher-timeframe agreement moved "
+                         "expectancy from +0.067R to +0.275R while keeping about half "
+                         "the trades - and every trade that opposed the bias lost money.</i>"]
+            else:
+                _body = ["🔁 <b>Test logic → CURRENT (5M → 1M)</b>", "",
+                         "5M engine decides direction and stop.",
+                         "1M confirms the entry.",
+                         "No higher timeframe is consulted.", "",
+                         "<i>More trades, and it can trade against the 15M trend.</i>"]
+            send_reply(chat_id, "\n".join(_body), skip_smallcaps=True)
+            return
         elif _ta in ("trade", "trades", "t"):
             # Live status of this system only. Prices are fetched here rather
             # than read off the trade dicts: the monitor stores levels, not the
@@ -15454,6 +15512,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}\n\n"
                 f"Pairs: {', '.join(x.replace('-USDT','') for x in TEST_SYMBOLS)}\n"
                 f"Cycle: every {TEST_CYCLE_SECS//60} min\n"
+                f"Logic: <b>{'MTF 15M/5M/1M' if TEST_LOGIC == 'mtf' else 'Current 5M/1M'}</b>\n"
                 f"Closed: {_n}  ({_w} win / {_n-_w} loss)\n"
                 + (f"\n⚠️ <b>Last post error:</b> <code>{_test_last_post_error}</code>\n"
                    f"<i>The bot likely is not an admin of that channel.</i>\n"
@@ -18138,7 +18197,7 @@ _SCAN_SUBCATS = {
         ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
     ]),
     "testsys": ("🧪 Test System", [
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
