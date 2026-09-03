@@ -2719,6 +2719,52 @@ def register_user(chat_id, username=None):
                 "blocked": list(blocked_users),
             })
 
+def _sweep_blocked_users(report_to=None):
+    """Actively refresh blocked_users for every registered user.
+
+    Uses sendChatAction, not sendMessage: Telegram answers it with the same
+    403 "bot was blocked by the user", but the user receives no message - at
+    worst a typing indicator that vanishes. There is no API for asking
+    directly, so this is the only way to find a block the bot has not already
+    tripped over on a real send.
+
+    Runs on its own thread and paces itself; a sweep of a few thousand users
+    would otherwise walk straight into Telegram's rate limit."""
+    def _run():
+        ids = sorted(u for u in list(registered_users) if int(u) > 0)
+        before = set(blocked_users)
+        checked = errors = 0
+        for uid in ids:
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendChatAction",
+                    json={"chat_id": uid, "action": "typing"}, timeout=10)
+                _mark_block_state(uid, r)
+                checked += 1
+            except Exception:
+                errors += 1
+            time.sleep(0.06)          # ~16/s, well inside Telegram's limit
+        now = set(blocked_users)
+        if report_to:
+            _new, _gone = sorted(now - before), sorted(before - now)
+            _name = lambda u: (f"@{user_usernames[str(u)]}"
+                               if user_usernames.get(str(u)) else str(u))
+            lines = ["🔎 <b>Blocked-user sweep</b>", "",
+                     f"Checked: <b>{checked}</b> user(s)"
+                     + (f"  ({errors} unreachable)" if errors else ""),
+                     f"Blocked now: <b>{len(now)}</b>"]
+            if _new:
+                lines += ["", "🚫 <b>Newly detected:</b>",
+                          ", ".join(_name(u) for u in _new)]
+            if _gone:
+                lines += ["", "✅ <b>Unblocked since last check:</b>",
+                          ", ".join(_name(u) for u in _gone)]
+            if not _new and not _gone:
+                lines += ["", "<i>No change.</i>"]
+            send_reply(report_to, "\n".join(lines), skip_smallcaps=True)
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users — exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -8708,6 +8754,38 @@ _scan_quiet = threading.local()  # per-thread flag — True only inside an auto-
                                   # never suppress the admin's own separate interactions
                                   # running in a different thread at the same time.
 
+def _mark_block_state(chat_id, r) -> bool:
+    """Record or clear a "bot was blocked by the user" state from one send.
+
+    Telegram has no API for asking whether a user blocked the bot - the only
+    signal is a 403 on an actual send - so every send site has to report what
+    it saw. Returns True if the user is currently blocked.
+
+    Groups and channels (negative ids) are skipped: a 403 there means the bot
+    was removed or lost rights, which is a different thing entirely and must
+    not land in a list the admin reads as "users who blocked me"."""
+    try:
+        cid_int = int(chat_id)
+    except (TypeError, ValueError):
+        return False
+    if cid_int <= 0:
+        return False
+    try:
+        code = getattr(r, "status_code", None)
+        body = (getattr(r, "text", "") or "").lower()
+    except Exception:
+        return False
+    if code == 403 and "blocked" in body:
+        if cid_int not in blocked_users:
+            blocked_users.add(cid_int); save_users()
+            print(f"  [BLOCKED] {cid_int} has blocked the bot")
+        return True
+    if code == 200 and cid_int in blocked_users:
+        blocked_users.discard(cid_int); save_users()
+        print(f"  [BLOCKED] {cid_int} unblocked the bot")
+    return False
+
+
 def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important=False, skip_smallcaps=False):
     # Auto-scan progress noise suppression (2026-07-28, rate-limit fix) — only
     # applies to messages headed for the admin's own DM from inside a quiet
@@ -8742,6 +8820,11 @@ def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important
             json=payload, timeout=10)
         if not r.json().get("ok"):
             print(f"  [REPLY ERROR] Telegram rejected: {r.json().get('description')}")
+        # Block bookkeeping. This used to live ONLY in send_to_user (broadcasts)
+        # and _copy_message_to, but send_reply is what sends almost everything -
+        # so unless a broadcast happened to go out, a block was never recorded
+        # and /status kept reporting 0 (admin 2026-09-03).
+        _mark_block_state(chat_id, r)
     except Exception as e: print(f"  [REPLY ERROR] {e}")
 
 def _build_vip_csv(vip_start: str, vip_end: str) -> bytes:
@@ -13259,7 +13342,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -15162,6 +15245,14 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"<b>Groups</b>\n<pre>" + "\n".join(_grp) + "</pre>\n"
             f"<code>/userbot restart</code> to force a reconnect.",
             skip_smallcaps=True)
+
+    elif cmd == "/checkblocked" and is_admin:
+        _n = len([u for u in registered_users if int(u) > 0])
+        send_reply(chat_id, "\n".join([
+            f"🔎 Checking <b>{_n}</b> user(s)...", "",
+            "<i>Uses a typing indicator, not a message - nobody gets pinged. "
+            "Results in a moment.</i>"]), skip_smallcaps=True)
+        _sweep_blocked_users(report_to=chat_id)
 
     elif cmd == "/secretary" and is_admin:
         global SECRETARY_ENABLED, SECRETARY_AI, SECRETARY_MSG
@@ -18054,6 +18145,7 @@ _TRADECONTROL_SUBCATS = {
 # ─── "Copy Admin" is split into sub-sections (main gate → door) ───────────────
 _COPYADMIN_SUBCATS = {
     "directory": ("👥 User Directory", [
+        ("/checkblocked", "🔎", "Check Blocked Users", "Actively re-checks every registered user and refreshes the blocked list in /status. Uses a typing indicator rather than a message, so nobody is pinged. Telegram has no API for asking whether someone blocked the bot - without this, a block is only noticed the next time the bot happens to send that user something."),
         ("/allusers",  "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
         ("/users",     "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
