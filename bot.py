@@ -15213,7 +15213,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"<b>Connections ({len(_biz_conns)}):</b>",
                 ("\n".join(_rows) if _rows else
                  "  <i>none - link the bot in Telegram Settings &gt; Telegram Business &gt; Chatbots</i>"),
-                "", "<b>Fixed reply:</b>",
+                "", "<b>Fixed reply:</b>  <i>{bot} becomes the bot's @username</i>",
                 f"<blockquote>{_html.escape(SECRETARY_MSG)}</blockquote>",
                 "<code>/secretary on</code>  <code>/secretary off</code>",
                 "<code>/secretary ai on</code>  <code>/secretary msg &lt;text&gt;</code>"]),
@@ -18119,7 +18119,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
-        ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>`."),
+        ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
@@ -19663,8 +19663,11 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
 SECRETARY_ENABLED = False          # /secretary on | off
 SECRETARY_AI = False               # canned text by default; AI reply is opt-in
 SECRETARY_COOLDOWN = 6 * 3600      # one auto-reply per chat per 6h
-SECRETARY_MSG = ("Thanks for the message. This is an automated reply - "
-                 "the account owner has been notified and will get back to you personally.")
+# {bot} is replaced with the bot's real @username at send time rather than
+# hard-coded, so this stays correct if the token ever changes - and the admin
+# can use the same placeholder in their own /secretary msg text.
+SECRETARY_MSG = ("Thanks for messaging! I'll reply personally soon. "
+                 "Meanwhile {bot} has the live signals - send it /start.")
 _biz_conns: dict = {}              # connection_id -> connection dict
 _biz_last: dict = {}               # "conn_id:chat_id" -> epoch of last auto-reply
 _SECRETARY_FILE = os.path.join(DATA_DIR, "secretary.json")
@@ -19787,6 +19790,7 @@ def _biz_on_message(msg: dict):
                 reply = _ai.strip()[:1000]
         except Exception as e:
             print(f"  [SECRETARY] AI reply failed ({e}) - using the canned message")
+    reply = reply.replace("{bot}", f"@{_get_bot_username() or 'the bot'}")
     if _biz_send(conn_id, chat_id, reply):
         _biz_last[key] = time.time()
         print(f"  [SECRETARY] auto-replied in chat {chat_id}")
