@@ -2764,6 +2764,89 @@ def _sweep_blocked_users(report_to=None):
     threading.Thread(target=_run, daemon=True).start()
 
 
+# ─── Auto-clear schedules for /clearslfree and /clearslvip ──────────────────
+# /freesl <minutes> and /vipsl <minutes>. 0 turns a schedule off.
+#
+# An automatic run cannot ask for confirmation, so this deletes without one -
+# and a deleted Telegram message is gone for good. It only ever touches what
+# the manual command would (see _sl_clearable): a real stop-out or a timeout
+# that closed down, never a breakeven, a profitable timeout, or an open trade.
+AUTO_CLEAR_FREE_MIN = 0
+AUTO_CLEAR_VIP_MIN = 0
+_AUTOCLEAR_FILE = os.path.join(DATA_DIR, "autoclear.json")
+
+
+def _autoclear_save():
+    blob = {"free": AUTO_CLEAR_FREE_MIN, "vip": AUTO_CLEAR_VIP_MIN}
+    try:
+        with open(_AUTOCLEAR_FILE, "w") as f:
+            json.dump(blob, f)
+    except Exception as e:
+        print(f"[AUTOCLEAR] save: {e}")
+    try:
+        _kv_push("autoclear", blob)
+    except Exception as e:
+        print(f"[AUTOCLEAR] central push: {e}")
+
+
+def _autoclear_load():
+    """Central store first, local file as the fallback - DATA_DIR is wiped on
+    every deploy, and a schedule that silently stops after a redeploy is worse
+    than one that never started."""
+    global AUTO_CLEAR_FREE_MIN, AUTO_CLEAR_VIP_MIN
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/autoclear")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_AUTOCLEAR_FILE, r.json(), "AUTOCLEAR")
+        if d is None and os.path.exists(_AUTOCLEAR_FILE):
+            with open(_AUTOCLEAR_FILE) as f:
+                d = json.load(f)
+        if not d:
+            return
+        AUTO_CLEAR_FREE_MIN = int(d.get("free", 0) or 0)
+        AUTO_CLEAR_VIP_MIN = int(d.get("vip", 0) or 0)
+        print(f"[AUTOCLEAR] loaded: free={AUTO_CLEAR_FREE_MIN}m vip={AUTO_CLEAR_VIP_MIN}m")
+    except Exception as e:
+        print(f"[AUTOCLEAR] load: {e}")
+
+
+def _autoclear_loop():
+    """One thread for both schedules. Checks every 20s so a 1-minute setting is
+    honoured without a separate timer per channel type."""
+    _last = {"free": 0.0, "vip": 0.0}
+    while True:
+        try:
+            now = time.time()
+            for _kind, _mins, _count, _clear, _label in (
+                ("free", AUTO_CLEAR_FREE_MIN, _pending_free_sl_count,
+                 _clear_free_sl_messages, "Free"),
+                ("vip", AUTO_CLEAR_VIP_MIN, _pending_vip_sl_count,
+                 _clear_vip_sl_messages, "VIP")):
+                if _mins <= 0:
+                    continue
+                if now - _last[_kind] < _mins * 60:
+                    continue
+                _last[_kind] = now
+                if not _count():
+                    continue          # nothing due - stay silent
+                _ok, _fail = _clear(), None
+                if isinstance(_ok, tuple):
+                    _ok, _fail = _ok
+                if ADMIN_CHAT_ID and _ok:
+                    send_reply(ADMIN_CHAT_ID,
+                               f"🧹 <b>Auto-clear ({_label})</b>\n\n"
+                               f"Deleted <b>{_ok}</b> message(s)"
+                               + (f", {_fail} failed" if _fail else "")
+                               + f".\n<i>Every {_mins} min — /"
+                               + ("freesl" if _kind == "free" else "vipsl")
+                               + " stop to turn this off.</i>", skip_smallcaps=True)
+        except Exception as e:
+            print(f"[AUTOCLEAR] {e}")
+        time.sleep(20)
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -13426,7 +13509,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -15247,6 +15330,68 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/addfunds":
         send_addfunds_screen(chat_id)
+
+    elif cmd in ("/freesl", "/vipsl") and is_admin:
+        global AUTO_CLEAR_FREE_MIN, AUTO_CLEAR_VIP_MIN
+        _is_free = cmd == "/freesl"
+        _cur = AUTO_CLEAR_FREE_MIN if _is_free else AUTO_CLEAR_VIP_MIN
+        _lbl = "Free" if _is_free else "VIP"
+        _other = "/clearslfree" if _is_free else "/clearslvip"
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        if not _arg:
+            send_reply(chat_id, "\n".join([
+                f"🧹 <b>Auto-clear ({_lbl})</b> — "
+                + (f"every <b>{_cur}</b> min" if _cur else "<b>OFF</b>"), "",
+                f"Runs {_other} on a timer. It deletes a losing signal's whole "
+                f"thread — entry, chart image, trailing-SL notices and the "
+                f"closing message — for a real stop-out or a timeout that "
+                f"closed down. Breakevens, profitable timeouts and open trades "
+                f"are never touched.", "",
+                f"Waiting to be cleared right now: <b>"
+                f"{(_pending_free_sl_count if _is_free else _pending_vip_sl_count)()}</b>", "",
+                f"<code>{cmd} 5</code> — every 5 minutes",
+                f"<code>{cmd} run</code> — clear once, now, no confirmation",
+                f"<code>{cmd} stop</code> — turn the schedule off"]), skip_smallcaps=True)
+            return
+        if _arg in ("run", "now", "go"):
+            # One-off, no confirmation - the admin asked for it by name here,
+            # which is the confirmation. Same worker the scheduled run uses.
+            _pend = (_pending_free_sl_count if _is_free else _pending_vip_sl_count)()
+            if not _pend:
+                send_reply(chat_id, f"📭 Nothing to clear in {_lbl} channel(s) "
+                           f"right now.", skip_smallcaps=True); return
+            _ok, _fail = (_clear_free_sl_messages if _is_free else _clear_vip_sl_messages)()
+            send_reply(chat_id, "\n".join([
+                f"🧹 <b>Cleared ({_lbl})</b>", "",
+                f"{_pend} signal(s), <b>{_ok}</b> message(s) deleted"
+                + (f", {_fail} failed" if _fail else "") + "."]), skip_smallcaps=True)
+            return
+        if _arg in ("off", "stop", "0"):
+            _mins = 0
+        else:
+            try:
+                _mins = int(_arg)
+            except ValueError:
+                send_reply(chat_id, f"<code>{cmd} 5</code> or <code>{cmd} off</code>",
+                           skip_smallcaps=True); return
+            if not (1 <= _mins <= 1440):
+                send_reply(chat_id, "Pick 1-1440 minutes, or 0 to turn it off.",
+                           skip_smallcaps=True); return
+        if _is_free: AUTO_CLEAR_FREE_MIN = _mins
+        else:        AUTO_CLEAR_VIP_MIN = _mins
+        _autoclear_save()
+        if _mins:
+            send_reply(chat_id, "\n".join([
+                f"✅ <b>Auto-clear ({_lbl}) ON</b> — every <b>{_mins}</b> min", "",
+                f"Runs {_other} automatically. <b>It cannot ask you to confirm, "
+                f"and a deleted Telegram message is gone for good.</b>", "",
+                f"Only losing signals go: a real stop-out, or a timeout that "
+                f"closed down. You will get a note here whenever it actually "
+                f"deletes something.", "",
+                f"<code>{cmd} 0</code> to stop."]), skip_smallcaps=True)
+        else:
+            send_reply(chat_id, f"⏹ <b>Auto-clear ({_lbl}) OFF</b>\n\n"
+                       f"<i>{_other} still works on demand.</i>", skip_smallcaps=True)
 
     elif cmd == "/clearslfree":
         _n = _pending_free_sl_count()
@@ -18364,6 +18509,8 @@ _SETTINGS_SUBCATS = {
         ("/freelimit", "🆓", "Free Daily Signal Limit", "Set how many signals the Free channel gets shown per day before locking further reveals."),
     ]),
     "cleanup": ("🧹 Channel Cleanup", [
+        ("/freesl", "⏱", "Auto-Clear Free", "Run /clearslfree automatically every N minutes, e.g. `/freesl 5`. `/freesl stop` turns it off, `/freesl run` clears once immediately with no confirmation, and `/freesl` alone shows the schedule and how many signals are waiting. Automatic and `run` clears never ask you to confirm."),
+        ("/vipsl", "⏱", "Auto-Clear VIP", "Run /clearslvip automatically every N minutes, e.g. `/vipsl 30`. `/vipsl stop` turns it off, `/vipsl run` clears once immediately. Automatic and `run` clears never ask you to confirm."),
         ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every losing signal's messages from the Free channel(s) — a real SL, or a timeout that closed down. Removes the entry, its chart image, any trailing-SL notice and the closing message. BE and profitable timeouts are never touched."),
         ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every losing signal's messages from the VIP channel(s) — a real SL, or a timeout that closed down. Removes the entry, its chart image, any trailing-SL notice and the closing message. BE and profitable timeouts are never touched."),
     ]),
@@ -23325,6 +23472,8 @@ def main():
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
     _backfill_slot_days()
     _sec_load()
+    _autoclear_load()
+    threading.Thread(target=_autoclear_loop, daemon=True).start()
     _test_load()
     threading.Thread(target=_test_scan_loop, daemon=True).start()
     threading.Thread(target=_test_monitor_loop, daemon=True).start()
