@@ -11983,21 +11983,41 @@ def _test_scan_loop():
 
 
 def _test_save():
+    """Local file AND the central store.
+
+    DATA_DIR defaults to "." - Railway's ephemeral container filesystem - so
+    the local file alone is wiped on every deploy, taking the enabled flag,
+    the open trades and the whole recap history with it. That is why the test
+    system came back stopped and empty after each redeploy (admin 2026-09-03).
+    """
+    blob = {"enabled": TEST_ENABLED, "trades": _test_trades,
+            "history": _test_history, "stats": _test_stats}
     try:
         with open(_TEST_STATE_FILE, "w") as f:
-            json.dump({"enabled": TEST_ENABLED, "trades": _test_trades,
-                       "history": _test_history, "stats": _test_stats}, f)
+            json.dump(blob, f)
     except Exception as e:
         print(f"[TEST] save: {e}")
+    try:
+        _kv_push("test_system", blob)
+    except Exception as e:
+        print(f"[TEST] central push: {e}")
 
 
 def _test_load():
+    """Central store first, local file as the fallback - the same order every
+    other shared piece of state uses (see _load_free_sl_log)."""
     global TEST_ENABLED
     try:
-        if not os.path.exists(_TEST_STATE_FILE):
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/test_system")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_TEST_STATE_FILE, r.json(), "TEST")
+        if d is None and os.path.exists(_TEST_STATE_FILE):
+            with open(_TEST_STATE_FILE) as f:
+                d = json.load(f)
+        if not d:
             return
-        with open(_TEST_STATE_FILE) as f:
-            d = json.load(f)
         TEST_ENABLED = bool(d.get("enabled", False))
         _test_trades[:] = d.get("trades", []) or []
         _test_history[:] = d.get("history", []) or []
@@ -13824,8 +13844,22 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
+        # The test system starts with everything else. It has its own loops and
+        # its own kill switch, so it used to need a separate /test run after
+        # every deploy - and being separate is exactly why forgetting it was
+        # easy to miss (admin 2026-09-03). /test stop still stops it; the next
+        # /go turns it back on, which is the same relationship /go has with
+        # every other scanner.
+        _test_was_off = not TEST_ENABLED
+        if _test_was_off:
+            TEST_ENABLED = True
+            _test_save()
         _push_public_status_if_due(force=True)   # website reflects it immediately
         send_go_screen(chat_id)
+        if _test_was_off:
+            send_reply(chat_id, "🧪 <b>Test system started</b> too — "
+                       "<code>/test stop</code> if you don't want it running.",
+                       skip_smallcaps=True)
 
     elif cmd == "/demo" and is_scanadmin:
         """
