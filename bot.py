@@ -15212,7 +15212,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"Cooldown: one reply per chat per {SECRETARY_COOLDOWN // 3600}h", "",
                 f"<b>Connections ({len(_biz_conns)}):</b>",
                 ("\n".join(_rows) if _rows else
-                 "  <i>none - link the bot in Telegram Settings &gt; Telegram Business &gt; Chatbots</i>"),
+                 "  <i>none yet - add the bot under Telegram Settings &gt; Telegram Business "
+                 "&gt; Chatbots.\n\n  Already added there? Telegram only announces a "
+                 "connection when it CHANGES, so toggle the bot off and back on in that "
+                 "screen and it will register here.</i>"),
                 "", "<b>Fixed reply:</b>  <i>{bot} becomes the bot's @username</i>",
                 f"<blockquote>{_html.escape(SECRETARY_MSG)}</blockquote>",
                 "<code>/secretary on</code>  <code>/secretary off</code>",
@@ -19674,21 +19677,42 @@ _SECRETARY_FILE = os.path.join(DATA_DIR, "secretary.json")
 
 
 def _sec_save():
+    """Local file AND the central store.
+
+    The connection record MUST survive a redeploy. Telegram sends
+    business_connection only when the connection actually changes - never on
+    bot restart - so a forgotten connection is not re-announced, and the bot
+    silently stops answering until the owner re-toggles it by hand. DATA_DIR
+    defaults to "." which is Railway's ephemeral container filesystem, so the
+    local file alone is wiped on every deploy (admin 2026-09-03)."""
+    blob = {"enabled": SECRETARY_ENABLED, "ai": SECRETARY_AI,
+            "msg": SECRETARY_MSG, "conns": _biz_conns}
     try:
         with open(_SECRETARY_FILE, "w") as f:
-            json.dump({"enabled": SECRETARY_ENABLED, "ai": SECRETARY_AI,
-                       "msg": SECRETARY_MSG, "conns": _biz_conns}, f)
+            json.dump(blob, f)
     except Exception as e:
         print(f"[SECRETARY] save: {e}")
+    try:
+        _kv_push("secretary", blob)
+    except Exception as e:
+        print(f"[SECRETARY] central push: {e}")
 
 
 def _sec_load():
+    """Central store first, local file as the fallback - same order as every
+    other shared piece of state (see _load_free_sl_log)."""
     global SECRETARY_ENABLED, SECRETARY_AI, SECRETARY_MSG
     try:
-        if not os.path.exists(_SECRETARY_FILE):
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/secretary")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_SECRETARY_FILE, r.json(), "SECRETARY")
+        if d is None and os.path.exists(_SECRETARY_FILE):
+            with open(_SECRETARY_FILE) as f:
+                d = json.load(f)
+        if not d:
             return
-        with open(_SECRETARY_FILE) as f:
-            d = json.load(f)
         SECRETARY_ENABLED = bool(d.get("enabled", False))
         SECRETARY_AI = bool(d.get("ai", False))
         SECRETARY_MSG = d.get("msg") or SECRETARY_MSG
