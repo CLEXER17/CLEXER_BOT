@@ -9712,8 +9712,7 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
         # Two compact rows, not five "X: Locked" lines - the card says nothing,
         # so it should not take five lines to say it (admin 2026-09-03).
         [[f"🔒 {_smallcaps_title('Direction')} • {_smallcaps_title('Entry')}",
-          "🔒 SL • TP1 • TP2"],
-         [f"🔓 {_smallcaps_title('Tap Unlock below to reveal full details in your DM')}"]],
+          "🔒 SL • TP1 • TP2"]],
         tag=sig_id,
     )
 
