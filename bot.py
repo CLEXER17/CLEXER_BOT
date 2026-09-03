@@ -2765,19 +2765,18 @@ def _sweep_blocked_users(report_to=None):
 
 
 def _build_users_summary():
-    # Negative chat_ids are groups/channels, not individual users — exclude them.
+    # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
     _real_blocked = [u for u in blocked_users if int(u) > 0]
     _total_users  = len(_real_users)
     _active_users = len([u for u in ct.active_ids() if int(u) > 0])
-    # Anchors, not bare handles: /status runs through the smallcaps pass, which
-    # would otherwise leave every mixed-case @handle unlinkable (admin 2026-09-03).
-    _blocked_str = ("\n" + "\n".join(f"  {_user_ref(u)}" for u in _real_blocked)
-                    if _real_blocked else "none")
+    # Count only. /status is a glance at the bot's state, and naming ten or more
+    # people there pushed everything below them off the screen (admin 2026-09-03).
+    # /checkblocked prints the list when it is actually wanted.
     return (
         f"👥 Total users: {_total_users}\n"
         f"🟢 Using copy trade: {_active_users}\n"
-        f"🚫 Blocked bot ({len(_real_blocked)}): {_blocked_str}\n"
+        f"🚫 Blocked bot: {len(_real_blocked)}\n"
     )
 
 def _user_ref(chat_id) -> str:
