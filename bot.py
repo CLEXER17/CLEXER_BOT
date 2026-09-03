@@ -9659,7 +9659,7 @@ def _load_free_sl_log():
 def _pending_free_sl_count() -> int:
     """How many signals are actually eligible to be cleared right now — real
     SL result only, BE and still-open ones don't count."""
-    return sum(1 for v in _free_sl_log.values() if v.get("result") == "SL")
+    return sum(1 for v in _free_sl_log.values() if _sl_clearable(v.get("result")))
 
 def _clear_free_sl_messages() -> tuple:
     """Deletes the entry + trailing-SL + SL-hit messages for every signal
@@ -9670,7 +9670,7 @@ def _clear_free_sl_messages() -> tuple:
     ok = 0; fail = 0
     _remaining = {}
     for sig_id, entry in _free_sl_log.items():
-        if entry.get("result") != "SL":
+        if not _sl_clearable(entry.get("result")):
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
             continue
         cid = entry.get("cid")
@@ -9761,7 +9761,7 @@ def _load_vip_sl_log():
 def _pending_vip_sl_count() -> int:
     """How many signals are actually eligible to be cleared right now — real
     SL result only, BE and still-open ones don't count."""
-    return sum(1 for v in _vip_sl_log.values() if v.get("result") == "SL")
+    return sum(1 for v in _vip_sl_log.values() if _sl_clearable(v.get("result")))
 
 def _clear_vip_sl_messages() -> tuple:
     """Deletes the entry + trailing-SL + SL-hit messages for every signal
@@ -9772,7 +9772,7 @@ def _clear_vip_sl_messages() -> tuple:
     ok = 0; fail = 0
     _remaining = {}
     for sig_id, entry in _vip_sl_log.items():
-        if entry.get("result") != "SL":
+        if not _sl_clearable(entry.get("result")):
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
             continue
         cid = entry.get("cid")
@@ -9792,6 +9792,16 @@ def _clear_vip_sl_messages() -> tuple:
     _vip_sl_log = _remaining
     _save_vip_sl_log()
     return ok, fail
+
+_CLEARABLE_RESULTS = ("SL", "TIMEOUT_LOSS")
+# What /clearslfree and /clearslvip are allowed to delete. A timeout that
+# closed DOWN is a loss the same as a stop-out and was being left behind
+# (admin 2026-09-03); a timeout that closed up, and BE, are not losses and are
+# never touched.
+
+def _sl_clearable(result) -> bool:
+    return result in _CLEARABLE_RESULTS
+
 
 def _track_sl_ids(sig_id: str, field: str, ids: dict):
     """Records message_ids from a send_lifecycle_reply/send_entry_signal
@@ -10003,9 +10013,18 @@ def _tick_one(ver: int, t: dict) -> bool:
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
             _delete_trail_sl_messages(t)
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
-            send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
+            _to_ids = send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True),
                 react_category="timeout_win" if pnl >= 0 else "timeout_loss")
+            # A timeout that closed down is a loss, so it has to be clearable
+            # like any other. Its ids were never recorded, which is why
+            # /clearslfree left these behind. A timeout in profit is finalized
+            # too - explicitly NOT clearable - so it can never be mistaken for
+            # an unresolved trade later.
+            _to_sid = t.get("sig_id", "")
+            _track_sl_ids(_to_sid, "sl_mid", _to_ids)
+            _to_res = "TIMEOUT_LOSS" if pnl < 0 else "TIMEOUT_WIN"
+            _finalize_free_sl(_to_sid, _to_res); _finalize_vip_sl(_to_sid, _to_res)
             if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
             ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
@@ -15232,17 +15251,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/clearslfree":
         _n = _pending_free_sl_count()
         if not _n:
-            send_reply(chat_id, "📭 No real-SL signals in Free channel(s) to clear right now (BE outcomes are never touched)."); return
+            send_reply(chat_id, "📭 Nothing to clear in Free channel(s) right now — no stopped-out or losing-timeout signals (BE and profitable timeouts are never touched)."); return
         _ask_confirm(chat_id, _check_id, "clear_free_sl",
-            f"Delete {_n} signal(s) that hit a real SL from Free channel(s)? For each one this removes its entry signal, its trailing-SL notice, and its SL-hit message — never BE/breakeven trades, and never other signals' trailing-SL messages.",
+            f"Delete {_n} losing signal(s) from Free channel(s) — stopped out, or timed out DOWN? For each one this removes its entry signal, its chart image, its trailing-SL notice, and its closing message — never BE/breakeven trades, never a timeout that closed in profit, and never other signals' trailing-SL messages.",
             "help_main")
 
     elif cmd == "/clearslvip":
         _n = _pending_vip_sl_count()
         if not _n:
-            send_reply(chat_id, "📭 No real-SL signals in VIP channel(s) to clear right now (BE outcomes are never touched)."); return
+            send_reply(chat_id, "📭 Nothing to clear in VIP channel(s) right now — no stopped-out or losing-timeout signals (BE and profitable timeouts are never touched)."); return
         _ask_confirm(chat_id, _check_id, "clear_vip_sl",
-            f"Delete {_n} signal(s) that hit a real SL from VIP channel(s)? For each one this removes its entry signal, its trailing-SL notice(s), and its SL-hit message — never BE/breakeven trades, and never other signals' trailing-SL messages.",
+            f"Delete {_n} losing signal(s) from VIP channel(s) — stopped out, or timed out DOWN? For each one this removes its entry signal, its chart image, its trailing-SL notice(s), and its closing message — never BE/breakeven trades, never a timeout that closed in profit, and never other signals' trailing-SL messages.",
             "help_main")
 
     elif cmd == "/resetspins":
@@ -18345,8 +18364,8 @@ _SETTINGS_SUBCATS = {
         ("/freelimit", "🆓", "Free Daily Signal Limit", "Set how many signals the Free channel gets shown per day before locking further reveals."),
     ]),
     "cleanup": ("🧹 Channel Cleanup", [
-        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every logged real-SL signal's messages from the Free channel(s) — BE trades are never touched."),
-        ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every logged real-SL signal's messages from the VIP channel(s) — BE trades are never touched."),
+        ("/clearslfree", "🗑", "Clear Free SL Messages", "Bulk-delete every losing signal's messages from the Free channel(s) — a real SL, or a timeout that closed down. Removes the entry, its chart image, any trailing-SL notice and the closing message. BE and profitable timeouts are never touched."),
+        ("/clearslvip", "🗑", "Clear VIP SL Messages", "Bulk-delete every losing signal's messages from the VIP channel(s) — a real SL, or a timeout that closed down. Removes the entry, its chart image, any trailing-SL notice and the closing message. BE and profitable timeouts are never touched."),
     ]),
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
@@ -22498,8 +22517,11 @@ def _demo_monitor_loop():
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
+                        _to_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
                             react_category="timeout_win" if pnl >= 0 else "timeout_loss")
+                        _track_sl_ids(sig_id, "sl_mid", _to_ids)
+                        _to_res = "TIMEOUT_LOSS" if pnl < 0 else "TIMEOUT_WIN"
+                        _finalize_free_sl(sig_id, _to_res); _finalize_vip_sl(sig_id, _to_res)
                         if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
