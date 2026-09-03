@@ -9709,9 +9709,10 @@ def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
     lifecycle message uses, so it looks native rather than bolted-on."""
     return _scan_box(
         "VIP Signal", f"📣 ${coin}-USDT  |  {tag_label}",
-        [[f"🔒 {_smallcaps_title('Direction')}: Locked",
-          f"🔒 {_smallcaps_title('Entry')}: Locked",
-          "🔒 SL: Locked", "🔒 TP1: Locked", "🔒 TP2: Locked"],
+        # Two compact rows, not five "X: Locked" lines - the card says nothing,
+        # so it should not take five lines to say it (admin 2026-09-03).
+        [[f"🔒 {_smallcaps_title('Direction')} • {_smallcaps_title('Entry')}",
+          "🔒 SL • TP1 • TP2"],
          [f"🔓 {_smallcaps_title('Tap Unlock below to reveal full details in your DM')}"]],
         tag=sig_id,
     )
