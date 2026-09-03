@@ -2747,18 +2747,17 @@ def _sweep_blocked_users(report_to=None):
         now = set(blocked_users)
         if report_to:
             _new, _gone = sorted(now - before), sorted(before - now)
-            _name = lambda u: (f"@{user_usernames[str(u)]}"
-                               if user_usernames.get(str(u)) else str(u))
+
             lines = ["🔎 <b>Blocked-user sweep</b>", "",
                      f"Checked: <b>{checked}</b> user(s)"
                      + (f"  ({errors} unreachable)" if errors else ""),
                      f"Blocked now: <b>{len(now)}</b>"]
             if _new:
                 lines += ["", "🚫 <b>Newly detected:</b>",
-                          ", ".join(_name(u) for u in _new)]
+                          "\n".join(_user_ref(u) for u in _new)]
             if _gone:
                 lines += ["", "✅ <b>Unblocked since last check:</b>",
-                          ", ".join(_name(u) for u in _gone)]
+                          "\n".join(_user_ref(u) for u in _gone)]
             if not _new and not _gone:
                 lines += ["", "<i>No change.</i>"]
             send_reply(report_to, "\n".join(lines), skip_smallcaps=True)
@@ -2771,13 +2770,33 @@ def _build_users_summary():
     _real_blocked = [u for u in blocked_users if int(u) > 0]
     _total_users  = len(_real_users)
     _active_users = len([u for u in ct.active_ids() if int(u) > 0])
-    _blocked_unames = [f"@{user_usernames[str(u)]}" if user_usernames.get(str(u)) else str(u) for u in _real_blocked]
-    _blocked_str = ", ".join(_blocked_unames) if _blocked_unames else "none"
+    # Anchors, not bare handles: /status runs through the smallcaps pass, which
+    # would otherwise leave every mixed-case @handle unlinkable (admin 2026-09-03).
+    _blocked_str = ("\n" + "\n".join(f"  {_user_ref(u)}" for u in _real_blocked)
+                    if _real_blocked else "none")
     return (
         f"👥 Total users: {_total_users}\n"
         f"🟢 Using copy trade: {_active_users}\n"
         f"🚫 Blocked bot ({len(_real_blocked)}): {_blocked_str}\n"
     )
+
+def _user_ref(chat_id) -> str:
+    """One compact, tappable reference to a user, for lists.
+
+    A bare "@handle" is NOT reliable here: most screens go through the global
+    smallcaps pass, which rewrites mixed-case handles into unicode glyphs that
+    Telegram's auto-linker no longer recognises. An explicit anchor survives
+    that, because _smallcaps_body never touches tag attributes.
+
+    With no username, the link text stays non-numeric on purpose - Telegram
+    sometimes auto-detects a run of digits as a phone number and overrides the
+    link on just that entry (see _user_dm_link). The id is shown beside it in
+    <code>, which is both copyable and skipped by the smallcaps pass."""
+    uname = user_usernames.get(str(chat_id))
+    if uname:
+        return f'<a href="https://t.me/{uname}">@{uname}</a>'
+    return f'<a href="tg://user?id={chat_id}">👤 Profile</a> <code>{chat_id}</code>'
+
 
 def _user_dm_link(chat_id):
     uname = user_usernames.get(str(chat_id))
