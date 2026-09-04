@@ -2671,6 +2671,14 @@ def load_users():
         print(f"[USERS] Load error: {e}"); registered_users = set()
 
 def save_users():
+    """Local file AND the central store.
+
+    The blocked list only ever went to DATA_DIR, which is wiped on every
+    deploy - so /checkblocked would find ten blocked users, and /status would
+    be back to 0 after the next redeploy. register_user pushed centrally, but
+    only when a BRAND NEW user appeared, and by then the in-memory blocked set
+    had already been reloaded empty, so the push wrote the emptiness back
+    (admin 2026-09-03)."""
     _blob = {
         "users": list(registered_users),
         "usernames": user_usernames,
@@ -2680,6 +2688,9 @@ def save_users():
         with open(USER_DB_FILE, "w") as f:
             json.dump(_blob, f)
     except Exception as e: print(f"[USERS] Save error: {e}")
+    try:
+        _kv_push("registered_users", _blob)
+    except Exception as e: print(f"[USERS] central push error: {e}")
 
 def is_co_admin(chat_id) -> bool:
     return bool(CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID and str(chat_id) == str(CO_ADMIN_CHAT_ID))
@@ -9420,8 +9431,21 @@ def _active_verified_scan_syms() -> set:
     """Same as _all_active_scan_syms but VST (verified) trades only — admin rule
     (2026-08-06): a VST candidate may only be blocked by an already-active VST
     trade on that coin, never by an NT (regular grid) or UNST (unverified
-    special-time) trade."""
-    return {t["symbol"] for t in scan1_trades + scan2_trades if t.get("symbol") and t.get("tier_routed")}
+    special-time) trade.
+
+    Matches on the run's CATEGORY, not on tier_routed. A verified run that was
+    demoted to Signal-only — by the /vsttimes allowlist or by the per-weekday
+    gate — is still a verified run, but it carries tier_routed=False, so a
+    tier_routed test made it invisible here and a SECOND verified trade could
+    open on the same coin. That is exactly what happened: two ⭐ Scan2 ETH
+    trades open at once (admin 2026-09-03). The weekday gate demotes far more
+    often than the allowlist ever did, which is why it surfaced now.
+
+    cat is stamped at entry; trades opened before that fall back to
+    tier_routed, which is what the check used to be."""
+    return {t["symbol"] for t in scan1_trades + scan2_trades
+            if t.get("symbol") and (t["cat"] == "verified" if "cat" in t
+                                    else t.get("tier_routed"))}
 
 def _log_scan_history(t: dict, result: str, close_price: float):
     """Append closed scan trade to scan_history (max 30)."""
@@ -17544,6 +17568,7 @@ Reasoning: [one line]"""
                         slot_data["share_free"] = _effective_share_free
                         slot_data["tier_routed"] = _tier_routed
                         slot_data["vst_downgraded"] = _vst_downgraded  # fmt_scan_signal tags [VST] when set
+                        slot_data["cat"] = _ai_category(_kind)   # see _active_verified_scan_syms
                         slot_data["wd_locked"] = _wd_locked
                         slot_data["wd_promoted"] = _wd_promoted
                         slot_data["is_d48"] = _gw_model_tag(_kind) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
@@ -21581,7 +21606,13 @@ def command_listener():
                 # file_id, so a screenshot can be referenced later (e.g. embedded
                 # into a bot message via sendPhoto) without needing a local copy of
                 # the file at all. Debug utility, admin-only (2026-08-04).
-                if msg.get("photo") and ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID):
+                # ...but ONLY in the admin's own DM. Keyed on the sender alone, it
+                # also fired in every group and channel the bot shares with the
+                # admin, answering each posted image with a file_id nobody there
+                # asked for (admin 2026-09-03).
+                if (msg.get("photo") and ADMIN_CHAT_ID
+                        and str(sender_uid) == str(ADMIN_CHAT_ID)
+                        and str(cid) == str(ADMIN_CHAT_ID)):
                     _fid = msg["photo"][-1].get("file_id", "")
                     send_reply(cid, f"🖼 <b>file_id:</b>\n<code>{_fid}</code>")
                     continue
