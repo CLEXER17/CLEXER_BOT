@@ -2952,6 +2952,77 @@ def _st_merge_grid(parsed: dict):
     return restored, improved, unchanged
 
 
+def _st_catchup(since_hm=(9, 0), apply=False):
+    """Re-credit today's resolved outcomes that never reached the weekday grid.
+
+    During the 2026-09-06 incident the container holding the live counters was
+    replaced, and the grid that came back from the central store was the
+    morning snapshot - so any trade that resolved while the damaged container
+    was serving never got credited. trade_history.csv still has those rows.
+
+    Reads the SAME fields _backfill_slot_days reads, with the same win rule,
+    so a row counted here counts identically to one counted live. Returns
+    (rows, per_cell) - and with apply=False changes nothing, which is the
+    default because there is no way to tell an already-credited row from a
+    missing one. Preview, eyeball it against /st week, then apply.
+    """
+    import csv as _csv
+    today = now_ist().strftime('%Y-%m-%d')
+    found = []
+    if not os.path.exists(TRADE_LOG_CSV):
+        return [], {}
+    kindmap = {'scan1': 'scan1', 'scan2': 'scan2', 'demo1': 'demo1', 'demo2': 'demo2'}
+    try:
+        with open(TRADE_LOG_CSV, newline='', encoding='utf-8-sig') as f:
+            for row in _csv.DictReader(f):
+                kind = kindmap.get((row.get('type') or '').strip())
+                if not kind:
+                    continue
+                res = (row.get('result') or '').strip()
+                if res in ('TP2', 'BE', 'BREAKEVEN'):
+                    win = True
+                elif res in ('SL', 'LOSS'):
+                    win = False
+                elif res.startswith('TIMEOUT'):
+                    _m = re.search(r'\(([+-]?[0-9.]+)%\)', res)
+                    if not _m:
+                        continue
+                    try:
+                        win = float(_m.group(1)) >= 0
+                    except ValueError:
+                        continue
+                else:
+                    continue
+                _sig = (row.get('signal_time') or '').replace(' IST', '').strip()
+                if not _sig.startswith(today):
+                    continue
+                try:
+                    dt = datetime.strptime(_sig, '%Y-%m-%d %H:%M')
+                except Exception:
+                    continue
+                if (dt.hour, dt.minute) < tuple(since_hm):
+                    continue
+                hm = (dt.hour, dt.minute)
+                sched = _SLOT_SCHEDULE_KIND.get(kind, kind)
+                if hm not in _SCAN_SPECIAL.get(sched, set()):
+                    continue
+                found.append((dt, kind, hm, win, row.get('coin', '?'), res))
+    except Exception as e:
+        print(f'[ST CATCHUP] {e}')
+        return [], {}
+    found.sort(key=lambda r: r[0])
+    per_cell = {}
+    for dt, kind, hm, win, coin, res in found:
+        key = (kind, hm, _wd_index(dt))
+        c = per_cell.setdefault(key, {'tp': 0, 'sl': 0})
+        c['tp' if win else 'sl'] += 1
+    if apply:
+        for dt, kind, hm, win, coin, res in found:
+            _slot_day_track(kind, hm, win, dt.timestamp() - IST.total_seconds())
+        _save_slot_state()
+    return found, per_cell
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -14550,6 +14621,42 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         # /st week  — the per-weekday grid the gate actually decides on.
+        if len(parts) > 1 and parts[1].lower() == "catchup" and is_admin:
+            _args = [a.lower() for a in parts[2:]]
+            _apply = "apply" in _args
+            _tm = next((a for a in _args if ":" in a or a.isdigit()), "9:00")
+            try:
+                _h, _m2 = (_tm.split(":") + ["0"])[:2]
+                _since = (int(_h), int(_m2))
+            except ValueError:
+                send_reply(chat_id, "<code>/st catchup 9:00</code>  then  "
+                           "<code>/st catchup 9:00 apply</code>", skip_smallcaps=True); return
+            _rows, _cells = _st_catchup(_since, apply=_apply)
+            if not _rows:
+                send_reply(chat_id,
+                    f"📭 Nothing resolved on a tracked slot since "
+                    f"<b>{_since[0]}:{_since[1]:02d}</b> today in trade_history.csv.",
+                    skip_smallcaps=True); return
+            _WD = ["Su","Mo","Tu","We","Th","Fr","Sa"]
+            _lines = []
+            for (_k, _hm, _d), _c in sorted(_cells.items()):
+                _tp, _sl = _c.get("tp", 0), _c.get("sl", 0)
+                _lines.append(f"  {_k:<6} {_hm[0]:>2}:{_hm[1]:02d} {_WD[_d]}"
+                              f"   +{_tp} win  +{_sl} loss")
+            _hdr = ("✅ <b>Applied</b>" if _apply else "🔍 <b>Preview — nothing changed</b>")
+            send_reply(chat_id, "\n".join([
+                _hdr, "",
+                f"<b>{len(_rows)}</b> resolved outcome(s) since "
+                f"<b>{_since[0]}:{_since[1]:02d}</b> today, across "
+                f"<b>{len(_cells)}</b> cell(s):", "",
+                "<pre>" + "\n".join(_lines[:40]) + "</pre>",
+                ("<i>...and more</i>" if len(_lines) > 40 else ""),
+                ("" if _apply else
+                 "<i>Compare against /st week first. If those counts are ALREADY "
+                 "in the grid, applying would double them. "
+                 "<code>/st catchup " + f"{_since[0]}:{_since[1]:02d}" + " apply</code> "
+                 "when you are sure.</i>")]), skip_smallcaps=True)
+            return
         if len(parts) > 1 and parts[1].lower() == "restore" and is_admin:
             _ra = parts[2].lower() if len(parts) > 2 else ""
             if _ra in ("done", "end", "stop"):
