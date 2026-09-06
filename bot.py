@@ -2858,6 +2858,100 @@ def _autoclear_loop():
         time.sleep(20)
 
 
+def _csv_autopush_loop():
+    """Keeps trade_history.csv in the central store without a manual /syncup.
+
+    The CSV is the ONLY source a weekday-grid rebuild can read, and it lived in
+    the ephemeral DATA_DIR with exactly one push site: /syncup, typed by hand.
+    So it drifted behind the live counters, and a rebuild from it silently
+    deleted the difference - which is what happened on 2026-09-06.
+
+    Pushing it on a timer makes the CSV a superset rather than a subset, so a
+    rebuild can restore every weekday instead of thinning them. Active server
+    only, matching _save_slot_state: a stale push from an abandoned server
+    would be worse than no push at all."""
+    time.sleep(120)                       # let startup pulls finish first
+    _last_size = -1
+    while True:
+        try:
+            if CLEXER_API_URL and is_active_server() and os.path.exists(TRADE_LOG_CSV):
+                _size = os.path.getsize(TRADE_LOG_CSV)
+                if _size != _last_size:   # only when it actually grew/changed
+                    _body = open(TRADE_LOG_CSV, encoding="utf-8").read()
+                    if _kv_push("trade_history_csv", {"csv": _body}):
+                        _last_size = _size
+                        print(f"[CSV PUSH] trade_history.csv -> central ({_size:,} bytes)")
+        except Exception as e:
+            print(f"[CSV PUSH] {e}")
+        time.sleep(1800)                  # every 30 min
+
+
+_ST_RESTORE_ACTIVE: dict = {}      # chat_id -> True while pasting a grid
+_ST_KIND_HDR = (("DEMO TS1", "demo1"), ("DEMO TS2", "demo2"),
+                ("SCAN1", "scan1"), ("SCAN2", "scan2"))
+_ST_CELL_RE = re.compile(r"(\d+)/(\d+)(?:\s*\[S(\d+)\])?|\.")
+_ST_ROW_RE = re.compile(r"^\s*>?\s*(\d{1,2}):(\d{2})\s+(.+)$")
+
+
+def _st_parse_grid(text: str, carry_kind=None):
+    """Parse a pasted /st week table back into (kind, hm, weekday) -> cell.
+
+    Recovery path for a grid rebuilt from an incomplete CSV: the posted table
+    is the only surviving record of what those counters held. Column order is
+    the same Sunday-first order the table prints, so index i IS the weekday
+    index _wd_index produces - no remapping needed.
+
+    Returns (parsed, kind_at_end) so a table split across several Telegram
+    messages can continue with the section header it left off in."""
+    out = {}
+    kind = carry_kind
+    for line in text.split("\n"):
+        _upper = line.upper()
+        for _hdr, _k in _ST_KIND_HDR:
+            if _hdr in _upper:
+                kind = _k
+                break
+        if not kind:
+            continue
+        m = _ST_ROW_RE.match(line)
+        if not m:
+            continue
+        try:
+            hm = (int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            continue
+        cells = _ST_CELL_RE.findall(m.group(3))
+        if len(cells) < 7:
+            continue          # header row, or a line that only looked like one
+        for _day, (_tp, _sl, _stk) in enumerate(cells[:7]):
+            if not _tp and not _sl:
+                continue      # "." - no data in that cell
+            out[(kind, hm, _day)] = {"tp": int(_tp), "sl": int(_sl),
+                                     "streak": int(_stk) if _stk else 0}
+    return out, kind
+
+
+def _st_merge_grid(parsed: dict):
+    """Merge parsed cells in, keeping whichever side holds MORE outcomes.
+
+    Never a blind overwrite in either direction: a pasted cell restores what
+    was lost, while a live cell that has moved past the paste is kept.
+    Returns (restored, improved, unchanged)."""
+    restored = improved = unchanged = 0
+    for (kind, hm, day), cell in parsed.items():
+        slot = _slot_day_stats.setdefault(_slot_key(kind, hm), {})
+        cur = slot.get(str(day))
+        if cur is None:
+            slot[str(day)] = dict(cell); restored += 1
+        elif (cell["tp"] + cell["sl"]) > (cur.get("tp", 0) + cur.get("sl", 0)):
+            slot[str(day)] = dict(cell); improved += 1
+        else:
+            unchanged += 1
+    if restored or improved:
+        _save_slot_state()
+    return restored, improved, unchanged
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -14456,6 +14550,26 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/st":
         _st_labels = {"scan1": "SCAN1", "scan2": "SCAN2", "demo1": "DEMO TS1", "demo2": "DEMO TS2"}
         # /st week  — the per-weekday grid the gate actually decides on.
+        if len(parts) > 1 and parts[1].lower() == "restore" and is_admin:
+            _ra = parts[2].lower() if len(parts) > 2 else ""
+            if _ra in ("done", "end", "stop"):
+                _ST_RESTORE_ACTIVE.pop(chat_id, None)
+                send_reply(chat_id, "✅ <b>Restore finished</b>\n\n"
+                           "<i>/st week to check the grid.</i>", skip_smallcaps=True); return
+            if _ra in ("cancel", "abort"):
+                _ST_RESTORE_ACTIVE.pop(chat_id, None)
+                send_reply(chat_id, "🚫 Restore cancelled.", skip_smallcaps=True); return
+            _ST_RESTORE_ACTIVE[chat_id] = {"kind": None, "cells": 0}
+            send_reply(chat_id, "\n".join([
+                "📥 <b>Grid restore — paste mode ON</b>", "",
+                "Paste the /st week tables now, one message at a time. Section",
+                "headers are read as they appear, so a table split across several",
+                "messages continues in the right section.", "",
+                "A cell is only written if it holds MORE outcomes than what is",
+                "live, so this can restore lost data but can never undo a trade",
+                "that resolved since.", "",
+                "<code>/st restore done</code> when finished."]), skip_smallcaps=True)
+            return
         if len(parts) > 2 and parts[1].lower() in ("check", "why") and is_admin:
             # Diagnostic: does the weekday store agree with the lifetime store
             # for one slot, and what does the gate say about today?
@@ -21653,6 +21767,28 @@ def command_listener():
                     send_reply(cid, f"🖼 <b>file_id:</b>\n<code>{_fid}</code>")
                     continue
 
+                # Grid restore paste mode — swallow plain text and merge it,
+                # so a pasted /st week table is never treated as a command.
+                _rst = _ST_RESTORE_ACTIVE.get(cid)
+                if (_rst is not None and ADMIN_CHAT_ID
+                        and str(sender_uid) == str(ADMIN_CHAT_ID)
+                        and not (msg.get("text") or "").strip().startswith("/")):
+                    try:
+                        _parsed, _rst["kind"] = _st_parse_grid(msg.get("text") or "",
+                                                               _rst.get("kind"))
+                        _r, _i, _u = _st_merge_grid(_parsed)
+                        _rst["cells"] += _r + _i
+                        _sec = _rst.get("kind") or "?"
+                        send_reply(cid,
+                            f"📥 read <b>{len(_parsed)}</b> cell(s) — "
+                            f"restored <b>{_r}</b>, improved <b>{_i}</b>, "
+                            f"already current {_u}  ({_sec})",
+                            skip_smallcaps=True)
+                    except Exception as _e:
+                        send_reply(cid, f"⚠️ could not read that paste: {_e}",
+                                   skip_smallcaps=True)
+                    continue
+
                 # Never respond to another bot, anywhere (2026-07-31, safety) — a
                 # command-like message from a bot account (accidental, malicious,
                 # or a bot-loop) never gets processed or replied to. Telegram
@@ -23540,6 +23676,7 @@ def main():
     _backfill_slot_days()
     _sec_load()
     _autoclear_load()
+    threading.Thread(target=_csv_autopush_loop, daemon=True).start()
     threading.Thread(target=_autoclear_loop, daemon=True).start()
     _test_load()
     threading.Thread(target=_test_scan_loop, daemon=True).start()
