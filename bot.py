@@ -2969,15 +2969,23 @@ def _st_catchup(since_hm=(9, 0), apply=False):
     import csv as _csv
     today = now_ist().strftime('%Y-%m-%d')
     found = []
+    diag = {'rows': 0, 'today': 0, 'today_open': 0, 'today_done': 0,
+            'before_cutoff': 0, 'untracked_slot': 0}
     if not os.path.exists(TRADE_LOG_CSV):
-        return [], {}
+        diag['no_csv'] = True
+        return [], {}, diag
     kindmap = {'scan1': 'scan1', 'scan2': 'scan2', 'demo1': 'demo1', 'demo2': 'demo2'}
     try:
         with open(TRADE_LOG_CSV, newline='', encoding='utf-8-sig') as f:
             for row in _csv.DictReader(f):
+                diag['rows'] += 1
                 kind = kindmap.get((row.get('type') or '').strip())
                 if not kind:
                     continue
+                _st = (row.get('signal_time') or '').replace(' IST', '').strip()
+                _is_today = _st.startswith(today)
+                if _is_today:
+                    diag['today'] += 1
                 res = (row.get('result') or '').strip()
                 if res in ('TP2', 'BE', 'BREAKEVEN'):
                     win = True
@@ -2992,7 +3000,11 @@ def _st_catchup(since_hm=(9, 0), apply=False):
                     except ValueError:
                         continue
                 else:
+                    if _is_today:
+                        diag['today_open'] += 1
                     continue
+                if _is_today:
+                    diag['today_done'] += 1
                 _sig = (row.get('signal_time') or '').replace(' IST', '').strip()
                 if not _sig.startswith(today):
                     continue
@@ -3001,15 +3013,17 @@ def _st_catchup(since_hm=(9, 0), apply=False):
                 except Exception:
                     continue
                 if (dt.hour, dt.minute) < tuple(since_hm):
+                    diag['before_cutoff'] += 1
                     continue
                 hm = (dt.hour, dt.minute)
                 sched = _SLOT_SCHEDULE_KIND.get(kind, kind)
                 if hm not in _SCAN_SPECIAL.get(sched, set()):
+                    diag['untracked_slot'] += 1
                     continue
                 found.append((dt, kind, hm, win, row.get('coin', '?'), res))
     except Exception as e:
         print(f'[ST CATCHUP] {e}')
-        return [], {}
+        return [], {}, diag
     found.sort(key=lambda r: r[0])
     per_cell = {}
     for dt, kind, hm, win, coin, res in found:
@@ -3020,7 +3034,7 @@ def _st_catchup(since_hm=(9, 0), apply=False):
         for dt, kind, hm, win, coin, res in found:
             _slot_day_track(kind, hm, win, dt.timestamp() - IST.total_seconds())
         _save_slot_state()
-    return found, per_cell
+    return found, per_cell, diag
 
 
 def _build_users_summary():
@@ -14631,11 +14645,39 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             except ValueError:
                 send_reply(chat_id, "<code>/st catchup 9:00</code>  then  "
                            "<code>/st catchup 9:00 apply</code>", skip_smallcaps=True); return
-            _rows, _cells = _st_catchup(_since, apply=_apply)
+            _rows, _cells, _dg = _st_catchup(_since, apply=_apply)
             if not _rows:
-                send_reply(chat_id,
-                    f"📭 Nothing resolved on a tracked slot since "
-                    f"<b>{_since[0]}:{_since[1]:02d}</b> today in trade_history.csv.",
+                # Say WHY it is empty. "Nothing resolved" and "the CSV cannot
+                # see today at all" look identical otherwise, and they mean
+                # opposite things.
+                _n_rows = _dg.get("rows", 0)
+                _n_today = _dg.get("today", 0)
+                _n_done = _dg.get("today_done", 0)
+                _n_open = _dg.get("today_open", 0)
+                _n_early = _dg.get("before_cutoff", 0)
+                _n_untr = _dg.get("untracked_slot", 0)
+                if _dg.get("no_csv"):
+                    _why = ("<b>trade_history.csv is not on this server.</b> Nothing "
+                            "can be recovered from here - run /syncup on a server "
+                            "that has it.")
+                elif not _n_today:
+                    _why = (f"The CSV holds <b>{_n_rows}</b> row(s) but <b>none dated "
+                            f"today</b>. This copy predates today entirely, so it "
+                            f"cannot recover anything.")
+                elif not _n_done:
+                    _why = (f"<b>{_n_today}</b> trade(s) logged today and every one is "
+                            f"still OPEN. Nothing has resolved yet, so there is nothing "
+                            f"to credit - each will credit itself when it closes. "
+                            f"<b>This is the healthy answer.</b>")
+                else:
+                    _why = (f"<b>{_n_done}</b> trade(s) resolved today, but none "
+                            f"qualified: <b>{_n_early}</b> closed before "
+                            f"{_since[0]}:{_since[1]:02d}, <b>{_n_untr}</b> were on a "
+                            f"regular-grid time rather than a tracked slot.")
+                send_reply(chat_id, "\n".join([
+                    "📭 <b>Nothing to catch up</b>", "", _why, "",
+                    f"<i>csv rows {_n_rows} | today {_n_today} "
+                    f"({_n_done} resolved, {_n_open} open)</i>"]),
                     skip_smallcaps=True); return
             _WD = ["Su","Mo","Tu","We","Th","Fr","Sa"]
             _lines = []
