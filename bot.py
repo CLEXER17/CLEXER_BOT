@@ -5660,7 +5660,6 @@ def _backfill_slot_days() -> int:
         print("[SLOT DAY] no trade_history.csv — weekday counters start empty")
         return 0
     kindmap = {"scan1": "scan1", "scan2": "scan2", "demo1": "demo1", "demo2": "demo2"}
-    _slot_day_stats.clear()           # full rebuild, never an increment
     # Collected first and replayed in chronological order. A streak is a
     # sequence, so applying rows in whatever order the file happens to hold
     # them would produce a number that means nothing.
@@ -5701,6 +5700,36 @@ def _backfill_slot_days() -> int:
     except Exception as e:
         print(f"[SLOT DAY] backfill error: {e}")
         return 0
+    # A rebuild REPLACES the grid, and its only source is trade_history.csv -
+    # which lives in the ephemeral DATA_DIR and is refreshed centrally only by a
+    # manual /syncup. So the CSV on a fresh container can hold far less than the
+    # counters accumulated live, and a seed bump would then quietly delete
+    # months of real outcomes. That is exactly what happened on 2026-09-06:
+    # bumping the seed for the streak-rule change took Sunday from 45 qualifying
+    # slots to 16.
+    #
+    # So compare first. If the CSV cannot account for at least as many resolved
+    # outcomes as the grid already holds, keep what is live, tell the admin, and
+    # leave the seed version alone so a later run can still upgrade once the CSV
+    # is complete.
+    _have = sum(c.get("tp", 0) + c.get("sl", 0)
+                for slot in _slot_day_stats.values() for c in slot.values())
+    if _have and len(_pending) < _have:
+        print(f"[SLOT DAY] REFUSING rebuild — csv has {len(_pending)} outcomes, "
+              f"the live grid holds {_have}. Keeping the live data.")
+        if ADMIN_CHAT_ID:
+            try:
+                send_reply(ADMIN_CHAT_ID,
+                    "⚠️ <b>Weekday grid rebuild skipped</b>\n\n"
+                    f"trade_history.csv accounts for <b>{len(_pending)}</b> resolved "
+                    f"outcomes, but the live grid already holds <b>{_have}</b>.\n\n"
+                    "<i>Rebuilding would have deleted the difference. Run /syncup on a "
+                    "server holding the full CSV, then /st rebuild to upgrade.</i>",
+                    skip_smallcaps=True)
+            except Exception:
+                pass
+        return 0
+    _slot_day_stats.clear()           # safe now: the CSV is at least as complete
     for _dt, _kind, _hm, _win in sorted(_pending, key=lambda r: r[0]):
         _st = _slot_day_stats.setdefault(_slot_key(_kind, _hm), {})                              .setdefault(str(_wd_index(_dt)), {"tp": 0, "sl": 0, "streak": 0})
         _st["tp" if _win else "sl"] += 1
