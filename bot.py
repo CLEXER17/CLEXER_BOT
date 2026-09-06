@@ -5536,7 +5536,7 @@ _slot_day_stats: dict = {}     # "kind|H.M" -> {"0".."6": {"tp": int, "sl": int}
 # The weekday record now outranks a lifetime auto-demotion; only an entry here
 # is final.
 _SLOT_MANUAL_LOCK = {"scan1": set(), "scan2": set(), "test1": set(), "test2": set()}
-_SLOT_DAY_SEED_VERSION = 3   # v3 adds the per-cell streak
+_SLOT_DAY_SEED_VERSION = 4   # v4 = streak resets to 0 on a loss (was -1)
 _slot_day_seed_v: int = 0
 WD_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
@@ -5570,7 +5570,12 @@ def _slot_day_track(kind: str, hm: tuple, is_win: bool, when=None):
     # Admin rule 2026-08-29: a profit adds one, a loss takes one away, and it
     # never goes below zero. Not reset-to-zero on a loss - a slot that has won
     # six times running should not be knocked all the way back by one miss.
-    st["streak"] = max(0, st["streak"] + (1 if is_win else -1))
+    # Reset on ANY loss, not -1 (admin 2026-09-06). With -1 and a floor of 0
+    # the streak is just wins minus losses, so every slot above 50% keeps a
+    # streak >= 1 permanently and the streak half of the gate could never
+    # bite - proven over 32,766 sequences. A slot now has to WIN its next
+    # trade on that weekday before it can reach tier channels again.
+    st["streak"] = st["streak"] + 1 if is_win else 0
     # Logged because a missing credit is otherwise invisible: /st and /st week
     # would simply disagree with no way to tell which half failed.
     print(f"  [SLOT DAY] {key} {WD_NAMES[int(day)]} {'+tp' if is_win else '+sl'} "
@@ -5699,7 +5704,9 @@ def _backfill_slot_days() -> int:
     for _dt, _kind, _hm, _win in sorted(_pending, key=lambda r: r[0]):
         _st = _slot_day_stats.setdefault(_slot_key(_kind, _hm), {})                              .setdefault(str(_wd_index(_dt)), {"tp": 0, "sl": 0, "streak": 0})
         _st["tp" if _win else "sl"] += 1
-        _st["streak"] = max(0, _st.get("streak", 0) + (1 if _win else -1))
+        # Identical rule to _slot_day_track, or a seeded cell disagrees
+        # with every cell built live after it.
+        _st["streak"] = _st.get("streak", 0) + 1 if _win else 0
         n += 1
     _slot_day_seed_v = _SLOT_DAY_SEED_VERSION
     print(f"[SLOT DAY] backfilled {n} outcomes across {len(_slot_day_stats)} slots "
