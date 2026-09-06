@@ -9358,12 +9358,18 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
     if mode == "specific_user":
         targets = [target_user] if target_user else []
     elif mode == "users":
-        targets = [u for u in registered_users if u not in blocked_users]
+        # Real users only. register_user records EVERY chat the bot is spoken to
+        # in, groups included (negative ids), so "Users Only" was reaching more
+        # chats than /status ever counted. Groups belong to the channel modes,
+        # which have their own picker (admin 2026-09-06).
+        targets = [u for u in registered_users
+                   if u not in blocked_users and int(u) > 0]
     elif mode in ("channels", "free", "vip"):
         targets = channel_targets if channel_targets is not None else [cid for cid, _ in _bc_picker_targets(mode)]
     else:
         _chan = channel_targets if channel_targets is not None else [cid for cid, _ in _all_broadcast_channel_targets()]
-        targets = [u for u in registered_users if u not in blocked_users] + _chan
+        targets = [u for u in registered_users
+                   if u not in blocked_users and int(u) > 0] + _chan
     ok = 0; fail = 0; mentioned = 0
     for cid in targets:
         _sent = (_copy_message_to(cid, copy_from[0], copy_from[1]) if copy_from
@@ -10234,7 +10240,14 @@ def fmt_scan_signal(t: dict) -> str:
     )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
-    if t is None: t = scan_active_trade
+    # t is required. The old fallback read scan_active_trade, a global that has
+    # never existed anywhere in this file - so any call that omitted t raised
+    # NameError instead of doing something sensible. Every call site does pass
+    # t today, which is the only reason it was never hit; an empty box is a far
+    # better failure than a crash inside a lifecycle message.
+    if t is None:
+        print("  [FMT SCAN] called with no trade - returning an empty card")
+        return ""
     coin = t.get('symbol','?')
     sym  = f"#{coin}"; sig = t.get("signal","?")
     ver_lbl = f"S{t.get('ver', 1)}"
@@ -13748,7 +13761,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -16718,12 +16731,17 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, f"❌ Error: {e}")
         return
 
-    elif cmd == "/test" and is_scanadmin:
+    elif cmd in ("/demoscan", "/ds") and is_scanadmin:
+        # Was ALSO "/test", which the Test System handler above already claims
+        # for is_admin. So /test meant two different features depending on who
+        # typed it, and because the admin branch matches first the admin could
+        # never reach this one at all - it was dead code for them and live for a
+        # co-admin (admin 2026-09-06). Renamed; both roles can reach it now.
         global _test_scan1_last_hour, _test_scan2_last_hour
         sub = parts[1].lower() if len(parts) > 1 else ""
         _test_btns = {"inline_keyboard": [
-            [{"text": "🟢  ON", "callback_data": "test_on"}, {"text": "🔴  OFF", "callback_data": "test_off"}],
-            [{"text": "🧪  Run Now", "callback_data": "test_run"}],
+            [{"text": "🟢  ON", "callback_data": "demoscan_on"}, {"text": "🔴  OFF", "callback_data": "demoscan_off"}],
+            [{"text": "🧪  Run Now", "callback_data": "demoscan_run"}],
         ]}
         if sub == "on":
             TEST_SCAN_ENABLED = True
@@ -18653,6 +18671,7 @@ _COPYUSER_SUBCATS = {
 # ─── "Scan Control" is split into sub-sections (main gate → door) ─────────────
 _SCAN_SUBCATS = {
     "run": ("🔍 Run Now", [
+        ("/demoscan", "🧪", "Demo Scan On/Off", "Turn the demo/paper scan on or off, or fire one now. Was reachable only by a co-admin because it shared the /test name with the Test System, which the admin branch claimed first. (/ds is the same command.)"),
         ("/scan",   "🔍", "Force Scan1 + Scan2", "Runs both scans immediately, outside their schedule."),
         ("/scan1",  "1️⃣", "Force Scan1 Only",    "Runs Scan1 immediately."),
         ("/scan2",  "2️⃣", "Force Scan2 Only",    "Runs Scan2 immediately."),
@@ -21716,12 +21735,12 @@ def command_listener():
 
                     elif cb_data == "noop":
                         pass
-                    elif cb_data == "test_on" and cb_is_scanadmin:
-                        _toggle_cmd("/test on", cb_chat_id, cb_cid, cb_msg_id, "scan")
-                    elif cb_data == "test_off" and cb_is_scanadmin:
-                        _toggle_cmd("/test off", cb_chat_id, cb_cid, cb_msg_id, "scan")
-                    elif cb_data == "test_run" and cb_is_scanadmin:
-                        _toggle_cmd("/test run", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data == "demoscan_on" and cb_is_scanadmin:
+                        _toggle_cmd("/demoscan on", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data == "demoscan_off" and cb_is_scanadmin:
+                        _toggle_cmd("/demoscan off", cb_chat_id, cb_cid, cb_msg_id, "scan")
+                    elif cb_data == "demoscan_run" and cb_is_scanadmin:
+                        _toggle_cmd("/demoscan run", cb_chat_id, cb_cid, cb_msg_id, "scan")
                     elif cb_data.startswith("userinfo:"):
                         uid = cb_data.split(":")[1]
                         handle_command(f"/user {uid}", cb_chat_id, {}, sender_id=cb_cid)

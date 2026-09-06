@@ -3563,8 +3563,18 @@ def handle(cmd: str, parts: list, chat_id, username: str,
         def _user_btns(cb_prefix):
             rows = []
             row = []
-            for uid, u in list(_db.items()):
-                label = _display_uname(uid, u) + (" ⛔" if u.get("paused_by_admin") else ("  🟢" if u.get("copy_on") else ""))
+            # EVERY registered user, not just those with a copy-trade record -
+            # same gap as /users had. _db only holds users who reached the
+            # copy-trade screens, so this picker offered 14 of 30 and the rest
+            # could not be inspected at all (admin 2026-09-06). A trailing dot
+            # marks a user with no copy-trade record.
+            # (/kick deliberately still lists _db only: it removes API keys and
+            # cancels orders, so there is nothing to kick without a record.)
+            for uid in _all_known_users():
+                u = _db.get(uid) or {}
+                label = _display_uname(uid, u) + (" ⛔" if u.get("paused_by_admin")
+                                                  else ("  🟢" if u.get("copy_on")
+                                                        else ("" if uid in _db else "  ·")))
                 row.append({"text": label, "callback_data": f"{cb_prefix}:{uid}"})
                 if len(row) == 2:
                     rows.append(row); row = []
@@ -3575,6 +3585,11 @@ def handle(cmd: str, parts: list, chat_id, username: str,
             send_reply_fn(chat_id, "👥 <b>Select a user:</b>", reply_markup=mkp); return
         target = str(parts[1]); user = _db.get(target)
         if not user:
+            if target in _all_known_users():
+                send_reply_fn(chat_id,
+                    f"{_display_uname_link(target, {})} | <code>{target}</code>\n\n"
+                    "<i>Registered, but has never opened the copy-trade screens, "
+                    "so there are no settings to show.</i>"); return
             send_reply_fn(chat_id, f"User {target} not found."); return
         pos_info = ""
         if user.get("in_position") and user.get("connected"):
