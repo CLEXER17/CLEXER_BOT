@@ -14066,7 +14066,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -14527,6 +14527,27 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # Scan+Trade Control on top of the open-to-all ones, everyone else
         # sees just the open-to-all ones.
         _send_all_commands_list(chat_id, is_admin, is_co_admin(_check_id))
+
+    elif cmd == "/ping":
+        # Splits the delay in two. message.date is when TELEGRAM received it, so
+        # now - date is how long it sat before this process picked it up: that is
+        # polling/delivery, and no amount of handler tuning touches it. The
+        # round-trip is measured separately by how long the reply takes to send.
+        _sent_at = float((message or {}).get("date") or 0)
+        _lag = (time.time() - _sent_at) if _sent_at else -1
+        _t = time.time()
+        _verdict = ("<i>Delivery is the problem — the message sat unread. That is "
+                    "polling (a second poller, or a stalled long-poll), not the "
+                    "handlers.</i>" if _lag > 3 else
+                    "<i>Delivery is fine. If replies still feel slow, it is the "
+                    "handler — check the log for [SLOW] lines.</i>" if _lag >= 0 else
+                    "<i>No timestamp on this message.</i>")
+        send_reply(chat_id, "\n".join([
+            "🏓 <b>Pong</b>", "",
+            f"Waited before pickup: <b>{_lag:.1f}s</b>" if _lag >= 0 else "Waited: unknown",
+            f"Instance: <code>{_INSTANCE_ID}</code>  ·  up {int((time.time()-_PROCESS_START)//60)}m",
+            "", _verdict]), skip_smallcaps=True)
+        print(f"[PING] delivery lag {_lag:.1f}s, reply built in {time.time()-_t:.2f}s")
 
     elif cmd in ("/go", "/resume"):
         bot_paused.clear(); bot_stopped.clear()
