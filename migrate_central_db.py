@@ -69,6 +69,23 @@ def _cols(cur, table):
     return [r[0] for r in cur.fetchall()]
 
 
+def _json_cols(cur, table):
+    """Names of this table's json/jsonb columns.
+
+    psycopg2 decodes a jsonb column into a plain dict on the way out but
+    cannot adapt one on the way back in ("can't adapt type 'dict'"), so every
+    such value has to be re-wrapped in Json() before the insert. The types are
+    looked up rather than guessed from the value: a genuine Postgres array
+    column also arrives as a Python list, and wrapping that would quietly
+    turn it into json."""
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+          AND data_type IN ('json', 'jsonb')
+    """, (table,))
+    return {r[0] for r in cur.fetchall()}
+
+
 def _count(cur, table):
     try:
         cur.execute(f'SELECT COUNT(*) FROM "{table}"')
@@ -140,11 +157,16 @@ def main():
             updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in pk)
             conflict = (f'ON CONFLICT ({", ".join(chr(34) + c + chr(34) for c in pk)}) '
                         + (f"DO UPDATE SET {updates}" if updates else "DO NOTHING"))
+            jsonat = [i for i, c in enumerate(cols) if c in _json_cols(sc, table)]
             sc.execute(f'SELECT {collist} FROM "{table}"')
             while True:
                 rows = sc.fetchmany(500)
                 if not rows:
                     break
+                if jsonat:
+                    rows = [tuple(psycopg2.extras.Json(v)
+                                  if (i in jsonat and v is not None) else v
+                                  for i, v in enumerate(r)) for r in rows]
                 psycopg2.extras.execute_values(
                     dc, f'INSERT INTO "{table}" ({collist}) VALUES %s {conflict}', rows)
                 copied += len(rows)
