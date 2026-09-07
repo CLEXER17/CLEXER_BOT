@@ -2374,6 +2374,9 @@ def get_active_server_name() -> str:
         return SERVER_NAME
     return _get_active_server_info()["name"]
 
+_resource_hold_cache: dict = {}   # key -> (checked_at, we_hold_it)
+
+
 def _claim_resource(key: str, ttl: int = 600) -> bool:
     """Instance-level lock on a shared resource, on top of the active-server flag.
 
@@ -2406,6 +2409,38 @@ def _claim_resource(key: str, ttl: int = 600) -> bool:
     except Exception as e:
         print(f"[CLAIM] {key}: {e} - proceeding")
         return True              # never let the central store being down stop the bot
+
+
+def _take_resource(key: str):
+    """Claim a resource outright, without waiting for the current holder.
+
+    Used at startup: the newest process should win, because on a rolling
+    deploy the previous container is already being torn down. The loser finds
+    out via _holds_resource and steps aside."""
+    if not CLEXER_API_URL:
+        return
+    _kv_push_async(key, {"server": SERVER_NAME, "instance": _INSTANCE_ID,
+                         "ts": time.time()})
+
+
+def _holds_resource(key: str) -> bool:
+    """Does THIS process still hold the claim? Cached briefly - it is polled."""
+    if not CLEXER_API_URL:
+        return True
+    now = time.time()
+    _c = _resource_hold_cache.get(key)
+    if _c and now - _c[0] < 45:
+        return _c[1]
+    try:
+        r = _central_get(f"/kv/{key}", timeout=4, retries=1)
+        body = (r.json() if (r is not None and r.ok) else {}) or {}
+        cur = (body.get("data") or {}) if body.get("found") else {}
+        _inst = cur.get("instance")
+        held = (not _inst) or _inst == _INSTANCE_ID
+    except Exception:
+        held = True          # store unreachable: keep working, never self-silence
+    _resource_hold_cache[key] = (now, held)
+    return held
 
 
 def _hold_resource(key: str, every: int = 240):
@@ -20984,6 +21019,7 @@ def command_listener():
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
     _standby_warned = False
+    _lost_warned = False
     while True:
         # Stop polling the instant this server is no longer the active one —
         # e.g. right after an auto-rotation switch to a new server (admin
@@ -21003,6 +21039,18 @@ def command_listener():
             time.sleep(20)
             continue
         _standby_warned = False
+        # Did a newer instance take over? _holds_resource is cached for 45s, so
+        # this costs at most one central read a minute. Standing down here is what
+        # keeps the 409 window to a single check interval, instead of lasting
+        # until Railway finally kills this container.
+        if not _holds_resource("poller_owner"):
+            if not _lost_warned:
+                print(f"[SERVER] a newer instance took the poller claim — "
+                      f"{SERVER_NAME}/{_INSTANCE_ID} is standing down.")
+                _lost_warned = True
+            time.sleep(20)
+            continue
+        _lost_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
                 params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message"]}, timeout=25)
@@ -24299,21 +24347,20 @@ def main():
                           f"Run /server {SERVER_NAME} from the active server to switch.")
                     _warned = True
                 time.sleep(20)
-            # Being the active SERVER is not enough - two containers of the
-            # same server exist during every Railway redeploy, and both would
-            # poll, which is exactly the 409 the admin hit. Wait for the
-            # instance-level claim as well; the outgoing container releases it
-            # by dying, and this one picks it up within the TTL.
-            _cwarned = False
-            while not _claim_resource("poller_owner"):
-                if not _cwarned:
-                    print(f"[SERVER] '{SERVER_NAME}' is active but ANOTHER INSTANCE "
-                          f"of it already holds the poller claim — waiting for it to "
-                          f"finish before polling.")
-                    _cwarned = True
-                time.sleep(20)
+            # The NEWEST process takes the poller claim outright; it does not
+            # wait for the previous one. Waiting was wrong: on a Railway
+            # redeploy the outgoing container is being torn down anyway, so
+            # the incoming one sat out the whole TTL before polling and every
+            # message sent in that window queued at Telegram. The admin
+            # measured 258s of delivery lag from exactly this (2026-09-07).
+            #
+            # The outgoing container notices it lost the claim inside a
+            # minute and stops polling itself - see command_listener - so the
+            # 409 window is one check interval instead of a whole deploy.
+            _take_resource("poller_owner")
             _hold_resource("poller_owner")
-            print(f"[SERVER] '{SERVER_NAME}' is ACTIVE and holds the poller claim — starting Telegram polling now.")
+            print(f"[SERVER] '{SERVER_NAME}' is ACTIVE — took the poller claim "
+                  f"(instance {_INSTANCE_ID}) — starting Telegram polling now.")
         command_listener()
     threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
