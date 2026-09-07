@@ -3320,21 +3320,29 @@ def _notify_load():
         print(f'[NOTIFY] load: {e}')
 
 
-def _ping_admin_user_activity(chat_id, username=None):
+def _ping_admin_user_activity(user_id, username=None, chat_id=None):
     """Ping the admin that a user is using the bot, at most once per
     USER_PING_COOLDOWN for that user.
 
-    Never fires for the admin's own messages, for a co-admin, or in a group -
-    the point is to see real users arriving, not to echo the admin's own
-    typing back at them."""
+    Never fires for the admin's own messages, for a co-admin, or for anything
+    said in a group - the point is to see real users talking TO the bot, not
+    every message in every group the bot happens to sit in.
+
+    chat_id is where the message was said. Telegram gives a private chat the
+    same id as the user, so chat_id != user_id means a group/channel and is
+    dropped. The old "id must be positive" test could never catch that: the
+    caller passes the SENDER's id, which is positive in a group too, so every
+    line of ordinary group chatter pinged the admin (admin 2026-09-07)."""
     if not USER_PING_ENABLED or not ADMIN_CHAT_ID:
         return
     try:
-        cid = int(chat_id)
+        cid = int(user_id)
     except (TypeError, ValueError):
         return
     if cid <= 0 or str(cid) == str(ADMIN_CHAT_ID) or is_co_admin(cid):
         return
+    if chat_id is None or str(chat_id) != str(cid):
+        return          # group, supergroup or channel - not a DM to the bot
     now = time.time()
     if now - _user_ping_last.get(cid, 0) < USER_PING_COOLDOWN:
         return
@@ -22620,7 +22628,8 @@ def command_listener():
                 # gating - see _ping_admin_user_activity; it ignores the admin,
                 # a co-admin and groups.
                 _ping_admin_user_activity(sender_uid or cid,
-                                          uname if uname != "?" else None)
+                                          uname if uname != "?" else None,
+                                          chat_id=cid)
                 if cid in broadcast_pending and not text.startswith("/"):
                     handle_broadcast_message(cid, msg); continue
                 if str(cid) in _schedule_time_pending and not text.startswith("/"):
