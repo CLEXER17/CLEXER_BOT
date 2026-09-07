@@ -1787,26 +1787,34 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     if _uname: btns.append({"text": "🤖 Open Bot", "url": f"https://t.me/{_uname}", "style": "primary"})
     if _uname: btns.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     mkp = {"inline_keyboard": [btns]} if btns else None
+    # This goes out through _send_plain_reply, which sends raw HTML and never
+    # runs send_reply's global styling pass - so the chosen font is applied
+    # here by hand, and only to the quote. The headline keeps real <b> and
+    # ordinary letters: styling it too would leave the whole post in one
+    # texture with nothing to anchor the eye (admin 2026-09-07).
     if result == "TP1":
         text = (
             "🚨 <b>VIP SIGNAL UPDATE</b>\n\n"
             f"#{coin}USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
-            f"<blockquote>This signal was shared exclusively in \"Crypto Clexer VIP\" AT {entry_ts}\n"
-            "Congratulations to all our VIP members who secured profits. 🔥\n\n"
-            "Want to receive these signals?\n"
-            "📩 DM now for VIP access.</blockquote>"
+            "<blockquote>" + _style_body(
+                f"This signal was shared exclusively in \"Crypto Clexer VIP\" AT {entry_ts}\n"
+                "Congratulations to all our VIP members who secured profits. 🔥\n\n"
+                "Want to receive these signals?\n"
+                "📩 DM now for VIP access.") + "</blockquote>"
         )
     else:
         text = (
             "🏆 <b>VIP RESULT</b>\n\n"
             f"#{coin}USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
-            "<blockquote>VIP-exclusive signal closed successfully.\n\n"
-            "✅ TP1 Achieved\n"
-            "✅ TP2 Achieved\n\n"
-            f"This setup was shared with our VIP members AT {entry_ts}\n"
-            "If you're seeing this in the free channel, imagine having the trade before the move.\n\n"
-            "💎 Crypto Clexer VIP\n"
-            "📩 DM now for VIP access.</blockquote>"
+            "<blockquote>" + _style_body(
+                "VIP-exclusive signal closed successfully.\n\n"
+                "✅ TP1 Achieved\n"
+                "✅ TP2 Achieved\n\n"
+                f"This setup was shared with our VIP members AT {entry_ts}\n"
+                "If you're seeing this in the free channel, imagine having the "
+                "trade before the move.\n\n"
+                "💎 Crypto Clexer VIP\n"
+                "📩 DM now for VIP access.") + "</blockquote>"
         )
     # Thread this as a genuine reply to the locked/redacted entry post that
     # went out to Free at signal time (same reply_map + _send_plain_reply
@@ -9041,7 +9049,7 @@ _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
     global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE, MESSAGE_FONT
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -9096,6 +9104,7 @@ def load_settings():
             CHAT_IMAGE_MODEL = d.get("chat_image_model", CHAT_IMAGE_MODEL)
             CHAT_USE_AEROLINK = d.get("chat_use_aerolink", CHAT_USE_AEROLINK)
             MINIAPP_MAINTENANCE_ON  = d.get("miniapp_maintenance_on",  MINIAPP_MAINTENANCE_ON)
+            MESSAGE_FONT            = d.get("message_font", MESSAGE_FONT)
             MINIAPP_MAINTENANCE_MSG = d.get("miniapp_maintenance_msg", MINIAPP_MAINTENANCE_MSG)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
@@ -9174,6 +9183,7 @@ def save_settings():
             "chat_image_model": CHAT_IMAGE_MODEL,
             "chat_use_aerolink": CHAT_USE_AEROLINK,
             "miniapp_maintenance_on": MINIAPP_MAINTENANCE_ON,
+            "message_font": MESSAGE_FONT,
             "miniapp_maintenance_msg": MINIAPP_MAINTENANCE_MSG,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
@@ -9337,6 +9347,96 @@ def _smallcaps_title(text: str) -> str:
 
 GLOBAL_SMALLCAPS_ENABLED = True   # every outbound message body + button label rendered in smallcaps, per admin request
 
+
+# ─── Message font (/font) ──────────────────────────────────────────────────
+# Which unicode alphabet every outbound message body is rendered in. Small
+# caps is the default and the historical behaviour, so nothing changes until
+# the admin picks something else - and /font switches back in one command.
+#
+# Small caps is not a plain character table: it keeps a word's first letter
+# a real capital and leaves acronyms and slash-commands alone, so it stays on
+# its own code path (_smallcaps_body). Everything else is a straight A-Z /
+# a-z / 0-9 substitution and goes through _font(), which already knows to
+# skip HTML tags, entities and the contents of <code>/<pre>/<a>.
+def _mk_font(up: int, lo: int, dig: int) -> dict:
+    t = {chr(c): chr(up + c - 65) for c in range(65, 91)}
+    t.update({chr(c): chr(lo + c - 97) for c in range(97, 123)})
+    t.update({chr(c): chr(dig + c - 48) for c in range(48, 58)})
+    return t
+
+
+# key -> (menu label, character table). A None table means "not a simple
+# substitution" and is handled by name in _style_body.
+_FONT_STYLES = {
+    "smallcaps": ("Sᴍᴀʟʟ Cᴀᴘꜱ",      None),
+    "bold":      ("𝐁𝐨𝐥𝐝 𝐒𝐞𝐫𝐢𝐟",       _mk_font(0x1D400, 0x1D41A, 0x1D7CE)),
+    "sansbold":  ("𝗕𝗼𝗹𝗱 𝗦𝗮𝗻𝘀",        _mk_font(0x1D5D4, 0x1D5EE, 0x1D7EC)),
+    "sans":      ("𝖲𝖺𝗇𝗌",             _mk_font(0x1D5A0, 0x1D5BA, 0x1D7E2)),
+    "mono":      ("𝙼𝚘𝚗𝚘𝚜𝚙𝚊𝚌𝚎",      _mk_font(0x1D670, 0x1D68A, 0x1D7F6)),
+    "wide":      ("Ｗｉｄｅ",            _mk_font(0xFF21, 0xFF41, 0xFF10)),
+    "plain":     ("Plain (no styling)", {}),
+}
+MESSAGE_FONT = "smallcaps"
+
+
+def _style_body(text: str) -> str:
+    """Render a message body in the admin's chosen font (/font)."""
+    if MESSAGE_FONT not in _FONT_STYLES or MESSAGE_FONT == "smallcaps":
+        return _smallcaps_body(text)
+    _tbl = _FONT_STYLES[MESSAGE_FONT][1]
+    return text if not _tbl else _font(text, _tbl)
+
+
+def _style_label(text: str) -> str:
+    """Same choice as _style_body, for a button label. Labels are short and
+    already carry their own emoji, so there is no tag/entity handling to do -
+    a straight substitution is enough, and anything outside ASCII (emoji,
+    glyphs already in another alphabet) falls through untouched."""
+    if MESSAGE_FONT not in _FONT_STYLES or MESSAGE_FONT == "smallcaps":
+        return _smallcaps_title(text)
+    _tbl = _FONT_STYLES[MESSAGE_FONT][1]
+    return text if not _tbl else "".join(_tbl.get(c, c) for c in text)
+
+
+def _font_sample(key: str, word: str = "Scanning The Market") -> str:
+    """That word rendered in one style - the whole point of the /font screen
+    is seeing the alphabets side by side rather than guessing from a name."""
+    if key == "smallcaps":
+        return _smallcaps_title(word)
+    _tbl = _FONT_STYLES.get(key, ("", {}))[1]
+    return word if not _tbl else "".join(_tbl.get(c, c) for c in word)
+
+
+def send_font_screen(chat_id, message_id=None):
+    """/font - pick the alphabet every outbound message body is rendered in."""
+    _rows, _row = [], []
+    for _k in _FONT_STYLES:
+        _row.append({"text": ("✅ " if _k == MESSAGE_FONT else "") + _FONT_STYLES[_k][0],
+                     "callback_data": f"font:{_k}"})
+        if len(_row) == 2:
+            _rows.append(_row); _row = []
+    if _row:
+        _rows.append(_row)
+    _nl = chr(10)
+    _lines = _nl.join(
+        f"{'▸' if _k == MESSAGE_FONT else '  '} {_font_sample(_k)}" for _k in _FONT_STYLES)
+    _txt = (f"🔤 <b>Message Font</b>{_nl}{_nl}"
+            f"Current: <b>{_FONT_STYLES[MESSAGE_FONT][0]}</b>{_nl}{_nl}"
+            f"<blockquote>{_lines}</blockquote>{_nl}"
+            "Applies to every message body the bot sends, and to the VIP "
+            "result posts in the channels. Tickers, prices and anything in "
+            f"code blocks are never restyled.{_nl}{_nl}"
+            "Also settable as <code>/font mono</code>, <code>/font wide</code>, etc.")
+    # skip_smallcaps: the samples ARE the message. Running the global styling
+    # pass over them would rewrite every line into the current font and the
+    # comparison would show six identical rows.
+    if message_id:
+        _help_edit_or_send(chat_id, _txt, {"inline_keyboard": _rows},
+                           message_id=message_id)
+    else:
+        send_reply(chat_id, _txt, reply_markup={"inline_keyboard": _rows},
+                   skip_smallcaps=True)
+
 _HTML_TAG_RE = re.compile(r'(<[^>]+>)')
 
 def _smallcaps_body(text: str) -> str:
@@ -9346,11 +9446,18 @@ def _smallcaps_body(text: str) -> str:
     prices, tickers, and other exact values stay unmangled."""
     if not text:
         return text
-    parts = _HTML_TAG_RE.split(text)
+    # Split on _FONT_SKIP_RE, not _HTML_TAG_RE: that one only knows about
+    # tags, so an HTML ENTITY had its letters restyled and Telegram then
+    # showed it literally - '&gt;' came out as '&ɢᴛ;' rather than '>'. The
+    # hex form was reported first (&#x27; in a VIP post, admin 2026-09-07);
+    # the named forms &gt; &lt; &amp; &quot; were broken the same way.
+    parts = _FONT_SKIP_RE.split(text)
     out = []
     skip = 0
     for part in parts:
-        if part.startswith("<") and part.endswith(">"):
+        if part.startswith("&") and part.endswith(";"):
+            out.append(part)          # entity - leave it decodable
+        elif part.startswith("<") and part.endswith(">"):
             inner = part.strip("<>").lstrip("/").split()[0].lower() if part.strip("<>").lstrip("/") else ""
             if inner in ("code", "pre"):
                 skip = max(0, skip - 1) if part.startswith("</") else skip + 1
@@ -9395,7 +9502,7 @@ def _apply_premium_emojis(text: str, overrides: dict = None, skip_smallcaps: boo
                 # unrelated sends like the startup deploy notice.
                 text = text.replace(_ex_name, f'{_ex_glyph} {_ex_name}')
     if GLOBAL_SMALLCAPS_ENABLED and not skip_smallcaps:
-        text = _smallcaps_body(text)
+        text = _style_body(text)
     return text
 
 # Distinct custom emoji ID for ⭐ specifically on Telegram-Stars payment
@@ -9476,7 +9583,7 @@ def _style_keyboard(markup, rotate=True):
                         btn["text"] = stripped if stripped else label
                         break
             if GLOBAL_SMALLCAPS_ENABLED and "text" in btn:
-                btn["text"] = _smallcaps_title(btn["text"])
+                btn["text"] = _style_label(btn["text"])
     return markup
 
 def send_telegram(text, include_ch2=True, with_bot_button=False):
@@ -14214,7 +14321,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping","/font"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -16104,6 +16211,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             send_reply(chat_id, "❌ <b>News OFF</b>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
 
+    elif cmd == "/font":
+        global MESSAGE_FONT
+        if len(parts) > 1 and parts[1].lower() in _FONT_STYLES:
+            MESSAGE_FONT = parts[1].lower(); save_settings()
+        send_font_screen(chat_id)
     elif cmd == "/ws":
         global WEEKEND_SLEEP_ENABLED
         _ws_btns = {"inline_keyboard": [[
@@ -19289,6 +19401,7 @@ _COPYADMIN_SUBCATS = {
         ("/allusers",  "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
         ("/users",     "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
+        ("/font", "🔤", "Message Font",       "Pick the alphabet every bot message is written in — small caps, bold, monospace, wide or plain. Shows a live sample of each."),
         ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
         ("/leaderboard", "🏆", "Volume Leaderboard", "Ranks users by real copy-trade volume — Today, 7D, 30D, Year, or All-Time."),
         ("/adminlinks", "🔗", "Admin Quick Links", "Shows quick-access links/shortcuts for admin tools."),
@@ -21996,7 +22109,7 @@ def command_listener():
                         _model_val = _mdl  # the exact model ID from MODEL_REGISTRY, not hardcoded opus/fable
                         _aero_val = (_gw == "aerolink")
                         if _kind == "btc":
-                            global SCAN_MODEL, USE_AEROLINK
+                            global SCAN_MODEL, USE_AEROLINK, MESSAGE_FONT
                             SCAN_MODEL = _model_val; USE_AEROLINK = _aero_val
                         else:
                             AICFG_GRID[_kind][_tier]["model"] = _model_val
@@ -22331,6 +22444,10 @@ def command_listener():
                                   "text": _apply_premium_emojis(_gw_text), "parse_mode": "HTML",
                                   "reply_markup": _style_keyboard(_gw_mkp)}, timeout=10)
 
+                    elif cb_data.startswith("font:") and cb_is_admin:
+                        MESSAGE_FONT = cb_data.split(":", 1)[1]
+                        save_settings()
+                        send_font_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("go_model:") and cb_is_admin:
                         _garg = cb_data.split(":")[1]
                         if _garg == "opus":  SCAN_MODEL = "claude-opus-5"
