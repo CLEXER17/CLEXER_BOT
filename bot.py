@@ -3375,10 +3375,13 @@ def _no_trades_card() -> str:
     else:
         _when = "SOON"
     _b = lambda s: _font(s, _FONT_BOLD)
-    return ("🔍 " + _b("SCANNING THE MARKET...") + "\n\n"
+    # 🔎 and 🕐 rather than 🔍 and 🕑 - only these two are in
+    # PREMIUM_EMOJI_MAP, so the others rendered as plain glyphs while every
+    # other card in the bot shows the animated version (admin 2026-09-07).
+    return ("🔎 " + _b("SCANNING THE MARKET...") + "\n\n"
             + _b("We are watching for the next clear trade setup. Nothing "
                  "forced - we wait for the right move.")
-            + "\n\n🕑 " + _b("COME BACK AT " + _when))
+            + "\n\n🕐 " + _b("COME BACK AT " + _when))
 
 
 def _build_users_summary():
