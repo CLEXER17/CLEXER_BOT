@@ -3355,6 +3355,32 @@ def _ping_admin_user_activity(chat_id, username=None):
     send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
 
 
+def _no_trades_card() -> str:
+    """Shown by /trade when nothing is open.
+
+    The come-back time is the next SCHEDULED scan across every pipeline -
+    Scan1, Scan2 and both TS grids - not a fixed hour, so it stays honest if
+    the admin edits a schedule. Falls back to the earliest slot tomorrow once
+    today's are all done."""
+    _now = now_ist()
+    _now_hm = (_now.hour, _now.minute)
+    _all = []
+    for _s in (SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE):
+        _all += [tuple(x) for x in (_s or [])]
+    _all = sorted(set(_all))
+    _fut = [hm for hm in _all if hm > _now_hm]
+    _nxt = _fut[0] if _fut else (_all[0] if _all else None)
+    if _nxt:
+        _when = f"{_nxt[0]:02d}:{_nxt[1]:02d}" + ("" if _fut else " TOMORROW")
+    else:
+        _when = "SOON"
+    _b = lambda s: _font(s, _FONT_BOLD)
+    return ("🔍 " + _b("SCANNING THE MARKET...") + "\n\n"
+            + _b("We are watching for the next clear trade setup. Nothing "
+                 "forced - we wait for the right move.")
+            + "\n\n🕑 " + _b("COME BACK AT " + _when))
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -15516,7 +15542,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if parts_out:
             send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
         else:
-            send_reply(chat_id, "No active trade.")
+            send_reply(chat_id, _no_trades_card(), skip_smallcaps=True)
 
     elif cmd == "/history":
         sub = parts[1].lower() if len(parts) > 1 else "btc"
