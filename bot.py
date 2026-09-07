@@ -2942,18 +2942,26 @@ def _sweep_blocked_users(report_to=None):
         if report_to:
             _new, _gone = sorted(now - before), sorted(before - now)
 
+            # Always list who is blocked, not just what changed. "No change"
+            # answered a question the admin was not asking (2026-09-07) - the
+            # useful output is the current list, with the deltas marked on it.
             lines = ["🔎 <b>Blocked-user sweep</b>", "",
                      f"Checked: <b>{checked}</b> user(s)"
                      + (f"  ({errors} unreachable)" if errors else ""),
                      f"Blocked now: <b>{len(now)}</b>"]
-            if _new:
-                lines += ["", "🚫 <b>Newly detected:</b>",
-                          "\n".join(_user_ref(u) for u in _new)]
+            if now:
+                lines += ["", "🚫 <b>Currently blocking the bot:</b>"]
+                for _i, _u in enumerate(sorted(now), 1):
+                    _tag = "  🆕" if _u in _new else ""
+                    lines.append(f"{_i}. {_user_ref(_u)}{_tag}")
+            else:
+                lines += ["", "<i>Nobody is blocking the bot.</i>"]
             if _gone:
-                lines += ["", "✅ <b>Unblocked since last check:</b>",
-                          "\n".join(_user_ref(u) for u in _gone)]
-            if not _new and not _gone:
-                lines += ["", "<i>No change.</i>"]
+                lines += ["", "✅ <b>Unblocked since last check:</b>"]
+                lines += [f"  {_user_ref(u)}" for u in _gone]
+            lines += ["", (f"<i>{len(_new)} new, {len(_gone)} unblocked since the "
+                           f"last sweep.</i>") if (_new or _gone)
+                          else "<i>No change since the last sweep.</i>"]
             send_reply(report_to, "\n".join(lines), skip_smallcaps=True)
     threading.Thread(target=_run, daemon=True).start()
 
