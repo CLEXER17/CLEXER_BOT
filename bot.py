@@ -2335,6 +2335,54 @@ def get_active_server_name() -> str:
         return SERVER_NAME
     return _get_active_server_info()["name"]
 
+def _claim_resource(key: str, ttl: int = 120) -> bool:
+    """Instance-level lock on a shared resource, on top of the active-server flag.
+
+    is_active_server() compares NAMES, and Railway keeps the old container
+    running while the new one boots - so during every redeploy there are two
+    processes both called 'Co3', both of which consider themselves active.
+    That is what produces the getUpdates 409 and, on the userbot, a permanently
+    revoked session (admin 2026-09-07).
+
+    Returns True only if THIS process holds the claim. A claim is honoured for
+    ttl seconds and refreshed by the holder, so a crashed instance releases it
+    on its own with no manual reset.
+    """
+    if not CLEXER_API_URL:
+        return True              # single-server mode - nothing to contend with
+    try:
+        r = _central_get(f"/kv/{key}")
+        body = (r.json() if (r is not None and r.ok) else {}) or {}
+        cur = (body.get("data") or {}) if body.get("found") else {}
+        if (cur.get("instance") and cur["instance"] != _INSTANCE_ID
+                and time.time() - float(cur.get("ts") or 0) < ttl):
+            return False         # someone else holds it and is still alive
+        _kv_push(key, {"server": SERVER_NAME, "instance": _INSTANCE_ID,
+                       "ts": time.time()})
+        time.sleep(2)            # let a simultaneous claim land
+        r2 = _central_get(f"/kv/{key}")
+        b2 = (r2.json() if (r2 is not None and r2.ok) else {}) or {}
+        c2 = (b2.get("data") or {}) if b2.get("found") else {}
+        return c2.get("instance") in (None, _INSTANCE_ID)
+    except Exception as e:
+        print(f"[CLAIM] {key}: {e} - proceeding")
+        return True              # never let the central store being down stop the bot
+
+
+def _hold_resource(key: str, every: int = 60):
+    """Keep a _claim_resource claim fresh for as long as this process lives."""
+    def _beat():
+        while True:
+            try:
+                if CLEXER_API_URL and is_active_server():
+                    _kv_push(key, {"server": SERVER_NAME, "instance": _INSTANCE_ID,
+                                   "ts": time.time()})
+            except Exception:
+                pass
+            time.sleep(every)
+    threading.Thread(target=_beat, daemon=True).start()
+
+
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
 
@@ -24136,7 +24184,21 @@ def main():
                           f"Run /server {SERVER_NAME} from the active server to switch.")
                     _warned = True
                 time.sleep(20)
-            print(f"[SERVER] '{SERVER_NAME}' is ACTIVE — starting Telegram polling now.")
+            # Being the active SERVER is not enough - two containers of the
+            # same server exist during every Railway redeploy, and both would
+            # poll, which is exactly the 409 the admin hit. Wait for the
+            # instance-level claim as well; the outgoing container releases it
+            # by dying, and this one picks it up within the TTL.
+            _cwarned = False
+            while not _claim_resource("poller_owner"):
+                if not _cwarned:
+                    print(f"[SERVER] '{SERVER_NAME}' is active but ANOTHER INSTANCE "
+                          f"of it already holds the poller claim — waiting for it to "
+                          f"finish before polling.")
+                    _cwarned = True
+                time.sleep(20)
+            _hold_resource("poller_owner")
+            print(f"[SERVER] '{SERVER_NAME}' is ACTIVE and holds the poller claim — starting Telegram polling now.")
         command_listener()
     threading.Thread(target=_wait_then_poll, daemon=True).start()
     threading.Thread(target=_demo_monitor_loop, daemon=True).start()
