@@ -7279,11 +7279,20 @@ def save_state():
     # sync, making trades (including these newly-added demo ones) look stale
     # or missing entirely most of the time.
     if CLEXER_API_URL:
-        try:
-            requests.post(f"{CLEXER_API_URL}/push_state", json=state,
-                headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}), timeout=8)
-        except Exception as e:
-            print(f"[STATE] Central push error: {e}")
+        # Off-thread. save_state() is called from 47 places, including command
+        # handlers, and this POST has an 8s timeout - so a slow central store
+        # put up to eight seconds inline behind whatever the user just did.
+        # The local file write above already happened, so nothing is lost if
+        # this one is still in flight when the process dies; the next save
+        # re-pushes the whole state anyway (admin 2026-09-07).
+        def _push():
+            try:
+                requests.post(f"{CLEXER_API_URL}/push_state", json=state,
+                    headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}),
+                    timeout=8)
+            except Exception as e:
+                print(f"[STATE] Central push error: {e}")
+        threading.Thread(target=_push, daemon=True).start()
 
 def save_active_trade():
     save_state()

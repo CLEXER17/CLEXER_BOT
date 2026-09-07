@@ -1,4 +1,4 @@
-﻿"""
+"""
 CLEXER V17.8.5 — BingX Copy Trade System
 ──────────────────────────────────────
 Standalone module. Import into bot.py.
@@ -441,8 +441,13 @@ def _set(cid: str, user: dict):
     with _lock:
         _db[str(cid)] = user
         _save()
+        # Off-thread. push_to_central has a 15s timeout, and _set runs on every
+        # copy-trade write - including ones a user is waiting on in a command
+        # handler - so a slow central store put up to fifteen seconds inline
+        # behind an ordinary reply (admin 2026-09-07). _save() above already
+        # wrote locally; the next _set re-pushes the whole db regardless.
         try:
-            push_to_central()
+            threading.Thread(target=push_to_central, daemon=True).start()
         except Exception as e:
             print(f"[CT] immediate central push error: {e}")
 
