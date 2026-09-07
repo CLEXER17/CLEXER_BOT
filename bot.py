@@ -984,6 +984,7 @@ _userbot_last_error = ""    # last connect failure, surfaced by /userbot
 # permanent: Telegram kills the session for good, and it takes a manual
 # re-login to recover.
 _INSTANCE_ID = uuid.uuid4().hex[:8]
+_PROCESS_START = time.time()   # for /server, to tell two live containers apart
 
 def _start_userbot():
     """Call once at startup (see main()). No-op if TG_USER_* isn't configured
@@ -18427,7 +18428,15 @@ Reasoning: [one line]"""
             f"Switch with <code>/server &lt;name&gt;</code> (e.g. <code>/server co1</code>) — "
             f"a STANDBY server never polls Telegram (see _wait_then_poll), so this only actually "
             f"works run from whichever server is CURRENTLY ACTIVE.\n\n"
-            f"🧪 <b>BUILD MARKER: DEPLOY-TEST-01</b>", reply_markup=_mkp)
+            f"🧪 <b>BUILD MARKER: DEPLOY-TEST-01</b>\n\n"
+            f"<b>This process</b>\n"
+            f"  instance: <code>{_INSTANCE_ID}</code>\n"
+            f"  up for:   {int((time.time() - _PROCESS_START) // 60)}m\n\n"
+            f"<i>Run /server twice. A DIFFERENT instance id between the two "
+            f"replies means two processes are alive on this token - whichever "
+            f"one wins each update answers it. That is what a 409 looks like "
+            f"from the inside.</i>",
+            reply_markup=_mkp)
         return
 
     elif cmd == "/model" and is_admin:
