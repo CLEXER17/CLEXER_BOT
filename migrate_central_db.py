@@ -99,15 +99,18 @@ def main():
     sc, dc = src.cursor(), dst.cursor()
 
     if wipe and go:
-        # Reverse order, so a child table is emptied before the parent it
-        # references - TRUNCATE on users would otherwise be refused by the
-        # foreign keys. CASCADE is deliberately NOT used: it would silently
-        # widen the blast radius to tables this script never listed.
-        targets = [t for t, _ in reversed(TABLES)
+        # ONE statement listing every table. Emptying children first is not
+        # enough - Postgres refuses TRUNCATE on a table another table
+        # references unless that table is named in the same command, even
+        # when the child is already empty. CASCADE would satisfy it too, but
+        # is deliberately NOT used: it silently widens the blast radius to
+        # tables this script never listed.
+        targets = [t for t, _ in TABLES
                    if (not only or t in only) and _count(dc, t) is not None]
         print(f"WIPING destination tables: {', '.join(targets)}")
-        for t in targets:
-            dc.execute(f'TRUNCATE TABLE "{t}" RESTART IDENTITY')
+        dc.execute("TRUNCATE TABLE "
+                   + ", ".join(f'"{t}"' for t in targets)
+                   + " RESTART IDENTITY")
         dst.commit()
         print("Destination emptied.\n")
 
