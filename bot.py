@@ -107,8 +107,12 @@ COINTRENDZ_BOT_USERNAME = os.getenv("COINTRENDZ_BOT_USERNAME", "cointrendzbot").
 # account (not CLEXER's bot token) used only to send that command — see the userbot section
 # near _request_coin_chart_image. TG_USER_SESSION_STRING is generated once via a local
 # interactive login (userbot_login.py) and then reused headlessly here on every restart.
-TG_USER_API_ID = os.getenv("TG_USER_API_ID", "")
-TG_USER_API_HASH = os.getenv("TG_USER_API_HASH", "")
+# All three get the same paste-damage strip. The api_hash and api_id are just
+# as easy to paste with a trailing newline as the session string is, and a
+# newline on the hash fails auth with a "bad api_hash" that looks like a wrong
+# credential rather than a whitespace problem (admin's main env, 2026-09-07).
+TG_USER_API_ID = "".join(os.getenv("TG_USER_API_ID", "").split()).strip("'\"")
+TG_USER_API_HASH = "".join(os.getenv("TG_USER_API_HASH", "").split()).strip("'\"")
 TG_USER_SESSION_STRING = os.getenv("TG_USER_SESSION_STRING", "")
 # A session string is ~350 characters on one line, so pasting it into a Railway
 # variable readily picks up a newline, a stray space or surrounding quotes. Any
