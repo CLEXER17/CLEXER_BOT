@@ -1282,10 +1282,37 @@ def get_virtual_state(user: dict = Depends(get_current_user)):
             enabled = bool((row["meta"] or {}).get("enabled", enabled))
     except Exception as e:
         print(f"[VIRTUAL STATE] pending-toggle check error: {e}")
+    # Balance/leverage need exactly the same treatment, and did not have it.
+    # Saving them only QUEUES a virtual_settings event; until bot.py's poller
+    # applies it (up to ~30s), ct_users still holds the old numbers - so
+    # reloading the page inside that window showed the balance snapping back to
+    # 1000 and the leverage to 10, as if the setting had never saved (admin
+    # 2026-09-07).
+    _bal = v.get("balance", 1000.0)
+    _lev = v.get("leverage", 10.0)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT meta FROM payment_events
+                    WHERE cid = %s AND event_type = 'virtual_settings' AND processed = FALSE
+                    ORDER BY id DESC LIMIT 1
+                """, (cid,))
+                srow = cur.fetchone()
+        if srow:
+            _meta = srow["meta"] or {}
+            # A pending event may carry only one of the two - the calculator
+            # sends whichever the user actually changed.
+            if _meta.get("balance") is not None:
+                _bal = float(_meta["balance"])
+            if _meta.get("leverage") is not None:
+                _lev = float(_meta["leverage"])
+    except Exception as e:
+        print(f"[VIRTUAL STATE] pending-settings check error: {e}")
     return {
         "enabled":  enabled,
-        "balance":  v.get("balance", 1000.0),
-        "leverage": v.get("leverage", 10.0),
+        "balance":  _bal,
+        "leverage": _lev,
         "open":     open_positions,
         "history":  history,
         "tier":     urec.get("tier", "free"),
