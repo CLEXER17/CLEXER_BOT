@@ -29,6 +29,10 @@ primary key, so the script is safe to run twice, and safe to run again after
 fixing a partial failure.
 """
 
+import base64
+import datetime
+import decimal
+import json
 import os
 import sys
 
@@ -94,6 +98,136 @@ def _count(cur, table):
         return None          # table does not exist on this side
 
 
+def _arg(flag):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
+
+
+# ── dump / load ──────────────────────────────────────────────────────────────
+# Same rows, via a file on disk instead of a live connection. Worth having
+# separately from the direct copy: the file is a real backup, so the data
+# survives the source project being deleted or running out of credit, and the
+# load half can be re-run as often as needed without the source existing.
+#
+# json/jsonb values already are dicts and go through untouched. Everything
+# else Postgres hands back that JSON has no notion of - timestamps, NUMERIC,
+# BYTEA - is tagged on the way out and rebuilt on the way in, per COLUMN
+# rather than per value, so a jsonb blob that happens to contain a key like
+# "__ts" is never mistaken for a tag.
+
+def _encode(v):
+    if isinstance(v, (bytes, memoryview)):
+        return {"__b64": base64.b64encode(bytes(v)).decode()}
+    if isinstance(v, decimal.Decimal):
+        return {"__dec": str(v)}
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return {"__ts": v.isoformat()}
+    return v
+
+
+def _decode(v):
+    if isinstance(v, dict):
+        if "__b64" in v:
+            return psycopg2.Binary(base64.b64decode(v["__b64"]))
+        if "__dec" in v:
+            return decimal.Decimal(v["__dec"])
+        if "__ts" in v:
+            return v["__ts"]          # Postgres parses the ISO string itself
+    return v
+
+
+def do_dump(src_url, path, only):
+    src = psycopg2.connect(src_url)
+    sc = src.cursor()
+    out = {"created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           "source_host": src_url.split("@")[-1], "tables": {}}
+    print(f"{'table':<20} {'rows':>8}")
+    print("-" * 30)
+    for table, _pk in TABLES:
+        if only and table not in only:
+            continue
+        if _count(sc, table) is None:
+            print(f"{table:<20} {'MISSING':>8}")
+            continue
+        cols = _cols(sc, table)
+        jcols = _json_cols(sc, table)
+        sc.execute(f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM "{table}"')
+        rows = [[v if cols[i] in jcols else _encode(v) for i, v in enumerate(r)]
+                for r in sc.fetchall()]
+        out["tables"][table] = {"cols": cols, "json_cols": sorted(jcols), "rows": rows}
+        print(f"{table:<20} {len(rows):>8}")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f)
+    src.close()
+    size = os.path.getsize(path)
+    print(f"\nWrote {path}  ({size:,} bytes)")
+    print("This file is a full copy of the source store. Keep it until the "
+          "migration is verified.")
+
+
+def do_load(dst_url, path, go, wipe, only):
+    with open(path, encoding="utf-8") as f:
+        blob = json.load(f)
+    print(f"Dump taken {blob.get('created_at', '?')} from {blob.get('source_host', '?')}\n")
+    dst = psycopg2.connect(dst_url)
+    dc = dst.cursor()
+
+    if wipe and go:
+        targets = [t for t, _ in TABLES
+                   if t in blob["tables"] and (not only or t in only)
+                   and _count(dc, t) is not None]
+        print(f"WIPING destination tables: {', '.join(targets)}")
+        dc.execute("TRUNCATE TABLE " + ", ".join(f'"{t}"' for t in targets)
+                   + " RESTART IDENTITY")
+        dst.commit()
+        print("Destination emptied.\n")
+
+    print(f"{'table':<20} {'in file':>8} {'loaded':>8}")
+    print("-" * 40)
+    total = 0
+    for table, pk in TABLES:
+        if table not in blob["tables"] or (only and table not in only):
+            continue
+        spec = blob["tables"][table]
+        n = len(spec["rows"])
+        loaded = 0
+        if go and n:
+            if _count(dc, table) is None:
+                print(f"{table:<20} {n:>8}  DESTINATION HAS NO SUCH TABLE - skipped")
+                continue
+            dcols = set(_cols(dc, table))
+            keep = [i for i, c in enumerate(spec["cols"]) if c in dcols]
+            cols = [spec["cols"][i] for i in keep]
+            jset = set(spec["json_cols"])
+            collist = ", ".join(f'"{c}"' for c in cols)
+            updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in pk)
+            conflict = (f'ON CONFLICT ({", ".join(chr(34) + c + chr(34) for c in pk)}) '
+                        + (f"DO UPDATE SET {updates}" if updates else "DO NOTHING"))
+            rows = [tuple(psycopg2.extras.Json(r[i]) if (spec["cols"][i] in jset
+                                                         and r[i] is not None)
+                          else _decode(r[i]) for i in keep)
+                    for r in spec["rows"]]
+            for i in range(0, len(rows), 500):
+                psycopg2.extras.execute_values(
+                    dc, f'INSERT INTO "{table}" ({collist}) VALUES %s {conflict}',
+                    rows[i:i + 500])
+            dst.commit()
+            loaded = len(rows)
+            if "id" in pk:
+                try:
+                    dc.execute(f"""SELECT setval(pg_get_serial_sequence('{table}', 'id'),
+                                   COALESCE((SELECT MAX(id) FROM "{table}"), 1))""")
+                    dst.commit()
+                except Exception as e:
+                    print(f"    (sequence reset skipped for {table}: {e})")
+        total += loaded
+        print(f"{table:<20} {n:>8} {loaded:>8}")
+    dc.execute("SELECT COUNT(*) FROM kv_store")
+    print(f"\n{dc.fetchone()[0]} keys now in destination kv_store.")
+    print(f"Loaded {total} rows." if go else
+          "\nDRY RUN - nothing was written. Add --go to load.")
+    dst.close()
+
+
 def main():
     go   = "--go" in sys.argv
     only = None
@@ -102,12 +236,26 @@ def main():
 
     src_url = os.getenv("SRC_DATABASE_URL")
     dst_url = os.getenv("DST_DATABASE_URL")
+    wipe = "--wipe" in sys.argv
+
+    # --dump reads the source only, --load writes the destination only. Each
+    # half works with just its own URL set, so the file can be taken now and
+    # loaded later, from a machine that can no longer reach the source at all.
+    dump_path, load_path = _arg("--dump"), _arg("--load")
+    if dump_path:
+        if not src_url:
+            sys.exit("Set SRC_DATABASE_URL to dump from.")
+        return do_dump(src_url, dump_path, only)
+    if load_path:
+        if not dst_url:
+            sys.exit("Set DST_DATABASE_URL to load into.")
+        return do_load(dst_url, load_path, go, wipe, only)
+
     if not src_url or not dst_url:
         sys.exit("Set SRC_DATABASE_URL and DST_DATABASE_URL first (see the docstring).")
     if src_url == dst_url:
         sys.exit("SRC and DST are the same database - refusing.")
 
-    wipe = "--wipe" in sys.argv
     if wipe and not go:
         print("--wipe has no effect on a dry run; add --go to actually do it.\n")
 
