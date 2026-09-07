@@ -331,6 +331,26 @@ def main():
         total += copied
         print(f"{table:<20} {n_src:>8} {n_dst:>12} {copied:>8}")
 
+    # Freshen updated_at on everything that landed. This is not cosmetic.
+    # Both bots decide local-file-vs-central by comparing the kv row's
+    # updated_at against the mtime of their own copy in DATA_DIR
+    # (_kv_pick_newer / load_active_trade). Copying the SOURCE's timestamp
+    # verbatim makes freshly migrated data look older than whatever stale
+    # file happens to sit on the destination's volume, so the destination
+    # boots on its own stale copy and then pushes it back over the migration
+    # - which is exactly what happened to ct_users on the first attempt
+    # (16 users replaced by 3, admin 2026-09-07). The data did arrive here
+    # now, so NOW() is also the honest value.
+    if go:
+        for table, _pk in TABLES:
+            if only and table not in only:
+                continue
+            if _count(dc, table) and "updated_at" in _cols(dc, table):
+                dc.execute(f'UPDATE "{table}" SET updated_at = NOW()')
+        dst.commit()
+        print("\nupdated_at freshened to NOW() - central now beats any stale "
+              "file on the destination's volume.")
+
     # The part that actually matters: the kv blobs the bot reloads on boot.
     print("\nkv_store blobs")
     print("-" * 52)
