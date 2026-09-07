@@ -2,7 +2,7 @@
 CLEXER Signal Bot V17.8.5
 """
 
-import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string, math, gzip
+import os, time, json, base64, requests, anthropic, threading, re, subprocess, html as _html, random, string as _string, math, gzip, uuid
 
 # Install Playwright Chromium at startup (fast if already installed)
 print("[STARTUP] Ensuring Playwright Chromium is installed...")
@@ -977,6 +977,14 @@ _coin_chart_pending_result: dict = {}
 _userbot_starting = False   # a start is in flight; see _start_userbot
 _userbot_last_error = ""    # last connect failure, surfaced by /userbot
 
+# Unique to this PROCESS, not this server. Railway can keep the old container
+# alive while the new one boots, so two instances share a server name - and a
+# claim keyed on the name alone cannot tell them apart. That is the one race
+# the ownership check has to catch, because AuthKeyDuplicatedError is
+# permanent: Telegram kills the session for good, and it takes a manual
+# re-login to recover.
+_INSTANCE_ID = uuid.uuid4().hex[:8]
+
 def _start_userbot():
     """Call once at startup (see main()). No-op if TG_USER_* isn't configured
     — chart-image requests just won't get a reply from CoinTrendzBot until
@@ -1034,12 +1042,39 @@ def _start_userbot():
                 if not is_active_server():
                     raise RuntimeError("no longer the active server at connect time")
                 try:
-                    _kv_push("userbot_owner", {"server": SERVER_NAME, "ts": time.time()})
+                    # STEP 1 - is someone already holding it? A claim is
+                    # considered live for 120s; the holder refreshes it every
+                    # 60s while connected (see the heartbeat below), so a
+                    # crashed instance's claim goes stale and the next one can
+                    # take over without a manual reset. This is the case the
+                    # write-then-read check below cannot see: a container that
+                    # boots MINUTES after another has already connected.
+                    _pre = _central_get("/kv/userbot_owner")
+                    _pb = (_pre.json() if (_pre is not None and _pre.ok) else {}) or {}
+                    _pc = (_pb.get("data") or {}) if _pb.get("found") else {}
+                    if (_pc.get("instance") and _pc["instance"] != _INSTANCE_ID
+                            and time.time() - float(_pc.get("ts") or 0) < 120):
+                        _held_by = _pc.get('server') or '?'
+                        _held_ago = int(time.time() - float(_pc.get('ts') or 0))
+                        raise RuntimeError(
+                            f"userbot already held by '{_held_by}' "
+                            f"(claimed {_held_ago}s ago) — standing down")
+                    # STEP 2 - claim it, then read back. Catches two containers
+                    # that started close enough together to both pass step 1.
+                    _kv_push("userbot_owner", {"server": SERVER_NAME,
+                                               "instance": _INSTANCE_ID,
+                                               "ts": time.time()})
                     time.sleep(2)
                     _own = _central_get("/kv/userbot_owner")
-                    _who = (_own.json() or {}).get("server") if (_own is not None and _own.ok) else None
-                    if _who and _who != SERVER_NAME:
-                        raise RuntimeError(f"userbot session claimed by '{_who}' — standing down")
+                    # /kv/<key> answers {found, data, updated_at} - the claim
+                    # lives under data. Reading .get('server') off the envelope
+                    # always returned None, so this guard never once fired.
+                    _body = (_own.json() if (_own is not None and _own.ok) else {}) or {}
+                    _claim = (_body.get("data") or {}) if _body.get("found") else {}
+                    _inst = _claim.get("instance")
+                    if _inst and _inst != _INSTANCE_ID:
+                        raise RuntimeError(
+                            f"userbot session claimed by another instance ({_inst}) — standing down")
                 except RuntimeError:
                     raise
                 except Exception as _ce:
@@ -1047,6 +1082,22 @@ def _start_userbot():
             _userbot_client.start()
             globals()["_userbot_last_error"] = ""
             print(f"[USERBOT] Connected as server '{SERVER_NAME}'.")
+
+            # Heartbeat. The claim above is only honoured for 120s, so it has
+            # to be refreshed while this instance is alive - and left to go
+            # stale the moment it dies, so the next container can take over
+            # without anyone resetting anything by hand.
+            def _own_heartbeat():
+                while _userbot_client is not None and _userbot_ready.is_set():
+                    try:
+                        if CLEXER_API_URL and is_active_server():
+                            _kv_push("userbot_owner", {"server": SERVER_NAME,
+                                                       "instance": _INSTANCE_ID,
+                                                       "ts": time.time()})
+                    except Exception as _he:
+                        print(f"[USERBOT] heartbeat: {_he}")
+                    time.sleep(60)
+            threading.Thread(target=_own_heartbeat, daemon=True).start()
 
             # Force a dialog-list sync so Telethon caches the access_hash for
             # every chat Kaito's account currently sits in — without this, a
