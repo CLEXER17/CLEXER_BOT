@@ -1163,6 +1163,34 @@ def _send_via_userbot(chat_id, text: str, timeout: float = 10.0):
         print(f"[USERBOT] send failed: {e}")
         return None
 
+def _userbot_list_groups(timeout: float = 20.0):
+    """Every group/channel the userbot ACCOUNT can actually see.
+
+    The relay fails with 'unresolved peer / not a member' when a configured
+    group id is wrong or the account was removed, and the two look identical
+    from the send side. Listing what the account genuinely has lets the admin
+    compare against COINTRENDZ_GROUP_IDS instead of guessing.
+
+    Returns a list of (id, title) or None if the client is not up.
+    """
+    if not _userbot_ready.wait(5) or not (_userbot_loop and _userbot_client):
+        return None
+    import asyncio
+
+    async def _collect():
+        out = []
+        async for d in _userbot_client.iter_dialogs():
+            if getattr(d, 'is_group', False) or getattr(d, 'is_channel', False):
+                out.append((int(d.id), (d.name or '?')[:40]))
+        return out
+
+    try:
+        return asyncio.run_coroutine_threadsafe(_collect(), _userbot_loop).result(timeout=timeout)
+    except Exception as e:
+        print(f'[USERBOT] dialog list failed: {e}')
+        return None
+
+
 def _request_coin_chart_image(coin: str, timeout: float = 30.0):
     """Sends '/c <coin>' to whichever configured CoinTrendzBot group is
     currently active (see _cointrendz_pick_group — auto-switches groups
@@ -15895,6 +15923,34 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/userbot" and is_admin:
         _cfg = bool(TG_USER_API_ID and TG_USER_API_HASH and TG_USER_SESSION_STRING)
         _conn = _userbot_client is not None and _userbot_ready.is_set()
+        if len(parts) > 1 and parts[1].lower() in ("groups", "chats"):
+            if not _conn:
+                send_reply(chat_id, "❌ Userbot is not connected — nothing to list.",
+                           skip_smallcaps=True); return
+            send_reply(chat_id, "🔍 Reading the account's dialog list...",
+                       skip_smallcaps=True)
+            _gl = _userbot_list_groups()
+            if _gl is None:
+                send_reply(chat_id, "⚠️ Could not read the dialog list — see the server log.",
+                           skip_smallcaps=True); return
+            _have = {g for g, _t in _gl}
+            _rows = []
+            for _cid_, _title in _gl:
+                _mark = " ← CONFIGURED" if str(_cid_) in {str(x) for x in COINTRENDZ_GROUP_IDS} else ""
+                _rows.append(f"  <code>{_cid_}</code>  {_html.escape(_title)}{_mark}")
+            _missing = [str(x) for x in COINTRENDZ_GROUP_IDS if int(x) not in _have]
+            _out = ["👥 <b>Groups the userbot account can see</b> ({len(_gl)})", "",
+                    "\n".join(_rows[:40]) or "  <i>none</i>"]
+            if _missing:
+                _out += ["", "🚫 <b>Configured but NOT reachable:</b>",
+                         "  " + ", ".join(f"<code>{m}</code>" for m in _missing), "",
+                         "<i>That id is either wrong, or this account is not a member. "
+                         "A supergroup that was upgraded also changes its id. Add the "
+                         "account to the group, or fix COINTRENDZ_GROUP_ID.</i>"]
+            else:
+                _out += ["", "✅ <i>Every configured group is reachable.</i>"]
+            send_reply(chat_id, "\n".join(_out), skip_smallcaps=True)
+            return
         if len(parts) > 1 and parts[1].lower() in ("restart", "reconnect"):
             _stop_userbot_if_running(); time.sleep(1); _start_userbot()
             send_reply(chat_id, "🔄 Userbot restart requested — "
@@ -18931,7 +18987,7 @@ _SETTINGS_SUBCATS = {
         ("/chartsoff", "🚫", "Disable Charts",  "Turn off chart snapshots — saves API credits."),
         ("/charts",    "🖼", "Chart Snapshot Status", "Shows whether chart snapshots are currently on or off, with a preview."),
         ("/images",    "🖼", "Images On/Off",   "Enable or disable chart images being sent at all."),
-        ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot restart` forces a reconnect."),
+        ("/userbot", "👤", "Userbot Status", "Whether the second Telegram account that fetches CoinTrendz chart images is connected, plus each shared group's daily command count and any rate-limit block. `/userbot groups` lists every group the account can actually see and flags any configured id it cannot reach; `/userbot restart` forces a reconnect."),
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
