@@ -9377,6 +9377,17 @@ def _all_broadcast_channel_targets() -> list:
 
 _TG_MSG_LIMIT = 4096
 
+
+def _tg_len(s: str) -> int:
+    """Length as TELEGRAM counts it: UTF-16 code units, not Python chars.
+
+    Every character outside the BMP is one Python char but TWO UTF-16 units -
+    and the mathematical bold/monospace alphabets /cmd uses are all outside
+    it. Measuring with len() therefore undercounts styled text by nearly half,
+    which built /cmd pages over the 4096 limit; Telegram rejected them and the
+    Next button appeared to do nothing (admin 2026-09-07)."""
+    return (len(s) + sum(1 for ch in s if ord(ch) > 0xFFFF)) if s else 0
+
 def _send_group_mentions(chat_id) -> int:
     """After a broadcast lands in a group, follow up with mention links for
     everyone the bot has seen post there (_group_seen_users — see its
@@ -20212,10 +20223,13 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
     for cat_label, c, emoji, title, desc in reg:
         by_cat.setdefault(cat_label, []).append((c, emoji, title, desc))
 
-    header = (f"📖 <b>{_font('All Commands', _FONT_BOLD)}</b> ({len(reg)} total)\n\n"
-              f"<i>Pulled live from the same list that powers the button menu — "
-              f"add a command's entry there and it shows up here too.</i>\n")
-    footer = f"\n<i>Tip: /help for the button-driven menu instead.</i>"
+    # Upright monospace, not italic - see the per-entry comment below.
+    _sub = ("Pulled live from the same list that powers the button menu - add a "
+            "command's entry there and it shows up here too.")
+    header = (f"📖 <b>{_font('All Commands', _FONT_BOLD)}</b> "
+              f"({len(reg)} total)\n\n"
+              f"{_font(_sub, _FONT_MONO)}\n")
+    footer = f"\n{_font('Tip: /help for the button-driven menu instead.', _FONT_MONO)}"
 
     lines = []  # (is_category_header, text)
     for cat_label, entries in by_cat.items():
@@ -20226,7 +20240,10 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
             # explanation under it takes the monospace one.
             lbl = f"{emoji} <code>{c}</code>" + (
                 f" — <b>{_font(title, _FONT_BOLD)}</b>" if title else "")
-            lines.append((False, f"{lbl}\n<i>{_font(desc, _FONT_MONO)}</i>"))
+            # No <i> here. The monospace face already separates the explanation
+            # from its title, and italic on top of it renders slanted and
+            # hard to read (admin 2026-09-07).
+            lines.append((False, f"{lbl}\n{_font(desc, _FONT_MONO)}"))
 
     margin = 120  # room for the part-tag + footer + any HTML close tags
     chunks = []; cur = header
@@ -20234,7 +20251,7 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
     for is_hdr, text in lines:
         if is_hdr:
             last_cat_header = text
-        if len(cur) + len(text) + 1 > _TG_MSG_LIMIT - margin:
+        if _tg_len(cur) + _tg_len(text) + 1 > _TG_MSG_LIMIT - margin:
             chunks.append(cur)
             # a chunk break mid-category re-opens with that category's own
             # header so the continuation still reads in context
