@@ -110,6 +110,13 @@ COINTRENDZ_BOT_USERNAME = os.getenv("COINTRENDZ_BOT_USERNAME", "cointrendzbot").
 TG_USER_API_ID = os.getenv("TG_USER_API_ID", "")
 TG_USER_API_HASH = os.getenv("TG_USER_API_HASH", "")
 TG_USER_SESSION_STRING = os.getenv("TG_USER_SESSION_STRING", "")
+# A session string is ~350 characters on one line, so pasting it into a Railway
+# variable readily picks up a newline, a stray space or surrounding quotes. Any
+# of those makes Telethon fail deep inside StringSession.decode with
+# "struct.error: unpack requires a buffer of N bytes", which reads like a dead
+# session rather than a bad paste (admin 2026-09-07). Strip it here so the
+# common paste damage simply works.
+TG_USER_SESSION_STRING = "".join(TG_USER_SESSION_STRING.split()).strip("'\"")
 STARS_PER_USD = float(os.getenv("STARS_PER_USD", "62.5"))   # Telegram's real Stars rate: 100 Stars ≈ $1.60, i.e. $1 ≈ 62.5 Stars
 
 SYMBOL               = "BTCUSDT"
@@ -1022,7 +1029,21 @@ def _start_userbot():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _userbot_loop = loop
-        _userbot_client = TelegramClient(StringSession(TG_USER_SESSION_STRING),
+        try:
+            _session = StringSession(TG_USER_SESSION_STRING)
+        except Exception as _se:
+            # Malformed string - truncated, or damaged in the paste. Telethon
+            # raises struct.error here, which is not an Exception subclass
+            # anyone would think to catch, so the whole thread died with a
+            # traceback and /userbot just showed 'not connected'.
+            globals()["_userbot_last_error"] = (
+                f"Session string is malformed ({type(_se).__name__}: {_se}). "
+                f"It is {len(TG_USER_SESSION_STRING)} characters - a real one is "
+                "around 350 on a single line. Re-copy it from userbot_session.txt "
+                "without a line break.")
+            print(f"[USERBOT] {_userbot_last_error}")
+            return
+        _userbot_client = TelegramClient(_session,
             int(TG_USER_API_ID), TG_USER_API_HASH, loop=loop)
         try:
             # Telethon's client.start(), called outside an async function with
