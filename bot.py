@@ -2408,6 +2408,23 @@ def _hold_resource(key: str, every: int = 60):
 def is_active_server() -> bool:
     return get_active_server_name() == SERVER_NAME
 
+def _kv_push_async(key: str, data):
+    """Fire-and-forget _kv_push, for save paths that sit in front of a user.
+
+    _kv_push retries 3 times with a 2s delay, so a slow or unreachable central
+    store can block its caller for six seconds or more. That is fine for
+    /syncup, which the admin is waiting on anyway, but not for save_users() -
+    which _mark_block_state calls from inside send_reply, i.e. in front of
+    every single reply the bot sends (admin 2026-09-07: everything went slow).
+
+    The local file write still happens synchronously, so nothing is lost if
+    the process dies before the push lands; the next save re-pushes it.
+    """
+    if not CLEXER_API_URL:
+        return
+    threading.Thread(target=lambda: _kv_push(key, data), daemon=True).start()
+
+
 def _kv_push(key: str, data, retries: int = 3, delay: float = 2.0) -> bool:
     """Push any JSON-able blob to the shared store under `key`. Used by /syncup
     for the pieces that don't already have their own dedicated push path.
@@ -2838,7 +2855,7 @@ def save_users():
             json.dump(_blob, f)
     except Exception as e: print(f"[USERS] Save error: {e}")
     try:
-        _kv_push("registered_users", _blob)
+        _kv_push_async("registered_users", _blob)
     except Exception as e: print(f"[USERS] central push error: {e}")
 
 def is_co_admin(chat_id) -> bool:
@@ -2873,7 +2890,7 @@ def register_user(chat_id, username=None):
             # A brand-new user must never depend on someone remembering to run
             # /syncup — push immediately so a server switch can never silently
             # lose them, even if nothing else gets manually synced that day.
-            _kv_push("registered_users", {
+            _kv_push_async("registered_users", {
                 "users": list(registered_users),
                 "usernames": user_usernames,
                 "blocked": list(blocked_users),
@@ -12627,7 +12644,9 @@ def _test_save():
     except Exception as e:
         print(f"[TEST] save: {e}")
     try:
-        _kv_push("test_system", blob)
+        # Off-thread: this runs inside the test monitor loop on every trade
+        # change, and must not stall it behind a slow central store.
+        _kv_push_async("test_system", blob)
     except Exception as e:
         print(f"[TEST] central push: {e}")
 
