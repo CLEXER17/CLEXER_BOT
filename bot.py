@@ -3037,6 +3037,89 @@ def _st_catchup(since_hm=(9, 0), apply=False):
     return found, per_cell, diag
 
 
+# ─── Admin notifications: user-activity ping + per-event pinning ───────────
+# USER_PING_ENABLED pings the admin the first time a user touches the bot,
+# then goes quiet for that user for USER_PING_COOLDOWN. The cooldown is
+# per-user, not global, so a busy user cannot drown out a new one.
+USER_PING_ENABLED = False
+USER_PING_COOLDOWN = 600           # 10 min per user
+_user_ping_last: dict = {}         # chat_id -> epoch of last ping
+# Pin toggles. The message is always SENT; these only decide whether it also
+# gets pinned in the admin's DM so it stays visible.
+PIN_FLAGS = {'userping': False, 'blacklist': False, 'promote': False,
+             'demote': False, 'reverify': False}
+_NOTIFY_FILE = os.path.join(DATA_DIR, 'notify.json')
+_PIN_LABELS = [('userping', '👤 User Activity Ping'),
+               ('blacklist', '🚫 Auto-Blacklisted'),
+               ('promote', '⭐ Auto-Promoted'),
+               ('demote', '⚠️ Auto-Demoted'),
+               ('reverify', '✅ Auto-Reverified')]
+
+
+def _notify_save():
+    blob = {'user_ping': USER_PING_ENABLED, 'pins': PIN_FLAGS}
+    try:
+        with open(_NOTIFY_FILE, 'w') as f:
+            json.dump(blob, f)
+    except Exception as e:
+        print(f'[NOTIFY] save: {e}')
+    try:
+        _kv_push('notify', blob)
+    except Exception as e:
+        print(f'[NOTIFY] central push: {e}')
+
+
+def _notify_load():
+    global USER_PING_ENABLED
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get('/kv/notify')
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_NOTIFY_FILE, r.json(), 'NOTIFY')
+        if d is None and os.path.exists(_NOTIFY_FILE):
+            with open(_NOTIFY_FILE) as f:
+                d = json.load(f)
+        if not d:
+            return
+        USER_PING_ENABLED = bool(d.get('user_ping', False))
+        for k, v in (d.get('pins') or {}).items():
+            if k in PIN_FLAGS:
+                PIN_FLAGS[k] = bool(v)
+        print(f'[NOTIFY] loaded: ping={USER_PING_ENABLED} pins={PIN_FLAGS}')
+    except Exception as e:
+        print(f'[NOTIFY] load: {e}')
+
+
+def _ping_admin_user_activity(chat_id, username=None):
+    """Ping the admin that a user is using the bot, at most once per
+    USER_PING_COOLDOWN for that user.
+
+    Never fires for the admin's own messages, for a co-admin, or in a group -
+    the point is to see real users arriving, not to echo the admin's own
+    typing back at them."""
+    if not USER_PING_ENABLED or not ADMIN_CHAT_ID:
+        return
+    try:
+        cid = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    if cid <= 0 or str(cid) == str(ADMIN_CHAT_ID) or is_co_admin(cid):
+        return
+    now = time.time()
+    if now - _user_ping_last.get(cid, 0) < USER_PING_COOLDOWN:
+        return
+    _user_ping_last[cid] = now
+    _uname = username or user_usernames.get(str(cid))
+    _who = f'@{_uname}' if _uname else f'ID {cid}'
+    _u = ct._get(str(cid)) or {}
+    _tier = '⭐ VIP' if _u.get('tier') == 'vip' else '🆓 Free'
+    _txt = (f'👤 <b>{_who}</b> is using the bot\n\n'
+            f'{_tier}  |  <code>{cid}</code>\n'
+            f'<i>Next ping for this user in {USER_PING_COOLDOWN // 60} min.</i>')
+    send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
+
+
 def _build_users_summary():
     # Negative chat_ids are groups/channels, not individual users - exclude them.
     _real_users   = [u for u in registered_users if int(u) > 0]
@@ -5507,7 +5590,7 @@ def _check_slot_blacklist(kind: str, hm: tuple) -> bool:
     send_admin(f"🚫 <b>Auto-blacklisted</b> {kind} {hm_str}\n\n"
                f"{win_pct:.0f}% win rate ({st['tp']}tp/{st['sl']}sl) — below the "
                f"{_SLOT_EVAL_THRESHOLD.get(kind, 50)}% minimum. Retired permanently, "
-               f"no replacement time.", pin=True)
+               f"no replacement time.", pin=PIN_FLAGS["blacklist"])
     _rebuild_schedules()
     _save_slot_state()
     return True
@@ -5639,19 +5722,19 @@ def _evaluate_slot(kind: str, hm: tuple):
                        f"{win_pct:.1f}% win rate ({st['tp']}tp/{st['sl']}sl), "
                        f"{st.get('streak', 0)} in a row — now in /st.\n\n"
                        f"<i>It still has to earn each weekday separately before it "
-                       f"reaches VIP/Free — see /st week.</i>", pin=True)
+                       f"reaches VIP/Free — see /st week.</i>", pin=PIN_FLAGS["promote"])
     elif is_special and not is_unverified:
         if win_pct < threshold:
             _SCAN_SPECIAL_NO_COPY.setdefault(sched_kind, set()).add(hm)
             changed = True
             send_admin(f"⚠️ <b>Auto-demoted</b> {kind} {hm_str} → UNVERIFIED\n\n"
-                       f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.", pin=True)
+                       f"Win rate dropped to {win_pct:.1f}% ({st['tp']}tp/{st['sl']}sl) — copytrade paused here until it recovers.", pin=PIN_FLAGS["demote"])
     elif is_unverified:
         if win_pct >= threshold and st.get("streak", 0) >= _SLOT_MIN_STREAK_FOR_REVERIFY:
             _SCAN_SPECIAL_NO_COPY[sched_kind].discard(hm)
             changed = True
             send_admin(f"✅ <b>Auto-reverified</b> {kind} {hm_str} → VERIFIED\n\n"
-                       f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.", pin=True)
+                       f"{win_pct:.1f}% win rate, {st['streak']} clean wins in a row — copytrade resumed here.", pin=PIN_FLAGS["reverify"])
 
     if changed:
         _rebuild_schedules()
@@ -13761,7 +13844,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -15666,6 +15749,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/addfunds":
         send_addfunds_screen(chat_id)
+
+    elif cmd == "/notify" and is_admin:
+        send_notify_screen(chat_id)
 
     elif cmd in ("/freesl", "/vipsl") and is_admin:
         global AUTO_CLEAR_FREE_MIN, AUTO_CLEAR_VIP_MIN
@@ -18832,6 +18918,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
+        ("/notify", "📣", "Admin Notifications", "Ping yourself whenever someone uses the bot - at most once per user every 10 minutes, and never for your own messages or a co-admin. Same screen also chooses which admin notices get PINNED in your DM: the user ping, auto-blacklisted, auto-promoted, auto-demoted and auto-reverified. Pinning never changes whether a notice is sent."),
         ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
@@ -19318,6 +19405,27 @@ def _run_confirmed_action(action_id, chat_id, cid, msg_id, back_cb):
     else:
         result_text = "✅ Done."
     return result_text
+
+def send_notify_screen(chat_id, message_id=None):
+    """Admin notification settings: the user-activity ping, and which admin
+    notices also get pinned in the DM. Pinning never changes whether a message
+    is SENT - only whether it stays visible at the top."""
+    _on = lambda b: '✅ ON' if b else '❌ OFF'
+    rows = [[{'text': f'👤 User Activity Ping  {_on(USER_PING_ENABLED)}',
+              'callback_data': 'notify_ping_toggle'}],
+            [{'text': '— pin these in your DM —', 'callback_data': 'noop'}]]
+    for _k, _lbl in _PIN_LABELS:
+        rows.append([{'text': f'{_lbl}  📌 {_on(PIN_FLAGS.get(_k))}',
+                      'callback_data': f'notify_pin:{_k}'}])
+    rows.append([{'text': '◀️  Back', 'callback_data': 'help_cat:settings'}])
+    _txt = ('📣 <b>Admin Notifications</b>\n\n'
+            '<blockquote>The ping tells you when someone uses the bot, at most '
+            f'once per user every {USER_PING_COOLDOWN // 60} minutes. Your own '
+            'messages and a co-admin never trigger it.\n\n'
+            'The 📌 rows only control PINNING - those notices are always sent '
+            'either way.</blockquote>')
+    _help_edit_or_send(chat_id, _txt, {'inline_keyboard': rows}, message_id)
+
 
 def send_adminlinks_screen(chat_id, message_id=None):
     _ca_flag = "✅ ON" if CONTACT_ADMIN_ENABLED else "❌ OFF"
@@ -20063,6 +20171,36 @@ def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
                     out.append((cat_label, cmd, emoji, title, desc))
     return out
 
+# ─── /cmd typography ───────────────────────────────────────────────────────
+# Two unicode alphabets, applied per role so the two halves of a /cmd entry
+# are told apart at a glance: bold for a heading, monospace for the
+# explanation under it. ASCII-only by design - digits, punctuation and
+# anything already non-ASCII (emoji, smallcaps) pass through untouched, and
+# text inside an HTML tag is never rewritten, so <code>/cmd</code> stays
+# tappable and links keep working.
+_FONT_BOLD = {chr(c): chr(0x1D400 + c - 65) for c in range(65, 91)}
+_FONT_BOLD.update({chr(c): chr(0x1D41A + c - 97) for c in range(97, 123)})
+_FONT_BOLD.update({chr(c): chr(0x1D7CE + c - 48) for c in range(48, 58)})
+_FONT_MONO = {chr(c): chr(0x1D670 + c - 65) for c in range(65, 91)}
+_FONT_MONO.update({chr(c): chr(0x1D68A + c - 97) for c in range(97, 123)})
+_FONT_MONO.update({chr(c): chr(0x1D7F6 + c - 48) for c in range(48, 58)})
+
+
+def _font(text: str, table: dict) -> str:
+    """Restyle only the visible text, never inside an HTML tag."""
+    out = []
+    depth = 0
+    for part in _HTML_TAG_RE.split(text or ''):
+        if part.startswith('<') and part.endswith('>'):
+            _inner = part.strip('<>').lstrip('/').split()[0].lower() if part.strip('<>').lstrip('/') else ''
+            if _inner in ('code', 'pre', 'a'):
+                depth = max(0, depth - 1) if part.startswith('</') else depth + 1
+            out.append(part)
+        else:
+            out.append(part if depth > 0 else ''.join(table.get(ch, ch) for ch in part))
+    return ''.join(out)
+
+
 def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool = False):
     """/cmd — flat text list of every registered command, its use, and how
     to run it, chunked across as many messages as Telegram's 4096-char
@@ -20074,17 +20212,21 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
     for cat_label, c, emoji, title, desc in reg:
         by_cat.setdefault(cat_label, []).append((c, emoji, title, desc))
 
-    header = (f"📖 <b>All Commands</b> ({len(reg)} total)\n\n"
+    header = (f"📖 <b>{_font('All Commands', _FONT_BOLD)}</b> ({len(reg)} total)\n\n"
               f"<i>Pulled live from the same list that powers the button menu — "
               f"add a command's entry there and it shows up here too.</i>\n")
     footer = f"\n<i>Tip: /help for the button-driven menu instead.</i>"
 
     lines = []  # (is_category_header, text)
     for cat_label, entries in by_cat.items():
-        lines.append((True, f"\n<b>{cat_label}</b>"))
+        lines.append((True, f"\n<b>{_font(cat_label, _FONT_BOLD)}</b>"))
         for c, emoji, title, desc in entries:
-            lbl = f"{emoji} <code>{c}</code>" + (f" — <b>{title}</b>" if title else "")
-            lines.append((False, f"{lbl}\n<i>{desc}</i>"))
+            # The command stays literal inside <code> so it is still tappable;
+            # the title takes the bold face like its category heading, and the
+            # explanation under it takes the monospace one.
+            lbl = f"{emoji} <code>{c}</code>" + (
+                f" — <b>{_font(title, _FONT_BOLD)}</b>" if title else "")
+            lines.append((False, f"{lbl}\n<i>{_font(desc, _FONT_MONO)}</i>"))
 
     margin = 120  # room for the part-tag + footer + any HTML close tags
     chunks = []; cur = header
@@ -20655,6 +20797,17 @@ def command_listener():
                     # Help menu navigation
                     if cb_data == "help_main":
                         send_help_menu(cb_chat_id, cb_is_admin, message_id=cb_msg_id, uname=cb_uname, cid=cb_cid)
+                    elif cb_data == "notify_ping_toggle" and cb_is_admin:
+                        global USER_PING_ENABLED
+                        USER_PING_ENABLED = not USER_PING_ENABLED
+                        _notify_save()
+                        send_notify_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("notify_pin:") and cb_is_admin:
+                        _pk = cb_data.split(":", 1)[1]
+                        if _pk in PIN_FLAGS:
+                            PIN_FLAGS[_pk] = not PIN_FLAGS[_pk]
+                            _notify_save()
+                        send_notify_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data.startswith("help_cat:"):
                         cat_id = cb_data.split(":", 1)[1]
                         send_help_category(cb_chat_id, cat_id, cb_is_admin, message_id=cb_msg_id)
@@ -22033,6 +22186,11 @@ def command_listener():
 
                 print(f"  [CMD] @{uname} ID:{cid}: {text[:50]}")
                 register_user(cid, uname if uname != "?" else None)
+                # Ping the admin that a real user is here. Own cooldown, own
+                # gating - see _ping_admin_user_activity; it ignores the admin,
+                # a co-admin and groups.
+                _ping_admin_user_activity(sender_uid or cid,
+                                          uname if uname != "?" else None)
                 if cid in broadcast_pending and not text.startswith("/"):
                     handle_broadcast_message(cid, msg); continue
                 if str(cid) in _schedule_time_pending and not text.startswith("/"):
@@ -23843,6 +24001,7 @@ def main():
     threading.Thread(target=_time_panel_monitor_loop, daemon=True).start()
     _backfill_slot_days()
     _sec_load()
+    _notify_load()
     _autoclear_load()
     threading.Thread(target=_csv_autopush_loop, daemon=True).start()
     threading.Thread(target=_autoclear_loop, daemon=True).start()
