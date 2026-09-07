@@ -3355,33 +3355,81 @@ def _ping_admin_user_activity(chat_id, username=None):
     send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
 
 
-def _no_trades_card() -> str:
-    """Shown by /trade when nothing is open.
+# Rotating no-trade replies. Each entry is (emoji, headline, body, footer).
+# Every emoji here is in PREMIUM_EMOJI_MAP - a glyph that is not gets no
+# <tg-emoji> wrap and renders flat next to the rest of the bot.
+_NO_TRADE_CARDS = [
+    ("🔎", "SCANNING THE MARKET...",
+     "We are watching for the next clear trade setup. Nothing forced - we "
+     "wait for the right move.", "COME BACK AT"),
+    ("🔎", "STILL SCANNING...",
+     "Don't worry - you haven't missed anything. We are monitoring the "
+     "market and waiting for the right setup.", "COME BACK AT"),
+    ("📡", "MARKET UNDER WATCH...",
+     "No need to chase a trade. The scanner is still active, and when the "
+     "conditions align, you'll know.", "CHECK BACK AT"),
+    ("⚡", "WE ARE ON IT...",
+     "The market is being scanned right now. If there's a trade worth "
+     "taking, we'll be ready. Until then, stay calm - the scan continues.",
+     "NEXT SCAN AT"),
+]
 
-    The come-back time is the next SCHEDULED scan across every pipeline -
-    Scan1, Scan2 and both TS grids - not a fixed hour, so it stays honest if
-    the admin edits a schedule. Falls back to the earliest slot tomorrow once
-    today's are all done."""
-    _now = now_ist()
-    _now_hm = (_now.hour, _now.minute)
+# chat_id -> {"win": window key, "idx": which card}. In memory only: this is
+# cosmetic, and a restart simply starts the rotation over.
+_no_trade_seen: dict = {}
+
+
+def _scan_windows():
+    """Every scheduled slot today, across Scan1, Scan2 and both TS grids."""
     _all = []
     for _s in (SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE):
         _all += [tuple(x) for x in (_s or [])]
-    _all = sorted(set(_all))
+    return sorted(set(_all))
+
+
+def _no_trades_reset(chat_id):
+    """Called when /trade actually has something to show, so the next dry"""
+    _no_trade_seen.pop(str(chat_id), None)
+
+
+def _no_trades_card(chat_id=None) -> str:
+    """The /trade reply when nothing is open.
+
+    Asking again inside the same scan window repeats the same card - the
+    answer has not changed, so neither should the wording. Coming back after
+    the NEXT scheduled scan and still finding nothing moves to the next card,
+    so a user who keeps checking gets a different reassurance each time rather
+    than the identical sentence. A real trade resets it (see _no_trades_reset).
+
+    The come-back time is the next scheduled slot, not a fixed hour, so it
+    stays honest when a schedule is edited."""
+    _now = now_ist()
+    _now_hm = (_now.hour, _now.minute)
+    _all = _scan_windows()
     _fut = [hm for hm in _all if hm > _now_hm]
     _nxt = _fut[0] if _fut else (_all[0] if _all else None)
     if _nxt:
         _when = f"{_nxt[0]:02d}:{_nxt[1]:02d}" + ("" if _fut else " TOMORROW")
     else:
         _when = "SOON"
+    # Window = the most recent slot that has already fired today. Everyone
+    # asking between two slots sees the same card.
+    _past = [hm for hm in _all if hm <= _now_hm]
+    _win = (_now.strftime("%Y-%m-%d"), _past[-1] if _past else None)
+    _idx = 0
+    if chat_id is not None:
+        _st = _no_trade_seen.get(str(chat_id))
+        if _st is None:
+            _idx = 0
+        elif _st["win"] != _win:
+            _idx = min(_st["idx"] + 1, len(_NO_TRADE_CARDS) - 1)
+        else:
+            _idx = _st["idx"]
+        _no_trade_seen[str(chat_id)] = {"win": _win, "idx": _idx}
+    _emoji, _head, _body, _foot = _NO_TRADE_CARDS[_idx]
     _b = lambda s: _font(s, _FONT_BOLD)
-    # 🔎 and 🕐 rather than 🔍 and 🕑 - only these two are in
-    # PREMIUM_EMOJI_MAP, so the others rendered as plain glyphs while every
-    # other card in the bot shows the animated version (admin 2026-09-07).
-    return ("🔎 " + _b("SCANNING THE MARKET...") + "\n\n"
-            + _b("We are watching for the next clear trade setup. Nothing "
-                 "forced - we wait for the right move.")
-            + "\n\n🕐 " + _b("COME BACK AT " + _when))
+    return (f"{_emoji} " + _b(_head) + "\n\n"
+            + _b(_body) + "\n\n🕐 " + _b(f"{_foot} {_when}"))
 
 
 def _build_users_summary():
@@ -15543,9 +15591,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 + (f"\n<i>{_it['entry_note']}</i>"
                    if (_it.get("entry_note") and not _it.get("entry_hit")) else ""))
         if parts_out:
+            # A real trade ends the dry spell, so the next one starts from the
+            # first card again rather than mid-rotation.
+            _no_trades_reset(chat_id)
             send_reply(chat_id, "\n\n──────────\n\n".join(parts_out))
         else:
-            send_reply(chat_id, _no_trades_card(), skip_smallcaps=True)
+            send_reply(chat_id, _no_trades_card(chat_id), skip_smallcaps=True)
 
     elif cmd == "/history":
         sub = parts[1].lower() if len(parts) > 1 else "btc"
