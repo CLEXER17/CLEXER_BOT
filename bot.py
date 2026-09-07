@@ -14863,7 +14863,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _tier_tag = ("⭐ VIP" + (f" (until {_user_ct['vip_end']})" if _user_ct and _user_ct.get("vip_end") else "")) if _tier_val == "vip" else "🆓 FREE"
         _users_summary = _build_users_summary()
         send_reply(chat_id,
-            f"<b>CLEXER V17.8.5</b>  |  {ist_str()}\n\n"
+            f"<b>CLEXER V17.8.5</b>\n\n"
             f"🤖 Bot:        <b>{st}</b>\n"
             + (
                 f"📡 BTC Scan:   <b>{_btc_flag}</b>  ({_btcmode_lbl})\n"
@@ -14890,7 +14890,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"{_intra_line}"
                 if is_admin else ""
             )
-            + f"\n📊 Session: {get_session()} | Conf: {required_confidence()} | SL streak: {trade_stats['consecutive_sl']}\n"
+            + f"\n📊 Session: {get_session()}\n"
             + (_users_summary if is_admin else "")
             + (f"📡 Source: {src} | TV: {tv_status}\n" if is_admin else "")
             + (f"{cd}" if cd else "")
