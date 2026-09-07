@@ -2316,10 +2316,25 @@ def _get_active_server_info() -> dict:
         return {"name": SERVER_NAME, "since": _active_server_cache["since"] or time.time(),
                 "last_reminder_date": _active_server_cache["last_reminder_date"]}
     now = time.time()
-    if now - _active_server_cache["checked_at"] < 20 and _active_server_cache["name"]:
-        return dict(_active_server_cache)
+    if now - _active_server_cache["checked_at"] < 20:
+        # Also covers a recent FAILED lookup. checked_at used to be set only on
+        # SUCCESS, so once the central store went slow every single caller
+        # retried the network - and _central_get's default 3 tries x 2.5s gaps
+        # x 8s timeout is nearly 30s each. is_active_server() is called from
+        # the message path, the whale feed and half the loops, which is exactly
+        # why replies took 30-60s (admin 2026-09-07).
+        if _active_server_cache["name"]:
+            return dict(_active_server_cache)
+        return {"name": "main", "since": _active_server_cache["since"] or now,
+                "last_reminder_date": _active_server_cache["last_reminder_date"]}
     try:
-        r = _central_get("/kv/active_server")
+        # Fast and single-shot. _central_get defaults to 3 tries with 2.5s
+        # gaps and an 8s timeout - nearly 30 seconds worst case - and this
+        # runs behind is_active_server(), which the whale feed calls on every
+        # frame and several loops call constantly. A miss here is not worth
+        # blocking anything for: the cached value is kept and retried on the
+        # next cycle (admin 2026-09-07: the whole bot felt slow).
+        r = _central_get("/kv/active_server", timeout=4, retries=1)
         if r is not None and r.ok:
             body = r.json()
             data = (body.get("data") or {}) if body.get("found") else {}
@@ -2338,8 +2353,10 @@ def _get_active_server_info() -> dict:
                 return dict(_active_server_cache)
         elif r is not None:
             print(f"[SERVER] active-check HTTP {r.status_code} — {r.text[:150]}")
+            _active_server_cache["checked_at"] = now
     except Exception as e:
         print(f"[SERVER] active-check error: {e}")
+    _active_server_cache["checked_at"] = now   # back off; do not retry per call
     # Unreachable/never-set — fall back to whatever we last knew. If nothing was
     # ever known, "main" is the safe grandfather default (the original, only-ever
     # server before multi-server existed) — any OTHER named server (co1, co2, ...)
@@ -22612,7 +22629,15 @@ def command_listener():
                     else:
                         send_reply(cid, "⚠️ Admin contact isn't set up right now.")
                 elif text.startswith("/"):
+                    # Updates are handled INLINE in the poll loop, so one slow handler
+                    # delays every command behind it. Time each one and name anything
+                    # that takes over a second, so 'the bot is slow' points at a
+                    # specific command instead of a guess (admin 2026-09-07).
+                    _t0 = time.time()
                     handle_command(text, cid, msg, sender_id=sender_uid)
+                    _el = time.time() - _t0
+                    if _el > 1.0:
+                        print(f"[SLOW] {text.split()[0][:24]} took {_el:.1f}s")
                 elif ADMIN_CHAT_ID and str(sender_uid) == str(ADMIN_CHAT_ID) and _pechi_strip(text or "")[1]:
                     # PECHI works standalone — no /chat session needed, no reply/forward
                     # needed even in a group, since the prefix itself IS the trigger.
