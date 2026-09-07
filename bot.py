@@ -20138,7 +20138,7 @@ def send_mini_room(chat_id, cat_id, sub_id, mini_id, message_id=None):
             continue          # command moved out of the sub-room - skip, never crash
         cmd, emoji, title, desc = c
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
-        desc_lines.append(f"<b>{emoji} {_html.escape(title)}</b>\n<i>{_html.escape(desc)}</i>")
+        desc_lines.append(f"<b>{emoji} {_html.escape(title, quote=False)}</b>\n<i>{_html.escape(desc, quote=False)}</i>")
     _pfx = _NESTED_CATS[cat_id][1]
     rows.append([{"text": "◀️  Back", "callback_data": f"{_pfx}:{sub_id}"}])
     _text = f"<b>{mlabel}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
@@ -20197,7 +20197,7 @@ _FONT_MONO.update({chr(c): chr(0x1D68A + c - 97) for c in range(97, 123)})
 _FONT_MONO.update({chr(c): chr(0x1D7F6 + c - 48) for c in range(48, 58)})
 
 
-_FONT_SKIP_RE = re.compile(r'(<[^>]+>|&[A-Za-z]+;|&#[0-9]+;)')
+_FONT_SKIP_RE = re.compile(r'(<[^>]+>|&[A-Za-z]+;|&#[0-9]+;|&#[xX][0-9A-Fa-f]+;)')
 
 
 def _font(text: str, table: dict) -> str:
@@ -20250,11 +20250,11 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
             # the title takes the bold face like its category heading, and the
             # explanation under it takes the monospace one.
             lbl = f"{emoji} <code>{c}</code>" + (
-                f" — <b>{_font(_html.escape(title), _FONT_BOLD)}</b>" if title else "")
+                f" — <b>{_font(_html.escape(title, quote=False), _FONT_BOLD)}</b>" if title else "")
             # No <i> here. The monospace face already separates the explanation
             # from its title, and italic on top of it renders slanted and
             # hard to read (admin 2026-09-07).
-            lines.append((False, f"{lbl}\n{_font(_html.escape(desc), _FONT_MONO)}"))
+            lines.append((False, f"{lbl}\n{_font(_html.escape(desc, quote=False), _FONT_MONO)}"))
 
     margin = 120  # room for the part-tag + footer + any HTML close tags
     chunks = []; cur = header
@@ -20461,7 +20461,7 @@ def send_copyuser_subcat(chat_id, sub_id, user_cid, message_id=None):
             if cmd == "/disconnect" and not connected:
                 continue
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
-        desc_lines.append(f"<b>{emoji} {_html.escape(title)}</b>\n<i>{_html.escape(desc)}</i>")
+        desc_lines.append(f"<b>{emoji} {_html.escape(title, quote=False)}</b>\n<i>{_html.escape(desc, quote=False)}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:copyuser"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
@@ -20482,7 +20482,7 @@ def send_scan_subcat(chat_id, sub_id, message_id=None):
     desc_lines = []
     for cmd, emoji, title, desc in cmds:
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
-        desc_lines.append(f"<b>{emoji} {_html.escape(title)}</b>\n<i>{_html.escape(desc)}</i>")
+        desc_lines.append(f"<b>{emoji} {_html.escape(title, quote=False)}</b>\n<i>{_html.escape(desc, quote=False)}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:scan"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
@@ -20497,7 +20497,7 @@ def send_tradecontrol_subcat(chat_id, sub_id, message_id=None):
     desc_lines = []
     for cmd, emoji, title, desc in cmds:
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
-        desc_lines.append(f"<b>{emoji} {_html.escape(title)}</b>\n<i>{_html.escape(desc)}</i>")
+        desc_lines.append(f"<b>{emoji} {_html.escape(title, quote=False)}</b>\n<i>{_html.escape(desc, quote=False)}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": "help_cat:tradecontrol"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
@@ -20518,7 +20518,7 @@ def _send_generic_subcat(chat_id, subcats, sub_id, back_cat, message_id=None):
     desc_lines = []
     for cmd, emoji, title, desc in cmds:
         rows.append([{"text": f"{emoji}  {title}", "callback_data": f"help_cmd:{cmd}"}])
-        desc_lines.append(f"<b>{emoji} {_html.escape(title)}</b>\n<i>{_html.escape(desc)}</i>")
+        desc_lines.append(f"<b>{emoji} {_html.escape(title, quote=False)}</b>\n<i>{_html.escape(desc, quote=False)}</i>")
     rows.append([{"text": "◀️  Back", "callback_data": f"help_cat:{back_cat}"}])
     markup = {"inline_keyboard": rows}
     text = f"<b>{label}</b>\n\n<blockquote>" + "\n\n".join(desc_lines) + "</blockquote>"
