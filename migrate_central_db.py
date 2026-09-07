@@ -9,7 +9,14 @@ tables.
 
     python migrate_central_db.py                 # dry run: counts only
     python migrate_central_db.py --go            # actually copy
+    python migrate_central_db.py --go --wipe     # empty the destination first
     python migrate_central_db.py --go --only kv_store,bot_state
+
+--wipe empties the destination tables before copying. Use it when the
+destination is a REUSED database rather than a fresh one: copy_trades and
+payment_events have SERIAL primary keys that both databases numbered from 1
+independently, so an upsert leaves the destination's surplus old rows behind,
+silently mixed into live data. It only ever touches the destination.
 
 Both URLs come from the environment so no connection string is ever typed
 into a shell history or a chat window:
@@ -83,9 +90,26 @@ def main():
     if src_url == dst_url:
         sys.exit("SRC and DST are the same database - refusing.")
 
+    wipe = "--wipe" in sys.argv
+    if wipe and not go:
+        print("--wipe has no effect on a dry run; add --go to actually do it.\n")
+
     src = psycopg2.connect(src_url)
     dst = psycopg2.connect(dst_url)
     sc, dc = src.cursor(), dst.cursor()
+
+    if wipe and go:
+        # Reverse order, so a child table is emptied before the parent it
+        # references - TRUNCATE on users would otherwise be refused by the
+        # foreign keys. CASCADE is deliberately NOT used: it would silently
+        # widen the blast radius to tables this script never listed.
+        targets = [t for t, _ in reversed(TABLES)
+                   if (not only or t in only) and _count(dc, t) is not None]
+        print(f"WIPING destination tables: {', '.join(targets)}")
+        for t in targets:
+            dc.execute(f'TRUNCATE TABLE "{t}" RESTART IDENTITY')
+        dst.commit()
+        print("Destination emptied.\n")
 
     print(f"{'table':<20} {'source':>8} {'dest before':>12} {'copied':>8}")
     print("-" * 52)
