@@ -1113,12 +1113,12 @@ def _start_userbot():
                 while _userbot_client is not None and _userbot_ready.is_set():
                     try:
                         if CLEXER_API_URL and is_active_server():
-                            _kv_push("userbot_owner", {"server": SERVER_NAME,
-                                                       "instance": _INSTANCE_ID,
-                                                       "ts": time.time()})
+                            _kv_push_async("userbot_owner", {"server": SERVER_NAME,
+                                                             "instance": _INSTANCE_ID,
+                                                             "ts": time.time()})
                     except Exception as _he:
                         print(f"[USERBOT] heartbeat: {_he}")
-                    time.sleep(60)
+                    time.sleep(240)
             threading.Thread(target=_own_heartbeat, daemon=True).start()
 
             # Force a dialog-list sync so Telethon caches the access_hash for
@@ -2374,7 +2374,7 @@ def get_active_server_name() -> str:
         return SERVER_NAME
     return _get_active_server_info()["name"]
 
-def _claim_resource(key: str, ttl: int = 120) -> bool:
+def _claim_resource(key: str, ttl: int = 600) -> bool:
     """Instance-level lock on a shared resource, on top of the active-server flag.
 
     is_active_server() compares NAMES, and Railway keeps the old container
@@ -2408,14 +2408,17 @@ def _claim_resource(key: str, ttl: int = 120) -> bool:
         return True              # never let the central store being down stop the bot
 
 
-def _hold_resource(key: str, every: int = 60):
+def _hold_resource(key: str, every: int = 240):
     """Keep a _claim_resource claim fresh for as long as this process lives."""
     def _beat():
         while True:
             try:
                 if CLEXER_API_URL and is_active_server():
-                    _kv_push(key, {"server": SERVER_NAME, "instance": _INSTANCE_ID,
-                                   "ts": time.time()})
+                    # Async: a heartbeat that blocks for six seconds on a slow
+                    # store is a heartbeat that misses its own deadline.
+                    _kv_push_async(key, {"server": SERVER_NAME,
+                                         "instance": _INSTANCE_ID,
+                                         "ts": time.time()})
             except Exception:
                 pass
             time.sleep(every)
