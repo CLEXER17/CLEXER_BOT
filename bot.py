@@ -158,27 +158,51 @@ def _next_special_time(kind: str) -> str:
     h, m = times[0]
     return f"{h}:{m:02d} IST (tomorrow)"
 
+def _slot_verified_now(kind: str, hm: tuple, tomorrow: bool = False) -> bool:
+    """Is this slot cleared for VIP/Free on the DAY IT WILL ACTUALLY FIRE?
+
+    This is the same verdict /st week draws its grid from - _slot_day_verified,
+    i.e. that weekday's win rate at or above the kind's threshold AND a live
+    streak - and the same one the scan cycle routes on (see the _wd_ok /
+    _wd_locked block in the Scan1/Scan2 path and its TS1/TS2 twin).
+
+    The tags used to read the static _SCAN_SPECIAL_NO_COPY list instead, which
+    stopped being what decides routing the day the weekday gate landed. So a
+    Next-Scan line could promise [V] on a slot /st week had locked for today,
+    or [NV] on one it had cleared (admin 2026-09-07).
+
+    `kind` is the SCHEDULE kind (scan1/scan2/test1/test2); the weekday grid is
+    keyed by the STAT kind (scan1/scan2/demo1/demo2) - hence the map.
+    `tomorrow` shifts the lookup a day, because the slot that fires next may
+    well be past midnight and a slot's verdict is per weekday, not global."""
+    _stat = _SLOT_SCHED_TO_KIND.get(kind, kind)
+    try:
+        return _slot_day_verified(_stat, hm,
+                                  when=(time.time() + 86400) if tomorrow else None)
+    except Exception:
+        return False
+
 def _next_special_tag(kind: str) -> str:
     """[V]/[NV] tag for whichever slot _next_special_time(kind) just picked —
     tells admin at a glance whether that upcoming signal will actually reach
-    VIP/Free ([V] verified) or stay Channel-1-only ([NV] unverified), per the
-    verified-only VIP/Free routing rule (see _ai_category/_force_direct48)."""
+    VIP/Free ([V] verified) or stay Channel-1-only ([NV] unverified). Reads
+    the weekday record, exactly like /st week — see _slot_verified_now."""
     times = sorted(_SCAN_SPECIAL.get(kind, set()))
     if not times:
         return ""
     _now_hm = (now_ist().hour, now_ist().minute)
     fut = [(h, m) for h, m in times if (h, m) > _now_hm]
     hm = fut[0] if fut else times[0]
-    return " [NV]" if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()) else " [V]"
+    return " [V]" if _slot_verified_now(kind, hm, tomorrow=not fut) else " [NV]"
 
-def _slot_tag(kind: str, hm: tuple) -> str:
+def _slot_tag(kind: str, hm: tuple, tomorrow: bool = False) -> str:
     """[V]/[NV]/[N] for ANY schedule slot (special or regular grid) — [N] means
     this slot isn't in the special set at all (regular hourly grid, always
-    Channel-1-only); [V]/[NV] are the same verified/unverified split as
-    _next_special_tag(), for when the slot IS a special one."""
+    Channel-1-only); [V]/[NV] are the same weekday verdict /st week shows,
+    for when the slot IS a special one."""
     if hm not in _SCAN_SPECIAL.get(kind, set()):
         return " [N]"
-    return " [NV]" if hm in _SCAN_SPECIAL_NO_COPY.get(kind, set()) else " [V]"
+    return " [V]" if _slot_verified_now(kind, hm, tomorrow) else " [NV]"
 
 def _next_schedule_times():
     """Returns (next_btc_scan, next_scan1, next_scan2) as display strings —
@@ -196,7 +220,7 @@ def _next_schedule_times():
         _hm = _fut[0] if _fut else schedule[0]
         _h, _m = _hm
         _suffix = " (tomorrow)" if not _fut else ""
-        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm)}"
+        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm, not _fut)}"
     return _next_btc_scan, _next_slot(SCAN1_SCHEDULE, "scan1"), _next_slot(SCAN2_SCHEDULE, "scan2")
 def get_session():
     mins = now_ist().hour * 60 + now_ist().minute
@@ -20318,7 +20342,7 @@ def send_go_screen(chat_id, message_id=None):
         _hm = _fut[0] if _fut else schedule[0]
         _h, _m = _hm
         _suffix = "" if _fut else " (tomorrow)"
-        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm)}"
+        return f"{_h}:{_m:02d} IST{_suffix}{_slot_tag(kind, _hm, not _fut)}"
     _go_ts1_line = (f"⏰ Next TS1: <b>{_go_next_test_slot(SCAN1_TEST_SCHEDULE, 'test1')}</b>\n"
                     if TEST_SCAN_ENABLED else "⏰ Next TS1: <b>OFF</b>\n")
     _go_ts2_line = (f"⏰ Next TS2: <b>{_go_next_test_slot(SCAN2_TEST_SCHEDULE, 'test2')}</b>\n"
