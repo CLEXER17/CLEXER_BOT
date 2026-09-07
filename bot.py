@@ -3110,8 +3110,14 @@ def _ping_admin_user_activity(chat_id, username=None):
     if now - _user_ping_last.get(cid, 0) < USER_PING_COOLDOWN:
         return
     _user_ping_last[cid] = now
-    _uname = username or user_usernames.get(str(cid))
-    _who = f'@{_uname}' if _uname else f'ID {cid}'
+    # _user_ref, not a bare @handle: this message goes through the global
+    # smallcaps pass, which rewrites a mixed-case handle into glyphs Telegram's
+    # auto-linker no longer recognises - so the name arrived unclickable
+    # (admin 2026-09-07). An explicit anchor survives that, and covers a user
+    # with no username at all.
+    if username and user_usernames.get(str(cid)) != username:
+        user_usernames[str(cid)] = username      # freshest name wins
+    _who = _user_ref(cid)
     _u = ct._get(str(cid)) or {}
     _tier = '⭐ VIP' if _u.get('tier') == 'vip' else '🆓 Free'
     _txt = (f'👤 <b>{_who}</b> is using the bot\n\n'
