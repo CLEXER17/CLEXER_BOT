@@ -9163,8 +9163,8 @@ PREMIUM_EMOJI_MAP = {
     "😭": "5339386257283764734", "💀": "5379930048478330552",
     "📣": "5215668805199473901", "🧠": "6120687391641440754",
     "⚠️": "5213181173026533794", "👑": "6120766436219555441",
-    "👋": "5258029071207505708", "🏷️": "6016997440777883054",
-    "🏷": "6016997440777883054",
+    "👋": "5258029071207505708", "🏷️": "6044125665400197078",
+    "🏷": "6044125665400197078",
     # VIP tier-label star (e.g. "⭐ VIP") — distinct from the Stars-payment ⭐
     # override (PAYMENT_STAR_EMOJI_ID below), which wins on payment screens
     # since per-call overrides take precedence over this global map.
