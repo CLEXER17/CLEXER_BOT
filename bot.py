@@ -15925,8 +15925,14 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _conn = _userbot_client is not None and _userbot_ready.is_set()
         if len(parts) > 1 and parts[1].lower() in ("groups", "chats"):
             if not _conn:
-                send_reply(chat_id, "❌ Userbot is not connected — nothing to list.",
-                           skip_smallcaps=True); return
+                # Dead-ending on "not connected" makes the admin run a second
+                # command to find out why. Say it here.
+                _why = (f"\n\n⚠️ <b>Last error:</b> <code>{_userbot_last_error}</code>"
+                        if _userbot_last_error else "")
+                _hint = ("\n\n<i>TG_USER_API_ID / TG_USER_API_HASH / TG_USER_SESSION_STRING are not all set on this server.</i>" if not _cfg else
+                         "\n\n<i>Session revoked or never started. AuthKeyDuplicated means Telegram killed it for being used from two IPs at once - stop any old deploy still holding TG_USER_SESSION_STRING, then generate a new one with userbot_login.py. Otherwise try <code>/userbot restart</code>.</i>")
+                send_reply(chat_id, "❌ <b>Userbot is not connected</b> — nothing to list."
+                           + _why + _hint, skip_smallcaps=True); return
             send_reply(chat_id, "🔍 Reading the account's dialog list...",
                        skip_smallcaps=True)
             _gl = _userbot_list_groups()
