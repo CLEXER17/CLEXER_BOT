@@ -2817,9 +2817,15 @@ def _maintenance_live_if_due(force: bool = False):
         requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": _on, "msg": _msg}, headers=_hdrs, timeout=5)
         if _changed:
             print(f"[MAINTENANCE] mini app -> {'PAUSED' if _on else 'LIVE'} ({_msg})")
-        _last_maintenance_sent = (_on, _msg)
     except Exception as e:
         print(f"[MAINTENANCE] periodic re-assert failed: {e}")
+    finally:
+        # Recorded even when the POST failed. Set only on success, a store
+        # that is down keeps _changed True forever, and _changed bypasses the
+        # interval gate - so a single outage turned a once-a-minute push into
+        # one on every 20s heartbeat tick, permanently. The next tick re-reads
+        # the state anyway; nothing is lost by not retrying harder here.
+        _last_maintenance_sent = (_on, _msg)
 
 _last_maintenance_sent = None   # last (on, msg) actually delivered
 _last_status_push = 0.0
@@ -9659,9 +9665,9 @@ def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
     if not ADMIN_CHAT_ID: return
     text = _apply_premium_emojis(text, overrides=emoji_overrides)
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": ADMIN_CHAT_ID, "text": text,
-                  "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10)
+        r = _tg_post_retrying("sendMessage",
+            {"chat_id": ADMIN_CHAT_ID, "text": text,
+             "parse_mode": "HTML", "disable_web_page_preview": True}, "ADMIN MSG")
         rj = r.json()
         if not rj.get("ok"):
             print(f"  [ADMIN MSG ERROR] Telegram rejected: {rj.get('description')}")
@@ -9734,6 +9740,86 @@ def _mark_block_state(chat_id, r) -> bool:
     return False
 
 
+# ─── Telegram rate limiting ────────────────────────────────────────────────
+# Two halves of the same problem, both seen live on 2026-09-08:
+# "Too Many Requests: retry after 8" alongside "[SLOW] /START took 15.7s"
+# and users getting no answer at all.
+#
+# 1. A 429'd message used to be printed and DROPPED. Telegram is not saying
+#    no, it is saying "not yet" - throwing the reply away turns a two-second
+#    wait into permanent silence, which is exactly what "not responding to
+#    users" looked like from the outside.
+# 2. Retrying inline would make it worse. Updates are handled INSIDE the poll
+#    loop (see the [SLOW] timing block in command_listener), so sleeping the
+#    8 seconds Telegram asks for would stall every command queued behind this
+#    one. The retry therefore happens on its own thread: the loop moves on,
+#    and the user gets the message a few seconds late instead of never.
+_TG_SEND_LOCK = threading.Lock()
+_tg_last_send = 0.0
+_TG_MIN_GAP = 0.05           # 20 messages/second. Telegram's ceiling is ~30, and
+                             # a 0.035 gap measured at exactly 30/sec in testing -
+                             # sitting ON the limit is how you earn the 429 this
+                             # whole block exists to avoid.
+
+
+def _tg_pace():
+    """Space outbound sends slightly so a burst does not earn a 429 in the
+    first place. Cheaper than recovering from one."""
+    global _tg_last_send
+    with _TG_SEND_LOCK:
+        _gap = time.time() - _tg_last_send
+        if _gap < _TG_MIN_GAP:
+            time.sleep(_TG_MIN_GAP - _gap)
+        _tg_last_send = time.time()
+
+
+def _tg_retry_after(resp) -> float:
+    """Seconds Telegram asked us to wait, or 0 if this was not a 429."""
+    try:
+        j = resp.json()
+        if j.get("ok") or j.get("error_code") != 429:
+            return 0.0
+        return float((j.get("parameters") or {}).get("retry_after", 1))
+    except Exception:
+        return 0.0
+
+
+def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int = 2):
+    """POST to the Bot API, honouring a 429's retry_after off-thread.
+
+    Returns the first response so callers keep their existing bookkeeping
+    (_mark_block_state and friends read it). The retry is fire-and-forget:
+    nothing downstream waits on it, because nothing downstream can - the
+    caller is the poll loop."""
+    _tg_pace()
+    _url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    r = requests.post(_url, json=payload, timeout=10)
+    _wait = _tg_retry_after(r)
+    if _wait and tries > 1:
+        def _later(_w=_wait, _t=tries):
+            # Cap the wait: past half a minute the user has given up and a
+            # late reply is just confusing.
+            if _w > 30:
+                print(f"  [{tag}] rate limited {_w:.0f}s — too long, dropping")
+                return
+            time.sleep(_w + 0.5)
+            try:
+                _tg_pace()
+                _r2 = requests.post(_url, json=payload, timeout=10)
+                if _r2.json().get("ok"):
+                    print(f"  [{tag}] rate limited {_w:.0f}s — resent OK")
+                elif _t > 2:
+                    _tg_post_retrying(method, payload, tag, _t - 1)
+                else:
+                    print(f"  [{tag}] resend still rejected: "
+                          f"{_r2.json().get('description')}")
+            except Exception as e:
+                print(f"  [{tag}] resend failed: {e}")
+        threading.Thread(target=_later, daemon=True).start()
+        print(f"  [{tag}] rate limited — retrying in {_wait:.0f}s off-thread")
+    return r
+
+
 def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important=False, skip_smallcaps=False):
     # Auto-scan progress noise suppression (2026-07-28, rate-limit fix) — only
     # applies to messages headed for the admin's own DM from inside a quiet
@@ -9764,8 +9850,7 @@ def send_reply(chat_id, text, reply_markup=None, emoji_overrides=None, important
                    "parse_mode": "HTML", "disable_web_page_preview": True}
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json=payload, timeout=10)
+        r = _tg_post_retrying("sendMessage", payload, "REPLY")
         if not r.json().get("ok"):
             print(f"  [REPLY ERROR] Telegram rejected: {r.json().get('description')}")
         # Block bookkeeping. This used to live ONLY in send_to_user (broadcasts)
