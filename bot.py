@@ -899,7 +899,7 @@ def _send_plain_reply(chat_id, text: str, reply_to=None, reply_markup=None, prot
     if protect:
         payload["protect_content"] = True
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=10)
+        r = _tg_post_retrying("sendMessage", payload, "PLAIN REPLY")
         rj = r.json()
         if rj.get("ok"):
             return rj["result"]["message_id"]
@@ -9972,9 +9972,12 @@ def send_to_user(chat_id, text, file_id=None, file_type=None):
             r = requests.post(f"{base}/sendDocument",
                 json={"chat_id": chat_id, "document": file_id, "caption": text, "parse_mode": "HTML"}, timeout=15)
         else:
-            r = requests.post(f"{base}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                      "disable_web_page_preview": True}, timeout=10)
+            # Broadcasts fan out to every user at once - the single most
+            # likely thing in the bot to earn a 429, and the one where a
+            # dropped message means somebody simply never got the notice.
+            r = _tg_post_retrying("sendMessage",
+                {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                 "disable_web_page_preview": True}, "SEND USER")
         _cid_int = int(chat_id)
         if r.status_code == 403 and "blocked" in r.text.lower():
             if _cid_int not in blocked_users:
@@ -20473,15 +20476,24 @@ def _help_edit_or_send(chat_id, text, markup, message_id=None, rotate=True, emoj
     if message_id:
         payload["message_id"] = message_id
         try:
-            r = requests.post(f"{base}/editMessageText", json=payload, timeout=10)
-            if not r.json().get("ok") and "message is not modified" not in r.json().get("description", ""):
-                print(f"  [HELP EDIT ERROR] Telegram rejected: {r.json().get('description')}")
-                requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+            r = _tg_post_retrying("editMessageText", payload, "HELP EDIT")
+            _desc = r.json().get("description", "") or ""
+            if not r.json().get("ok") and "message is not modified" not in _desc:
+                # A 429 is already being retried off-thread by the call above -
+                # falling through to a fresh sendMessage here would post a
+                # SECOND copy the moment the retry lands, and add to the very
+                # burst that earned the rate limit.
+                if "Too Many Requests" in _desc:
+                    return
+                print(f"  [HELP EDIT ERROR] Telegram rejected: {_desc}")
+                _tg_post_retrying("sendMessage", {k: v for k, v in payload.items()
+                                                  if k != "message_id"}, "HELP SEND")
         except Exception as e:
             print(f"  [HELP EDIT ERROR] {e}")
-            requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+            _tg_post_retrying("sendMessage", {k: v for k, v in payload.items()
+                                              if k != "message_id"}, "HELP SEND")
     else:
-        r = requests.post(f"{base}/sendMessage", json=payload, timeout=10)
+        r = _tg_post_retrying("sendMessage", payload, "HELP SEND")
         if not r.json().get("ok"):
             print(f"  [HELP SEND ERROR] Telegram rejected: {r.json().get('description')}")
 
