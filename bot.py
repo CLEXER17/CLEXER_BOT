@@ -9813,6 +9813,55 @@ def _tg_pace():
 # and cannot drift out of sync the way thirty separate edits would. Only
 # api.telegram.org is touched; BingX, Binance and the central store pass
 # straight through untouched.
+# ─── Per-chat flood cooldown ───────────────────────────────────────────────
+# Telegram rate limits PER CHAT, not just per bot, and the two look identical
+# in a log. What gave it away: the meter showed sendMessage=1 for the whole
+# minute and that single message still came back "retry after 8", while the
+# admin's own chat answered normally. One message a minute cannot exhaust a
+# bot-wide quota - the chat itself was in timeout.
+#
+# And the retry was keeping it there. Every send into a limited chat restarts
+# its penalty, so a user tapping /help a few times, each attempt retried,
+# held their own chat in timeout indefinitely while every other user was
+# fine. Backing off is the only way out: once a chat 429s, nothing is sent
+# to it until its window expires.
+_tg_chat_until: dict = {}          # chat_id (str) -> epoch when sending may resume
+_TG_CHAT_LOCK = threading.Lock()
+
+
+def _tg_chat_of(payload) -> str:
+    try:
+        return str((payload or {}).get("chat_id") or "")
+    except Exception:
+        return ""
+
+
+def _tg_chat_blocked(chat: str) -> float:
+    """Seconds still to wait for this chat, or 0 if it is free to send."""
+    if not chat:
+        return 0.0
+    with _TG_CHAT_LOCK:
+        _until = _tg_chat_until.get(chat, 0)
+    return max(0.0, _until - time.time())
+
+
+def _tg_chat_penalise(chat: str, seconds: float):
+    if not chat:
+        return
+    with _TG_CHAT_LOCK:
+        # Never shorten an existing penalty - a later, smaller retry_after
+        # does not mean the earlier one was lifted.
+        _tg_chat_until[chat] = max(_tg_chat_until.get(chat, 0),
+                                   time.time() + seconds + 1.0)
+
+
+def _tg_chat_clear(chat: str):
+    if not chat:
+        return
+    with _TG_CHAT_LOCK:
+        _tg_chat_until.pop(chat, None)
+
+
 _tg_real_post = requests.post
 
 
@@ -9824,6 +9873,23 @@ def _tg_method_of(url: str) -> str:
         return "?"
 
 
+class _TgBlocked:
+    """Stands in for a requests Response when a send is skipped because the
+    chat is in timeout. Shaped like a 429 so existing callers - which all
+    read .json() and look for ok/description - handle it as the rate limit
+    it represents, without a single one needing to know about this."""
+    status_code = 429
+    text = "chat cooling down"
+
+    def __init__(self, wait):
+        self._wait = wait
+
+    def json(self):
+        return {"ok": False, "error_code": 429,
+                "description": f"Too Many Requests: retry after {self._wait:.0f}",
+                "parameters": {"retry_after": self._wait}}
+
+
 def _tg_hooked_post(url, *args, **kwargs):
     if "api.telegram.org" in str(url):
         _m = _tg_method_of(url)
@@ -9831,9 +9897,30 @@ def _tg_hooked_post(url, *args, **kwargs):
         # timeout and is not what any rate limit is about. Counting it would
         # bury the real traffic, and pacing it would throttle the poll loop.
         if _m != "getUpdates":
+            _chat = _tg_chat_of(kwargs.get("json"))
+            _wait = _tg_chat_blocked(_chat)
+            if _wait:
+                # Do NOT send. Every call into a chat Telegram has timed out
+                # restarts its penalty, which is how one user tapping /help a
+                # few times kept their own chat locked while everyone else
+                # was fine.
+                print(f"  [TG CHAT] {_chat} cooling down {_wait:.0f}s — {_m} skipped")
+                return _TgBlocked(_wait)
             _tg_note_send(_m)
             _tg_pace()
-    return _tg_real_post(url, *args, **kwargs)
+    _r = _tg_real_post(url, *args, **kwargs)
+    if "api.telegram.org" in str(url):
+        try:
+            _w = _tg_retry_after(_r)
+            _c = _tg_chat_of(kwargs.get("json"))
+            if _w:
+                _tg_chat_penalise(_c, _w)
+                print(f"  [TG CHAT] {_c} rate limited — holding {_w:.0f}s")
+            elif _r.json().get("ok"):
+                _tg_chat_clear(_c)
+        except Exception:
+            pass
+    return _r
 
 
 # Guard against a re-exec/reload installing the hook twice, which would double
