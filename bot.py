@@ -9754,6 +9754,34 @@ def _mark_block_state(chat_id, r) -> bool:
 #    8 seconds Telegram asks for would stall every command queued behind this
 #    one. The retry therefore happens on its own thread: the loop moves on,
 #    and the user gets the message a few seconds late instead of never.
+# ─── Outbound send meter ───────────────────────────────────────────────────
+# Sustained 429s with no obvious burst are impossible to fix by reading code:
+# every send path looks reasonable on its own, and the one flooding is only
+# obvious from a count. This tallies every outbound Bot API call by tag and
+# prints a breakdown once a minute whenever the rate is high enough to matter,
+# so "the bot is rate limited" becomes "TEST POST sent 400 messages in a
+# minute" (admin 2026-09-08).
+_tg_send_counts: dict = {}
+_tg_count_window = 0.0
+_TG_RATE_REPORT_MIN = 40      # sends/minute above which the breakdown prints
+
+
+def _tg_note_send(tag: str):
+    global _tg_count_window
+    now = time.time()
+    if not _tg_count_window:
+        _tg_count_window = now
+    if now - _tg_count_window >= 60:
+        _total = sum(_tg_send_counts.values())
+        if _total >= _TG_RATE_REPORT_MIN:
+            _top = sorted(_tg_send_counts.items(), key=lambda kv: -kv[1])[:6]
+            print(f"[TG RATE] {_total} outbound calls in the last minute — "
+                  + ", ".join(f"{k}={v}" for k, v in _top))
+        _tg_send_counts.clear()
+        _tg_count_window = now
+    _tg_send_counts[tag] = _tg_send_counts.get(tag, 0) + 1
+
+
 _TG_SEND_LOCK = threading.Lock()
 _tg_last_send = 0.0
 _TG_MIN_GAP = 0.05           # 20 messages/second. Telegram's ceiling is ~30, and
@@ -9791,6 +9819,7 @@ def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int 
     (_mark_block_state and friends read it). The retry is fire-and-forget:
     nothing downstream waits on it, because nothing downstream can - the
     caller is the poll loop."""
+    _tg_note_send(tag)
     _tg_pace()
     _url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
     r = requests.post(_url, json=payload, timeout=10)
@@ -9802,7 +9831,7 @@ def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int 
             if _w > 30:
                 print(f"  [{tag}] rate limited {_w:.0f}s — too long, dropping")
                 return
-            time.sleep(_w + 0.5)
+            time.sleep(_w + 0.5 + random.uniform(0, 2.0))
             try:
                 _tg_pace()
                 _r2 = requests.post(_url, json=payload, timeout=10)
@@ -9816,7 +9845,14 @@ def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int 
             except Exception as e:
                 print(f"  [{tag}] resend failed: {e}")
         threading.Thread(target=_later, daemon=True).start()
-        print(f"  [{tag}] rate limited — retrying in {_wait:.0f}s off-thread")
+        # Dump the running tally right here rather than waiting for the
+        # minute to roll over. A 429 is the one moment the breakdown is
+        # actually worth reading, and by the next window the burst that
+        # caused it has already been cleared away.
+        _busy = sorted(_tg_send_counts.items(), key=lambda kv: -kv[1])[:6]
+        print(f"  [{tag}] rate limited — retrying in {_wait:.0f}s off-thread"
+              f"  | this minute so far: "
+              + (", ".join(f"{k}={v}" for k, v in _busy) or "nothing"))
     return r
 
 
@@ -11136,6 +11172,7 @@ def _tg_delete_message(chat_id, message_id) -> bool:
     Sleeping here is fine, unlike in send paths: the callers are the
     auto-clear thread and the /clearsl* commands, never the poll loop."""
     for _try in range(2):
+        _tg_note_send("BULK DELETE")
         _tg_pace()
         try:
             r = requests.post(
