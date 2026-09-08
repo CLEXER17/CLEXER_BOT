@@ -10675,7 +10675,6 @@ def _mtf_report(coin: str):
             out.append("   💧 liquidity — from " + _tfs_lbl)
             out.append("<pre>" + _nl.join(_lq) + "</pre>")
 
-    out += ["", "Engine read — no Clex, no cost. Not financial advice."]
     return _nl.join(out), None
 
 
