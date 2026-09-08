@@ -306,6 +306,43 @@ MINIAPP_MAINTENANCE_MSG = "Live"   # Tracked separately from central-api's own i
 # ON every time central-api itself restarts, independent of bot.py) so both the boot-time force-live push AND
 # the periodic re-push (_maintenance_live_if_due) know what the admin ACTUALLY wants, instead of blindly
 # forcing "live" and stomping an intentional pause within a minute (admin report, 2026-08-08).
+
+# ─── Mini-app sleep window (/miniapp sleep) ────────────────────────────────
+# A nightly auto-pause, kept SEPARATE from MINIAPP_MAINTENANCE_ON above: that
+# is the admin's own deliberate pause and must survive the window closing.
+# The two are combined in _miniapp_effective(), so waking up never resumes an
+# app the admin had paused on purpose.
+MINIAPP_SLEEP_ENABLED = False
+MINIAPP_SLEEP_START   = (0, 30)    # 12:30 AM IST
+MINIAPP_SLEEP_END     = (6, 30)    # 6:30 AM IST
+
+
+def _hm_in_window(now_hm, start, end) -> bool:
+    """Is now inside [start, end)? Handles a window crossing midnight, which
+    this one does - 00:30-06:30 does not, but a later edit to e.g. 22:00-06:00
+    would, and a naive a <= n < b silently matches nothing for those."""
+    n = now_hm[0] * 60 + now_hm[1]
+    a = start[0] * 60 + start[1]
+    b = end[0] * 60 + end[1]
+    return (a <= n < b) if a <= b else (n >= a or n < b)
+
+
+def _miniapp_sleeping() -> bool:
+    if not MINIAPP_SLEEP_ENABLED:
+        return False
+    _t = now_ist()
+    return _hm_in_window((_t.hour, _t.minute), MINIAPP_SLEEP_START, MINIAPP_SLEEP_END)
+
+
+def _miniapp_effective():
+    """(paused?, message) actually pushed to central-api. The admin's own
+    pause wins, so resuming at the end of the window can never override it."""
+    if MINIAPP_MAINTENANCE_ON:
+        return True, MINIAPP_MAINTENANCE_MSG
+    if _miniapp_sleeping():
+        return True, (f"😴 Sleeping — back at {MINIAPP_SLEEP_END[0]}:"
+                      f"{MINIAPP_SLEEP_END[1]:02d} AM IST")
+    return False, MINIAPP_MAINTENANCE_MSG
 CHAT_USE_AEROLINK      = False  # /chat's OWN gateway for Claude models — decoupled from USE_AEROLINK above,
 # switch via /chatmodel's toggle or in-session by typing "switch direct"/"switch free" (admin only, that
 # session only — see _CHAT_GATEWAY_SWITCH_CMDS). Non-Claude catalog models always force Aerolink regardless
@@ -2751,7 +2788,7 @@ def _self_heartbeat_if_due():
 
 _last_maintenance_push = 0.0
 
-def _maintenance_live_if_due():
+def _maintenance_live_if_due(force: bool = False):
     """Call from an ACTIVE server's main loop, every tick — internally
     rate-limited to _FAILOVER_CHECK_INTERVAL. central-api's maintenance
     flag is just in-memory on ITS side, resetting to ON every time IT
@@ -2763,19 +2800,28 @@ def _maintenance_live_if_due():
     bot.py ALSO happened to restart. Now periodically re-asserts whatever
     the admin's actual intended state is (MINIAPP_MAINTENANCE_ON/MSG, set
     via /miniapp) instead of blindly forcing live and only doing it once."""
-    global _last_maintenance_push
+    global _last_maintenance_push, _last_maintenance_sent
     now = time.time()
-    if now - _last_maintenance_push < _FAILOVER_CHECK_INTERVAL:
+    _on, _msg = _miniapp_effective()
+    # A sleep-window boundary is pushed the moment it is crossed rather than
+    # up to _FAILOVER_CHECK_INTERVAL later - otherwise the app stays awake
+    # (or asleep) for a visible minute past the time the admin set.
+    _changed = (_on, _msg) != _last_maintenance_sent
+    if not force and not _changed and now - _last_maintenance_push < _FAILOVER_CHECK_INTERVAL:
         return
     _last_maintenance_push = now
     if not CLEXER_API_URL:
         return
     try:
         _hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
-        requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": MINIAPP_MAINTENANCE_ON, "msg": MINIAPP_MAINTENANCE_MSG}, headers=_hdrs, timeout=5)
+        requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": _on, "msg": _msg}, headers=_hdrs, timeout=5)
+        if _changed:
+            print(f"[MAINTENANCE] mini app -> {'PAUSED' if _on else 'LIVE'} ({_msg})")
+        _last_maintenance_sent = (_on, _msg)
     except Exception as e:
         print(f"[MAINTENANCE] periodic re-assert failed: {e}")
 
+_last_maintenance_sent = None   # last (on, msg) actually delivered
 _last_status_push = 0.0
 _last_scan_ts     = 0.0    # when a scan cycle was last kicked off (set by _run_auto_scan)
 _last_scan_kind   = ""     # "scan1" / "scan2"
@@ -9049,7 +9095,7 @@ _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
     global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
-    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE, MESSAGE_FONT
+    global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE, MESSAGE_FONT, MINIAPP_SLEEP_ENABLED
     try:
         d = None
         # Central store first (shared across every server pointed at the same
@@ -9105,6 +9151,7 @@ def load_settings():
             CHAT_USE_AEROLINK = d.get("chat_use_aerolink", CHAT_USE_AEROLINK)
             MINIAPP_MAINTENANCE_ON  = d.get("miniapp_maintenance_on",  MINIAPP_MAINTENANCE_ON)
             MESSAGE_FONT            = d.get("message_font", MESSAGE_FONT)
+            MINIAPP_SLEEP_ENABLED   = d.get("miniapp_sleep_enabled", MINIAPP_SLEEP_ENABLED)
             MINIAPP_MAINTENANCE_MSG = d.get("miniapp_maintenance_msg", MINIAPP_MAINTENANCE_MSG)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
             CONTACT_ADMIN_ENABLED  = d.get("contact_admin_enabled",  True)
@@ -9184,6 +9231,7 @@ def save_settings():
             "chat_use_aerolink": CHAT_USE_AEROLINK,
             "miniapp_maintenance_on": MINIAPP_MAINTENANCE_ON,
             "message_font": MESSAGE_FONT,
+            "miniapp_sleep_enabled": MINIAPP_SLEEP_ENABLED,
             "miniapp_maintenance_msg": MINIAPP_MAINTENANCE_MSG,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
             "contact_admin_enabled":  CONTACT_ADMIN_ENABLED,
@@ -14152,6 +14200,7 @@ def _poll_payment_events():
                     if etype == "topup":
                         u = ct._db.get(str(cid)) or ct._default_user(cid)
                         u["wallet_balance"] = round(u.get("wallet_balance", 0) + amount, 2)
+                        u["wallet_topped"] = round(u.get("wallet_topped", 0) + amount, 2)
                         ct._set(cid, u)
                         send_to_user(cid, f"💰 <b>Wallet credited</b>: +${amount:,.2f}\n\nNew balance: <b>${u['wallet_balance']:,.2f}</b>")
                     elif etype == "vip":
@@ -15895,14 +15944,47 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/miniapp":
         if not is_admin: return
-        global MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG
+        global MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, MINIAPP_SLEEP_ENABLED
+        _sl_lbl = (f"{MINIAPP_SLEEP_START[0]}:{MINIAPP_SLEEP_START[1]:02d}"
+                   f" - {MINIAPP_SLEEP_END[0]}:{MINIAPP_SLEEP_END[1]:02d} AM IST")
         _mini_btns = {"inline_keyboard": [[
             {"text": "▶️  Resume (Live)",       "callback_data": "miniapp_resume"},
-            {"text": "⏸  Pause (Maintenance)", "callback_data": "miniapp_pause"}]]}
+            {"text": "⏸  Pause (Maintenance)", "callback_data": "miniapp_pause"}], [
+            {"text": ("✅ " if MINIAPP_SLEEP_ENABLED else "") + "😴 Sleep ON",
+             "callback_data": "miniapp_sleep_on"},
+            {"text": ("✅ " if not MINIAPP_SLEEP_ENABLED else "") + "☀️ Sleep OFF",
+             "callback_data": "miniapp_sleep_off"}]]}
         sub = parts[1].lower() if len(parts) > 1 else ""
         if not sub:
+            _now_state = ("⏸ PAUSED by you" if MINIAPP_MAINTENANCE_ON
+                          else "😴 Sleeping" if _miniapp_sleeping() else "▶️ Live")
+            _nl = chr(10)
             send_reply(chat_id,
-                "<b>Mini App Control</b>", reply_markup=_mini_btns)
+                "<b>Mini App Control</b>" + _nl + _nl
+                + f"Right now: <b>{_now_state}</b>" + _nl
+                + f"Nightly sleep: <b>{'ON' if MINIAPP_SLEEP_ENABLED else 'OFF'}</b>  ({_sl_lbl})" + _nl + _nl
+                + "<blockquote>Sleep closes the mini app every night between "
+                f"{_sl_lbl} and reopens it automatically. Your own pause always "
+                "wins - waking up never resumes an app you paused on "
+                "purpose.</blockquote>",
+                reply_markup=_mini_btns)
+            return
+        if sub == "sleep":
+            _arg = parts[2].lower() if len(parts) > 2 else ""
+            if _arg in ("on", "off"):
+                MINIAPP_SLEEP_ENABLED = (_arg == "on")
+                save_settings()
+                _maintenance_live_if_due(force=True)
+                send_reply(chat_id,
+                    f"{'😴' if MINIAPP_SLEEP_ENABLED else '☀️'} <b>Mini app nightly sleep "
+                    f"{'ON' if MINIAPP_SLEEP_ENABLED else 'OFF'}</b>"
+                    + (f" — closes {_sl_lbl}." if MINIAPP_SLEEP_ENABLED
+                       else " — stays open around the clock."),
+                    reply_markup=_mini_btns)
+            else:
+                send_reply(chat_id, f"Usage: <code>/miniapp sleep on</code> or "
+                                    f"<code>/miniapp sleep off</code>  ({_sl_lbl})",
+                           reply_markup=_mini_btns)
             return
         msg = " ".join(parts[2:]) if len(parts) > 2 else "Under Maintenance — back soon!"
         if "/" in msg:
@@ -16252,6 +16334,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/vip":
         send_vip_offer_screen(chat_id, str(_check_id))
+
+    elif cmd == "/wallet":
+        send_wallet_screen(chat_id, _check_id)
 
     elif cmd == "/addfunds":
         send_addfunds_screen(chat_id)
@@ -19401,7 +19486,6 @@ _COPYADMIN_SUBCATS = {
         ("/allusers",  "👥", "All Users Summary", "Quick overview of every copy-trade user and their status."),
         ("/users",     "📋", "List with Status",  "Full list of all users showing connected/copy-on/paused state."),
         ("/user",      "👤", "One User's Detail", "Look up a single user's full copy-trade configuration."),
-        ("/font", "🔤", "Message Font",       "Pick the alphabet every bot message is written in — small caps, bold, monospace, wide or plain. Shows a live sample of each."),
         ("/userstats", "📊", "User Stats",         "Total users, how many are using copy trade, and who has blocked the bot — by username."),
         ("/leaderboard", "🏆", "Volume Leaderboard", "Ranks users by real copy-trade volume — Today, 7D, 30D, Year, or All-Time."),
         ("/adminlinks", "🔗", "Admin Quick Links", "Shows quick-access links/shortcuts for admin tools."),
@@ -19473,6 +19557,7 @@ _SETTINGS_SUBCATS = {
         ("/miniapp", "📱", "Mini App Status", "Pause or resume the mini app (maintenance mode)."),
         ("/ws", "😴", "Weekend Sleep", "Turn off to let the bot run straight through Fri-Sun instead of auto-pausing."),
         ("/chatmodel", "💬", "Chat AI Model", "Pick which AI model/gateway powers /chat's own replies — separate from the scan AI."),
+        ("/font", "🔤", "Message Font", "Pick the alphabet every bot message is written in — small caps, bold serif, bold sans, sans, monospace, wide or plain. Shows a live sample of each so they can be compared. Tickers, prices and code blocks are never restyled."),
     ]),
     "winrate": ("🎯 Win Rate Targets", [
         ("/winrate", "🎯", "Win Rate Targets", "Set the promote/demote win-rate target independently for Scan1, Scan2, TS1, and TS2."),
@@ -19722,6 +19807,39 @@ def send_unlock_screen(chat_id, cid, sig_id: str, message_id=None):
     markup = {"inline_keyboard": rows}
     # rotate=False — plain/no-color buttons on this screen, per admin request.
     _help_edit_or_send(chat_id, text, markup, message_id, rotate=False, emoji_overrides=_PAYMENT_STAR_OVERRIDE)
+
+def send_wallet_screen(chat_id, cid, message_id=None):
+    """/wallet - what the user topped up, what they spent, what is left.
+
+    wallet_topped / wallet_spent are running totals kept at the three places
+    the balance actually moves (crypto credit, Stars credit, unlock debit).
+    They are counted rather than reconstructed from sig_spins, because a
+    signal unlocked with a Star never touched the wallet and reconstructing
+    would quietly count it as spend."""
+    u = ct._get(str(cid)) or {}
+    _bal    = float(u.get("wallet_balance", 0) or 0)
+    _topped = float(u.get("wallet_topped", 0) or 0)
+    _spent  = float(u.get("wallet_spent", 0) or 0)
+    _unlocked = len(u.get("unlocked_sigs", []) or [])
+    _nl = chr(10)
+    _lines = [f"Balance:     <b>${_bal:,.2f}</b>"]
+    if _topped:
+        _lines.append(f"Topped up:   ${_topped:,.2f}")
+    if _spent:
+        _lines.append(f"Spent:       ${_spent:,.2f}")
+    if _unlocked:
+        _lines.append(f"Unlocked:    {_unlocked} signal" + ("s" if _unlocked != 1 else ""))
+    text = ("💳 <b>" + _smallcaps_title("Your Wallet") + "</b>" + _nl + _nl
+            + "<blockquote>" + _nl.join(_lines) + "</blockquote>" + _nl
+            + ("Funds are used to unlock Free-channel signals. Top up with "
+               "crypto or Telegram Stars."
+               if _bal or _topped else
+               "Your wallet is empty. Top up with crypto or Telegram Stars to "
+               "unlock Free-channel signals."))
+    rows = [[{"text": "💰 Add Funds", "callback_data": "addfunds_menu"}],
+            [{"text": "◀️  Back", "callback_data": "help_main"}]]
+    _help_edit_or_send(chat_id, text, {"inline_keyboard": rows}, message_id, rotate=False)
+
 
 def send_addfunds_screen(chat_id, message_id=None):
     rows = [[{"text": "$1", "callback_data": "addfunds:1"}, {"text": "$5", "callback_data": "addfunds:5"}, {"text": "$10", "callback_data": "addfunds:10"}],
@@ -20614,6 +20732,7 @@ _MONITOR_SUBCATS = {
     ]),
     "vipwallet": ("⭐ VIP & Wallet", [
         ("/vip",      "⭐", "VIP Plans", "See VIP plans and pricing"),
+        ("/wallet",   "💳", "My Wallet", "Your balance — topped up, spent, and what is left"),
         ("/addfunds", "💵", "Add Funds", "Top up your copy-trade wallet"),
     ]),
     "aichat": ("💬 AI Chat", [
@@ -21612,7 +21731,23 @@ def command_listener():
                         _NP_TARGETS = {"/setsize": "setsize", "/setleverage": "setleverage", "/setrisk": "setrisk", "/tp1size": "tp1size", "/freelimit": "freelimit"}
                         _SCREEN_CMDS = {"/adminlinks": send_adminlinks_screen, "/userstats": send_userstats_screen,
                                         "/leaderboard": send_leaderboard_screen,
-                                        "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen}
+                                        "/coadmin": send_coadmin_screen, "/channelmgmt": send_channelmgmt_screen,
+                                        "/notify": send_notify_screen, "/font": send_font_screen,
+                                        "/chatmodel": send_chatmodel_screen, "/go": send_go_screen}
+                        # Commands that draw their OWN screen rather than
+                        # replying through send_reply. The capture below can
+                        # only see send_reply, so without an entry here the
+                        # command sent its screen as a NEW message AND the
+                        # capture came back empty, leaving the menu edited to
+                        # a pointless "Done: /vip" above it - two messages for
+                        # one tap (admin report 2026-09-08). Every one of
+                        # these already takes message_id; they were simply
+                        # never wired to it.
+                        _USER_SCREEN_CMDS = {
+                            "/vip":      lambda ch, uid, mid: send_vip_offer_screen(ch, str(uid), message_id=mid),
+                            "/addfunds": lambda ch, uid, mid: send_addfunds_screen(ch, message_id=mid),
+                            "/wallet":   lambda ch, uid, mid: send_wallet_screen(ch, uid, message_id=mid),
+                        }
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
                                              "/trailsl": send_trailsl_screen, "/winrate": send_winrate_screen,
@@ -21621,6 +21756,8 @@ def command_listener():
                                             "/settp2": "settp2", "/closetrade": "closetrade"}
                         if cmd_text == "/connect":
                             send_connect_exchange_picker(cb_chat_id, message_id=cb_msg_id)
+                        elif cmd_text in _USER_SCREEN_CMDS:
+                            _USER_SCREEN_CMDS[cmd_text](cb_chat_id, cb_cid, cb_msg_id)
                         elif cmd_text in _SCREEN_CMDS and cb_is_admin:
                             _SCREEN_CMDS[cmd_text](cb_chat_id, message_id=cb_msg_id)
                         elif cmd_text in _SCAN_SCREEN_CMDS and cb_is_scanadmin:
@@ -21865,6 +22002,7 @@ def command_listener():
                             # so this applies synchronously (safe: ct._set is race-free
                             # within this one long-running process).
                             _u["wallet_balance"] = round(_bal - _amt, 2)
+                            _u["wallet_spent"] = round(_u.get("wallet_spent", 0) + _amt, 2)
                             _u.setdefault("unlocked_sigs", []).append(_sig_id)
                             ct._set(cb_cid, _u)
                             send_unlock_screen(cb_chat_id, cb_cid, _sig_id, message_id=cb_msg_id)
@@ -22041,6 +22179,9 @@ def command_listener():
                     # ── Miniapp pause/resume ──────────────────────────────────
                     elif cb_data in ("miniapp_pause", "miniapp_resume"):
                         _toggle_cmd(f"/miniapp {'pause' if cb_data=='miniapp_pause' else 'resume'}", cb_chat_id, cb_cid, cb_msg_id, "settings")
+                    elif cb_data in ("miniapp_sleep_on", "miniapp_sleep_off"):
+                        _toggle_cmd(f"/miniapp sleep {'on' if cb_data=='miniapp_sleep_on' else 'off'}",
+                                    cb_chat_id, cb_cid, cb_msg_id, "settings")
 
                     elif cb_data in ("btca_on", "btca_off") and cb_is_scanadmin:
                         global btc_analysis_enabled
@@ -22739,6 +22880,7 @@ def command_listener():
                         _u = ct._db.get(str(_sp_cid)) or ct._default_user(_sp_cid)
                         _sp_usd = float(_sp_payload.get("usd", _sp_stars / STARS_PER_USD))
                         _u["wallet_balance"] = round(_u.get("wallet_balance", 0) + _sp_usd, 2)
+                        _u["wallet_topped"] = round(_u.get("wallet_topped", 0) + _sp_usd, 2)
                         ct._set(_sp_cid, _u)
                         send_to_user(_sp_cid, f"💰 <b>Wallet credited</b>: +${_sp_usd:,.2f} (⭐{_sp_stars:,} Stars)\n\nNew balance: <b>${_u['wallet_balance']:,.2f}</b>")
                     elif _sp_type == "sig_unlock":
@@ -24489,8 +24631,9 @@ def main():
     if CLEXER_API_URL:
         try:
             _hdrs = {"X-Push-Secret": PUSH_STATE_SECRET, "Content-Type": "application/json"} if PUSH_STATE_SECRET else {"Content-Type": "application/json"}
-            requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": MINIAPP_MAINTENANCE_ON, "msg": MINIAPP_MAINTENANCE_MSG}, headers=_hdrs, timeout=5)
-            print(f"  Mini app: re-asserted intended state on startup ({'PAUSED' if MINIAPP_MAINTENANCE_ON else 'LIVE'})")
+            _m_on, _m_msg = _miniapp_effective()
+            requests.post(f"{CLEXER_API_URL}/maintenance", json={"on": _m_on, "msg": _m_msg}, headers=_hdrs, timeout=5)
+            print(f"  Mini app: re-asserted intended state on startup ({'PAUSED' if _m_on else 'LIVE'})")
         except Exception as e:
             print(f"  Mini app: could not re-assert state on startup — {e}")
 
