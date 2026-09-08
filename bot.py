@@ -10272,6 +10272,388 @@ def bingx_klines(symbol: str, interval: str, limit: int):
         print(f"  [BINGX KLINES] {symbol} {interval}: {e}")
         return None
 
+# ═══════════════════════════════════════════════════════════════════════════
+# /mtf — multi-timeframe read.  ZERO model calls: no Claude, no Aerolink, no
+# cost, ever.  Every number below is arithmetic on candles the exchange serves
+# for free, using the same four detectors _engine_signal already routes real
+# trades on (P structure, C momentum, E position, F travel) so /mtf and the
+# engine can never disagree about what a timeframe is doing.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_MTF_TFS = ["6h", "4h", "1h", "30m", "15m", "5m", "1m"]
+_MTF_LABEL = {"6h": "6H", "4h": "4H", "1h": "1H", "30m": "30m",
+              "15m": "15m", "5m": "5m", "1m": "1m"}
+# Higher timeframes carry more weight in a combination's confidence: a 6H
+# trend surviving is worth more than a 1m wiggle agreeing with it.
+_MTF_WEIGHT = {"6h": 3.0, "4h": 3.0, "1h": 2.0, "30m": 2.0,
+               "15m": 1.5, "5m": 1.0, "1m": 0.5}
+_MTF_COMBOS = [
+    ("POSITION", ["6h", "4h", "1h"]),
+    ("SWING",    ["4h", "1h", "15m"]),
+    ("INTRADAY", ["1h", "15m", "5m"]),
+    ("SCALP",    ["15m", "5m", "1m"]),
+]
+_MTF_BARS  = 200         # candles fetched per timeframe
+_MTF_BIAS_BARS = 30      # ...but direction reads only the newest 30
+_MTF_FIB_BARS  = 60      # ...and the entry leg only the newest 60
+# Three different windows on purpose. Liquidity wants DEPTH - at 60 bars a
+# falling market simply has no swing lows left below price and the 3-below
+# panel came back with one line. Direction wants the OPPOSITE: net travel
+# and range position across 200 candles describe last week, not now.
+_MTF_CACHE: dict = {}    # (symbol, tf) -> (fetched_at, df)
+_MTF_CACHE_TTL = 60      # seconds; users WILL spam this, and a minute-old 6H candle is identical
+
+
+def _mtf_candles(symbol: str, tf: str):
+    """One timeframe of candles, cached briefly. Oldest first, newest last —
+    the same order the rest of the bot assumes (see the df_5m[-1] price
+    fallback in the intraday scanner)."""
+    _k = (symbol, tf)
+    _hit = _MTF_CACHE.get(_k)
+    if _hit and time.time() - _hit[0] < _MTF_CACHE_TTL:
+        return _hit[1]
+    df = bingx_klines(symbol, tf, _MTF_BARS)
+    if df is not None and len(df):
+        try:
+            df = df.sort_values("time")
+        except Exception:
+            pass
+        _MTF_CACHE[_k] = (time.time(), df)
+    return df
+
+
+def _mtf_bias(df):
+    """(direction, score, flags) for one timeframe.
+
+    The four detectors are _engine_signal's, unchanged in meaning:
+      P  structure  swing highs/lows stepping up or down
+      C  momentum   3+ consecutive candles pushing that way, anchored to the newest
+      E  position   price in the top/bottom third of the window's range
+      F  travel     net move across the window beats 1%
+
+    Returns direction "up"/"down", the winning side's score 0-4, and the
+    letters that fired, so the reader can see WHY a timeframe reads bull -
+    a 4/4 built on structure and travel is a different animal from one built
+    on position alone."""
+    if df is None or len(df) < 10:
+        return None, 0, ""
+    H = [float(x) for x in df["high"].values]
+    L = [float(x) for x in df["low"].values]
+    C = [float(x) for x in df["close"].values]
+    n = len(H)
+    sh  = [H[i] for i in range(1, n - 1) if H[i] == max(H[i - 1:i + 2])]
+    slp = [L[i] for i in range(1, n - 1) if L[i] == min(L[i - 1:i + 2])]
+
+    def _run(v, falling, thr=0.1):
+        c = 1
+        for i in range(len(v) - 1, 0, -1):
+            if not v[i - 1]:
+                break
+            d = (v[i] - v[i - 1]) / v[i - 1] * 100
+            if (d < -thr) if falling else (d > thr):
+                c += 1
+            else:
+                break
+        return c
+
+    rng = max(H) - min(L)
+    if rng <= 0 or not C[0]:
+        return None, 0, ""
+    pos = (C[-1] - min(L)) / rng * 100
+    net = (C[-1] - C[0]) / C[0] * 100
+
+    p_b = (len(sh) >= 2 and sh[-1] > sh[-2]) or (len(slp) >= 2 and slp[-1] > slp[-2])
+    p_s = (len(slp) >= 2 and slp[-1] < slp[-2]) or (len(sh) >= 2 and sh[-1] < sh[-2])
+    _bull = [p_b, _run(L, False) >= 3, pos > 67, net > 1]
+    _bear = [p_s, _run(H, True) >= 3, pos < 33, net < -1]
+    b, s = sum(_bull), sum(_bear)
+    if b == s:
+        # A genuine tie is decided by net travel rather than called a coin
+        # flip - the window still moved one way overall.
+        _dir = "up" if net >= 0 else "down"
+        _fl = _bull if _dir == "up" else _bear
+        return _dir, b, "".join(c for c, f in zip("PCEF", _fl) if f)
+    _dir = "up" if b > s else "down"
+    _fl = _bull if _dir == "up" else _bear
+    return _dir, max(b, s), "".join(c for c, f in zip("PCEF", _fl) if f)
+
+
+def _mtf_swings(df, kind: str):
+    """Swing highs (kind='high') or lows ('low') with a crude liquidity score.
+
+    A level matters in proportion to how often price has been there and how
+    much traded when it was: resting stops accumulate at levels the market
+    keeps revisiting. Scored as touches 40% + volume 40% + recency 20%,
+    which is a proxy, not order-book truth - BingX exposes no resting-order
+    data, so anything claiming to read actual stop clusters would be made up."""
+    if df is None or len(df) < 12:
+        return []
+    H = [float(x) for x in df["high"].values]
+    L = [float(x) for x in df["low"].values]
+    V = [float(x) for x in df["volume"].values] if "volume" in df else [1.0] * len(H)
+    src = H if kind == "high" else L
+    n = len(src)
+    out = []
+    for i in range(2, n - 2):
+        win = src[i - 2:i + 3]
+        if (src[i] == max(win)) if kind == "high" else (src[i] == min(win)):
+            out.append({"price": src[i], "vol": V[i], "idx": i})
+    if not out:
+        return []
+    # Merge levels within 0.3% of each other - two swings a hair apart are one
+    # pool of liquidity, and listing both wastes a slot the reader needs.
+    out.sort(key=lambda d: d["price"])
+    merged = [out[0]]
+    for lv in out[1:]:
+        prev = merged[-1]
+        if prev["price"] and abs(lv["price"] - prev["price"]) / prev["price"] < 0.003:
+            prev["vol"] += lv["vol"]
+            prev["idx"] = max(prev["idx"], lv["idx"])
+            prev["touches"] = prev.get("touches", 1) + 1
+        else:
+            merged.append(lv)
+    _maxv = max(l["vol"] for l in merged) or 1
+    _maxt = max(l.get("touches", 1) for l in merged) or 1
+    for l in merged:
+        _t = l.get("touches", 1) / _maxt
+        _v = l["vol"] / _maxv
+        _r = l["idx"] / max(1, n - 1)
+        l["score"] = round((_t * 0.4 + _v * 0.4 + _r * 0.2) * 100)
+    return merged
+
+
+def _mtf_liquidity(dfs: dict, tfs: list, price: float, direction: str):
+    """Liquidity levels for ONE combination, pooled from that combination's
+    own timeframes. That is why POSITION's levels sit far out and SCALP's sit
+    close in - they are literally reading different candles.
+
+    direction 'up'   -> 3 above, 2 below
+    direction 'down' -> 3 below, 2 above
+    direction None   -> 2 each way, nearest first (a 3/2 split needs a
+                        direction to lean on, and a mixed combo has none)"""
+    ups, dns = [], []
+    for tf in tfs:
+        df = dfs.get(tf)
+        for lv in _mtf_swings(df, "high"):
+            if lv["price"] > price * 1.001:
+                ups.append(lv)
+        for lv in _mtf_swings(df, "low"):
+            if lv["price"] < price * 0.999:
+                dns.append(lv)
+
+    def _dedupe(levels, reverse):
+        levels.sort(key=lambda d: d["price"], reverse=reverse)
+        out = []
+        for lv in levels:
+            if not any(abs(lv["price"] - o["price"]) / max(o["price"], 1e-9) < 0.003 for o in out):
+                out.append(lv)
+        return out
+
+    ups = _dedupe(ups, False)      # nearest above first
+    dns = _dedupe(dns, True)       # nearest below first
+    if direction == "up":
+        n_up, n_dn = 3, 2
+    elif direction == "down":
+        n_up, n_dn = 2, 3
+    else:
+        n_up, n_dn = 2, 2
+    return ups[:n_up], dns[:n_dn]
+
+
+def _mtf_tier(score: int) -> str:
+    """MIN / MED / HIGH straight off the liquidity score.
+
+    Tiering by DISTANCE instead was tried first and had to go: it printed
+    "$79,372 HIGH 52%" directly above "$79,120 MED 88%", so the word and the
+    number beside it contradicted each other on every read. The label now
+    just names the band the percentage falls in, and can repeat - two deep
+    pools above price is a real thing the reader should see, not something to
+    hide behind a tidy MIN/MED/HIGH ladder."""
+    if score >= 70:
+        return "HIGH"
+    if score >= 40:
+        return "MED"
+    return "MIN"
+
+
+def _mtf_fib_entry(df, direction: str):
+    """Fibonacci 23.6-50% retrace of the most recent leg. For an UP read that
+    is a pullback zone under price; for a DOWN read, a bounce zone above it.
+    Returns (low, high) or None when the window has no usable leg."""
+    if df is None or len(df) < 10 or not direction:
+        return None
+    H = [float(x) for x in df["high"].values]
+    L = [float(x) for x in df["low"].values]
+    hi, lo = max(H), min(L)
+    if hi <= lo:
+        return None
+    leg = hi - lo
+    if direction == "up":
+        return (hi - leg * 0.50, hi - leg * 0.236)
+    return (lo + leg * 0.236, lo + leg * 0.50)
+
+
+def _mtf_money(v: float) -> str:
+    """Price as text, with enough decimals to be readable at any scale — a
+    $0.000043 coin and a $62,508 coin both have to render sensibly."""
+    if v >= 1000:
+        return f"{v:,.0f}"
+    if v >= 1:
+        return f"{v:,.2f}"
+    if v >= 0.01:
+        return f"{v:,.4f}"
+    return f"{v:,.8f}".rstrip("0").rstrip(".")
+
+
+def _mtf_bar(score: int, out_of: int = 4) -> str:
+    _f = max(0, min(out_of, score))
+    return "▓" * _f + "░" * (out_of - _f)
+
+
+def _mtf_usage_text() -> str:
+    """/mtf with no coin. Deliberately NOT a BTC default (admin 2026-09-08).
+
+    Body in the monospace alphabet, but the three examples stay inside <code>:
+    Telegram renders that as real monospace anyway AND makes it tap-to-copy,
+    whereas the glyph version is dead text a user cannot tap or paste back as
+    a command. Same reason _smallcaps_title leaves slash-commands alone."""
+    _m = lambda s: _font(s, _FONT_STYLES["mono"][1])
+    _nl = chr(10)
+    return (
+        "📐 <b>" + _m("MULTI-TIMEFRAME") + "</b>" + _nl + _nl
+        + _m("Reads seven timeframes at once and tells you which way each one "
+             "is leaning, then scores four timeframe combinations so you can "
+             "see where they agree and where they do not.") + _nl + _nl
+        + "🕐 " + _m("Timeframes") + "   <code>6H  4H  1H  30m  15m  5m  1m</code>" + _nl + _nl
+        + _m("Each combination gives you:") + _nl
+        + _m("  · direction, up or down, with a confidence %") + _nl
+        + _m("  · a Fibonacci entry range") + _nl
+        + _m("  · its own liquidity levels, from its own timeframes") + _nl + _nl
+        + "▶️ <b>" + _m("How to use") + "</b>" + _nl
+        + "<code>/mtf BTC</code>" + _nl
+        + "<code>/mtf SOL</code>" + _nl
+        + "<code>/mtf ETH</code>" + _nl + _nl
+        + _m("Any coin listed on the exchange works. Type the ticker on its "
+             "own - no USDT, no dollar sign.")
+    )
+
+
+def _mtf_report(coin: str):
+    """Builds the whole /mtf message. Returns (text, None) or (None, error)."""
+    _sym = f"{coin}-USDT"
+    dfs = {tf: _mtf_candles(_sym, tf) for tf in _MTF_TFS}
+    _live = [tf for tf in _MTF_TFS if dfs.get(tf) is not None and len(dfs[tf]) >= 10]
+    if not _live:
+        return None, (f"⚠️ No market data for <b>{_html.escape(coin)}</b>. "
+                      f"Check the ticker — e.g. <code>/mtf SOL</code>.")
+    price = get_bingx_price(_sym)
+    if not price:
+        _last = dfs[_live[-1]]
+        price = float(_last["close"].values[-1])
+
+    bias = {}
+    for tf in _MTF_TFS:
+        _d = dfs.get(tf)
+        d, sc, fl = _mtf_bias(_d.tail(_MTF_BIAS_BARS) if _d is not None else None)
+        bias[tf] = {"dir": d, "score": sc, "flags": fl}
+
+    _nl = chr(10)
+    _rows = []
+    for tf in _MTF_TFS:
+        b = bias[tf]
+        if not b["dir"]:
+            _rows.append(f"{_MTF_LABEL[tf]:<5} ·· no data")
+            continue
+        _arrow = "🟢 BULL" if b["dir"] == "up" else "🔴 BEAR"
+        _flags = " ".join(c if c in b["flags"] else "·" for c in "PCEF")
+        _rows.append(f"{_MTF_LABEL[tf]:<5} {_arrow}  {_mtf_bar(b['score'])} "
+                     f"{b['score']}/4  {_flags}")
+
+    out = ["📐 <b>" + _font("MULTI-TIMEFRAME", _FONT_BOLD) + f"</b> — {_html.escape(coin)}/USDT",
+           f"<b>${_mtf_money(price)}</b>   {ist_str()}", "",
+           "<pre>" + _nl.join(_rows) + "</pre>"]
+
+    _results = []
+    for name, tfs in _MTF_COMBOS:
+        _have = [t for t in tfs if bias[t]["dir"]]
+        if not _have:
+            continue
+        # Confidence is AGREEMENT first, strength second, and the two are
+        # added rather than multiplied. Multiplying them (the first attempt)
+        # counted a weak score twice and produced nonsense: three timeframes
+        # all pointing down at 2/4 each scored 50%, while two of three
+        # agreeing scored 28% and got called MIXED.
+        _w_up = sum(_MTF_WEIGHT[t] for t in _have if bias[t]["dir"] == "up")
+        _w_dn = sum(_MTF_WEIGHT[t] for t in _have if bias[t]["dir"] == "down")
+        _w_tot = sum(_MTF_WEIGHT[t] for t in _have) or 1
+        _lead = "up" if _w_up > _w_dn else "down" if _w_dn > _w_up else None
+        _agree_tfs = [t for t in _have if bias[t]["dir"] == _lead] if _lead else []
+        _strength = (sum(bias[t]["score"] for t in _agree_tfs) / (4 * len(_agree_tfs))
+                     if _agree_tfs else 0)
+        _conf = round((max(_w_up, _w_dn) / _w_tot * 0.6 + _strength * 0.4) * 100)
+        # Below 45% the timeframes are arguing rather than agreeing, and a
+        # direction printed on that is worse than no direction at all.
+        if _conf < 45:
+            _lead = None
+        _results.append({"name": name, "tfs": tfs, "have": _have,
+                         "dir": _lead, "conf": _conf,
+                         "strength": round(_strength * 4, 1)})
+    _results.sort(key=lambda r: r["conf"], reverse=True)
+
+    _NUM = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    for i, r in enumerate(_results):
+        out.append("═" * 24)
+        _tfs_lbl = " ".join(_MTF_LABEL[t] for t in r["tfs"])
+        _dir_lbl = ("⬆️ UP" if r["dir"] == "up" else
+                    "⬇️ DOWN" if r["dir"] == "down" else "⚠️ MIXED")
+        out.append(f"{_NUM[i]} <b>" + _font(r["name"], _FONT_BOLD)
+                   + f"</b> · {_tfs_lbl}")
+        out.append(f"   {_dir_lbl} · <b>{r['conf']}%</b>")
+
+        _blk = []
+        if r["dir"]:
+            # Entry comes off the combo's MIDDLE timeframe: the fastest one
+            # gives a band too tight to ever fill, the slowest one a band so
+            # wide it says nothing.
+            _mid = r["tfs"][len(r["tfs"]) // 2]
+            _dmid = dfs.get(_mid)
+            _fib = _mtf_fib_entry(_dmid.tail(_MTF_FIB_BARS) if _dmid is not None else None,
+                                  r["dir"])
+            if _fib:
+                out.append(f"   Entry  <b>${_mtf_money(_fib[0])} – "
+                           f"${_mtf_money(_fib[1])}</b>  (fib 23.6–50%)")
+        _agree = [t for t in r["have"] if bias[t]["dir"] == r["dir"]] if r["dir"] else []
+        if r["dir"]:
+            _against = [t for t in r["have"] if bias[t]["dir"] != r["dir"]]
+            _note = (f"All {len(_agree)} aligned" if not _against else
+                     f"{len(_agree)} of {len(r['have'])} agree — "
+                     + ", ".join(_MTF_LABEL[t] for t in _against) + " against")
+            # The average strength is printed because agreement alone does not
+            # explain the number: three timeframes can all point the same way
+            # while each is only 2/4, and the reader needs to see that.
+            out.append(f"   <i>{_note}, average strength {r['strength']}/4.</i>")
+        else:
+            out.append("   <i>No entry — the timeframes disagree.</i>")
+
+        ups, dns = _mtf_liquidity(dfs, r["tfs"], price, r["dir"])
+        if ups or dns:
+            _lq = []
+            for lv in reversed(ups):
+                _lq.append(f"{'$' + _mtf_money(lv['price']):<12} "
+                           f"{_mtf_bar(round(lv['score'] / 20), 5)}  "
+                           f"{_mtf_tier(lv['score']):<4} {lv['score']:>3}%")
+            _lq.append(f"── ${_mtf_money(price)} ──")
+            for j, lv in enumerate(dns):
+                _lq.append(f"{'$' + _mtf_money(lv['price']):<12} "
+                           f"{_mtf_bar(round(lv['score'] / 20), 5)}  "
+                           f"{_mtf_tier(lv['score']):<4} {lv['score']:>3}%")
+            out.append("   💧 <i>liquidity — from " + _tfs_lbl + "</i>")
+            out.append("<pre>" + _nl.join(_lq) + "</pre>")
+
+    out += ["", "<i>Engine read — no Clex, no cost. Not financial advice.</i>"]
+    return _nl.join(out), None
+
+
 def _scan_list(ver: int) -> list:
     """Return the active trades list for scan version 1 or 2."""
     return scan1_trades if ver == 1 else scan2_trades
@@ -14384,7 +14766,7 @@ FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 
 <i>Note: 2 uses per command per hour</i>"""
 
-FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat","/endchat","/suggest"}
+FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat","/endchat","/suggest","/mtf"}
 
 # False = scan uses BingX candles + matplotlib (default, no TV bridge needed)
 # True  = scan uses TV bridge candles + TV screenshots (old behaviour)
@@ -15978,6 +16360,21 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                        + "<blockquote>Type your idea, feedback or problem in your next "
                        + "message and it goes straight to the admin.</blockquote>" + chr(10)
                        + "<i>Or send it in one go: /suggest your idea here</i>")
+
+    elif cmd == "/mtf":
+        _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
+        _coin = _coin.replace("-USDT", "").replace("USDT", "").strip()
+        if not _coin:
+            send_reply(chat_id, _mtf_usage_text(), skip_smallcaps=True); return
+        if not _coin.isalnum() or len(_coin) > 12:
+            send_reply(chat_id, "⚠️ That does not look like a ticker. Try "
+                                "<code>/mtf SOL</code>."); return
+        _txt, _err = _mtf_report(_coin)
+        if _err:
+            send_reply(chat_id, _err); return
+        # skip_smallcaps: the report is already styled per-element, and the
+        # <pre> tables must keep their exact column widths.
+        send_reply(chat_id, _safe_truncate_html(_txt, 3900), skip_smallcaps=True)
 
     elif cmd == "/price":
         # This command was listed in FRIEND_COMMANDS and shown as a button in
@@ -20806,6 +21203,7 @@ _MONITOR_SUBCATS = {
         ("/status",  "📊", "Bot Status",     "Full bot status"),
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
+        ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),
