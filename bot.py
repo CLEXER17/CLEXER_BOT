@@ -9801,6 +9801,48 @@ def _tg_pace():
         _tg_last_send = time.time()
 
 
+# ─── One choke point for EVERY Telegram call ───────────────────────────────
+# The per-call-site wrappers were not enough. bot.py reaches the Bot API from
+# roughly thirty places - sendPhoto for charts, editMessageText, deleteMessage,
+# answerCallbackQuery, pinChatMessage, the channel posters, the test system -
+# and wrapping them one at a time both missed most of the traffic and made the
+# meter lie: it reported 5 calls in a minute while the bot was still being
+# rate limited, because everything else was invisible to it (admin 2026-09-08).
+#
+# Patching requests.post once catches all of them, including any added later,
+# and cannot drift out of sync the way thirty separate edits would. Only
+# api.telegram.org is touched; BingX, Binance and the central store pass
+# straight through untouched.
+_tg_real_post = requests.post
+
+
+def _tg_method_of(url: str) -> str:
+    """'sendPhoto' out of '.../botTOKEN/sendPhoto' - never the token."""
+    try:
+        return str(url).rsplit("/", 1)[-1].split("?")[0][:24] or "?"
+    except Exception:
+        return "?"
+
+
+def _tg_hooked_post(url, *args, **kwargs):
+    if "api.telegram.org" in str(url):
+        _m = _tg_method_of(url)
+        # getUpdates is the long-poll: it is meant to sit open for its whole
+        # timeout and is not what any rate limit is about. Counting it would
+        # bury the real traffic, and pacing it would throttle the poll loop.
+        if _m != "getUpdates":
+            _tg_note_send(_m)
+            _tg_pace()
+    return _tg_real_post(url, *args, **kwargs)
+
+
+# Guard against a re-exec/reload installing the hook twice, which would double
+# every pace interval and halve the bot's throughput for no reason.
+if getattr(requests.post, "__name__", "") != "_tg_hooked_post":
+    requests.post = _tg_hooked_post
+    print("[TG RATE] send meter installed on every Telegram call")
+
+
 def _tg_retry_after(resp) -> float:
     """Seconds Telegram asked us to wait, or 0 if this was not a 429."""
     try:
@@ -9819,8 +9861,9 @@ def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int 
     (_mark_block_state and friends read it). The retry is fire-and-forget:
     nothing downstream waits on it, because nothing downstream can - the
     caller is the poll loop."""
-    _tg_note_send(tag)
-    _tg_pace()
+    # No _tg_note_send/_tg_pace here - the requests.post hook above already
+    # does both for every Telegram call, and doing it twice would double the
+    # pacing delay on exactly the paths users wait on.
     _url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
     r = requests.post(_url, json=payload, timeout=10)
     _wait = _tg_retry_after(r)
@@ -9833,7 +9876,6 @@ def _tg_post_retrying(method: str, payload: dict, tag: str = "SEND", tries: int 
                 return
             time.sleep(_w + 0.5 + random.uniform(0, 2.0))
             try:
-                _tg_pace()
                 _r2 = requests.post(_url, json=payload, timeout=10)
                 if _r2.json().get("ok"):
                     print(f"  [{tag}] rate limited {_w:.0f}s — resent OK")
@@ -11172,8 +11214,6 @@ def _tg_delete_message(chat_id, message_id) -> bool:
     Sleeping here is fine, unlike in send paths: the callers are the
     auto-clear thread and the /clearsl* commands, never the poll loop."""
     for _try in range(2):
-        _tg_note_send("BULK DELETE")
-        _tg_pace()
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
