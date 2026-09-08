@@ -10460,20 +10460,40 @@ def _mtf_liquidity(dfs: dict, tfs: list, price: float, direction: str):
     return ups[:n_up], dns[:n_dn]
 
 
-def _mtf_tier(score: int) -> str:
-    """MIN / MED / HIGH straight off the liquidity score.
+def _mtf_tiers(levels: list, is_direction_side: bool = False) -> dict:
+    """HIGH / MED / MIN by score RANK within the levels actually shown, keyed
+    by each level's index in the list.
 
-    Tiering by DISTANCE instead was tried first and had to go: it printed
-    "$79,372 HIGH 52%" directly above "$79,120 MED 88%", so the word and the
-    number beside it contradicted each other on every read. The label now
-    just names the band the percentage falls in, and can repeat - two deep
-    pools above price is a real thing the reader should see, not something to
-    hide behind a tidy MIN/MED/HIGH ladder."""
-    if score >= 70:
-        return "HIGH"
-    if score >= 40:
-        return "MED"
-    return "MIN"
+    The shape is fixed, as the admin specified: the direction side always
+    reads HIGH, MED and MIN, the opposite side always MED and MIN. Ranking
+    is what keeps that shape honest.
+
+    Two earlier attempts were wrong. Tiering by DISTANCE printed
+    "$79,372 HIGH 52%" above "$79,120 MED 88%" - the word contradicting the
+    number beside it. Tiering by absolute score BAND then gave two HIGHs on
+    one side and two MINs on the other, losing the shape entirely (admin
+    2026-09-08). Ranking gives both: strongest of the three shown is HIGH,
+    middle is MED, weakest is MIN, so the label and the percentage can never
+    disagree about which level matters most."""
+    # The DIRECTION side always leads with HIGH, even when the window turned
+    # up fewer than three levels - it is the side the read is about. The
+    # opposite side starts at MED, so a glance at the labels alone says which
+    # way the combination is pointing.
+    _names = (["HIGH", "MED", "MIN"] if is_direction_side else ["MED", "MIN"])
+    _order = sorted(range(len(levels)),
+                    key=lambda i: levels[i]["score"], reverse=True)
+    # The percentage is normalised to THIS SIDE, not across both. A raw score
+    # is an absolute reading, and printing one next to a label that ranks
+    # within a side guarantees they contradict: the run that prompted this
+    # showed "MIN 88%" above "MED 96%" on one side and "HIGH 49%" on the
+    # other. Per-side normalisation makes the top of each side its own 100%,
+    # so within a side the label and the number always move together - and
+    # "which level on my side matters most" is the question the reader is
+    # actually asking.
+    _max = max((levels[i]["score"] for i in range(len(levels))), default=0) or 1
+    return {idx: (_names[min(rank, len(_names) - 1)],
+                  max(1, round(levels[idx]["score"] / _max * 100)))
+            for rank, idx in enumerate(_order)}
 
 
 def _mtf_fib_entry(df, direction: str):
@@ -10638,15 +10658,20 @@ def _mtf_report(coin: str):
         ups, dns = _mtf_liquidity(dfs, r["tfs"], price, r["dir"])
         if ups or dns:
             _lq = []
-            for lv in reversed(ups):
-                _lq.append(f"{'$' + _mtf_money(lv['price']):<12} "
-                           f"{_mtf_bar(round(lv['score'] / 20), 5)}  "
-                           f"{_mtf_tier(lv['score']):<4} {lv['score']:>3}%")
+            # Tiers are ranked within each SIDE separately, so the direction
+            # side keeps its full HIGH/MED/MIN ladder regardless of how the
+            # other side scored.
+            _t_up = _mtf_tiers(ups, r["dir"] == "up")
+            _t_dn = _mtf_tiers(dns, r["dir"] == "down")
+            for _i in range(len(ups) - 1, -1, -1):
+                _nm, _pc = _t_up[_i]
+                _lq.append(f"{'$' + _mtf_money(ups[_i]['price']):<12} "
+                           f"{_mtf_bar(round(_pc / 20), 5)}  {_nm:<4} {_pc:>3}%")
             _lq.append(f"── ${_mtf_money(price)} ──")
-            for j, lv in enumerate(dns):
+            for _i, lv in enumerate(dns):
+                _nm, _pc = _t_dn[_i]
                 _lq.append(f"{'$' + _mtf_money(lv['price']):<12} "
-                           f"{_mtf_bar(round(lv['score'] / 20), 5)}  "
-                           f"{_mtf_tier(lv['score']):<4} {lv['score']:>3}%")
+                           f"{_mtf_bar(round(_pc / 20), 5)}  {_nm:<4} {_pc:>3}%")
             out.append("   💧 <i>liquidity — from " + _tfs_lbl + "</i>")
             out.append("<pre>" + _nl.join(_lq) + "</pre>")
 
