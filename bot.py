@@ -9670,6 +9670,32 @@ def send_admin(text, pin: bool = False, emoji_overrides: dict = None):
             if _mid: _pin_message(ADMIN_CHAT_ID, _mid)
     except Exception as e: print(f"  [ADMIN MSG ERROR] {e}")
 
+def _deliver_suggestion(cid, text: str, username=None) -> bool:
+    """Forward a user's suggestion to the admin DM and pin it there.
+
+    Pinned because the whole point is that it does not scroll away unread -
+    the admin asked for these to stay visible (2026-09-08). The sender is an
+    explicit _user_ref anchor rather than a bare @handle, because the global
+    styling pass rewrites a mixed-case handle into glyphs Telegram's
+    auto-linker no longer matches, which is what made earlier notices
+    arrive unclickable."""
+    _body = (text or "").strip()
+    if not _body:
+        return False
+    if username:
+        user_usernames[str(cid)] = username
+    _u = ct._get(str(cid)) or {}
+    _tier = "⭐ VIP" if _u.get("tier") == "vip" else "🆓 Free"
+    send_admin(
+        "💡 <b>New Suggestion</b>" + chr(10) + chr(10)
+        + f"From: <b>{_user_ref(cid)}</b>  |  {_tier}  |  <code>{cid}</code>" + chr(10) + chr(10)
+        + "<blockquote>" + _html.escape(_body[:1500], quote=False) + "</blockquote>" + chr(10)
+        + "<i>Tap the name above to open their chat and reply directly.</i>",
+        pin=True)
+    print(f"  [SUGGESTION] from {cid}: {_body[:60]}")
+    return True
+
+
 _reply_capture: dict = {}  # cid → {"texts": [], "cat_id": str} when capturing for inline menu
 _scan_quiet = threading.local()  # per-thread flag — True only inside an auto-triggered
                                   # scan's own dedicated thread (see _do_scan), so it can
@@ -14358,7 +14384,7 @@ FRIEND_HELP = """<b>CLEXER V17.8.5 Commands</b>
 
 <i>Note: 2 uses per command per hour</i>"""
 
-FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat","/endchat"}
+FRIEND_COMMANDS = {"/start","/help","/status","/price","/trade","/history","/stats","/session","/chat","/endchat","/suggest"}
 
 # False = scan uses BingX candles + matplotlib (default, no TV bridge needed)
 # True  = scan uses TV bridge candles + TV screenshots (old behaviour)
@@ -15932,6 +15958,62 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             f"Signals: {vs['demo2_signals']}\n"
             f"TP1: {vs['demo2_tp1']} | TP2: {vs['demo2_tp2']} | SL: {vs['demo2_sl']}\n"
             f"Win rate: <b>{d2_wr:.0f}%</b>", reply_markup=_stats_btns)
+
+    elif cmd == "/suggest":
+        _sug = " ".join(parts[1:]).strip()
+        if _sug:
+            _uname_s = (message.get("from", {}).get("username") if message else None)
+            if _deliver_suggestion(_check_id, _sug, _uname_s):
+                send_reply(chat_id, "✅ <b>Thanks — sent to the admin.</b>" + chr(10) + chr(10)
+                           + "<blockquote>Every suggestion is read. If it needs a reply, "
+                           + "you will hear back here.</blockquote>")
+            else:
+                send_reply(chat_id, "⚠️ Nothing to send — type your suggestion after the command.")
+        else:
+            # Keyed on the CHAT id: the message loop looks pending_input up
+            # that way, so keyed on the sender it would never fire in a group.
+            # The sender rides along so the suggestion is still attributed.
+            pending_input[chat_id] = {"cmd": "/suggest", "from": _check_id}
+            send_reply(chat_id, "💡 <b>Send a Suggestion</b>" + chr(10) + chr(10)
+                       + "<blockquote>Type your idea, feedback or problem in your next "
+                       + "message and it goes straight to the admin.</blockquote>" + chr(10)
+                       + "<i>Or send it in one go: /suggest your idea here</i>")
+
+    elif cmd == "/price":
+        # This command was listed in FRIEND_COMMANDS and shown as a button in
+        # the menu but had NO handler at all, so tapping it did nothing
+        # (admin report 2026-09-08). BTC by default; any other coin on request.
+        _pq = (parts[1] if len(parts) > 1 else "BTC").upper().replace("$", "")
+        _pq = _pq.replace("-USDT", "").replace("USDT", "") or "BTC"
+        if _pq == "BTC":
+            _tk = get_ticker()
+            if not _tk:
+                send_reply(chat_id, f"⚠️ Couldn't reach any price feed right now — try again in a moment."); return
+            _pp, _pc = float(_tk["price"]), float(_tk.get("change", 0))
+            _lines = [
+                f"💲 <b>BTC / USDT</b>",
+                "",
+                f"Price:  <b>${_pp:,.2f}</b>",
+                f"24h:    <b>{_pc:+.2f}%</b>  " + ("🟢" if _pc >= 0 else "🔴"),
+            ]
+            if _tk.get("high24") and _tk.get("low24"):
+                _lines.append(f"Range:  ${float(_tk['low24']):,.2f}  →  ${float(_tk['high24']):,.2f}")
+            _lines += ["", f"<i>{_tk.get('source', '?')} · {ist_str()}</i>"]
+            send_reply(chat_id, chr(10).join(_lines))
+        else:
+            _pv = _get_live_price("alt", f"{_pq}-USDT")
+            if not _pv:
+                send_reply(chat_id, f"⚠️ No price found for <b>{_html.escape(_pq)}</b>. "
+                                    f"Check the ticker, e.g. <code>/price SOL</code>.")
+                return
+            # 6dp so a sub-cent coin still shows something, trimmed back for
+            # anything priced in whole dollars.
+            _pstr = f"{_pv:,.6f}".rstrip("0").rstrip(".") if _pv < 1 else f"{_pv:,.4f}".rstrip("0").rstrip(".")
+            _nl = chr(10)
+            send_reply(chat_id,
+                       f"💲 <b>{_html.escape(_pq)} / USDT</b>" + _nl + _nl
+                       + f"Price:  <b>${_pstr}</b>" + _nl + _nl
+                       + f"<i>BINGX · {ist_str()}</i>")
 
     elif cmd == "/session":
         s = get_session()
@@ -20723,7 +20805,8 @@ _MONITOR_SUBCATS = {
     "live": ("📊 Live Status", [
         ("/status",  "📊", "Bot Status",     "Full bot status"),
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
-        ("/price",   "💲", "BTC Price",      "Current BTC price"),
+        ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
+        ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),
     "record": ("📜 History & Stats", [
@@ -22993,6 +23076,15 @@ def command_listener():
                                     emoji_overrides=captured.get("emoji_overrides"))
                             else:
                                 send_reply(cid, result_text, reply_markup=_back_mkp)
+                    elif pi["cmd"] == "/suggest":
+                        del pending_input[cid]
+                        if _deliver_suggestion(pi.get("from") or cid, text,
+                                               uname if uname != "?" else None):
+                            send_reply(cid, "✅ <b>Thanks — sent to the admin.</b>" + chr(10) + chr(10)
+                                       + "<blockquote>Every suggestion is read. If it needs a "
+                                       + "reply, you will hear back here.</blockquote>")
+                        else:
+                            send_reply(cid, "⚠️ That looked empty — send /suggest again.")
                     elif pi["cmd"] == "_adminlinks_set_channel":
                         del pending_input[cid]
                         SIGNAL_CHANNEL_LINK = text.strip()
