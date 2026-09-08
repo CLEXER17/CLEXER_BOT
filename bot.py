@@ -9855,6 +9855,8 @@ def _tg_chat_recent(chat: str):
 
 _tg_chat_until: dict = {}          # chat_id (str) -> epoch when sending may resume
 _tg_chat_strikes: dict = {}        # chat_id (str) -> consecutive 429s
+_tg_chat_last429: dict = {}        # chat_id (str) -> epoch of the last real 429
+_TG_STRIKE_DECAY = 300.0           # quiet for this long and the escalation resets
 _TG_CHAT_LOCK = threading.Lock()
 _TG_CHAT_MAX_HOLD = 600.0          # never sit on a chat longer than 10 minutes
 
@@ -9886,7 +9888,17 @@ def _tg_chat_penalise(chat: str, seconds: float):
     lets the penalty lapse."""
     if not chat:
         return
+    _now = time.time()
     with _TG_CHAT_LOCK:
+        # Decay the escalation after a quiet spell. Strikes used to clear ONLY
+        # on a successful send - which can never happen while the chat is
+        # held, so the hold could only ever grow: 9s, 17s, 33s, 65s, up to the
+        # 10-minute cap. Telegram could have lifted its limit twenty minutes
+        # earlier and this code would still be locking the user out on its
+        # own. A chat that has not 429'd in _TG_STRIKE_DECAY starts over.
+        if _now - _tg_chat_last429.get(chat, 0) > _TG_STRIKE_DECAY:
+            _tg_chat_strikes.pop(chat, None)
+        _tg_chat_last429[chat] = _now
         _n = _tg_chat_strikes.get(chat, 0) + 1
         _tg_chat_strikes[chat] = _n
         _hold = min(seconds * (2 ** (_n - 1)) + 1.0, _TG_CHAT_MAX_HOLD)
@@ -9906,6 +9918,7 @@ def _tg_chat_clear(chat: str):
     with _TG_CHAT_LOCK:
         _tg_chat_until.pop(chat, None)
         _tg_chat_strikes.pop(chat, None)
+        _tg_chat_last429.pop(chat, None)
 
 
 _tg_real_post = requests.post
@@ -16741,7 +16754,16 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # answer has to come from the API (admin 2026-09-08).
         _cc = parts[1].strip() if len(parts) > 1 else ""
         if not _cc:
-            send_reply(chat_id, "Usage: <code>/checkchat 8843157114</code>"); return
+            send_reply(chat_id, "Usage: <code>/checkchat 8843157114</code>"
+                                + chr(10) + "<code>/checkchat 8843157114 clear</code>"
+                                + " — drop the bot's own hold on that chat"); return
+        if len(parts) > 2 and parts[2].lower() == "clear":
+            # Manual override. The backoff is the bot's guess at how long
+            # Telegram wants; this says "try again now" without waiting it out.
+            _tg_chat_clear(_cc)
+            send_reply(chat_id, f"✅ Cleared this bot's hold on <code>{_html.escape(_cc)}</code>. "
+                                f"The next message to them will actually be attempted.")
+            return
         _nl = chr(10)
         _out = [f"🔎 <b>Chat {_html.escape(_cc)}</b>", ""]
         _m1, _m5 = _tg_chat_recent(_cc)
