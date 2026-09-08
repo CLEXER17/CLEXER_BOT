@@ -11115,6 +11115,44 @@ def _pending_free_sl_count() -> int:
     SL result only, BE and still-open ones don't count."""
     return sum(1 for v in _free_sl_log.values() if _sl_clearable(v.get("result")))
 
+# ─── Bulk message deletion ─────────────────────────────────────────────────
+# The auto-clear sweeps used to fire deleteMessage in a bare loop with no
+# pacing and no rate-limit handling: 354 tracked signals x up to 5 message
+# ids each is well over a thousand calls back to back, against a ~30/sec
+# ceiling, repeating every 5 minutes. That did not just fail to delete - it
+# spent the WHOLE bot's quota, so ordinary users got "Too Many Requests" on
+# /wallet and /help and the bot looked dead to them (admin 2026-09-08).
+#
+# Two changes fix it: every delete is paced like any other send, and a run
+# stops after _TG_BULK_MAX deletions. Whatever is left is picked up by the
+# next run - these sweeps are periodic anyway, so draining over a few cycles
+# costs nothing and never starves live traffic.
+_TG_BULK_MAX = 60
+
+
+def _tg_delete_message(chat_id, message_id) -> bool:
+    """One paced deleteMessage that honours a 429 inline.
+
+    Sleeping here is fine, unlike in send paths: the callers are the
+    auto-clear thread and the /clearsl* commands, never the poll loop."""
+    for _try in range(2):
+        _tg_pace()
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": message_id}, timeout=10)
+        except Exception:
+            return False
+        _wait = _tg_retry_after(r)
+        if not _wait:
+            return bool(r.json().get("ok"))
+        if _try or _wait > 20:
+            print(f"  [BULK DELETE] rate limited {_wait:.0f}s — stopping this run")
+            return False
+        time.sleep(_wait + 0.5)
+    return False
+
+
 def _clear_free_sl_messages() -> tuple:
     """Deletes the entry + trailing-SL + SL-hit messages for every signal
     whose final result was a real SL (never BE) from Free, then drops those
@@ -11123,9 +11161,15 @@ def _clear_free_sl_messages() -> tuple:
     global _free_sl_log
     ok = 0; fail = 0
     _remaining = {}
+    _budget = _TG_BULK_MAX
     for sig_id, entry in _free_sl_log.items():
         if not _sl_clearable(entry.get("result")):
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
+            continue
+        if _budget <= 0:
+            # Out of budget for this run - keep the signal so the next sweep
+            # finishes it. Dropping it here would strand its messages forever.
+            _remaining[sig_id] = entry
             continue
         cid = entry.get("cid")
         # trailing_mid2 (the post-TP1 "halfway to TP2" trailing-SL notice) is
@@ -11139,14 +11183,10 @@ def _clear_free_sl_messages() -> tuple:
             mid = entry.get(field)
             if not mid:
                 continue
-            try:
-                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
-                    json={"chat_id": cid, "message_id": mid}, timeout=10)
-                if r.json().get("ok"):
-                    ok += 1
-                else:
-                    fail += 1
-            except Exception:
+            _budget -= 1
+            if _tg_delete_message(cid, mid):
+                ok += 1
+            else:
                 fail += 1
     _free_sl_log = _remaining
     _save_free_sl_log()
@@ -11225,23 +11265,25 @@ def _clear_vip_sl_messages() -> tuple:
     global _vip_sl_log
     ok = 0; fail = 0
     _remaining = {}
+    _budget = _TG_BULK_MAX
     for sig_id, entry in _vip_sl_log.items():
         if not _sl_clearable(entry.get("result")):
             _remaining[sig_id] = entry   # not a real loss (or still open) — keep, don't touch
+            continue
+        if _budget <= 0:
+            # Out of budget for this run - keep the signal so the next sweep
+            # finishes it. Dropping it here would strand its messages forever.
+            _remaining[sig_id] = entry
             continue
         cid = entry.get("cid")
         for field in ("entry_mid", "trailing_mid", "trailing_mid2", "sl_mid", "chart_mid"):
             mid = entry.get(field)
             if not mid:
                 continue
-            try:
-                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
-                    json={"chat_id": cid, "message_id": mid}, timeout=10)
-                if r.json().get("ok"):
-                    ok += 1
-                else:
-                    fail += 1
-            except Exception:
+            _budget -= 1
+            if _tg_delete_message(cid, mid):
+                ok += 1
+            else:
                 fail += 1
     _vip_sl_log = _remaining
     _save_vip_sl_log()
