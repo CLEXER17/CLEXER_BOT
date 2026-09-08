@@ -3441,7 +3441,7 @@ def _ping_admin_user_activity(user_id, username=None, chat_id=None):
     _tier = '⭐ VIP' if _u.get('tier') == 'vip' else '🆓 Free'
     _txt = (f'👤 <b>{_who}</b> is using the bot\n\n'
             f'{_tier}  |  <code>{cid}</code>\n'
-            f'<i>Next ping for this user in {USER_PING_COOLDOWN // 60} min.</i>')
+            f'Next ping for this user in {USER_PING_COOLDOWN // 60} min.')
     send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
 
 
@@ -9690,7 +9690,7 @@ def _deliver_suggestion(cid, text: str, username=None) -> bool:
         "💡 <b>New Suggestion</b>" + chr(10) + chr(10)
         + f"From: <b>{_user_ref(cid)}</b>  |  {_tier}  |  <code>{cid}</code>" + chr(10) + chr(10)
         + "<blockquote>" + _html.escape(_body[:1500], quote=False) + "</blockquote>" + chr(10)
-        + "<i>Tap the name above to open their chat and reply directly.</i>",
+        + "Tap the name above to open their chat and reply directly.",
         pin=True)
     print(f"  [SUGGESTION] from {cid}: {_body[:60]}")
     return True
@@ -10651,9 +10651,9 @@ def _mtf_report(coin: str):
             # The average strength is printed because agreement alone does not
             # explain the number: three timeframes can all point the same way
             # while each is only 2/4, and the reader needs to see that.
-            out.append(f"   <i>{_note}, average strength {r['strength']}/4.</i>")
+            out.append(f"   {_note}, average strength {r['strength']}/4.")
         else:
-            out.append("   <i>No entry — the timeframes disagree.</i>")
+            out.append("   No entry — the timeframes disagree.")
 
         ups, dns = _mtf_liquidity(dfs, r["tfs"], price, r["dir"])
         if ups or dns:
@@ -10672,10 +10672,10 @@ def _mtf_report(coin: str):
                 _nm, _pc = _t_dn[_i]
                 _lq.append(f"{'$' + _mtf_money(lv['price']):<12} "
                            f"{_mtf_bar(round(_pc / 20), 5)}  {_nm:<4} {_pc:>3}%")
-            out.append("   💧 <i>liquidity — from " + _tfs_lbl + "</i>")
+            out.append("   💧 liquidity — from " + _tfs_lbl)
             out.append("<pre>" + _nl.join(_lq) + "</pre>")
 
-    out += ["", "<i>Engine read — no Clex, no cost. Not financial advice.</i>"]
+    out += ["", "Engine read — no Clex, no cost. Not financial advice."]
     return _nl.join(out), None
 
 
