@@ -9825,6 +9825,34 @@ def _tg_pace():
 # held their own chat in timeout indefinitely while every other user was
 # fine. Backing off is the only way out: once a chat 429s, nothing is sent
 # to it until its window expires.
+_tg_chat_log: dict = {}            # chat_id (str) -> [epoch, ...] recent sends
+_TG_CHAT_WINDOW = 300.0            # how far back the per-chat history reaches
+
+
+def _tg_chat_note(chat: str):
+    """Remember when this chat was last sent to.
+
+    Telegram's 429 says only 'retry after N' - never which limit, never how
+    many messages, never over what period. So the one number that can settle
+    whether a per-chat limit was genuinely earned has to be counted here:
+    without it, every theory about the cause is a guess (admin 2026-09-08)."""
+    if not chat:
+        return
+    _now = time.time()
+    _h = _tg_chat_log.setdefault(chat, [])
+    _h.append(_now)
+    if len(_h) > 200:
+        _tg_chat_log[chat] = [t for t in _h if _now - t < _TG_CHAT_WINDOW]
+
+
+def _tg_chat_recent(chat: str):
+    """(sent in the last minute, sent in the last 5 minutes) for this chat."""
+    _now = time.time()
+    _h = _tg_chat_log.get(chat) or []
+    return (sum(1 for t in _h if _now - t < 60),
+            sum(1 for t in _h if _now - t < _TG_CHAT_WINDOW))
+
+
 _tg_chat_until: dict = {}          # chat_id (str) -> epoch when sending may resume
 _tg_chat_strikes: dict = {}        # chat_id (str) -> consecutive 429s
 _TG_CHAT_LOCK = threading.Lock()
@@ -9925,6 +9953,7 @@ def _tg_hooked_post(url, *args, **kwargs):
                 print(f"  [TG CHAT] {_chat} cooling down {_wait:.0f}s — {_m} skipped")
                 return _TgBlocked(_wait)
             _tg_note_send(_m)
+            _tg_chat_note(_chat)
             _tg_pace()
     _r = _tg_real_post(url, *args, **kwargs)
     if "api.telegram.org" in str(url):
@@ -9933,8 +9962,15 @@ def _tg_hooked_post(url, *args, **kwargs):
             _c = _tg_chat_of(kwargs.get("json"))
             if _w:
                 _held = _tg_chat_penalise(_c, _w) or _w
+                _m1, _m5 = _tg_chat_recent(_c)
+                # The counts are the point. Telegram's per-chat ceiling is
+                # around 20/minute: at or above that the limit was earned and
+                # the fix is to send less. Well below it, no ordinary flood
+                # rule explains this and the cause is elsewhere entirely.
                 print(f"  [TG CHAT] {_c} rate limited (strike "
-                      f"{_tg_chat_strikes.get(_c, 1)}) — holding {_held:.0f}s")
+                      f"{_tg_chat_strikes.get(_c, 1)}) — holding {_held:.0f}s"
+                      f"  | sent to this chat: {_m1} in the last min, "
+                      f"{_m5} in 5 min")
             elif _r.json().get("ok"):
                 _tg_chat_clear(_c)
         except Exception:
