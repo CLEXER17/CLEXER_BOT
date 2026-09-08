@@ -20818,9 +20818,9 @@ _MONITOR_SUBCATS = {
         ("/wallet",   "💳", "My Wallet", "Your balance — topped up, spent, and what is left"),
         ("/addfunds", "💵", "Add Funds", "Top up your copy-trade wallet"),
     ]),
-    "aichat": ("💬 AI Chat", [
-        ("/chat",    "💬", "Start Chat", "Start an AI chat session with the bot"),
-        ("/endchat", "🚪", "End Chat",   "End the current AI chat session"),
+    "aichat": ("💬 Chat With Clex", [
+        ("/chat",    "💬", "Start Chat", "Start a chat session with Clex"),
+        ("/endchat", "🚪", "End Chat",   "End the current chat session"),
     ]),
     "basics": ("⚙️ Bot Basics", [
         ("/start", "👋", "Start",        "Welcome message and the quick-actions keyboard"),
