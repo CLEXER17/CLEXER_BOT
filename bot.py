@@ -9826,7 +9826,9 @@ def _tg_pace():
 # fine. Backing off is the only way out: once a chat 429s, nothing is sent
 # to it until its window expires.
 _tg_chat_until: dict = {}          # chat_id (str) -> epoch when sending may resume
+_tg_chat_strikes: dict = {}        # chat_id (str) -> consecutive 429s
 _TG_CHAT_LOCK = threading.Lock()
+_TG_CHAT_MAX_HOLD = 600.0          # never sit on a chat longer than 10 minutes
 
 
 def _tg_chat_of(payload) -> str:
@@ -9846,20 +9848,36 @@ def _tg_chat_blocked(chat: str) -> float:
 
 
 def _tg_chat_penalise(chat: str, seconds: float):
+    """Hold this chat, backing off further each time it 429s in a row.
+
+    Telegram's retry_after understates a chat that has been hammered: waiting
+    exactly the 8 seconds it asks for and sending again immediately re-trips
+    it, which is what kept one user locked out through several fixes. Each
+    consecutive strike multiplies the wait - 8s, 16s, 32s - until a send
+    actually succeeds, so the bot stops circling a chat it cannot reach and
+    lets the penalty lapse."""
     if not chat:
         return
     with _TG_CHAT_LOCK:
+        _n = _tg_chat_strikes.get(chat, 0) + 1
+        _tg_chat_strikes[chat] = _n
+        _hold = min(seconds * (2 ** (_n - 1)) + 1.0, _TG_CHAT_MAX_HOLD)
         # Never shorten an existing penalty - a later, smaller retry_after
         # does not mean the earlier one was lifted.
         _tg_chat_until[chat] = max(_tg_chat_until.get(chat, 0),
-                                   time.time() + seconds + 1.0)
+                                   time.time() + _hold)
+        return _hold
 
 
 def _tg_chat_clear(chat: str):
+    """A successful send means the chat is healthy again - drop its strike
+    count too, so an unrelated 429 weeks later starts from 8s and not from
+    whatever escalation this episode reached."""
     if not chat:
         return
     with _TG_CHAT_LOCK:
         _tg_chat_until.pop(chat, None)
+        _tg_chat_strikes.pop(chat, None)
 
 
 _tg_real_post = requests.post
@@ -9914,8 +9932,9 @@ def _tg_hooked_post(url, *args, **kwargs):
             _w = _tg_retry_after(_r)
             _c = _tg_chat_of(kwargs.get("json"))
             if _w:
-                _tg_chat_penalise(_c, _w)
-                print(f"  [TG CHAT] {_c} rate limited — holding {_w:.0f}s")
+                _held = _tg_chat_penalise(_c, _w) or _w
+                print(f"  [TG CHAT] {_c} rate limited (strike "
+                      f"{_tg_chat_strikes.get(_c, 1)}) — holding {_held:.0f}s")
             elif _r.json().get("ok"):
                 _tg_chat_clear(_c)
         except Exception:
