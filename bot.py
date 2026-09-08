@@ -15151,7 +15151,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping","/font"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping","/font","/checkchat"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -16733,6 +16733,50 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                        + "<blockquote>Type your idea, feedback or problem in your next "
                        + "message and it goes straight to the admin.</blockquote>" + chr(10)
                        + "<i>Or send it in one go: /suggest your idea here</i>")
+
+    elif cmd == "/checkchat" and is_admin:
+        # Asks Telegram what it thinks of ONE chat, and prints the bot's own
+        # per-chat state beside it. A 429 with a send count of 1-in-5-minutes
+        # is not a flood, and no amount of reading bot.py explains it - the
+        # answer has to come from the API (admin 2026-09-08).
+        _cc = parts[1].strip() if len(parts) > 1 else ""
+        if not _cc:
+            send_reply(chat_id, "Usage: <code>/checkchat 8843157114</code>"); return
+        _nl = chr(10)
+        _out = [f"🔎 <b>Chat {_html.escape(_cc)}</b>", ""]
+        _m1, _m5 = _tg_chat_recent(_cc)
+        _hold = _tg_chat_blocked(_cc)
+        _out.append(f"Bot sent here: <b>{_m1}</b> in 1 min, <b>{_m5}</b> in 5 min")
+        _out.append(f"Strikes: <b>{_tg_chat_strikes.get(_cc, 0)}</b>   "
+                    f"Hold: <b>{_hold:.0f}s</b>")
+        _out.append("")
+        for _meth in ("getChat", "getChatMember"):
+            try:
+                _pl = {"chat_id": _cc}
+                if _meth == "getChatMember":
+                    _pl["user_id"] = _cc
+                _rr = _tg_real_post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{_meth}",
+                    json=_pl, timeout=10)
+                _j = _rr.json()
+                if _j.get("ok"):
+                    _d = _j.get("result", {})
+                    if _meth == "getChat":
+                        _out.append(f"getChat: <b>OK</b> — type={_d.get('type')} "
+                                    f"user=@{_d.get('username', '-')}")
+                    else:
+                        _out.append(f"getChatMember: <b>{_d.get('status', '?')}</b>")
+                else:
+                    _out.append(f"{_meth}: <b>{_j.get('error_code')}</b> "
+                                f"{_html.escape(str(_j.get('description'))[:90])}")
+            except Exception as _e:
+                _out.append(f"{_meth}: failed — {_html.escape(str(_e)[:80])}")
+        # getChat is a READ. If reads succeed while sends 429, the limit is on
+        # delivery to this user specifically, not on the bot.
+        _out.append("")
+        _out.append("Reads OK + sends 429 = the limit is on delivery to this "
+                    "user, not on the bot.")
+        send_reply(chat_id, _nl.join(_out), skip_smallcaps=True)
 
     elif cmd == "/mtf":
         _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
