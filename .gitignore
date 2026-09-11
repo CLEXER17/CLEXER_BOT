@@ -19,3 +19,6 @@ userbot_session.txt
 # Central-store dumps — contain encrypted user API keys, never commit
 co3_backup.json
 *_backup.json
+
+# Full system brief — no secrets in it, but keep it out of the repo anyway
+CLEXER_BOT_BRIEF.md
