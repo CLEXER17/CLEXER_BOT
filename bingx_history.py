@@ -81,25 +81,39 @@ def pull_binance(symbol, interval, out_dir, since_ms):
     path = os.path.join(out_dir, f"{symbol}_{interval}.csv")
     rows = _load_existing(path)
     have = len(rows)
-    start = max(rows) + 1 if rows else since_ms
     calls = 0
-    print(f"{symbol} {interval} (binance): {'resuming after ' + _ts(start) if rows else 'from ' + _ts(start)}")
-    while True:
-        data = _binance_page(symbol, interval, start)
-        calls += 1
-        if not data:
-            break
-        newest = None
-        for r in data:
-            t, o, h, l, c, v = _norm(r)
-            rows[t] = (o, h, l, c, v)
-            newest = t if newest is None else max(newest, t)
-        if len(data) < BINANCE_PAGE:
-            break
-        start = newest + 1
-        if calls % 50 == 0:
-            print(f"    {calls} calls · {len(rows):,} candles · up to {_ts(newest)}")
-        time.sleep(0.08)
+    # Two passes. BACKFILL first: if --since is older than what is on disk,
+    # fetch from --since up to the oldest candle we already hold. Then extend
+    # FORWARD from the newest one. So a file pulled from 2022 can later be
+    # deepened to 2019 without re-downloading the 2022-2026 stretch.
+    _ranges = []
+    if rows and since_ms < min(rows):
+        _ranges.append((since_ms, min(rows)))
+    _ranges.append((max(rows) + 1 if rows else since_ms, None))
+    for start, stop in _ranges:
+        if stop is not None and start >= stop:
+            continue
+        print(f"{symbol} {interval} (binance): {_ts(start)} -> {_ts(stop) if stop else 'now'}")
+        while True:
+            data = _binance_page(symbol, interval, start)
+            calls += 1
+            if not data:
+                break
+            newest = None
+            for r in data:
+                t, o, h, l, c, v = _norm(r)
+                if stop is not None and t >= stop:
+                    continue
+                rows[t] = (o, h, l, c, v)
+                newest = t if newest is None else max(newest, t)
+            if newest is None or len(data) < BINANCE_PAGE:
+                break
+            if stop is not None and newest >= stop - 1:
+                break
+            start = newest + 1
+            if calls % 50 == 0:
+                print(f"    {calls} calls · {len(rows):,} candles · up to {_ts(newest)}")
+            time.sleep(0.08)
     times = sorted(rows)
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -181,7 +195,7 @@ if __name__ == "__main__":
     ap.add_argument("--intervals", default="4h,1h,30m,15m,5m,1m")
     ap.add_argument("--out", default="data/klines")
     ap.add_argument("--source", default="bingx", choices=["bingx", "binance"])
-    ap.add_argument("--since", default="2022-08-03",
+    ap.add_argument("--since", default="2019-09-08",
                     help="binance only: earliest date to pull, YYYY-MM-DD")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
