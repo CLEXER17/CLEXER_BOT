@@ -10817,21 +10817,33 @@ def _mtf_tiers(levels: list, is_direction_side: bool = False) -> dict:
             for rank, idx in enumerate(_order)}
 
 
-def _mtf_fib_entry(df, direction: str):
-    """Fibonacci 23.6-50% retrace of the most recent leg. For an UP read that
-    is a pullback zone under price; for a DOWN read, a bounce zone above it.
-    Returns (low, high) or None when the window has no usable leg."""
+def _mtf_fib_entry(df, direction: str, price: float = None):
+    """Fibonacci 23.6-50% retrace of the leg INTO the current price. For an UP
+    read that is a pullback zone under price; for a DOWN read, a bounce zone
+    above it. Returns (low, high) or None when the window has no usable leg.
+
+    The leg is measured from the window's extreme TO THE CURRENT PRICE, not
+    between the window's high and low. Built the old way, an UP zone sat
+    above price whenever price had already retraced past the 50% level - a
+    "pullback" you would have to rally into - and on the 4H window the
+    high barely moves for days, so the Position zone printed the same two
+    numbers every day, just flipped (admin's reviewer, 11 Sep 2026). Anchored
+    to price, the zone is always on the correct side and moves every read."""
     if df is None or len(df) < 10 or not direction:
         return None
     H = [float(x) for x in df["high"].values]
     L = [float(x) for x in df["low"].values]
-    hi, lo = max(H), min(L)
-    if hi <= lo:
-        return None
-    leg = hi - lo
+    if not price:
+        price = float(df["close"].values[-1])
     if direction == "up":
-        return (hi - leg * 0.50, hi - leg * 0.236)
-    return (lo + leg * 0.236, lo + leg * 0.50)
+        leg = price - min(L)              # the rally we would be buying a dip in
+        if leg <= 0:
+            return None
+        return (price - leg * 0.50, price - leg * 0.236)
+    leg = max(H) - price                  # the drop we would be selling a bounce in
+    if leg <= 0:
+        return None
+    return (price + leg * 0.236, price + leg * 0.50)
 
 
 def _mtf_money(v: float) -> str:
@@ -10910,9 +10922,11 @@ def _mtf_report(coin: str):
         _rows.append(f"{_MTF_LABEL[tf]:<5} {_arrow}  {_mtf_bar(b['score'])} "
                      f"{b['score']}/4  {_flags}")
 
-    out = ["📐 <b>" + _font("MULTI-TIMEFRAME", _FONT_BOLD) + f"</b> — {_html.escape(coin)}/USDT",
+    out = ["📐 <b>" + _font("MULTI-TIMEFRAME", _FONT_BOLD) + f"</b> — {_html.escape(coin)}-USDT perp · BingX",
            f"<b>${_mtf_money(price)}</b>   {ist_str()}", "",
-           "<pre>" + _nl.join(_rows) + "</pre>"]
+           "<pre>" + _nl.join(_rows) + "</pre>",
+           # 6+7. the letters, and the reading rule, in one line
+           "P structure · C momentum · E position · F travel — each timeframe scores 0–4"]
 
     _results = []
     for name, tfs in _MTF_COMBOS:
@@ -10931,13 +10945,19 @@ def _mtf_report(coin: str):
         _agree_tfs = [t for t in _have if bias[t]["dir"] == _lead] if _lead else []
         _strength = (sum(bias[t]["score"] for t in _agree_tfs) / (4 * len(_agree_tfs))
                      if _agree_tfs else 0)
+        _agree_pct = round(max(_w_up, _w_dn) / _w_tot * 100)
         _conf = round((max(_w_up, _w_dn) / _w_tot * 0.6 + _strength * 0.4) * 100)
-        # Below 45% the timeframes are arguing rather than agreeing, and a
-        # direction printed on that is worse than no direction at all.
+        # Below 45% no entry is given. That used to be silent - a 48% read got
+        # an entry and a 43% read did not with nothing saying why, and both
+        # were labelled MIXED even when two of three agreed (admin's reviewer,
+        # 11 Sep 2026). Now MIXED means no majority at all; a majority that is
+        # simply too weak is LOW, and the cutoff is printed beside it.
+        _weak = _lead is not None and _conf < 45
         if _conf < 45:
             _lead = None
         _results.append({"name": name, "tfs": tfs, "have": _have,
-                         "dir": _lead, "conf": _conf,
+                         "dir": _lead, "conf": _conf, "weak": _weak,
+                         "agree_pct": _agree_pct,
                          "strength": round(_strength * 4, 1)})
     _results.sort(key=lambda r: r["conf"], reverse=True)
 
@@ -10946,7 +10966,8 @@ def _mtf_report(coin: str):
         out.append("═" * 24)
         _tfs_lbl = " ".join(_MTF_LABEL[t] for t in r["tfs"])
         _dir_lbl = ("⬆️ UP" if r["dir"] == "up" else
-                    "⬇️ DOWN" if r["dir"] == "down" else "⚠️ MIXED")
+                    "⬇️ DOWN" if r["dir"] == "down" else
+                    "⚠️ LOW (needs 45%)" if r.get("weak") else "⚠️ MIXED")
         out.append(f"{_NUM[i]} <b>" + _font(r["name"], _FONT_BOLD)
                    + f"</b> · {_tfs_lbl}")
         out.append(f"   {_dir_lbl} · <b>{r['conf']}%</b>")
@@ -10959,7 +10980,7 @@ def _mtf_report(coin: str):
             _mid = r["tfs"][len(r["tfs"]) // 2]
             _dmid = dfs.get(_mid)
             _fib = _mtf_fib_entry(_dmid.tail(_MTF_FIB_BARS) if _dmid is not None else None,
-                                  r["dir"])
+                                  r["dir"], price)
             if _fib:
                 out.append(f"   Entry  <b>${_mtf_money(_fib[0])} – "
                            f"${_mtf_money(_fib[1])}</b>  (fib 23.6–50%)")
@@ -10972,9 +10993,14 @@ def _mtf_report(coin: str):
             # The average strength is printed because agreement alone does not
             # explain the number: three timeframes can all point the same way
             # while each is only 2/4, and the reader needs to see that.
-            out.append(f"   {_note}, average strength {r['strength']}/4.")
+            # Both inputs printed, because "2 of 3, strength 2.0" can score
+            # 66%, 57% or 53% depending on WHICH two agree - the higher
+            # timeframes carry more weight - and without the agreement figure
+            # that looked like the same read giving three answers.
+            out.append(f"   {_note} · agreement {r['agree_pct']}% · strength {r['strength']}/4")
         else:
-            out.append("   No entry — the timeframes disagree.")
+            out.append("   No entry — " + ("majority too weak" if r.get("weak") else "no majority")
+                       + f" · agreement {r['agree_pct']}% · strength {r['strength']}/4")
 
         ups, dns = _mtf_liquidity(dfs, r["tfs"], price, r["dir"])
         if ups or dns:
