@@ -13447,7 +13447,7 @@ TEST_1M_CONFIRM = 2               # newest 1M candles that must agree
 #               universe over 894 simulated trades, requiring higher-timeframe
 #               agreement took expectancy from +0.067R to +0.275R while keeping
 #               about half the trades; every "HTF opposes" bucket lost money.
-TEST_LOGIC = "current"            # "current" | "mtf"
+TEST_LOGIC = "current"            # "current" | "mtf" | "ist"
 TEST_MTF_TF = "15m"               # the bias timeframe used by "mtf"
 
 _test_trades: list = []           # its own open trades, never the shared lists
@@ -13743,7 +13743,9 @@ def _test_scan_loop():
     _last = 0.0
     while True:
         try:
-            if TEST_ENABLED and (time.time() - _last) >= TEST_CYCLE_SECS:
+            # In IST mode the clock plan is the whole test system: the
+            # 5-symbol scan stands down rather than running beside it.
+            if TEST_ENABLED and TEST_LOGIC != "ist" and (time.time() - _last) >= TEST_CYCLE_SECS:
                 _last = time.time()
                 _results = []
                 for sym in TEST_SYMBOLS:
@@ -13762,6 +13764,533 @@ def _test_scan_loop():
         time.sleep(20)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# IST CLOCK PLAN — /test switch ist
+#
+# Four BTC-only setups that fire at fixed IST clock times and compare price
+# now against price earlier, from the admin's "IST Bitcoin Trade Plan" (11 Sep
+# 2026, backtested on 30m candles Jan-Sep 2026 and re-checked on 15m/5m).
+# Paper only, posts to the test channel only. Zero model calls.
+#
+# Every rule below is the admin's answer to a specific question and was
+# reproduced from the backtest, not invented here:
+#   - all prices are 30-MINUTE CANDLE OPENS: the compare price, the "now"
+#     price at the trigger, and the exit. Never the live tick.
+#   - strict above / strict below. Equal = no trade, for every setup.
+#   - A and B enter with a LIMIT 0.1% away and cancel after 30 minutes; the
+#     fill is simulated on 1m candles (touch). A stricter "$1 past" fill is
+#     logged in parallel because a real order at the exact price can sit in
+#     the queue unfilled.
+#   - no take-profit anywhere. Stop, then exit at the exit candle's open.
+#   - breakeven on C only. B trails. A and D neither.
+#   - weekday = the UTC weekday of the trigger, Mon-Fri. That is what makes
+#     Friday night (Sat 12:30 AM IST = Fri 19:00 UTC) a trading night and
+#     Sunday night (Mon 12:30 AM IST = Sun 19:00 UTC) not.
+#   - A, C and D shift one hour later whenever New York is not on daylight
+#     saving. B never shifts.
+#   - fees: 0.07% round trip for the limit-entry setups (A, B), 0.10% for the
+#     market ones (C, D). Both raw and after-fee P&L are kept.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_IST_SYMBOL = "BTC-USDT"
+_IST_STRICT_USD = 1.0          # "$1 past the limit" for the strict fill log
+_IST_CLOSE_CALL = 0.0005       # gap under 0.05% either way = a close call
+_IST_TRIGGER_GRACE = 150       # seconds after a trigger the bot may still act
+_IST_FEE_LIMIT = 0.07          # % round trip, maker entry + taker exit
+_IST_FEE_MARKET = 0.10         # % round trip, taker both ways
+
+# Times are IST (h, m) on the SUMMER clock. "shifts" setups move +1h in winter.
+# compare is the earlier candle the trigger is measured against; it may fall on
+# the previous calendar day (A compares 12:30 AM against 4:30 PM the evening
+# before), which _ist_plan() resolves.
+_IST_SETUPS = {
+    "A": {"name": "Night dip-buy",    "side": "BUY",    "entry": "limit",
+          "compare": (16, 30), "trigger": (0, 30), "cancel": (1, 0), "exit": (3, 0),
+          "limit_off": -0.001, "stop_pct": 1.5, "shifts": True,
+          "be": None, "trail": None, "fee": _IST_FEE_LIMIT},
+    "B": {"name": "Pre-dawn sell",    "side": "SELL",   "entry": "limit",
+          "compare": (2, 30),  "trigger": (4, 30), "cancel": (5, 0), "exit": (8, 30),
+          "limit_off": +0.001, "stop_pct": 1.0, "shifts": False,
+          "be": None, "trail": {"arm": 0.005, "dist": 0.005}, "fee": _IST_FEE_LIMIT},
+    "C": {"name": "Wake-up sell",     "side": "SELL",   "entry": "market",
+          "compare": (4, 0),   "trigger": (6, 0),  "cancel": None,  "exit": (8, 0),
+          "limit_off": 0.0,    "stop_pct": 1.5, "shifts": True,
+          "be": 0.0075, "trail": None, "fee": _IST_FEE_MARKET},
+    "D": {"name": "Pre-crowd follow", "side": "FOLLOW", "entry": "market",
+          "compare": (9, 0),   "trigger": (17, 0), "cancel": None,  "exit": (22, 30),
+          "limit_off": 0.0,    "stop_pct": 2.0, "shifts": True,
+          "be": None, "trail": None, "fee": _IST_FEE_MARKET},
+}
+
+# Persisted inside the test_system blob under "ist".
+_ist_state = {
+    "fired":   {},     # "A|2026-09-12" -> how it resolved ("opened"/"nofill"/"skip: ...")
+    "pending": {},     # setup -> the limit order waiting to fill
+    "open":    {},     # setup -> the open paper trade
+    "history": [],     # closed IST trades, full detail
+    "refs":    {},     # setup -> last trigger's compare/now/gap, for /test trade
+}
+_ist_lock = threading.Lock()
+
+
+def _ist_is_summer(when=None) -> bool:
+    """Is New York on daylight saving? A, C and D run one hour later when not.
+
+    zoneinfo carries the real rules and handles every future year; the dated
+    fallback is the PDF's own table, for a box with no tz database."""
+    _dt = when or datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        return (_dt.astimezone(ZoneInfo("America/New_York")).dst() or timedelta(0)) != timedelta(0)
+    except Exception:
+        _d = _dt.date()
+        _yr = _d.year
+        # PDF: summer 8 Mar 2026 - 1 Nov 2026, again from 14 Mar 2027.
+        _starts = {2026: (3, 8), 2027: (3, 14)}
+        _ends = {2026: (11, 1), 2027: (11, 7)}
+        _s = _starts.get(_yr, (3, 8)); _e = _ends.get(_yr, (11, 1))
+        return (_d.month, _d.day) >= _s and (_d.month, _d.day) < _e
+
+
+def _ist_epoch(d, hm, shift_h: int = 0) -> float:
+    """Epoch of IST date `d` at (h, m), optionally shifted by whole hours."""
+    _dt = datetime(d.year, d.month, d.day, hm[0], hm[1], tzinfo=timezone.utc) - IST
+    return _dt.timestamp() + shift_h * 3600
+
+
+def _ist_plan(setup: str, d) -> dict:
+    """Every instant this setup uses on IST date `d`: trigger, compare, exit,
+    cancel - as epochs - plus whether the clock is on summer time.
+
+    The compare candle is the most recent one BEFORE the trigger, so it rolls
+    back a day when the compare time is later in the clock than the trigger
+    (A: 4:30 PM yesterday vs 12:30 AM today). The exit is the first one AFTER
+    the trigger, rolling forward the same way."""
+    s = _IST_SETUPS[setup]
+    _trig_probe = _ist_epoch(d, s["trigger"])
+    _summer = _ist_is_summer(datetime.fromtimestamp(_trig_probe, timezone.utc))
+    _sh = 0 if (_summer or not s["shifts"]) else 1
+    trig = _ist_epoch(d, s["trigger"], _sh)
+    comp = _ist_epoch(d, s["compare"], _sh)
+    if comp >= trig:
+        comp -= 86400
+    ex = _ist_epoch(d, s["exit"], _sh)
+    if ex <= trig:
+        ex += 86400
+    canc = None
+    if s["cancel"]:
+        canc = _ist_epoch(d, s["cancel"], _sh)
+        if canc <= trig:
+            canc += 86400
+    return {"trigger": trig, "compare": comp, "exit": ex, "cancel": canc,
+            "summer": _summer, "shift": _sh}
+
+
+def _ist_hm_label(epoch: float) -> str:
+    _t = datetime.fromtimestamp(epoch, timezone.utc) + IST
+    return _t.strftime("%I:%M %p").lstrip("0")
+
+
+def _ist_weekday_ok(trigger_epoch: float) -> bool:
+    """Mon-Fri by the UTC weekday of the trigger. Not the IST one: that is the
+    whole reason Friday night trades and Sunday night does not."""
+    return datetime.fromtimestamp(trigger_epoch, timezone.utc).weekday() < 5
+
+
+def _ist_klines(interval: str, limit: int):
+    """BingX candles as a list of dicts with epoch SECONDS, oldest first, or
+    []. The exchange returns milliseconds and not always in order."""
+    df = bingx_klines(_IST_SYMBOL, interval, limit)
+    if df is None or not len(df):
+        return []
+    out = []
+    for _, r in df.iterrows():
+        try:
+            _t = float(r["time"])
+            if _t > 1e11:
+                _t /= 1000.0
+            out.append({"time": _t, "open": float(r["open"]), "high": float(r["high"]),
+                        "low": float(r["low"]), "close": float(r["close"])})
+        except Exception:
+            continue
+    out.sort(key=lambda c: c["time"])
+    return out
+
+
+def _ist_open_at(epoch: float):
+    """Open of the 30m candle that starts exactly at `epoch`, or None if the
+    exchange has not produced it yet. Every IST time in the plan lands on a
+    UTC :00/:30 boundary, so this is a real candle with no interpolation."""
+    for c in _ist_klines("30m", 60):
+        if abs(c["time"] - epoch) < 1:
+            return c["open"]
+    return None
+
+
+def _ist_closed_1m(after: float, before: float) -> list:
+    """Closed 1m candles with open time in (after, before). A candle still
+    forming is excluded - its high and low are not final, and a stop judged
+    on a half-formed candle is a stop judged on nothing."""
+    _now = time.time()
+    return [c for c in _ist_klines("1m", 120)
+            if after < c["time"] < before and c["time"] + 60 <= _now]
+
+
+def _ist_pnl(t: dict, price: float):
+    """(raw %, after-fee %) for closing this trade at `price`."""
+    raw = (price - t["entry"]) / t["entry"] * 100.0
+    if t["side"] == "SELL":
+        raw = -raw
+    return raw, raw - t["fee"]
+
+
+def _ist_apply_candle(t: dict, c: dict):
+    """Apply one closed 1m candle to an open trade, in the backtest's order:
+    gap through the stop first, then the stop itself, then the updates that
+    take effect from the NEXT candle. Returns (closed, result, price)."""
+    o, h, l = c["open"], c["high"], c["low"]
+    buy = t["side"] == "BUY"
+    stop = t["stop"]
+    # 1. gap: the candle opened beyond the stop - out at the open.
+    if (buy and o <= stop) or (not buy and o >= stop):
+        return True, ("BE" if t.get("be_armed") else "TRAIL" if t.get("trail_on") else "SL"), o
+    # 2. the stop, at its own price.
+    if (buy and l <= stop) or (not buy and h >= stop):
+        return True, ("BE" if t.get("be_armed") else "TRAIL" if t.get("trail_on") else "SL"), stop
+    # 3. updates - effective from the next candle, never inside this one.
+    if t.get("be") and not t.get("be_armed"):
+        _armed = (l <= t["entry"] * (1 - t["be"])) if not buy else (h >= t["entry"] * (1 + t["be"]))
+        if _armed:
+            t["be_armed"] = True
+            t["stop"] = t["entry"]
+    if t.get("trail"):
+        t["lowest_low"] = min(t.get("lowest_low", l), l)
+        if not t.get("trail_on") and l <= t["entry"] * (1 - t["trail"]["arm"]):
+            t["trail_on"] = True
+        if t.get("trail_on"):
+            t["stop"] = min(t["stop"], t["lowest_low"] * (1 + t["trail"]["dist"]))
+    return False, None, None
+
+
+def _ist_entry_card(t: dict) -> str:
+    s = _IST_SETUPS[t["setup"]]
+    arrow = "🟢" if t["side"] == "BUY" else "🔴"
+    _how = "limit filled" if s["entry"] == "limit" else "market entry"
+    _stop_pct = abs(t["stop"] - t["entry"]) / t["entry"] * 100
+    return _scan_box(f"#BTC IST-{t['setup']}", f"{arrow} {s['name']}", [[
+        f"{arrow} {_smallcaps_title(t['side'])} — {_smallcaps_title(_how)}",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
+        f"🛑 SL: <code>{t['stop']:,.1f}</code>  ({_stop_pct:.2f}%)",
+        f"⏰ {_smallcaps_title('Exit')}: {_ist_hm_label(t['exit_ts'])} IST",
+    ], [
+        f"📌 {_ist_hm_label(t['compare_ts'])} <code>{t['compare_px']:,.1f}</code> → "
+        f"{_ist_hm_label(t['trigger_ts'])} <code>{t['now_px']:,.1f}</code>  "
+        f"({t['gap_pct']:+.2f}%)" + ("  ⚠️ close call" if t.get("close_call") else ""),
+    ]], tag=t.get("sig_id", ""))
+
+
+def _ist_close(setup: str, t: dict, result: str, price: float):
+    """Announce the close in the channel as a reply to the entry, and record
+    it in both the IST history and the shared test history so the existing
+    daily/weekly recaps include it."""
+    raw, net = _ist_pnl(t, price)
+    icon = {"TIME": "⏰", "SL": "🛑", "BE": "🛡️", "TRAIL": "📉"}.get(result, "•")
+    label = {"TIME": "time exit", "SL": "stopped", "BE": "breakeven", "TRAIL": "trailed out"}.get(result, result)
+    _test_post(_scan_box(f"#BTC {result}", f"{icon} IST-{setup} · {_IST_SETUPS[setup]['name']}", [[
+        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(label)}",
+        f"📊 {_smallcaps_title('Price')}: <code>{price:,.1f}</code>",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
+        f"📈 P&L: <b>{raw:+.2f}%</b>  (after fees <b>{net:+.2f}%</b>)",
+    ]], tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+    rec = {"setup": setup, "side": t["side"], "entry": t["entry"], "exit": price,
+           "result": result, "pnl": round(raw, 4), "pnl_net": round(net, 4),
+           "strict_fill": bool(t.get("strict_fill", True)),
+           "close_call": bool(t.get("close_call")),
+           "entry_ts": t["entry_ts"], "exit_ts": time.time(),
+           "date": _ist_date_str(t["entry_ts"]), "time": ist_str(),
+           "summer": t.get("summer", True)}
+    with _ist_lock:
+        _ist_state["history"].append(rec)
+        if len(_ist_state["history"]) > 2000:
+            del _ist_state["history"][:-2000]
+        _ist_state["open"].pop(setup, None)
+    # Shared history too, in the shape the recap tables read, so the daily and
+    # weekly recaps list these beside everything else.
+    _test_history.append({"time": rec["time"], "symbol": f"BTC IST-{setup}",
+                          "signal": t["side"], "entry": t["entry"], "result": result,
+                          "close_price": price, "pnl": raw, "date": rec["date"],
+                          "logic": "ist", "setup": setup})
+    if len(_test_history) > 2000:
+        del _test_history[:-2000]
+    _test_save()
+    print(f"  [IST-{setup}] {result} @ {price:,.1f}  raw {raw:+.2f}%  net {net:+.2f}%")
+
+
+def _ist_open_trade(setup: str, plan: dict, ref: dict, entry: float, entry_ts: float,
+                    strict_fill: bool = True):
+    s = _IST_SETUPS[setup]
+    side = ref["side"]
+    _stop = entry * (1 - s["stop_pct"] / 100) if side == "BUY" else entry * (1 + s["stop_pct"] / 100)
+    t = {"setup": setup, "side": side, "entry": entry, "stop": _stop,
+         "entry_ts": entry_ts, "exit_ts": plan["exit"], "trigger_ts": plan["trigger"],
+         "compare_ts": plan["compare"], "compare_px": ref["compare_px"],
+         "now_px": ref["now_px"], "gap_pct": ref["gap_pct"],
+         "close_call": ref["close_call"], "strict_fill": strict_fill,
+         "fee": s["fee"], "be": s["be"], "trail": s["trail"],
+         "be_armed": False, "trail_on": False, "last_1m": entry_ts,
+         "summer": plan["summer"], "sig_id": _gen_signal_id()}
+    t["entry_mid"] = _test_post(_ist_entry_card(t))
+    with _ist_lock:
+        _ist_state["open"][setup] = t
+    _test_save()
+    print(f"  [IST-{setup}] opened {side} @ {entry:,.1f}  stop {_stop:,.1f}  "
+          f"exit {_ist_hm_label(plan['exit'])}"
+          + ("" if strict_fill else "  (touch-only fill)"))
+    return t
+
+
+def _ist_try_trigger(setup: str, now: float, today):
+    """Evaluate one setup's trigger for today, once."""
+    plan = _ist_plan(setup, today)
+    key = f"{setup}|{today.isoformat()}"
+    with _ist_lock:
+        if key in _ist_state["fired"]:
+            return
+    trig = plan["trigger"]
+    if now < trig + 5:
+        return                              # not yet - the 30m candle must exist
+    if now > trig + _IST_TRIGGER_GRACE:
+        # The bot was down at the trigger. Do not backfill: entering at market
+        # ten minutes late is not the plan that was tested.
+        _ist_mark(key, "missed (bot was not running at the trigger)")
+        return
+    if not _ist_weekday_ok(trig):
+        _ist_mark(key, "weekend by UTC")
+        return
+    s = _IST_SETUPS[setup]
+    comp_px = _ist_open_at(plan["compare"])
+    now_px = _ist_open_at(trig)
+    if comp_px is None or now_px is None:
+        _ist_mark(key, "no candle data at the trigger")
+        return
+    gap = (now_px - comp_px) / comp_px
+    ref = {"compare_px": comp_px, "now_px": now_px, "gap_pct": gap * 100,
+           "close_call": abs(gap) < _IST_CLOSE_CALL, "summer": plan["summer"],
+           "trigger_ts": trig, "compare_ts": plan["compare"], "exit_ts": plan["exit"]}
+    with _ist_lock:
+        _ist_state["refs"][setup] = dict(ref, at=now)
+    # Strict inequality everywhere: equal is no trade, for D as well.
+    if s["side"] == "FOLLOW":
+        if now_px == comp_px:
+            _ist_mark(key, f"equal: {now_px:,.1f} = {comp_px:,.1f}"); return
+        ref["side"] = "BUY" if now_px > comp_px else "SELL"
+    elif s["side"] == "BUY":
+        if not (now_px < comp_px):
+            _ist_mark(key, f"not below: {now_px:,.1f} vs {comp_px:,.1f}"); return
+        ref["side"] = "BUY"
+    else:
+        if not (now_px > comp_px):
+            _ist_mark(key, f"not above: {now_px:,.1f} vs {comp_px:,.1f}"); return
+        ref["side"] = "SELL"
+    if s["entry"] == "market":
+        _ist_open_trade(setup, plan, ref, now_px, trig)
+        _ist_mark(key, "opened")
+    else:
+        limit = now_px * (1 + s["limit_off"])
+        with _ist_lock:
+            _ist_state["pending"][setup] = {"plan": plan, "ref": ref, "limit": limit,
+                                            "key": key, "placed": now}
+        _ist_mark(key, "pending")
+        print(f"  [IST-{setup}] {ref['side']} limit {limit:,.1f} until "
+              f"{_ist_hm_label(plan['cancel'])}")
+
+
+def _ist_mark(key: str, how: str):
+    with _ist_lock:
+        _ist_state["fired"][key] = how
+        # Keep a fortnight; the dict is keyed by date and only grows.
+        if len(_ist_state["fired"]) > 80:
+            for k in sorted(_ist_state["fired"])[:-60]:
+                _ist_state["fired"].pop(k, None)
+    if how != "pending":
+        print(f"  [IST-{key.split('|')[0]}] {how}")
+
+
+def _ist_process_pending(setup: str, now: float):
+    with _ist_lock:
+        p = _ist_state["pending"].get(setup)
+    if not p:
+        return
+    plan, ref, limit = p["plan"], p["ref"], p["limit"]
+    buy = ref["side"] == "BUY"
+    for c in _ist_closed_1m(plan["trigger"] - 1, min(now, plan["cancel"])):
+        if buy:
+            hit = c["low"] <= limit
+            fill = c["open"] if c["open"] <= limit else limit
+            strict = c["low"] <= limit - _IST_STRICT_USD
+        else:
+            hit = c["high"] >= limit
+            fill = c["open"] if c["open"] >= limit else limit
+            strict = c["high"] >= limit + _IST_STRICT_USD
+        if not hit:
+            continue
+        with _ist_lock:
+            _ist_state["pending"].pop(setup, None)
+        t = _ist_open_trade(setup, plan, ref, fill, c["time"], strict_fill=strict)
+        _ist_mark(p["key"], "opened")
+        # "If the fill candle also hits the stop, count it as stopped."
+        s = _IST_SETUPS[setup]
+        if (buy and c["low"] <= t["stop"]) or (not buy and c["high"] >= t["stop"]):
+            _ist_close(setup, t, "SL", t["stop"])
+        return
+    if now >= plan["cancel"]:
+        with _ist_lock:
+            _ist_state["pending"].pop(setup, None)
+        _ist_mark(p["key"], f"no fill (limit {limit:,.1f} never touched)")
+        _test_save()
+
+
+def _ist_process_open(setup: str, now: float):
+    with _ist_lock:
+        t = _ist_state["open"].get(setup)
+    if not t:
+        return
+    # Closed candles since the last one applied, and strictly before the exit
+    # candle - stops are never judged inside the exit candle.
+    for c in _ist_closed_1m(t["last_1m"], t["exit_ts"]):
+        closed, result, price = _ist_apply_candle(t, c)
+        t["last_1m"] = c["time"]
+        if closed:
+            _ist_close(setup, t, result, price)
+            return
+    if now >= t["exit_ts"] + 5:
+        px = _ist_open_at(t["exit_ts"])
+        if px is None:
+            # 30m boundary candle not served yet - fall back to the 1m open
+            # at the same instant, which is the same price.
+            for c in _ist_klines("1m", 30):
+                if abs(c["time"] - t["exit_ts"]) < 1:
+                    px = c["open"]; break
+        if px is not None:
+            _ist_close(setup, t, "TIME", px)
+
+
+def _ist_loop():
+    """Own thread. Does nothing unless the test system is running in IST mode."""
+    time.sleep(60)
+    while True:
+        try:
+            if TEST_ENABLED and TEST_LOGIC == "ist" and (not CLEXER_API_URL or is_active_server()):
+                now = time.time()
+                today = now_ist().date()
+                for setup in _IST_SETUPS:
+                    try:
+                        _ist_try_trigger(setup, now, today)
+                        _ist_process_pending(setup, now)
+                        _ist_process_open(setup, now)
+                    except Exception as e:
+                        print(f"  [IST-{setup}] loop: {e}")
+        except Exception as e:
+            print(f"[IST LOOP] {e}")
+        time.sleep(20)
+
+
+def _ist_setup_stats(setup: str, rows: list = None) -> dict:
+    """Per-setup numbers in the PDF's own terms: trades, win rate raw and
+    after fees, average per trade raw and after fees, total as a plain sum,
+    worst trade and worst drawdown on the summed after-fee curve, plus the
+    touch-vs-strict fill split and the close-call count."""
+    rows = [r for r in (rows if rows is not None else _ist_state["history"]) if r["setup"] == setup]
+    n = len(rows)
+    if not n:
+        return {"n": 0}
+    raw = [r["pnl"] for r in rows]; net = [r["pnl_net"] for r in rows]
+    _peak = _cum = 0.0; _dd = 0.0
+    for v in net:
+        _cum += v; _peak = max(_peak, _cum); _dd = max(_dd, _peak - _cum)
+    strict = [r for r in rows if r.get("strict_fill", True)]
+    return {"n": n,
+            "win_raw": sum(1 for v in raw if v > 0) / n * 100,
+            "win_net": sum(1 for v in net if v > 0) / n * 100,
+            "avg_raw": sum(raw) / n, "avg_net": sum(net) / n,
+            "total_net": sum(net), "worst": min(net), "dd": _dd,
+            "strict_n": len(strict), "strict_net": sum(r["pnl_net"] for r in strict),
+            "close_calls": sum(1 for r in rows if r.get("close_call")),
+            "results": {k: sum(1 for r in rows if r["result"] == k)
+                        for k in ("TIME", "SL", "BE", "TRAIL")}}
+
+
+def _ist_stats_text(rows: list = None, title: str = "IST plan") -> str:
+    """The per-setup table, as <pre>."""
+    out = [f"{'':<3}{'n':>3} {'win':>5} {'net':>5} {'avg':>7} {'total':>7} {'worst':>7} {'dd':>6}"]
+    any_rows = False
+    for setup in _IST_SETUPS:
+        st = _ist_setup_stats(setup, rows)
+        if not st["n"]:
+            out.append(f"{setup:<3}{'-':>3}")
+            continue
+        any_rows = True
+        out.append(f"{setup:<3}{st['n']:>3} {st['win_raw']:>4.0f}% {st['win_net']:>4.0f}% "
+                   f"{st['avg_net']:>+6.2f}% {st['total_net']:>+6.2f}% "
+                   f"{st['worst']:>+6.2f}% {st['dd']:>5.2f}%")
+    if not any_rows:
+        return ""
+    extra = []
+    for setup in ("A", "B"):
+        st = _ist_setup_stats(setup, rows)
+        if st["n"]:
+            extra.append(f"{setup}: touch-fill {st['n']} · {st['total_net']:+.2f}%  |  "
+                         f"strict-fill {st['strict_n']} · {st['strict_net']:+.2f}%")
+    _cc = sum(_ist_setup_stats(s_, rows)["close_calls"] for s_ in _IST_SETUPS
+              if _ist_setup_stats(s_, rows)["n"])
+    extra.append(f"close calls: {_cc}")
+    return (f"<b>{title}</b>  (win = raw / after fees; avg, total, worst, dd are after fees)\n"
+            f"<pre>" + "\n".join(out) + "</pre>\n" + "\n".join(extra))
+
+
+def _ist_status_text() -> str:
+    """The IST section of /test trade."""
+    now = time.time()
+    today = now_ist().date()
+    summer = _ist_is_summer()
+    lines = [f"📐 <b>IST plan</b> — BTC only · "
+             f"{'☀️ summer clock' if summer else '❄️ winter clock (+1h on A, C, D)'}"]
+    rows = []
+    for setup, s in _IST_SETUPS.items():
+        plan = _ist_plan(setup, today)
+        with _ist_lock:
+            t = _ist_state["open"].get(setup)
+            p = _ist_state["pending"].get(setup)
+            fired = _ist_state["fired"].get(f"{setup}|{today.isoformat()}")
+            ref = _ist_state["refs"].get(setup)
+        head = (f"{setup} · {s['name']:<16} trig {_ist_hm_label(plan['trigger']):>8}  "
+                f"exit {_ist_hm_label(plan['exit']):>8}")
+        if t:
+            cp = get_bingx_price(_IST_SYMBOL) or 0
+            raw, net = _ist_pnl(t, cp) if cp else (0.0, 0.0)
+            body = (f"   OPEN {t['side']} @ {t['entry']:,.1f}  now {cp:,.1f}  {raw:+.2f}%"
+                    f"\n   stop {t['stop']:,.1f}"
+                    + ("  🛡️BE" if t.get("be_armed") else "")
+                    + ("  📉trail" if t.get("trail_on") else "")
+                    + ("  ⚠️close call" if t.get("close_call") else ""))
+        elif p:
+            body = (f"   PENDING {p['ref']['side']} limit {p['limit']:,.1f}  "
+                    f"until {_ist_hm_label(plan['cancel'])}")
+        elif fired:
+            body = f"   today: {fired}"
+        else:
+            body = f"   waiting · {'weekday ok' if _ist_weekday_ok(plan['trigger']) else 'weekend by UTC - will skip'}"
+        if ref:
+            body += (f"\n   ref {_ist_hm_label(ref['compare_ts'])} {ref['compare_px']:,.1f} → "
+                     f"{_ist_hm_label(ref['trigger_ts'])} {ref['now_px']:,.1f} ({ref['gap_pct']:+.2f}%)")
+        rows.append(head + "\n" + body)
+    lines.append("<pre>" + "\n\n".join(rows) + "</pre>")
+    st = _ist_stats_text()
+    if st:
+        lines.append(st)
+    return "\n\n".join(lines)
+
+
 def _test_save():
     """Local file AND the central store.
 
@@ -13770,8 +14299,12 @@ def _test_save():
     the open trades and the whole recap history with it. That is why the test
     system came back stopped and empty after each redeploy (admin 2026-09-03).
     """
+    with _ist_lock:
+        _ist_blob = {k: (dict(v) if isinstance(v, dict) else list(v))
+                     for k, v in _ist_state.items()}
     blob = {"enabled": TEST_ENABLED, "trades": _test_trades,
-            "history": _test_history, "stats": _test_stats, "logic": TEST_LOGIC}
+            "history": _test_history, "stats": _test_stats, "logic": TEST_LOGIC,
+            "ist": _ist_blob}
     try:
         with open(_TEST_STATE_FILE, "w") as f:
             json.dump(blob, f)
@@ -13801,7 +14334,12 @@ def _test_load():
         if not d:
             return
         TEST_ENABLED = bool(d.get("enabled", False))
-        TEST_LOGIC = d.get("logic") if d.get("logic") in ("current", "mtf") else TEST_LOGIC
+        TEST_LOGIC = d.get("logic") if d.get("logic") in ("current", "mtf", "ist") else TEST_LOGIC
+        _ist_in = d.get("ist") or {}
+        with _ist_lock:
+            for k in _ist_state:
+                if k in _ist_in:
+                    _ist_state[k] = _ist_in[k]
         _test_trades[:] = d.get("trades", []) or []
         _test_history[:] = d.get("history", []) or []
         _test_stats.update(d.get("stats", {}) or {})
@@ -13818,9 +14356,16 @@ def _test_recap(period: str, dates: list) -> str:
     if not rows:
         return ""
     title = f"{period} Recap — TEST"
-    if period == "Daily":
-        return _build_recap_text(rows, dates[0])
-    return _build_period_recap_text(rows, title)
+    text = _build_recap_text(rows, dates[0]) if period == "Daily" else _build_period_recap_text(rows, title)
+    # The IST plan's own per-setup table under the shared recap, for the
+    # period's rows only - win rates raw and after fees, close calls, and the
+    # touch-vs-strict fill split, which the shared table has no idea about.
+    _ist_rows = [r for r in _ist_state["history"] if r.get("date") in dates]
+    if _ist_rows:
+        _blk = _ist_stats_text(_ist_rows, f"IST plan — {period.lower()}")
+        if _blk:
+            text = (text or "") + chr(10) + chr(10) + _blk
+    return text
 
 
 def _test_recap_loop():
@@ -17557,14 +18102,30 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 TEST_LOGIC = "current"
             elif _want in ("mtf", "15m", "new"):
                 TEST_LOGIC = "mtf"
+            elif _want in ("ist", "clock", "plan", "btc"):
+                TEST_LOGIC = "ist"
             elif _want:
-                send_reply(chat_id, "<code>/test switch</code> to flip, or "
-                           "<code>/test switch current</code> / <code>/test switch mtf</code>",
+                send_reply(chat_id, "<code>/test switch</code> to cycle, or "
+                           "<code>/test switch current</code> / <code>mtf</code> / <code>ist</code>",
                            skip_smallcaps=True); return
             else:
-                TEST_LOGIC = "mtf" if TEST_LOGIC == "current" else "current"
+                TEST_LOGIC = {"current": "mtf", "mtf": "ist", "ist": "current"}[TEST_LOGIC]
             _test_save()
-            if TEST_LOGIC == "mtf":
+            if TEST_LOGIC == "ist":
+                _sm = _ist_is_summer()
+                _td = now_ist().date()
+                _tbl = chr(10).join(
+                    f"{k} · {v['name']:<16} {_ist_hm_label(_ist_plan(k, _td)['trigger']):>8}"
+                    f" → {_ist_hm_label(_ist_plan(k, _td)['exit']):>8}"
+                    for k, v in _IST_SETUPS.items())
+                _body = ["🔁 <b>Test logic → IST CLOCK PLAN (BTC only)</b>", "",
+                         "Four setups at fixed IST times, from the trade plan. "
+                         "The 5-symbol scan stands down while this is on.", "",
+                         "<pre>" + _tbl + "</pre>",
+                         f"Clock: <b>{'☀️ summer' if _sm else '❄️ winter (+1h on A, C, D)'}</b> · "
+                         "Mon–Fri by UTC · no take-profit, stop then time exit", "",
+                         "<code>/test trade</code> shows each setup's state and per-setup stats."]
+            elif TEST_LOGIC == "mtf":
                 _body = ["🔁 <b>Test logic → MTF (15M → 5M → 1M)</b>", "",
                          "15M structure sets the bias.",
                          "5M engine must agree with it, or the trade is skipped.",
@@ -17589,6 +18150,20 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _snap = list(_test_trades)
             _parts = [f"🧪 <b>Test Trades</b> — "
                       f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}"]
+            if TEST_LOGIC == "ist":
+                _parts.append(_ist_status_text())
+                _recent = [h for h in _test_history if h.get("logic") == "ist"][-5:]
+                if _recent:
+                    _cl = []
+                    for h in _recent:
+                        _p = h.get("pnl")
+                        _ps = f"{_p:+.2f}%" if _p is not None else "—"
+                        _cl.append(f"{h.get('setup','?'):<2} {h.get('signal',''):<4} "
+                                   f"{h.get('result',''):<5} {_ps:>8}  {h.get('time','')}")
+                    _parts.append("<b>Last closed:</b>" + chr(10) + "<pre>" + chr(10).join(_cl) + "</pre>")
+                send_reply(chat_id, _safe_truncate_html((chr(10) * 2).join(_parts), 3900),
+                           skip_smallcaps=True)
+                return
             if _snap:
                 _rows = []
                 for t in _snap:
@@ -17641,7 +18216,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 f"{'▶️ RUNNING' if TEST_ENABLED else '⏹ STOPPED'}\n\n"
                 f"Pairs: {', '.join(x.replace('-USDT','') for x in TEST_SYMBOLS)}\n"
                 f"Cycle: every {TEST_CYCLE_SECS//60} min\n"
-                f"Logic: <b>{'MTF 15M/5M/1M' if TEST_LOGIC == 'mtf' else 'Current 5M/1M'}</b>\n"
+                f"Logic: <b>{ {'mtf': 'MTF 15M/5M/1M', 'ist': 'IST clock plan (BTC)'}.get(TEST_LOGIC, 'Current 5M/1M') }</b>\n"
                 f"Closed: {_n}  ({_w} win / {_n-_w} loss)\n"
                 + (f"\n⚠️ <b>Last post error:</b> <code>{_test_last_post_error}</code>\n"
                    f"<i>The bot likely is not an admin of that channel.</i>\n"
@@ -25695,6 +26270,7 @@ def main():
     threading.Thread(target=_test_scan_loop, daemon=True).start()
     threading.Thread(target=_test_monitor_loop, daemon=True).start()
     threading.Thread(target=_test_recap_loop, daemon=True).start()
+    threading.Thread(target=_ist_loop, daemon=True).start()
     threading.Thread(target=_intraday_monitor_loop, daemon=True).start()
     threading.Thread(target=_intraday_scan_loop, daemon=True).start()
 
