@@ -25,3 +25,4 @@ CLEXER_BOT_BRIEF.md
 
 # Downloaded kline history — large, regenerable
 data/klines/
+data/klines_binance/

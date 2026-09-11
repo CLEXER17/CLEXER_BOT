@@ -34,7 +34,9 @@ from datetime import datetime, timezone
 import requests
 
 URL = "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
+BINANCE_URL = "https://fapi.binance.com/fapi/v1/klines"
 PAGE = 1000
+BINANCE_PAGE = 1500
 PAUSE = 0.12                # seconds between calls; 400 in a row at this pace was fine
 STALL_LIMIT = 3             # consecutive pages that add nothing before giving up
 
@@ -53,6 +55,61 @@ def _page(symbol, interval, end_ms):
             print(f"    retry in {wait}s: {e}", file=sys.stderr)
             time.sleep(wait)
     return []
+
+
+def _binance_page(symbol, interval, start_ms):
+    """Binance USDT-M perpetual. Pages FORWARD from startTime, 1500 a call,
+    and holds every interval back to Sep 2019 - the exchange the admin's
+    trade plan was researched on. BingX keeps 5m only 45 days and 15m 100."""
+    for _try in range(4):
+        try:
+            r = requests.get(BINANCE_URL, params={"symbol": symbol, "interval": interval,
+                                                  "startTime": start_ms, "limit": BINANCE_PAGE},
+                             timeout=20)
+            j = r.json()
+            if isinstance(j, dict):
+                raise RuntimeError(j.get("msg"))
+            return j
+        except Exception as e:
+            wait = 2 * (_try + 1)
+            print(f"    retry in {wait}s: {e}", file=sys.stderr)
+            time.sleep(wait)
+    return []
+
+
+def pull_binance(symbol, interval, out_dir, since_ms):
+    path = os.path.join(out_dir, f"{symbol}_{interval}.csv")
+    rows = _load_existing(path)
+    have = len(rows)
+    start = max(rows) + 1 if rows else since_ms
+    calls = 0
+    print(f"{symbol} {interval} (binance): {'resuming after ' + _ts(start) if rows else 'from ' + _ts(start)}")
+    while True:
+        data = _binance_page(symbol, interval, start)
+        calls += 1
+        if not data:
+            break
+        newest = None
+        for r in data:
+            t, o, h, l, c, v = _norm(r)
+            rows[t] = (o, h, l, c, v)
+            newest = t if newest is None else max(newest, t)
+        if len(data) < BINANCE_PAGE:
+            break
+        start = newest + 1
+        if calls % 50 == 0:
+            print(f"    {calls} calls · {len(rows):,} candles · up to {_ts(newest)}")
+        time.sleep(0.08)
+    times = sorted(rows)
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time_utc", "time_ms", "open", "high", "low", "close", "volume"])
+        for t in times:
+            w.writerow([_ts(t), t, *rows[t]])
+    days = (times[-1] - times[0]) / 86400000 if times else 0
+    print(f"  -> {len(rows):,} candles (+{len(rows) - have:,} new) · {_ts(times[0])} to "
+          f"{_ts(times[-1])} · {days:.0f} days · {calls} calls · {path}")
+    return path
 
 
 def _norm(row):
@@ -123,7 +180,15 @@ if __name__ == "__main__":
     ap.add_argument("--symbol", default="BTC-USDT")
     ap.add_argument("--intervals", default="4h,1h,30m,15m,5m,1m")
     ap.add_argument("--out", default="data/klines")
+    ap.add_argument("--source", default="bingx", choices=["bingx", "binance"])
+    ap.add_argument("--since", default="2022-08-03",
+                    help="binance only: earliest date to pull, YYYY-MM-DD")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     for iv in [x.strip() for x in a.intervals.split(",") if x.strip()]:
-        pull(a.symbol, iv, a.out)
+        if a.source == "binance":
+            _since = int(datetime.strptime(a.since, "%Y-%m-%d")
+                         .replace(tzinfo=timezone.utc).timestamp() * 1000)
+            pull_binance(a.symbol.replace("-", ""), iv, a.out, _since)
+        else:
+            pull(a.symbol, iv, a.out)
