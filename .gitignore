@@ -22,3 +22,6 @@ co3_backup.json
 
 # Full system brief — no secrets in it, but keep it out of the repo anyway
 CLEXER_BOT_BRIEF.md
+
+# Downloaded kline history — large, regenerable
+data/klines/
