@@ -776,6 +776,69 @@ def _set_position_sl(api_key: str, api_secret: str, pos_side: str, sl: float) ->
     except Exception as e:
         return {"code": -1, "msg": str(e)}
 
+_sl_fail_count: dict = {}       # (cid, sym) -> consecutive monitor cycles the stop could not be placed
+_SL_FAIL_CLOSE_AFTER = 3        # cycles (~90s) before the position is closed instead of retried
+
+
+def _sl_escalate(cid, ak, ask, sym, pos_side, pos_amt, sl_price, pos, uname, err,
+                 notify_fn, fixes) -> bool:
+    """The stop could not be placed on a LIVE position. Decide deterministically.
+
+    This replaces asking a model what to do. That path returned {"action":
+    "hold"} on any failure of its own - no API key, gateway down, unparseable
+    reply - and "hold" means leave the position open with no stop, which is
+    the one outcome the monitor exists to prevent. A safety net whose
+    fallback is the thing it guards against is not a safety net. It also
+    only covered BTC; scan coins just logged a cross and moved on, every
+    cycle, indefinitely (admin 2026-09-13).
+
+    Rule, in order:
+      1. If the mark price is ALREADY past the stop, close now. The exchange
+         rejects a stop on the wrong side of mark - so a persistent failure
+         usually means price blew through the level while unprotected, and
+         every further retry is a retry of something that cannot succeed.
+      2. Otherwise retry; after _SL_FAIL_CLOSE_AFTER consecutive cycles,
+         close. Same rule the entry path applies after 60 seconds.
+      3. If the CLOSE fails too, say so as loudly as the bot can - that is the
+         only case left where a human has to act, and they must know now.
+    Returns True if the position was closed."""
+    key = (str(cid), sym)
+    n = _sl_fail_count.get(key, 0) + 1
+    _sl_fail_count[key] = n
+    try:
+        mark = float(pos.get("markPrice") or 0)
+    except (TypeError, ValueError):
+        mark = 0.0
+    past = bool(mark) and ((pos_side == "LONG" and mark <= sl_price) or
+                           (pos_side == "SHORT" and mark >= sl_price))
+    if not past and n < _SL_FAIL_CLOSE_AFTER:
+        msg = (f"⚠️ @{uname} {sym}: stop could not be placed ({str(err)[:80]}) — "
+               f"attempt {n}/{_SL_FAIL_CLOSE_AFTER}, position is UNPROTECTED, retrying")
+        fixes.append(msg); print(f"[CT] {msg}")
+        if notify_fn: notify_fn(msg)
+        return False
+    why = (f"price {mark:g} is already past the stop {sl_price:g}" if past
+           else f"stop could not be placed {n} cycles running")
+    cr = _bingx("POST", "/openApi/swap/v2/trade/closePosition", ak, ask,
+                {"symbol": sym, "positionSide": pos_side})
+    if cr.get("code") == 0:
+        _sl_fail_count.pop(key, None)
+        msg = f"🚨 @{uname} {sym}: POSITION CLOSED — {why}. Nothing is left open without a stop."
+        closed = True
+    else:
+        msg = (f"🆘 @{uname} {sym}: NO STOP AND THE CLOSE FAILED ({str(cr.get('msg', ''))[:80]}) — "
+               f"{why}. CLOSE THIS POSITION MANUALLY NOW.")
+        closed = False
+    fixes.append(msg); print(f"[CT] {msg}")
+    if notify_fn: notify_fn(msg)
+    return closed
+
+
+def _sl_ok(cid, sym):
+    """A stop went on successfully - the strike count for this position resets."""
+    _sl_fail_count.pop((str(cid), sym), None)
+
+
 def _cancel_order(api_key: str, api_secret: str, order_id: str) -> dict:
     if not order_id:
         return {"code": 0}
@@ -2756,10 +2819,11 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                         msg = f"{'🔧' if ok else '❌'} @{uname} BTC SL {'restored @'+str(round(emergency_sl,2)) if ok else 'FAILED:'+r.get('msg','')[:40]}"
                         fixes.append(msg); print(f"[CT] {msg}")
                         if not ok:
-                            pnl = float(pos.get("unrealizedProfit",0))
-                            action = _ask_claude_action(f"BTC {trade_side} size={pos_amt} avg={avg_price} PnL={pnl:+.2f}. SL placement failed: {r.get('msg','')}. Protect this position.")
-                            _execute_claude_action(action, ak, ask, sym, pos_side, pos_amt, notify_fn, uname, avg_price=avg_price, user=user)
+                            if _sl_escalate(cid, ak, ask, sym, pos_side, pos_amt, emergency_sl, pos,
+                                            uname, r.get("msg", ""), notify_fn, fixes):
+                                continue          # closed - nothing further to reconcile
                         elif ok and notify_fn:
+                            _sl_ok(cid, sym)
                             notify_fn(f"✅ {msg}")
                     if not has_tp:
                         pnl = float(pos.get("unrealizedProfit",0))
@@ -2832,7 +2896,16 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                         "type": "STOP_MARKET", "quantity": round(pos_amt, 4),
                         "stopPrice": round(sl_price, 6),
                     })
-                    placed.append(f"SL {'✅' if r.get('code')==0 else '❌'+r.get('msg','')[:250]}")
+                    if r.get("code") == 0:
+                        placed.append("SL ✅")
+                        _sl_ok(cid, sym)
+                    else:
+                        placed.append(f"SL ❌{r.get('msg','')[:120]}")
+                        if _sl_escalate(cid, ak, ask, sym, pos_side, pos_amt, sl_price, pos,
+                                        uname, r.get("msg", ""), notify_fn, fixes):
+                            continue      # closed - do not go on to place TPs on a dead position
+                else:
+                    _sl_ok(cid, sym)
 
                 if not has_tp1 and tp1_price:
                     r = _bingx("POST", "/openApi/swap/v2/trade/order", ak, ask, {
