@@ -6919,6 +6919,38 @@ def _engine_fmt(v: float) -> str:
         s = s.rstrip("0").rstrip(".")
     return s or "0"
 
+def _sl_guard(signal: str, entry, sl) -> str:
+    """The one check every trade path must pass before it builds a trade:
+    a stop that exists, and sits on the correct side of the entry.
+
+    Returns "" when the stop is usable, otherwise the reason it is not.
+
+    Every placement path already rejected a MISSING stop and one outside its
+    %-band. None of them checked the SIDE: they all measured the distance
+    with abs(entry - sl), so a BUY whose stop sat ABOVE the entry - or a SELL
+    whose stop sat below - passed the band and went live. The monitor then
+    saw price <= stop on its very first tick and closed it as a loss. The
+    engine cannot produce that (its stop is the last-5 extreme on the correct
+    side by construction), but a model can, and the question 'does the SL
+    check work in engine mode' turned up the gap in both (admin 2026-09-13).
+    Applies identically whichever produced the signal."""
+    try:
+        entry = float(entry); sl = float(sl)
+    except (TypeError, ValueError):
+        return "stop is not a number"
+    if not entry or entry <= 0:
+        return "no entry price"
+    if not sl or sl <= 0:
+        return "no stop-loss"
+    if signal == "BUY" and sl >= entry:
+        return f"BUY stop {sl:g} is not below entry {entry:g}"
+    if signal == "SELL" and sl <= entry:
+        return f"SELL stop {sl:g} is not above entry {entry:g}"
+    if signal not in ("BUY", "SELL"):
+        return f"no direction ({signal})"
+    return ""
+
+
 def _engine_signal(H, L, C, entry, tp1_mult, tp2_mult, sl_lo=1.5, sl_hi=4.0):
     """The deterministic replacement for the AI's judgement, from 10 5M candles.
 
@@ -8894,6 +8926,10 @@ def analyze_with_claude(ticker, data, validate_trade=False):
             signal["tp1"] = round(entry+sl_dist*2 if sig_type=="BUY" else entry-sl_dist*2, -1)
             signal["tp2"] = round(entry+sl_dist*4 if sig_type=="BUY" else entry-sl_dist*4, -1)
         if sl_dist > 3000: return None
+        _slg = _sl_guard(sig_type, entry, signal["sl"])
+        if _slg:
+            print(f"  [BTC] {_slg} — signal dropped")
+            return None
 
         etype = signal.get("entry_type", "MARKET")
         if etype == "PULLBACK":
@@ -12916,6 +12952,9 @@ def _intra_validate(kind: str, sig: dict, scan_price: float):
         if inval >= entry:
             return False, f"SELL invalidation {inval:g} must sit BELOW entry {entry:g} (it is a runaway level, not a stop)"
 
+    _slg = _sl_guard(side, entry, sl)
+    if _slg:
+        return False, _slg
     sl_dist = abs(entry - sl)
     sl_pct = sl_dist / entry * 100.0
     # Epsilon on both edges: when sl_dist is raised to the floor it lands on
@@ -13582,6 +13621,9 @@ def _test_scan_one(symbol: str) -> str:
     dp = _test_dp(symbol)
     q = lambda v: round(float(v), dp)
     entry, sl = q(r["entry"]), q(r["sl"])
+    _slg = _sl_guard(side, entry, sl)
+    if _slg:
+        return (symbol, False, _slg)
     d = abs(entry - sl)
     if d <= 0:
         return (symbol, False, "stop collapsed onto entry after rounding to venue precision")
@@ -20020,6 +20062,11 @@ Reasoning: [one line]"""
                         _zone_hi = round(scan_entry * (1 + _ZONE_BAND_PCT), 6)
                         scan_entry = _zone_lo  # order placed at the zone's lower bound
 
+                    _slg = _sl_guard(scan_signal_val, scan_entry, scan_sl)
+                    if _slg:
+                        skip_log.append(f"🛑 {chosen_sym}: {_slg} — skipping")
+                        print(f"  [SCAN] {chosen_sym}: {_slg} — skipping")
+                        continue
                     if scan_sl > 0:
                         sl_dist = abs(scan_entry - scan_sl)
                         sl_pct  = sl_dist / scan_entry * 100
@@ -25100,8 +25147,9 @@ def _tp_run_scan(source: str, hm: tuple):
         m = _re.search(rf"{label}[:\s]+([0-9.]+)", _clean, _re.IGNORECASE)
         return float(m.group(1)) if m else 0.0
     entry = cand["price"]; sl = _parse("SL")
-    if sl <= 0:
-        print(f"[TIME PANEL] {source} {hm_str} — {sym} {signal_val} but no valid SL parsed"); return
+    _slg = _sl_guard(signal_val, entry, sl)
+    if _slg:
+        print(f"[TIME PANEL] {source} {hm_str} — {sym} {_slg}"); return
     sl_dist = abs(entry - sl)
     sl_pct = sl_dist / entry * 100
     if sl_pct < 1.0 or sl_pct > 3.0:
@@ -25877,6 +25925,11 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             # before the chart-fetch + Claude analysis, refetch so entry/SL/TP match
             # where price actually is now, not where it was minutes ago.
             scan_entry = get_bingx_price(chosen_sym) or cp
+            _slg = _sl_guard(scan_signal_val, scan_entry, scan_sl_raw)
+            if _slg:
+                print(f"  [TEST] {chosen_sym}: {_slg} — skipping")
+                skip_log.append(f"🛑 {chosen_sym}: {_slg}")
+                continue
             sl_dist = abs(scan_entry - scan_sl_raw)
             sl_pct  = sl_dist / scan_entry * 100
 
