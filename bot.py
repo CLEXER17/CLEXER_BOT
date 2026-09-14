@@ -9134,7 +9134,10 @@ ct._pause_event = bot_paused
 
 # Chat games (/games) - board images drawn by code, no AI. See games.py.
 import games as _games_mod
-_games_mod.init(TELEGRAM_BOT_TOKEN)
+# Boards are uploaded to GAMES_STORE_CHAT ahead of each move (a private
+# channel the bot is admin of); until one is set the admin's DM is used and
+# each upload is deleted immediately.
+_games_mod.init(TELEGRAM_BOT_TOKEN, os.getenv("GAMES_STORE_CHAT") or ADMIN_CHAT_ID)
 
 # --- TELEGRAM -----------------------------------------------------------------
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")

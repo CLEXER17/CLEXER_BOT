@@ -23,6 +23,7 @@ Buttons are deliberately NOT run through bot.py's _style_keyboard: the admin
 wants game buttons plain, with only Quit / Cancel in red.
 """
 
+import copy
 import io
 import json
 import math
@@ -36,6 +37,8 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 _TOKEN = None
+_STORE = None              # hidden chat that boards are uploaded to ahead of time
+PRELOAD = True             # upload-first-swap-second (see _prepare)
 _lock = threading.RLock()
 _games: dict = {}          # chat id (str) -> game dict
 _fonts: dict = {}
@@ -66,10 +69,14 @@ SNAKES = {17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 99: 78}
 
 # ── wiring ─────────────────────────────────────────────────────────────────
 
-def init(token: str):
-    """Called once from bot.py after the token is known."""
-    global _TOKEN, _watch_started
+def init(token: str, store_chat=None):
+    """Called once from bot.py after the token is known. store_chat is where
+    boards are uploaded ahead of a move (a private channel the bot is admin
+    of, or the admin's DM - the upload is deleted the moment its file_id is
+    known, so nothing stays visible there)."""
+    global _TOKEN, _watch_started, _STORE
     _TOKEN = token
+    _STORE = str(store_chat) if store_chat else None
     if not _watch_started:
         _watch_started = True
         threading.Thread(target=_watchdog, daemon=True, name="games-watchdog").start()
@@ -139,12 +146,14 @@ def _new_game(kind, chat, chat_type, host_id, host_name):
     return {"kind": kind, "chat": str(chat), "chat_type": chat_type, "host": str(host_id),
             "msg_id": None, "phase": "lobby", "want": 0, "players": [], "turn": 0,
             "last": None, "log": [], "confirm": None, "winner": None, "busy": False,
+            "ver": 0, "pre": None,
             "created": time.time(), "updated": time.time(), "turn_at": time.time()}
 
 
 def _seat(g, uid, name, bot=False):
     idx = len(g["players"])
     g["players"].append({"id": str(uid), "name": str(name)[:20], "pos": 0, "c": idx, "bot": bot})
+    g["ver"] += 1
 
 
 def _find(g, uid):
@@ -164,9 +173,11 @@ def _tag(p):
 
 # ── the move ───────────────────────────────────────────────────────────────
 
-def _do_roll(g, auto=False):
+def _do_roll(g, auto=False, d=None):
+    """d is normally decided here; _prepare passes one in that it already
+    rolled in secret so the board for it could be drawn and uploaded early."""
     p = _current(g)
-    d = random.randint(1, 6)
+    d = d or random.randint(1, 6)
     frm = p["pos"]
     to = frm + d
     ev = None
@@ -199,6 +210,7 @@ def _do_roll(g, auto=False):
     elif not again:
         g["turn"] = (g["turn"] + 1) % len(g["players"])
     g["turn_at"] = g["updated"] = time.time()
+    g["ver"] += 1
 
 
 def _remove_player(g, uid, why="left the game"):
@@ -218,6 +230,7 @@ def _remove_player(g, uid, why="left the game"):
             g["winner"] = g["players"][0]
             g["log"] = (g["log"] + [f"{_tag(g['players'][0])} wins - everyone else left"])[-3:]
     g["turn_at"] = g["updated"] = time.time()
+    g["ver"] += 1
 
 
 # ── captions & keyboards ───────────────────────────────────────────────────
@@ -585,16 +598,104 @@ RENDER = {"snl": render_snl}
 
 # ── pushing the board to Telegram ──────────────────────────────────────────
 
-def _push(g, kb_only=False):
-    """Redraw and swap the board into the game's message. One message per game."""
+def _upload(png):
+    """Park a board in the store chat and return its file_id (or None). The
+    parked message is deleted at once; the file stays on Telegram's servers
+    and the id keeps working, so the later edit has nothing to upload."""
+    if not (_STORE and png):
+        return None
+    j = _api("sendPhoto", {"chat_id": _STORE, "disable_notification": True},
+             files={"photo": ("board.jpg", png)})
+    res = j.get("result") or {}
+    sizes = res.get("photo") or []
+    fid = sizes[-1].get("file_id") if sizes else None
+    if res.get("message_id"):
+        _api("deleteMessage", {"chat_id": _STORE, "message_id": res["message_id"]})
+    return fid
+
+
+def _preview(g, d):
+    """Board as it will look after the current player rolls d - drawn on a
+    copy so the real game is untouched until the tap actually happens."""
+    with _lock:
+        g2 = copy.deepcopy({k: v for k, v in g.items() if k != "pre"})
+    g2["pre"] = None
+    _do_roll(g2, d=d)
+    return RENDER[g2["kind"]](g2)
+
+
+def _prepare(g):
+    """Upload first, swap second. As soon as it is a human's turn, roll their
+    dice in secret, draw the board that roll produces and upload it. When they
+    tap Roll the edit only references the file_id - the server-side upload
+    and Telegram's photo processing are already done. The version counter
+    makes sure a board prepared for a state that has since changed (someone
+    quit, a robot moved) is thrown away instead of used."""
+    if not (PRELOAD and _STORE):
+        return
+    with _lock:
+        if g["phase"] != "play":
+            return
+        cur = _current(g)
+        if not cur or cur["bot"]:
+            return
+        ver = g["ver"]
+        if g["pre"] and g["pre"]["ver"] == ver:
+            return
+        g["pre"] = {"ver": ver, "roll": None, "file_id": None, "png": None}   # claimed
+
+    def run():
+        d = random.randint(1, 6)
+        try:
+            png = _preview(g, d)
+            fid = _upload(png)
+        except Exception as e:
+            print(f"  [GAMES] prepare: {e}")
+            png = fid = None
+        with _lock:
+            if g["ver"] == ver:
+                g["pre"] = {"ver": ver, "roll": d, "file_id": fid, "png": png}
+    threading.Thread(target=run, daemon=True, name="games-prepare").start()
+
+
+def _take_pre(g):
+    """The prepared roll for the current state, if one finished in time."""
+    pre = g.get("pre")
+    g["pre"] = None
+    if pre and pre["ver"] == g["ver"] and pre["roll"]:
+        return pre
+    return None
+
+
+def _push(g, kb_only=False, file_id=None, png=None):
+    """Redraw and swap the board into the game's message. One message per game.
+    With file_id the edit carries no bytes at all; png (if given) is the
+    already-rendered board used as the fallback."""
     with _lock:
         cap = _caption(g)
         kb = _keyboard(g)
-        png = None if kb_only else RENDER[g["kind"]](g)
+        if not kb_only and png is None and not file_id:
+            png = RENDER[g["kind"]](g)
         chat, mid = g["chat"], g["msg_id"]
-    if kb_only and mid:
-        _api("editMessageReplyMarkup", {"chat_id": chat, "message_id": mid, "reply_markup": kb})
+    if kb_only:
+        if mid:
+            _api("editMessageReplyMarkup", {"chat_id": chat, "message_id": mid, "reply_markup": kb})
         return
+    if mid and file_id:
+        j = _api("editMessageMedia",
+                 {"chat_id": chat, "message_id": mid,
+                  "media": {"type": "photo", "media": file_id,
+                            "caption": cap, "parse_mode": "HTML"},
+                  "reply_markup": kb})
+        if j.get("ok"):
+            _prepare(g)
+            return
+        if "retry after" in str(j.get("description", "")):
+            return
+        # bad/expired file id - fall back to a normal upload
+        if png is None:
+            with _lock:
+                png = RENDER[g["kind"]](g)
     if mid:
         j = _api("editMessageMedia",
                  {"chat_id": chat, "message_id": mid,
@@ -603,6 +704,7 @@ def _push(g, kb_only=False):
                   "reply_markup": json.dumps(kb)},
                  files={"board": ("board.jpg", png)})
         if j.get("ok"):
+            _prepare(g)
             return
         desc = str(j.get("description", ""))
         if "not modified" in desc or "retry after" in desc:
@@ -615,6 +717,7 @@ def _push(g, kb_only=False):
     if new_id:
         with _lock:
             g["msg_id"] = new_id
+    _prepare(g)
 
 
 def _robots_go(chat):
@@ -631,7 +734,10 @@ def _robots_go(chat):
     def run():
         try:
             while True:
-                time.sleep(ROBOT_DELAY)
+                # The robot's roll is decided now; its board is drawn and
+                # uploaded during the pause, so the visible edit at the end
+                # of the pause has nothing left to send.
+                t0 = time.time()
                 with _lock:
                     g2 = _games.get(str(chat))
                     if not g2 or g2 is not g or g2["phase"] != "play":
@@ -639,8 +745,28 @@ def _robots_go(chat):
                     cur2 = _current(g2)
                     if not cur2 or not cur2["bot"]:
                         break
-                    _do_roll(g2)
-                _push(g)
+                    ver = g["ver"]
+                d = random.randint(1, 6)
+                fid = png = None
+                if PRELOAD and _STORE:
+                    try:
+                        png = _preview(g, d)
+                        fid = _upload(png)
+                    except Exception as e:
+                        print(f"  [GAMES] robot prepare: {e}")
+                        fid = png = None
+                time.sleep(max(0.0, ROBOT_DELAY - (time.time() - t0)))
+                with _lock:
+                    g2 = _games.get(str(chat))
+                    if not g2 or g2 is not g or g2["phase"] != "play":
+                        break
+                    cur2 = _current(g2)
+                    if not cur2 or not cur2["bot"]:
+                        break
+                    if g["ver"] != ver:          # someone quit meanwhile - redo
+                        fid = png = None
+                    _do_roll(g2, d=d)
+                _push(g, file_id=fid, png=png)
                 if g["phase"] != "play":
                     break
         finally:
@@ -772,8 +898,9 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
         if cur["id"] != uid:
             return f"Not your turn - it's {cur['name']}'s."
         with _lock:
-            _do_roll(g)
-        _push(g)
+            pre = _take_pre(g)
+            _do_roll(g, d=pre["roll"] if pre else None)
+        _push(g, file_id=pre["file_id"] if pre else None, png=pre["png"] if pre else None)
         _robots_go(chat)
         return None
 
@@ -822,7 +949,8 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
             for p in g["players"]:
                 p["pos"] = 0
             g.update({"phase": "play", "turn": 0, "last": None, "log": [], "confirm": None,
-                      "winner": None, "created": time.time(), "updated": time.time(),
+                      "winner": None, "pre": None, "ver": g["ver"] + 1,
+                      "created": time.time(), "updated": time.time(),
                       "turn_at": time.time()})
         _push(g)
         _robots_go(chat)
@@ -857,8 +985,9 @@ def _watchdog():
                     if (g["chat_type"] != "private" and cur and not cur["bot"] and not g["confirm"]
                             and now - g["turn_at"] > TURN_SECS):
                         with _lock:
-                            _do_roll(g, auto=True)
-                        _push(g)
+                            pre = _take_pre(g)
+                            _do_roll(g, auto=True, d=pre["roll"] if pre else None)
+                        _push(g, file_id=pre["file_id"] if pre else None, png=pre["png"] if pre else None)
                         _robots_go(chat)
                 elif g["phase"] == "over" and now - g["updated"] > FINISHED_KEEP:
                     with _lock:
