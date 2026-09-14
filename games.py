@@ -272,10 +272,22 @@ def _keyboard(g):
 
 
 # ── drawing ────────────────────────────────────────────────────────────────
+# Everything is drawn at 2x (S) and downsampled with Lanczos at the end -
+# Pillow has no anti-aliasing of its own, so this is what turns jagged
+# circles and lines into smooth ones. The static board (frame, squares,
+# ladders, snakes) is drawn once and cached; a move only paints the title
+# strip, the dice, the landing glow and the tokens onto a copy.
 
-CELL, MARGIN, TOP = 64, 20, 72
-W = MARGIN * 2 + CELL * 10
-H = TOP + CELL * 10 + MARGIN
+S = 2                                  # supersample factor
+OUT_W = 800                            # delivered width in px
+CELL, MARGIN, TOP, BOTTOM = 72, 28, 96, 28
+W = MARGIN * 2 + CELL * 10             # 776 logical px
+H = TOP + CELL * 10 + BOTTOM
+
+FELT = (24, 84, 58)                    # table felt behind the board
+FRAME = (92, 58, 30)                   # wooden frame
+CELL_A, CELL_B = (252, 246, 232), (232, 219, 190)
+INK = (98, 84, 70)
 
 
 def _font(size, bold=True):
@@ -294,7 +306,7 @@ def _font(size, bold=True):
               "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"]
     for p in cands:
         try:
-            f = ImageFont.truetype(p, size)
+            f = ImageFont.truetype(p, size * S)
             break
         except Exception:
             continue
@@ -305,7 +317,7 @@ def _font(size, bold=True):
 
 
 def _cell_xy(n):
-    """Centre of square n (1..100). Row 0 is the bottom, numbering snakes."""
+    """Centre of square n (1..100) in logical px. Row 0 is the bottom."""
     i = n - 1
     row, col = divmod(i, 10)
     if row % 2 == 1:
@@ -313,8 +325,18 @@ def _cell_xy(n):
     return (MARGIN + col * CELL + CELL / 2, TOP + (9 - row) * CELL + CELL / 2)
 
 
-def _cubic(p0, p3, k=0.28, n=28):
-    """S-shaped curve between two points - a snake."""
+def _sx(v):
+    return v * S
+
+
+def _shade(rgb, k):
+    """Lighten (k>0) or darken (k<0) a colour."""
+    if k >= 0:
+        return tuple(int(c + (255 - c) * k) for c in rgb)
+    return tuple(int(c * (1 + k)) for c in rgb)
+
+
+def _cubic(p0, p3, k=0.28, n=40):
     dx, dy = p3[0] - p0[0], p3[1] - p0[1]
     L = math.hypot(dx, dy) or 1
     px, py = -dy / L, dx / L
@@ -332,61 +354,126 @@ def _cubic(p0, p3, k=0.28, n=28):
 
 def _draw_ladder(d, a, b):
     (x1, y1), (x2, y2) = _cell_xy(a), _cell_xy(b)
+    x1, y1, x2, y2 = _sx(x1), _sx(y1), _sx(x2), _sx(y2)
     L = math.hypot(x2 - x1, y2 - y1) or 1
-    px, py = -(y2 - y1) / L * 8, (x2 - x1) / L * 8
-    rail = (140, 92, 46)
+    px, py = -(y2 - y1) / L * 9 * S, (x2 - x1) / L * 9 * S
+    dark, mid, hi = (96, 58, 26), (160, 104, 48), (214, 160, 92)
+    # shadow first, then rails with a highlight edge
     for s in (1, -1):
-        d.line([(x1 + px * s, y1 + py * s), (x2 + px * s, y2 + py * s)], fill=rail, width=5)
-    steps = max(2, int(L / 18))
+        d.line([(x1 + px * s + 3 * S, y1 + py * s + 3 * S), (x2 + px * s + 3 * S, y2 + py * s + 3 * S)],
+               fill=(0, 0, 0, 70), width=7 * S)
+    for s in (1, -1):
+        d.line([(x1 + px * s, y1 + py * s), (x2 + px * s, y2 + py * s)], fill=dark, width=7 * S)
+        d.line([(x1 + px * s, y1 + py * s), (x2 + px * s, y2 + py * s)], fill=mid, width=4 * S)
+        d.line([(x1 + px * s - 1 * S, y1 + py * s - 1 * S), (x2 + px * s - 1 * S, y2 + py * s - 1 * S)],
+               fill=hi, width=1 * S)
+    steps = max(2, int(L / (20 * S)))
     for i in range(1, steps):
         t = i / steps
         cx, cy = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
-        d.line([(cx + px, cy + py), (cx - px, cy - py)], fill=(190, 135, 70), width=4)
+        d.line([(cx + px, cy + py), (cx - px, cy - py)], fill=dark, width=5 * S)
+        d.line([(cx + px, cy + py), (cx - px, cy - py)], fill=mid, width=3 * S)
 
 
 def _draw_snake(d, head, tail):
-    pts = _cubic(_cell_xy(head), _cell_xy(tail))
-    d.line(pts, fill=(28, 96, 52), width=11, joint="curve")
-    d.line(pts, fill=(92, 184, 104), width=6, joint="curve")
+    (hx0, hy0), (tx0, ty0) = _cell_xy(head), _cell_xy(tail)
+    pts = _cubic((hx0, hy0), (tx0, ty0), n=max(60, int(math.hypot(tx0 - hx0, ty0 - hy0) / 1.5)))
+    pts = [(_sx(x), _sx(y)) for x, y in pts]
+    n = len(pts)
+    body_dark, body, belly, spot = (26, 92, 48), (72, 168, 92), (150, 214, 120), (20, 70, 36)
+    # tapering body: fat at the head, thin at the tail. Each layer is drawn
+    # as round dots along the curve so the taper is smooth and the shadow
+    # narrows with the body instead of peeking out beside the tail.
+    def _dots(dx, dy, base, shrink, color):
+        for i in range(n):
+            r = (base - shrink * (i / n)) * S / 2
+            x, y = pts[i][0] + dx, pts[i][1] + dy
+            d.ellipse([x - r, y - r, x + r, y + r], fill=color)
+    _dots(4 * S, 5 * S, 17, 12, (0, 0, 0, 55))
+    _dots(0, 0, 17, 12, body_dark)
+    _dots(0, 0, 13, 9, body)
+    _dots(-1 * S, -2 * S, 6, 4, belly)
+    # scale spots along the back
+    for i in range(6, n - 6, max(4, n // 12)):
+        x, y = pts[i]
+        r = (4 - 2 * (i / n)) * S
+        d.ellipse([x - r, y - r, x + r, y + r], fill=spot)
+    # head
     hx, hy = pts[0]
-    d.ellipse([hx - 11, hy - 11, hx + 11, hy + 11], fill=(28, 96, 52))
-    d.ellipse([hx - 9, hy - 9, hx + 9, hy + 9], fill=(92, 184, 104))
-    for ex in (-4, 4):
-        d.ellipse([hx + ex - 2, hy - 3, hx + ex + 2, hy + 1], fill=(20, 20, 20))
+    nx, ny = pts[1]
+    ang = math.atan2(ny - hy, nx - hx)
+    r = 13 * S
+    d.ellipse([hx - r - 2 * S, hy - r - 2 * S, hx + r + 2 * S, hy + r + 2 * S], fill=body_dark)
+    d.ellipse([hx - r, hy - r, hx + r, hy + r], fill=body)
+    d.ellipse([hx - r + 3 * S, hy - r + 3 * S, hx + r - 5 * S, hy - 1 * S], fill=_shade(body, 0.25))
+    # eyes sit across the direction of travel
+    ex, ey = -math.sin(ang) * 6 * S, math.cos(ang) * 6 * S
+    for s in (1, -1):
+        cx, cy = hx + ex * s - math.cos(ang) * 2 * S, hy + ey * s - math.sin(ang) * 2 * S
+        d.ellipse([cx - 3.2 * S, cy - 3.2 * S, cx + 3.2 * S, cy + 3.2 * S], fill=(250, 250, 240))
+        d.ellipse([cx - 1.6 * S, cy - 1.6 * S, cx + 1.6 * S, cy + 1.6 * S], fill=(10, 10, 10))
+    # forked tongue pointing away from the body
+    tx, ty = hx - math.cos(ang) * r, hy - math.sin(ang) * r
+    fx, fy = hx - math.cos(ang) * (r + 12 * S), hy - math.sin(ang) * (r + 12 * S)
+    d.line([(tx, ty), (fx, fy)], fill=(214, 40, 60), width=2 * S)
+    for s in (1, -1):
+        d.line([(fx, fy), (fx - math.cos(ang) * 5 * S - math.sin(ang) * 4 * S * s,
+                           fy - math.sin(ang) * 5 * S + math.cos(ang) * 4 * S * s)],
+               fill=(214, 40, 60), width=2 * S)
+    # tail tip
     tx, ty = pts[-1]
-    d.ellipse([tx - 4, ty - 4, tx + 4, ty + 4], fill=(28, 96, 52))
+    d.ellipse([tx - 3 * S, ty - 3 * S, tx + 3 * S, ty + 3 * S], fill=body_dark)
+
+
+def _noise(size, sigma=14):
+    n = Image.effect_noise(size, sigma).convert("L")
+    return n
 
 
 _snl_base = None
 
 
 def _snl_board() -> Image.Image:
-    """The static part - squares, ladders, snakes - drawn once and reused.
-    Each turn only the title strip, highlight and tokens are painted on a copy,
-    which keeps a move at ~15 ms instead of ~100 ms."""
+    """Static part - felt, wooden frame, squares, ladders, snakes - at 2x,
+    drawn once and cached."""
     global _snl_base
     if _snl_base is not None:
         return _snl_base.copy()
-    img = Image.new("RGB", (W, H), (246, 241, 231))
-    d = ImageDraw.Draw(img)
-    f12 = _font(12, bold=False)
+    img = Image.new("RGB", (W * S, H * S), FELT)
+    # felt texture
+    tex = _noise((W * S, H * S), 12)
+    img = Image.composite(img, Image.new("RGB", img.size, _shade(FELT, -0.25)), tex.point(lambda v: 140 + v // 3))
+    d = ImageDraw.Draw(img, "RGBA")
+    # wooden frame with a drop shadow
+    bx0, by0 = _sx(MARGIN - 12), _sx(TOP - 12)
+    bx1, by1 = _sx(MARGIN + CELL * 10 + 12), _sx(TOP + CELL * 10 + 12)
+    d.rounded_rectangle([bx0 + 8 * S, by0 + 10 * S, bx1 + 8 * S, by1 + 10 * S], radius=10 * S, fill=(0, 0, 0, 110))
+    d.rounded_rectangle([bx0, by0, bx1, by1], radius=10 * S, fill=FRAME)
+    for i in range(0, 12 * S, 3):
+        d.rounded_rectangle([bx0 + i, by0 + i, bx1 - i, by1 - i], radius=10 * S,
+                            outline=_shade(FRAME, 0.10 + 0.02 * (i % 4)), width=1)
+    d.rounded_rectangle([bx0, by0, bx1, by1], radius=10 * S, outline=_shade(FRAME, 0.35), width=2 * S)
+    # squares
+    f13 = _font(13)
     for n in range(1, 101):
         cx, cy = _cell_xy(n)
-        x0, y0 = cx - CELL / 2, cy - CELL / 2
-        row = (n - 1) // 10
-        col = (n - 1) % 10
-        light = (row + col) % 2 == 0
-        fill = (255, 250, 240) if light else (233, 223, 203)
+        x0, y0 = _sx(cx - CELL / 2), _sx(cy - CELL / 2)
+        x1, y1 = x0 + CELL * S, y0 + CELL * S
+        row, col = divmod(n - 1, 10)
+        fill = CELL_A if (row + col) % 2 == 0 else CELL_B
         if n == 100:
-            fill = (255, 214, 92)
+            fill = (255, 208, 84)
         elif n == 1:
-            fill = (200, 232, 205)
-        d.rectangle([x0, y0, x0 + CELL, y0 + CELL], fill=fill, outline=(205, 196, 180))
-        d.text((x0 + 4, y0 + 2), str(n), font=f12, fill=(110, 100, 90))
+            fill = (188, 226, 196)
+        d.rectangle([x0, y0, x1, y1], fill=fill)
+        # soft bevel: light top-left, dark bottom-right
+        d.line([(x0, y1), (x0, y0), (x1, y0)], fill=_shade(fill, 0.55), width=2 * S)
+        d.line([(x1, y0), (x1, y1), (x0, y1)], fill=_shade(fill, -0.14), width=2 * S)
+        d.text((x0 + 6 * S, y0 + 4 * S), str(n), font=f13, fill=INK)
         if n == 100:
-            d.text((x0 + 12, y0 + 36), "FINISH", font=_font(13), fill=(120, 80, 0))
+            d.text((x0 + 13 * S, y0 + 42 * S), "FINISH", font=_font(14), fill=(122, 78, 0))
         elif n == 1:
-            d.text((x0 + 14, y0 + 36), "START", font=_font(13), fill=(30, 100, 50))
+            d.text((x0 + 16 * S, y0 + 42 * S), "START", font=_font(14), fill=(28, 100, 52))
     for a, b in LADDERS.items():
         _draw_ladder(d, a, b)
     for a, b in SNAKES.items():
@@ -395,56 +482,101 @@ def _snl_board() -> Image.Image:
     return img.copy()
 
 
+def _token(d, x, y, rgb, label, r=15):
+    """A 3D-looking pawn: shadow, dark rim, radial highlight, label."""
+    x, y, r = _sx(x), _sx(y), r * S
+    d.ellipse([x - r + 2 * S, y - r + 5 * S, x + r + 2 * S, y + r + 5 * S], fill=(0, 0, 0, 90))
+    d.ellipse([x - r - 2 * S, y - r - 2 * S, x + r + 2 * S, y + r + 2 * S], fill=(255, 255, 255))
+    d.ellipse([x - r, y - r, x + r, y + r], fill=_shade(rgb, -0.35))
+    steps = 8
+    for i in range(steps):
+        k = i / steps
+        rr = r * (1 - k * 0.55)
+        ox, oy = -r * 0.25 * k, -r * 0.3 * k
+        d.ellipse([x + ox - rr, y + oy - rr, x + ox + rr, y + oy + rr], fill=_shade(rgb, -0.3 + 0.75 * k))
+    f = _font(13)
+    tw = d.textlength(label, font=f)
+    d.text((x - tw / 2 + 1 * S, y - 8 * S + 1 * S), label, font=f, fill=(0, 0, 0, 120))
+    d.text((x - tw / 2, y - 8 * S), label, font=f, fill=(255, 255, 255))
+
+
+def _die(d, x, y, n, rgb, size=40):
+    """Rounded die showing n pips, tinted in the roller's colour."""
+    x, y, s = _sx(x), _sx(y), size * S
+    d.rounded_rectangle([x + 3 * S, y + 4 * S, x + s + 3 * S, y + s + 4 * S], radius=8 * S, fill=(0, 0, 0, 100))
+    d.rounded_rectangle([x, y, x + s, y + s], radius=8 * S, fill=(250, 250, 246), outline=_shade(rgb, -0.2), width=2 * S)
+    d.rounded_rectangle([x + 2 * S, y + 2 * S, x + s - 2 * S, y + s * 0.45], radius=6 * S, fill=(255, 255, 255))
+    pips = {1: [(0.5, 0.5)], 2: [(0.25, 0.25), (0.75, 0.75)], 3: [(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)],
+            4: [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)],
+            5: [(0.25, 0.25), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75), (0.75, 0.75)],
+            6: [(0.25, 0.22), (0.75, 0.22), (0.25, 0.5), (0.75, 0.5), (0.25, 0.78), (0.75, 0.78)]}
+    pr = s * 0.085
+    for px, py in pips.get(n, []):
+        cx, cy = x + s * px, y + s * py
+        d.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill=_shade(rgb, -0.25))
+        d.ellipse([cx - pr * 0.5, cy - pr * 0.6, cx + pr * 0.1, cy - pr * 0.05], fill=_shade(rgb, 0.45))
+
+
 def render_snl(g) -> bytes:
     img = _snl_board()
-    d = ImageDraw.Draw(img)
-    # title strip
-    d.rectangle([0, 0, W, TOP - 8], fill=(31, 36, 48))
-    d.text((MARGIN, 18), "SNAKE & LADDER", font=_font(26), fill=(255, 255, 255))
+    d = ImageDraw.Draw(img, "RGBA")
+    # title strip: dark gradient with a gold rule
+    for i in range(TOP * S - 14 * S):
+        k = i / (TOP * S)
+        d.line([(0, i), (W * S, i)], fill=(int(22 + 14 * k), int(26 + 14 * k), int(36 + 18 * k)))
+    d.line([(0, TOP * S - 14 * S), (W * S, TOP * S - 14 * S)], fill=(214, 172, 80), width=2 * S)
+    d.text((_sx(MARGIN) + 2 * S, 22 * S + 2 * S), "SNAKE & LADDER", font=_font(30), fill=(0, 0, 0, 140))
+    d.text((_sx(MARGIN), 22 * S), "SNAKE & LADDER", font=_font(30), fill=(255, 226, 150))
     if g["phase"] == "lobby":
         status = f"Waiting {len(g['players'])}/{g['want']}"
     elif g["phase"] == "over":
         status = f"{g['winner']['name']} wins!"
     else:
         status = f"Turn: {_current(g)['name']}"
-    f15 = _font(16)
-    tw = d.textlength(status, font=f15)
-    d.text((W - MARGIN - tw, 8), status, font=f15, fill=(255, 220, 120))
-    # highlight where the last move landed
+    f16 = _font(17)
+    tw = d.textlength(status, font=f16)
+    d.text((_sx(W - MARGIN) - tw, 10 * S), status, font=f16, fill=(255, 255, 255))
+    # dice for the last roll, in the roller's colour
     last = g.get("last")
+    if last and last.get("roll"):
+        _die(d, W / 2 - 24, 12, last["roll"], COLORS[last["c"]][2], size=48)
+    # landing glow
     if last and last["to"] > 0:
         cx, cy = _cell_xy(last["to"])
-        d.rectangle([cx - CELL / 2 + 1, cy - CELL / 2 + 1, cx + CELL / 2 - 1, cy + CELL / 2 - 1],
-                    outline=(255, 170, 0), width=3)
+        for i in range(6, 0, -1):
+            a = int(28 + 18 * (6 - i))
+            d.rounded_rectangle([_sx(cx - CELL / 2) - i * S, _sx(cy - CELL / 2) - i * S,
+                                 _sx(cx + CELL / 2) + i * S, _sx(cy + CELL / 2) + i * S],
+                                radius=4 * S, outline=(255, 190, 40, a), width=2 * S)
+        d.rectangle([_sx(cx - CELL / 2), _sx(cy - CELL / 2), _sx(cx + CELL / 2), _sx(cy + CELL / 2)],
+                    outline=(255, 170, 0), width=3 * S)
     # tokens
-    offs = [(-13, -13), (13, -13), (-13, 13), (13, 13), (0, -13), (0, 13)]
-    f11 = _font(11)
-    bench_x = W - MARGIN - 14
+    offs = [(-15, -15), (15, -15), (-15, 15), (15, 15), (0, -17), (0, 17)]
+    bench_x = W - MARGIN - 16
     for p in g["players"]:
         rgb = COLORS[p["c"]][2]
         if p["pos"] <= 0:
-            # not on the board yet: sits on the bench in the title strip
-            x, y = bench_x, TOP - 22
-            bench_x -= 28
+            x, y = bench_x, TOP - 36
+            bench_x -= 34
         else:
             cx, cy = _cell_xy(p["pos"])
             ox, oy = offs[p["c"] % len(offs)]
             x, y = cx + ox, cy + oy
-        r = 11
-        d.ellipse([x - r - 2, y - r - 2, x + r + 2, y + r + 2], fill=(255, 255, 255))
-        d.ellipse([x - r, y - r, x + r, y + r], fill=rgb)
-        ch = p["name"].split()[-1] if p["bot"] else (p["name"][:1] or "?").upper()
-        tw = d.textlength(ch, font=f11)
-        d.text((x - tw / 2, y - 7), ch, font=f11, fill=(255, 255, 255))
+        label = p["name"].split()[-1] if p["bot"] else (p["name"][:1] or "?").upper()
+        _token(d, x, y, rgb, label)
     if g["phase"] == "lobby":
-        f = _font(30)
+        f = _font(32)
         msg = "Waiting for players"
         tw = d.textlength(msg, font=f)
-        bx, by = W / 2 - tw / 2 - 24, TOP + CELL * 4.2
-        d.rounded_rectangle([bx, by, bx + tw + 48, by + 60], radius=14, fill=(31, 36, 48))
-        d.text((W / 2 - tw / 2, by + 13), msg, font=f, fill=(255, 220, 120))
+        bx, by = W * S / 2 - tw / 2 - 28 * S, _sx(TOP + CELL * 4.2)
+        d.rounded_rectangle([bx + 4 * S, by + 6 * S, bx + tw + 56 * S + 4 * S, by + 70 * S + 6 * S],
+                            radius=16 * S, fill=(0, 0, 0, 120))
+        d.rounded_rectangle([bx, by, bx + tw + 56 * S, by + 70 * S], radius=16 * S, fill=(31, 36, 48),
+                            outline=(214, 172, 80), width=2 * S)
+        d.text((W * S / 2 - tw / 2, by + 16 * S), msg, font=f, fill=(255, 226, 150))
+    out = img.resize((OUT_W, int(H * OUT_W / W)), Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, "PNG", compress_level=6)
+    out.save(buf, "JPEG", quality=84)
     return buf.getvalue()
 
 
@@ -469,7 +601,7 @@ def _push(g, kb_only=False):
                   "media": json.dumps({"type": "photo", "media": "attach://board",
                                        "caption": cap, "parse_mode": "HTML"}),
                   "reply_markup": json.dumps(kb)},
-                 files={"board": ("board.png", png)})
+                 files={"board": ("board.jpg", png)})
         if j.get("ok"):
             return
         desc = str(j.get("description", ""))
@@ -478,7 +610,7 @@ def _push(g, kb_only=False):
         # message gone (user deleted it) - fall through and post a fresh one
     j = _api("sendPhoto", {"chat_id": chat, "caption": cap, "parse_mode": "HTML",
                            "reply_markup": json.dumps(kb)},
-             files={"photo": ("board.png", png)})
+             files={"photo": ("board.jpg", png)})
     new_id = (j.get("result") or {}).get("message_id")
     if new_id:
         with _lock:
