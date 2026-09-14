@@ -9134,16 +9134,17 @@ ct._pause_event = bot_paused
 
 # Chat games (/games) - board images drawn by code, no AI. See games.py.
 import games as _games_mod
-# Boards are uploaded to GAMES_STORE_CHAT ahead of each move (a private
-# channel the bot is admin of); until one is set the admin's DM is used and
-# each upload is deleted immediately.
-_games_mod.init(TELEGRAM_BOT_TOKEN, os.getenv("GAMES_STORE_CHAT") or ADMIN_CHAT_ID)
+# Boards are parked in GAMES_STORE_CHAT ahead of each move - a private
+# channel the bot is admin of, set with /gamestore. Until one is set the
+# upload-first path stays off (a DM fallback showed the parked boards
+# flashing under the admin's own game - admin 2026-09-14).
+_games_mod.init(TELEGRAM_BOT_TOKEN, os.getenv("GAMES_STORE_CHAT") or None)
 
 # --- TELEGRAM -----------------------------------------------------------------
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
 def load_settings():
-    global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE
+    global BTC_ENGINE, INTRADAY_PROMPT_DM, INTRADAY_MODE, GAMES_STORE_CHAT
     global channel_paused, SEND_CHARTS, CHART_TFS, SEND_NEWS, SIGNAL_SCAN_INTERVAL, BTC_PROMPT_MODE, btc_analysis_enabled, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, ZONE_ENTRY_ENABLED, CO_ADMIN_CHAT_ID, CO_ADMIN_ENABLED, ACTIVE_PROFILE, _SETTINGS_PROFILES, CHANNELS, FREE_SIGNAL_DAILY_LIMIT, TRAIL_SL_BTC, TRAIL_SL_SCAN1, TRAIL_SL_SCAN2, TRAIL_SL_DEMO1, TRAIL_SL_DEMO2, TRAIL_SL_BTCINT, TRAIL_SL_XAUT, WEEKEND_SLEEP_ENABLED, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, FORCE_DIRECT48_NORMAL_UNVERIFIED, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, MINIAPP_MAINTENANCE_ON, MINIAPP_MAINTENANCE_MSG, TRADE_THINKING_ENABLED, TRADE_EFFORT_LEVEL, TRADE_BENCHMARK_ENABLED, SIGNAL_ENGINE_MODE, MESSAGE_FONT, MINIAPP_SLEEP_ENABLED
     try:
         d = None
@@ -9200,6 +9201,8 @@ def load_settings():
             CHAT_USE_AEROLINK = d.get("chat_use_aerolink", CHAT_USE_AEROLINK)
             MINIAPP_MAINTENANCE_ON  = d.get("miniapp_maintenance_on",  MINIAPP_MAINTENANCE_ON)
             MESSAGE_FONT            = d.get("message_font", MESSAGE_FONT)
+            GAMES_STORE_CHAT        = d.get("games_store_chat", GAMES_STORE_CHAT)
+            _games_mod.set_store(GAMES_STORE_CHAT)
             MINIAPP_SLEEP_ENABLED   = d.get("miniapp_sleep_enabled", MINIAPP_SLEEP_ENABLED)
             MINIAPP_MAINTENANCE_MSG = d.get("miniapp_maintenance_msg", MINIAPP_MAINTENANCE_MSG)
             STATS_VISIBLE_TO_USERS = d.get("stats_visible_to_users", STATS_VISIBLE_TO_USERS)
@@ -9280,6 +9283,7 @@ def save_settings():
             "chat_use_aerolink": CHAT_USE_AEROLINK,
             "miniapp_maintenance_on": MINIAPP_MAINTENANCE_ON,
             "message_font": MESSAGE_FONT,
+            "games_store_chat": GAMES_STORE_CHAT,
             "miniapp_sleep_enabled": MINIAPP_SLEEP_ENABLED,
             "miniapp_maintenance_msg": MINIAPP_MAINTENANCE_MSG,
             "stats_visible_to_users": STATS_VISIBLE_TO_USERS,
@@ -9474,6 +9478,10 @@ _FONT_STYLES = {
     "plain":     ("Plain (no styling)", {}),
 }
 MESSAGE_FONT = "smallcaps"
+# Private channel the games module parks boards in before a move (see
+# games._prepare). Empty = feature off. Set with /gamestore.
+GAMES_STORE_CHAT = os.getenv("GAMES_STORE_CHAT", "")
+_gamestore_wait_until = 0.0
 
 
 def _style_body(text: str) -> str:
@@ -15784,7 +15792,7 @@ ADMIN_COMMANDS  = {"/go","/signal","/pause","/resume","/resetsl","/setinterval",
     "/images","/setimages","/news","/latestnews",
     "/pausechannel","/resumechannel","/channels","/btcmode",
     "/scan","/scan1","/scan2","/scantoggle","/model","/gateway","/directnu","/stop","/pause","/coin","/ctclose","/closetrade","/closescan","/scancopy","/readindicators","/checktvdata","/tvstudies","/calcstudies","/scantv",
-    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping","/font","/checkchat"}
+    "/compare","/charts","/chartson","/chartsoff","/force_reload","/miniapp","/ctstatus","/ctretry","/btcanalysis","/demo","/synccheck","/forceclose","/fc","/report","/tradelog","/alt","/alt2","/altdemo","/altdemo2","/adminlinks","/userstats","/leaderboard","/aiconfig","/entrystyle","/coadmin","/tp1size","/freelimit","/winrate","/wrscan1","/wrscan2","/wrts1","/wrts2","/channelmgmt","/trailsl","/syncup","/server","/testreply","/aerolinktest","/aerolinkkeys","/st","/nt","/list","/un","/ws","/clearslfree","/clearslvip","/resetspins","/setvipprice","/chatmodel","/statsaccess","/cp","/timepanel","/settime","/vsttimes","/thinking","/think","/effort","/eff","/benchmark","/bench","/benchtable","/bt","/switch","/sw","/intraday","/intra","/btcengine","/btceng","/intradayevery","/intrastatus","/intrast","/intradaydm","/test","/userbot","/secretary","/checkblocked","/freesl","/vipsl","/demoscan","/ds","/notify","/ping","/font","/checkchat","/gamestore"}
 
 # ---- Date-range navigation (year -> monthly/weekly -> month -> week) for /tradelog and /report ----
 _MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -16125,6 +16133,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     # auto=True marks a command as scheduler-triggered (not a human typing it)
     # — currently only used by /scan1 and /scan2 to suppress routine progress
     # noise in the admin DM (2026-07-28, rate-limit fix). See _do_scan below.
+    global GAMES_STORE_CHAT, _gamestore_wait_until
     global SIGNAL_SCAN_INTERVAL, SEND_CHARTS, CHART_TFS, SEND_NEWS, last_force_scan_time, broadcast_pending, BTC_PROMPT_MODE, btc_analysis_enabled, ALT_SCAN_MINUTE, ALT_SCAN2_MINUTE, _auto_scan1_last_hour, _auto_scan2_last_hour, SCAN1_SCHEDULE, SCAN2_SCHEDULE, SCAN1_AUTO_ENABLED, SCAN2_AUTO_ENABLED, TEST_SCAN_ENABLED, SCAN_MODEL, USE_AEROLINK, SCAN1_TEST_SCHEDULE, SCAN2_TEST_SCHEDULE, CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED, SIGNAL_CHANNEL_LINK, FREE_SIGNAL_DAILY_LIMIT, CHANNELS, VIP_MONTHLY_PRICE, CHAT_MODEL, CHAT_IMAGE_MODEL, CHAT_USE_AEROLINK, STATS_VISIBLE_TO_USERS, VERIFIED_SPECIAL_ENABLED, UNVERIFIED_SPECIAL_ENABLED, NONSPECIAL_SCAN_ENABLED, PROMPT_DM_VERIFIED, PROMPT_DM_UNVERIFIED, PROMPT_DM_NONSPECIAL, BTC_ENGINE, INTRADAY_SCAN_INTERVAL, INTRADAY_PROMPT_DM, INTRADAY_MODE, _slot_day_seed_v, TEST_ENABLED
     _uname = (message or {}).get("from", {}).get("username")
     register_user(chat_id, _uname)
@@ -17833,6 +17842,30 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             SEND_NEWS = False; save_settings()
             send_reply(chat_id, "❌ <b>News OFF</b>", reply_markup=_news_btns)
         else: send_reply(chat_id, "Usage: /news on|off", reply_markup=_news_btns)
+
+    elif cmd == "/gamestore":
+        _gs_arg = (parts[1] if len(parts) > 1 else "").strip().lower()
+        if _gs_arg == "off":
+            GAMES_STORE_CHAT = ""; _games_mod.set_store(None); save_settings()
+            send_reply(chat_id, "🎮 Games store cleared. Boards now upload inside each move again.")
+        elif _gs_arg.lstrip("-").isdigit():
+            GAMES_STORE_CHAT = _gs_arg; _games_mod.set_store(GAMES_STORE_CHAT); save_settings()
+            send_reply(chat_id, f"🎮 Games store set to <code>{GAMES_STORE_CHAT}</code>.")
+        else:
+            _gamestore_wait_until = time.time() + 600
+            _gs_cur = f"Current store: <code>{GAMES_STORE_CHAT}</code>" if GAMES_STORE_CHAT else "No store set - upload-first is OFF."
+            send_reply(chat_id,
+                "🎮 <b>Games store</b>\n\n"
+                f"{_gs_cur}\n\n"
+                "This is a private channel where the bot parks each board a moment "
+                "before it is shown, so the move itself carries no upload.\n\n"
+                "<b>To set it (10 minutes to do this):</b>\n"
+                "1. Create a private channel, any name\n"
+                "2. Add this bot as admin (post + delete messages)\n"
+                "3. Post anything in that channel\n\n"
+                "I'll pick it up automatically and confirm here.\n\n"
+                "<code>/gamestore -100…</code> sets an id directly · <code>/gamestore off</code> switches it off.",
+                skip_smallcaps=True)
 
     elif cmd == "/font":
         global MESSAGE_FONT
@@ -22950,7 +22983,7 @@ def _biz_on_message(msg: dict):
 _last_getupdates_fail_alert = 0.0
 
 def command_listener():
-    global last_update_id, _last_getupdates_fail_alert
+    global last_update_id, _last_getupdates_fail_alert, GAMES_STORE_CHAT, _gamestore_wait_until
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
@@ -22989,7 +23022,7 @@ def command_listener():
         _lost_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","channel_post","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message"]}, timeout=25)
             data = r.json()
             if not data.get("ok"):
                 # This used to be completely silent — no print, no admin DM —
@@ -23035,6 +23068,22 @@ def command_listener():
                 if upd.get("business_message"):
                     try: _biz_on_message(upd["business_message"])
                     except Exception as e: print(f"[SECRETARY] message: {e}")
+                    continue
+                if upd.get("channel_post"):
+                    # Only wanted while /gamestore is waiting: the first post
+                    # from any channel names that channel as the games store.
+                    try:
+                        _cp = upd["channel_post"]; _cpc = _cp.get("chat", {})
+                        if time.time() < _gamestore_wait_until and _cpc.get("type") == "channel":
+                            _gamestore_wait_until = 0.0
+                            GAMES_STORE_CHAT = str(_cpc.get("id"))
+                            _games_mod.set_store(GAMES_STORE_CHAT)
+                            save_settings()
+                            send_admin(f"🎮 Games store set to <b>{_html.escape(_cpc.get('title') or '')}</b> "
+                                       f"(<code>{GAMES_STORE_CHAT}</code>). Boards are now parked there before "
+                                       f"every move - nothing will flash in your DM again.")
+                    except Exception as e:
+                        print(f"  [GAMES] channel_post: {e}")
                     continue
 
                 # Handle inline button callbacks

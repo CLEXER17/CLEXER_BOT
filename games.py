@@ -74,12 +74,19 @@ def init(token: str, store_chat=None):
     boards are uploaded ahead of a move (a private channel the bot is admin
     of, or the admin's DM - the upload is deleted the moment its file_id is
     known, so nothing stays visible there)."""
-    global _TOKEN, _watch_started, _STORE
+    global _TOKEN, _watch_started
     _TOKEN = token
-    _STORE = str(store_chat) if store_chat else None
+    set_store(store_chat)
     if not _watch_started:
         _watch_started = True
         threading.Thread(target=_watchdog, daemon=True, name="games-watchdog").start()
+
+
+def set_store(chat):
+    """Where boards are parked ahead of a move. None switches the
+    upload-first path off (moves upload inside the edit, as before)."""
+    global _STORE
+    _STORE = str(chat).strip() if chat and str(chat).strip() else None
 
 
 def _api(method, payload=None, files=None, timeout=15):
