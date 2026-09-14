@@ -9132,6 +9132,10 @@ def check_price_status(price, high, low, df_5m=None):
 import copytrade as ct
 ct._pause_event = bot_paused
 
+# Chat games (/games) - board images drawn by code, no AI. See games.py.
+import games as _games_mod
+_games_mod.init(TELEGRAM_BOT_TOKEN)
+
 # --- TELEGRAM -----------------------------------------------------------------
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
@@ -17413,6 +17417,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     "user, not on the bot.")
         send_reply(chat_id, _nl.join(_out), skip_smallcaps=True)
 
+    elif cmd in ("/games", "/game"):
+        _games_mod.cmd_games(chat_id, (message or {}).get("chat", {}).get("type") or "private")
+
     elif cmd == "/mtf":
         _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
         _coin = _coin.replace("-USDT", "").replace("USDT", "").strip()
@@ -22300,6 +22307,7 @@ _MONITOR_SUBCATS = {
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
         ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
+        ("/games",   "🎮", "Games",          "Play Snake & Ladder — against robots in DM, with friends in a group"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),
@@ -23047,6 +23055,24 @@ def command_listener():
                     # pending_input set it themselves right after this.
                     pending_input.pop(cb_cid, None)
 
+                    # Chat games answer their own callback: a popup ("not your
+                    # turn") needs the answer to carry text, so it can't be
+                    # acked blindly first like every other button below.
+                    if cb_data.startswith("game:"):
+                        try:
+                            _gm_pop = _games_mod.on_callback(
+                                cb_data, cb_cid, _cb_fname, cb_chat_id, cb_msg_id,
+                                cb_msg.get("chat", {}).get("type") or "private")
+                        except Exception as _ge:
+                            print(f"  [GAMES] callback {cb_data}: {_ge}")
+                            _gm_pop = "Something went wrong - try again."
+                        _gm_ans = {"callback_query_id": cb["id"]}
+                        if _gm_pop:
+                            _gm_ans.update({"text": _gm_pop, "show_alert": True})
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json=_gm_ans, timeout=5)
+                        continue
+
                     # Check admin-only BEFORE answering, so we can show alert popup
                     _is_admin_btn = False
                     if cb_data.startswith("help_cmd:"):
@@ -23324,6 +23350,7 @@ def command_listener():
                             "/vip":      lambda ch, uid, mid: send_vip_offer_screen(ch, str(uid), message_id=mid),
                             "/addfunds": lambda ch, uid, mid: send_addfunds_screen(ch, message_id=mid),
                             "/wallet":   lambda ch, uid, mid: send_wallet_screen(ch, uid, message_id=mid),
+                            "/games":    lambda ch, uid, mid: _games_mod.cmd_games(ch, None, message_id=mid),
                         }
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
