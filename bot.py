@@ -22343,7 +22343,7 @@ _MONITOR_SUBCATS = {
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
         ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
-        ("/games",   "🎮", "Games",          "Play Snake & Ladder — against robots in DM, with friends in a group"),
+        ("/games",   "🎮", "Games",          "15 chat games — Snake & Ladder, Ludo-style dice, Tic-Tac-Toe, Connect 4 and more. Robots in DM, friends in a group"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),
@@ -24452,6 +24452,16 @@ def command_listener():
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
+
+                # A running chat game that takes typed input (number guessing)
+                # gets first look at plain text in its chat. It only consumes
+                # what it understands from a seated player on their turn.
+                if text and not text.startswith("/") and _games_mod.wants_text(cid):
+                    try:
+                        if _games_mod.on_text(cid, sender_uid, msg.get("from", {}).get("first_name") or uname, text):
+                            continue
+                    except Exception as _ge:
+                        print(f"  [GAMES] on_text: {_ge}")
 
                 # Admin sends a photo directly to the bot — reply with its Telegram
                 # file_id, so a screenshot can be referenced later (e.g. embedded
