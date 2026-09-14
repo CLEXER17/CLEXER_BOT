@@ -22343,7 +22343,7 @@ _MONITOR_SUBCATS = {
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
         ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
-        ("/games",   "🎮", "Games",          "15 chat games — Snake & Ladder, Ludo-style dice, Tic-Tac-Toe, Connect 4 and more. Robots in DM, friends in a group"),
+        ("/games",   "🎮", "Games",          "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),

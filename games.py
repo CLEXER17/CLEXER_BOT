@@ -2572,3 +2572,11 @@ class Slots(Spec):
             _txt(d, self.W / 2, TOP + 225, f"{q['name']}'s spin", 16, GOLD)
         _score_rows(d, g, 70, TOP + 250, self.W - 140, extra=lambda p: f"{st['total'][p['id']]} pts", rowh=40)
         return _finish(img, self.W, self.H)
+
+
+# ── second batch lives in its own modules (they register themselves) ───────
+try:
+    import games_board   # noqa: E402,F401  Ludo, Chess, Checkers, Battleship, Blackjack
+    import games_party   # noqa: E402,F401  Trivia, Uno, 2048, Simon, Scramble, Archery, Target, Boxing, Zombie, Puzzle
+except Exception as _e:
+    print(f"  [GAMES] extra games not loaded: {_e}")
