@@ -1714,7 +1714,7 @@ def _send_tp1_streak_promo(symbol: str, detail: dict):
     _sid_line = f"🪪 {sig_id}\n" if sig_id else ""
     arrow = "🟩" if side == "BUY" else "🟥"
     text = (
-        f"💰 <b>TP1 HIT — #{coin}USDT!</b> 🎉  |  <b>{tag}</b>\n"
+        f"💰 <b>TP1 HIT — ${coin}-USDT!</b> 🎉  |  <b>{tag}</b>\n"
         f"{arrow} {side}\n"
         f"✅ TP1: <b>{tp1:,.4g}</b>\n"
         f"🛡 SL moved to BE: <b>{sl_be:,.4g}</b>\n"
@@ -1832,7 +1832,7 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     if result == "TP1":
         text = (
             "🚨 <b>VIP SIGNAL UPDATE</b>\n\n"
-            f"#{coin}USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
+            f"${coin}-USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
             "<blockquote>" + _style_body(
                 f"This signal was shared exclusively in \"Crypto Clexer VIP\" AT {entry_ts}\n"
                 "Congratulations to all our VIP members who secured profits. 🔥\n\n"
@@ -1842,7 +1842,7 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     else:
         text = (
             "🏆 <b>VIP RESULT</b>\n\n"
-            f"#{coin}USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
+            f"${coin}-USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
             "<blockquote>" + _style_body(
                 "VIP-exclusive signal closed successfully.\n\n"
                 "✅ TP1 Achieved\n"
@@ -11755,7 +11755,7 @@ def fmt_scan_signal(t: dict) -> str:
         dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
         sig_id = t.get("sig_id") or f"#ID{int(t.get('created_at', time.time()))}"
         return (
-            f"📩 <b>#{coin}USDT</b>  S{ver} {_gw_tag} | Mid-Term{_vst_tag}\n\n"
+            f"📩 <b>${coin}-USDT</b>  S{ver} {_gw_tag} | Mid-Term{_vst_tag}\n\n"
             f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
             f"⏳ Signal Details:\n"
             f"Target 1: <b>{tp1:,.4g}</b>\n"
@@ -11789,11 +11789,11 @@ def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
         print("  [FMT SCAN] called with no trade - returning an empty card")
         return ""
     coin = t.get('symbol','?')
-    sym  = f"#{coin}"; sig = t.get("signal","?")
+    sym  = f"${coin}"; sig = t.get("signal","?")
     ver_lbl = f"S{t.get('ver', 1)}"
     entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
-    _hdr = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
-    _hdr_notime = lambda title_emoji, title: f"{title_emoji} #{coin}  |  {ver_lbl}"
+    _hdr = lambda title_emoji, title: f"{title_emoji} ${coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
+    _hdr_notime = lambda title_emoji, title: f"{title_emoji} ${coin}  |  {ver_lbl}"
     _sid = t.get("sig_id","")
     msgs = {
         "ENTRY_HIT": _scan_box(
@@ -13288,12 +13288,12 @@ def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
         raw = _intra_engine_block(kind, meta)
         print(f"  [INTRA {kind}] engine (no API): {raw.splitlines()[0]}")
         if INTRADAY_PROMPT_DM:
-            _send_prompt_debug(ADMIN_CHAT_ID, f"⚙️ #{sym}.P {label} ENGINE",
+            _send_prompt_debug(ADMIN_CHAT_ID, f"⚙️ ${sym}.P {label} ENGINE",
                                block + "\n\n--- ENGINE OUTPUT (no API call) ---\n" + raw)
     else:
         prompt = _intra_prompt(kind, block)
         if INTRADAY_PROMPT_DM:
-            _send_prompt_debug(ADMIN_CHAT_ID, f"📝 #{sym}.P {label} PROMPT", prompt)
+            _send_prompt_debug(ADMIN_CHAT_ID, f"📝 ${sym}.P {label} PROMPT", prompt)
         raw = _intra_ai_call(kind, prompt)
     if not raw:
         return f"{label}: no response from Clex"
@@ -13403,7 +13403,7 @@ def _intra_entry_card(t: dict) -> str:
         f"✅ TP2: <code>{t['tp2']:,.6g}</code>",
         f"📊 {_smallcaps_title('Confidence')}: {t['confidence']}",
     ]]
-    return _scan_box(f"#{coin} {spec['label']}", f"{arrow} {spec['symbol']}.P", rows,
+    return _scan_box(f"${coin} {spec['label']}", f"{arrow} {spec['symbol']}.P", rows,
                      tag=t.get("sig_id", ""))
 
 
@@ -13429,7 +13429,7 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
     ]]
     if note:
         body[0].append(f"<i>{note}</i>")
-    text = _scan_box(f"#{coin} {result}", f"{icon} {spec['label']}", body, tag=sig_id)
+    text = _scan_box(f"${coin} {result}", f"{icon} {spec['label']}", body, tag=sig_id)
 
     if result in ("SL", "BE"):
         _send_sl_and_log(text, t.get("reply_map"), sig_id, result, include_ch2=False,
@@ -13781,7 +13781,7 @@ def _test_pin(mid):
 def _test_entry_card(t: dict) -> str:
     coin = t["symbol"].replace("-USDT", "")
     arrow = "🟢" if t["signal"] == "BUY" else "🔴"
-    return _scan_box(f"#{coin} TEST", f"{arrow} {t['symbol']}", [[
+    return _scan_box(f"${coin} TEST", f"{arrow} {t['symbol']}", [[
         f"{arrow} {_smallcaps_title(t['signal'])} — {_smallcaps_title('market entry')}",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
         f"🛑 SL: <code>{t['sl']}</code>  ({t['sl_pct']:.2f}%)",
@@ -13803,7 +13803,7 @@ def _test_close(t: dict, result: str, price: float):
                 pnl = -pnl
     except Exception:
         pnl = None
-    _test_post(_scan_box(f"#{coin} {result}", f"{icon} {t['symbol']}", [[
+    _test_post(_scan_box(f"${coin} {result}", f"{icon} {t['symbol']}", [[
         f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
         f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
@@ -14123,7 +14123,7 @@ def _ist_entry_card(t: dict) -> str:
     arrow = "🟢" if t["side"] == "BUY" else "🔴"
     _how = "limit filled" if s["entry"] == "limit" else "market entry"
     _stop_pct = abs(t["stop"] - t["entry"]) / t["entry"] * 100
-    return _scan_box(f"#BTC IST-{t['setup']}", f"{arrow} {s['name']}", [[
+    return _scan_box(f"$BTC IST-{t['setup']}", f"{arrow} {s['name']}", [[
         f"{arrow} {_smallcaps_title(t['side'])} — {_smallcaps_title(_how)}",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
         f"🛑 SL: <code>{t['stop']:,.1f}</code>  ({_stop_pct:.2f}%)",
@@ -14142,7 +14142,7 @@ def _ist_close(setup: str, t: dict, result: str, price: float):
     raw, net = _ist_pnl(t, price)
     icon = {"TIME": "⏰", "SL": "🛑", "BE": "🛡️", "TRAIL": "📉"}.get(result, "•")
     label = {"TIME": "time exit", "SL": "stopped", "BE": "breakeven", "TRAIL": "trailed out"}.get(result, result)
-    _test_post(_scan_box(f"#BTC {result}", f"{icon} IST-{setup} · {_IST_SETUPS[setup]['name']}", [[
+    _test_post(_scan_box(f"$BTC {result}", f"{icon} IST-{setup} · {_IST_SETUPS[setup]['name']}", [[
         f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(label)}",
         f"📊 {_smallcaps_title('Price')}: <code>{price:,.1f}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
@@ -14614,7 +14614,7 @@ def _intraday_monitor_loop():
                             # to catch it.
                             t["invalidation"] = None
                             send_lifecycle_reply(
-                                _scan_box(f"#{spec['coin']} Entry Filled",
+                                _scan_box(f"${spec['coin']} Entry Filled",
                                           f"⚡ {spec['label']}",
                                           [[f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
                                             f"📊 {_smallcaps_title('Price')}: <code>{cp:,.6g}</code>"]],
@@ -14720,7 +14720,7 @@ def _intra_cancel_pending(t: dict, reason: str):
         return
     t["_announced"] = "CANCEL"
     spec = _intra_spec(t["kind"])
-    text = _scan_box(f"#{spec['coin']} Cancelled", f"🚫 {spec['label']}",
+    text = _scan_box(f"${spec['coin']} Cancelled", f"🚫 {spec['label']}",
                      [[f"🚫 {_smallcaps_title('Pending entry cancelled')}",
                        f"🎯 {_smallcaps_title('Entry was')}: <code>{t['entry']:,.6g}</code>",
                        f"<i>{reason}</i>"]],
@@ -14739,7 +14739,7 @@ def _intra_cancel_pending(t: dict, reason: str):
 def _intra_close_partial(t: dict, price: float):
     """TP1 hit — half off, stop to breakeven, trade stays open for TP2."""
     spec = _intra_spec(t["kind"])
-    text = _scan_box(f"#{spec['coin']} TP1 Hit", f"✅ {spec['label']}",
+    text = _scan_box(f"${spec['coin']} TP1 Hit", f"✅ {spec['label']}",
                      [[f"✅ TP1: <code>{t['tp1']:,.6g}</code>",
                        f"📊 {_smallcaps_title('Price')}: <code>{price:,.6g}</code>",
                        f"🛡️ {_smallcaps_title('SL moved to breakeven')}",
@@ -19998,7 +19998,7 @@ Reasoning: [one line]"""
                         # part-split) is pure noise about a model that was never called.
                         # The engine's own decision block is sent below instead.
                         _send_prompt_debug(cid,
-                            f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>",
+                            f"📝 <b>${chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)} PROMPT</b>",
                             analysis_prompt)
 
                     def _build_content(_prompt):
@@ -20033,7 +20033,7 @@ Reasoning: [one line]"""
                             print(f"  [ENGINE] scan{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
                             if _prompt_dm_allowed(_kind):
                                 send_reply(cid,
-                                    f"⚙️ <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} "
+                                    f"⚙️ <b>${chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} "
                                     f"[{_category_tag(_kind)}] ENGINE</b>\n\n"
                                     f"<pre>{_html.escape(analysis)}</pre>",
                                     important=True)
@@ -20132,7 +20132,7 @@ Reasoning: [one line]"""
                         emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                         tv_src = "TV" if tv_switched else "BingX"
                         send_reply(cid,
-                            f"{emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)}</b>  {ist_str()}\n\n"
+                            f"{emoji} <b>${chosen_sym}</b> #{len(tried)}  <b>Scan{scan_ver} [{_category_tag(_kind)}] {_gw_model_tag(_kind)}</b>  {ist_str()}\n\n"
                             f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | {tv_src}\n\n"
                             f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
@@ -25472,7 +25472,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
             "entry_price": entry, "sl_price": sl, "tp1_price": tp1, "tp2_price": tp2})
         _msg = _scan_box(
-            f"#{coin} TP2 Hit", f"🏆 TS{dver} ${coin}-USDT",
+            f"${coin} TP2 Hit", f"🏆 TS{dver} ${coin}-USDT",
             [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
               f"🏆 TP2: <code>{tp2:,.6g}</code>",
@@ -25501,7 +25501,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
             "entry_price": entry, "sl_price": be_sl_price, "tp1_price": tp1, "tp2_price": tp2})
         _msg = _scan_box(
-            f"#{coin} TP1 Hit", f"🎯 TS{dver} ${coin}-USDT",
+            f"${coin} TP1 Hit", f"🎯 TS{dver} ${coin}-USDT",
             [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
               f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
@@ -25527,7 +25527,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": _sl_exit, "tp1_price": tp1, "tp2_price": tp2})
     _msg = _scan_box(
-        f"#{coin} {lbl} Hit", f"🚨 TS{dver} ${coin}-USDT",
+        f"${coin} {lbl} Hit", f"🚨 TS{dver} ${coin}-USDT",
         [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
           f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
           f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
@@ -25618,7 +25618,7 @@ def _demo_monitor_loop():
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} TP2 Hit", f"🏆 TS{_dver} ${coin}-USDT",
+                            f"${coin} TP2 Hit", f"🏆 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
@@ -25648,7 +25648,7 @@ def _demo_monitor_loop():
                             "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} {lbl} Hit", f"🚨 TS{_dver} ${coin}-USDT",
+                            f"${coin} {lbl} Hit", f"🚨 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
@@ -25694,7 +25694,7 @@ def _demo_monitor_loop():
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
                         _msg = _scan_box(
-                            f"#{coin} TP1 Hit", f"🎯 TS{_dver} ${coin}-USDT",
+                            f"${coin} TP1 Hit", f"🎯 TS{_dver} ${coin}-USDT",
                             [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
                               f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
@@ -25720,7 +25720,7 @@ def _demo_monitor_loop():
                         _timeout_line = (f"1ʜ ᴇʟᴀᴘꜱᴇᴅ ꜱɪɴᴄᴇ TP1 — {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% runner closed')}"
                                          if tp1hit else f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}")
                         _msg = _scan_box(
-                            f"#{coin} Timeout", f"⏰ TS{_dver} ${coin}-USDT",
+                            f"${coin} Timeout", f"⏰ TS{_dver} ${coin}-USDT",
                             [[_timeout_line,
                               f"📊 {_smallcaps_title('Exit')}: <code>{cp:,.6g}</code>",
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
@@ -26015,7 +26015,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                 # model was actually asked. Gated by /promptvst /promptunst /promptnt.
                 # Skipped in engine mode — see the live scan loop's matching comment.
                 _send_prompt_debug(cid,
-                    f"📝 <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>",
+                    f"📝 <b>${chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)} PROMPT</b>",
                     analysis_prompt)
 
             # Claude analysis
@@ -26034,7 +26034,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
                     print(f"  [ENGINE] test{scan_ver} {chosen_sym}: {analysis.splitlines()[0]}")
                     if _prompt_dm_allowed("test", scan_ver):
                         send_reply(cid,
-                            f"⚙️ <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} "
+                            f"⚙️ <b>${chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} "
                             f"[{_category_tag('test', scan_ver)}] ENGINE</b>\n\n"
                             f"<pre>{_html.escape(analysis)}</pre>",
                             important=True)
@@ -26113,7 +26113,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             if _prompt_dm_allowed("test", scan_ver):
                 _demo_emoji = "🟢" if candidate["change"] >= 0 else "🔴"
                 send_reply(cid,
-                    f"{_demo_emoji} <b>#{chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)}</b>  {ist_str()}\n\n"
+                    f"{_demo_emoji} <b>${chosen_sym}</b> #{len(tried)}  <b>TS{scan_ver} [{_category_tag('test', scan_ver)}] {_gw_model_tag('test', scan_ver)}</b>  {ist_str()}\n\n"
                     f"Price: <b>${cp:,.6g}</b> ({candidate['change']:+.2f}%) | 🔀 BingX\n\n"
                     f"<pre>{_html.escape(analysis[:900])}</pre>", important=True)
 
