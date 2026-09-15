@@ -811,5 +811,7 @@
 "⚠️ Ödeme bağlantısı oluşturulamadı — birazdan tekrar deneyin.",
 "⚠️ Stars faturası oluşturulamadı — birazdan tekrar deneyin.",
 "⚠️ Önce çevirin.",
-"⚠️ Yetersiz bakiye ({}) — önce Bakiye Ekle'ye dokunun."
+"⚠️ Yetersiz bakiye ({}) — önce Bakiye Ekle'ye dokunun.",
+"<b>🎮 Oyunlar</b>",
+"<blockquote>Hemen çalıştırmak için bir komuta dokunun 👇</blockquote>"
 ]

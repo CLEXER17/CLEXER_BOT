@@ -21045,6 +21045,12 @@ _HELP_CATS = {
     # _XXX_SUBCATS dict (rooms), not here. Only the label/admin-only flag is used
     # for these; an empty list is intentional, not a bug.
     "copyuser":     ("💰 My Copy Trade",       False, []),
+    # Games get their own room - they are not status information
+    # (admin 2026-09-15). A flat list: two commands, no sub-rooms needed.
+    "games":        ("🎮 Games",               False, [
+        ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group"),
+        ("/out",     "🗳", "Vote Out", "Start a vote to remove a player from a game you are in — the game's players decide"),
+    ]),
     "tradecontrol": ("🎯 Trade Control",       True,  []),
     "scan":         ("🔍 Scan Control",        True,  []),
     "copyadmin":    ("👥 Copy Admin",          True,  []),
@@ -22424,8 +22430,6 @@ _MONITOR_SUBCATS = {
         ("/trade",   "📈", "Active Trades",  "Active BTC + all scan trades"),
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
         ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
-        ("/games",   "🎮", "Games",          "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group"),
-        ("/out",     "🗳", "Vote Out",       "Start a vote to remove a player from a game you are in — the game's players decide"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),
