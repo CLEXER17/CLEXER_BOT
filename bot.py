@@ -6438,12 +6438,19 @@ def _slot_hm_for_trade(t: dict, epoch=None):
         return tuple(_hm)
     return _ist_hm_from_epoch(epoch if epoch is not None else t.get("created_at"))
 
-def _status_trade_cat(kind: str, created_at) -> str:
+def _status_trade_cat(kind: str, created_at, trigger_hm=None) -> str:
     """Classifies a scan/demo trade as 'verified' (special + copy-enabled),
     'unverified' (special but auto-demoted), or 'nonspecial' — shared by
     /status and /trade to gate which viewer tier can see it, and by admin's
-    view to tag which category a trade belongs to."""
-    _hm = _ist_hm_from_epoch(created_at)
+    view to tag which category a trade belongs to.
+
+    trigger_hm is the schedule slot that actually fired (stored on the trade
+    at placement, see _slot_hm_for_trade). A slow cycle places the trade
+    minutes after its slot, and deriving the slot from created_at then lands
+    on a non-special minute - which hid a verified TS2 trade from every VIP
+    viewer's /trade while the same signal sat in their channel (admin
+    2026-09-15). created_at stays as the fallback for older trades."""
+    _hm = tuple(trigger_hm) if trigger_hm else _ist_hm_from_epoch(created_at)
     if not _hm:
         return "nonspecial"
     _sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
@@ -7530,6 +7537,11 @@ def save_state():
         # re-pushes the whole state anyway (admin 2026-09-07).
         def _push():
             try:
+                # A standby server loading its own (older) state file must not
+                # overwrite what the active one just pushed - the mini app's
+                # Trades tab reads exactly this row.
+                if not is_active_server():
+                    return
                 requests.post(f"{CLEXER_API_URL}/push_state", json=state,
                     headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}),
                     timeout=8)
@@ -17197,7 +17209,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         for _ver, _lst in [(1, scan1_trades), (2, scan2_trades)]:
             for sc in _lst:
                 _kind = f"scan{_ver}"
-                _cat = _status_trade_cat(_kind, sc.get('created_at'))
+                _cat = _status_trade_cat(_kind, sc.get('created_at'), sc.get('trigger_hm'))
                 _reveal, _locked = _trade_reveal(_cat, sc.get('share_free', True), sc.get('tier_routed', True),
                                                   _trade_tier_val, _trade_full_view,
                                                   actually_shared=_reply_map_reached_tier(sc.get('reply_map')))
@@ -17226,7 +17238,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             for dc in _dlst:
                 _dver = dc.get('scan_ver', 1)
                 _kind = f"demo{_dver}"
-                _cat = _status_trade_cat(_kind, dc.get('created_at'))
+                _cat = _status_trade_cat(_kind, dc.get('created_at'), dc.get('trigger_hm'))
                 _reveal, _locked = _trade_reveal(_cat, dc.get('share_free', True), dc.get('tier_routed', True),
                                                   _trade_tier_val, _trade_full_view,
                                                   actually_shared=_reply_map_reached_tier(dc.get('reply_map')))

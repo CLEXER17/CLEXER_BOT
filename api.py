@@ -811,19 +811,26 @@ def _kv_dict(key: str) -> dict:
     except Exception:
         return {}
 
-def _trade_category(kind: str, created_at, special: dict, no_copy: dict) -> str:
+def _trade_category(kind: str, created_at, special: dict, no_copy: dict, trigger_hm=None) -> str:
     """Same verified/unverified/non-special classification bot.py's /status
     uses, reimplemented here since api.py is a separate process with no
     access to bot.py's in-memory _SCAN_SPECIAL/_SCAN_SPECIAL_NO_COPY sets —
     slot_auto_state (pushed by bot.py's _save_slot_state) carries the same
     data centrally instead."""
-    if not created_at:
-        return "nonspecial"
-    try:
-        dt = datetime.fromtimestamp(float(created_at), timezone.utc) + IST
-        hm = [dt.hour, dt.minute]
-    except Exception:
-        return "nonspecial"
+    # Prefer the slot that actually fired (bot.py stores trigger_hm on the
+    # trade): a slow cycle places the trade minutes after its slot, and the
+    # created_at minute then misses the special set - which hid verified
+    # trades from VIP viewers here just as it did in bot.py's /trade.
+    if trigger_hm:
+        hm = [int(x) for x in trigger_hm]
+    else:
+        if not created_at:
+            return "nonspecial"
+        try:
+            dt = datetime.fromtimestamp(float(created_at), timezone.utc) + IST
+            hm = [dt.hour, dt.minute]
+        except Exception:
+            return "nonspecial"
     sched_kind = _SLOT_SCHEDULE_KIND.get(kind, kind)
     if hm in no_copy.get(sched_kind, []):
         return "unverified"
@@ -894,7 +901,7 @@ def get_active_trades(request: Request):
         # BTC ("main") is intentionally never filtered — shown to everyone,
         # same as bot.py's /status. Scan/demo trades are gated by tier.
         if filterable:
-            cat = _trade_category(source, t.get("created_at"), special, no_copy)
+            cat = _trade_category(source, t.get("created_at"), special, no_copy, t.get("trigger_hm"))
             share_free  = t.get("share_free", True)
             tier_routed = t.get("tier_routed", True)
             if is_admin_view:
