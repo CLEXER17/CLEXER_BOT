@@ -17432,6 +17432,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd in ("/games", "/game"):
         _games_mod.cmd_games(chat_id, (message or {}).get("chat", {}).get("type") or "private")
 
+    elif cmd == "/out":
+        _games_mod.cmd_out(chat_id, _check_id, (message or {}).get("from", {}).get("first_name") or _uname)
+
     elif cmd == "/mtf":
         _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
         _coin = _coin.replace("-USDT", "").replace("USDT", "").strip()
@@ -22344,6 +22347,7 @@ _MONITOR_SUBCATS = {
         ("/price",   "💲", "BTC Price",      "Current BTC price — or any coin, e.g. /price SOL"),
         ("/mtf",     "📐", "Multi-Timeframe","Seven timeframes at once, four combination reads, entry ranges and liquidity — e.g. /mtf SOL"),
         ("/games",   "🎮", "Games",          "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group"),
+        ("/out",     "🗳", "Vote Out",       "Start a vote to remove a player from a game you are in — the game's players decide"),
         ("/suggest", "💡", "Send Suggestion","Send the admin an idea, some feedback, or a problem you hit"),
         ("/session", "🕐", "Session",        "London / NY / Sleep session"),
     ]),

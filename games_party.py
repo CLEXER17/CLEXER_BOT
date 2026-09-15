@@ -12,7 +12,7 @@ import requests
 from games import (Spec, _register, COLORS, TOP, S, GOLD, INK, CELL_A, CELL_B,
                    _canvas, _finish, _frame, _panel, _cell, _txt, _token, _plabel, _die, _bar,
                    _score_rows, _shade, _sx, _font, _log, _advance, _win, _draw_game,
-                   _current, _alive, _find, _tag, _scores, _esc, _HANG_WORDS)
+                   _current, _alive, _find, _tag, _tags, _scores, _esc, _dyn, _HANG_WORDS)
 
 
 def _wrap(d, text, font, maxw):
@@ -125,8 +125,8 @@ class Trivia(Spec):
         out = []
         if g["phase"] == "play":
             cat, q, opts, _ = st["qs"][st["i"]]
-            out += [f"Q{st['i'] + 1}/{_TRIVIA_Q} · <b>{_esc(cat)}</b>", _esc(q), ""]
-            out += [f"{'ABCD'[k]}. {_esc(o)}" for k, o in enumerate(opts)]
+            out += [f"Q{st['i'] + 1}/{_TRIVIA_Q} · <b>{_dyn(_esc(cat))}</b>", _dyn(_esc(q)), ""]
+            out += [f"{'ABCD'[k]}. {_dyn(_esc(o))}" for k, o in enumerate(opts)]
             out.append("")
         out += [f"{_tag(p)} · {sc[p['id']]} pt" + (" ✅" if p["id"] in st["ans"] else "") for p in g["players"]]
         return out
@@ -149,7 +149,7 @@ class Trivia(Spec):
         for q_ in right:
             st["score"][q_["id"]] += 1
         st["shown"] = {"i": st["i"], "ans": dict(st["ans"])}
-        _log(g, f"Q{st['i'] + 1}: <b>{'ABCD'[c]}. {_esc(opts[c])}</b> · " + (", ".join(_tag(x) for x in right) + " ✅" if right else "nobody got it"))
+        _log(g, f"Q{st['i'] + 1}: <b>{_dyn('ABCD'[c])}. {_dyn(_esc(opts[c]))}</b> · " + (_tags(right) + " ✅" if right else "nobody got it"))
         st["ans"] = {}
         st["i"] += 1
         if st["i"] >= len(st["qs"]):
@@ -256,7 +256,7 @@ class Uno(Spec):
     def caption(self, g):
         st = g["st"]
         top = st["pile"][-1]
-        out = [f"Top: <b>{_u_name(top)}</b>" + (f" · colour {_U_COL[st['color']][0]}" if top[0] == 'W' else "")]
+        out = [f"Top: <b>{_dyn(_u_name(top))}</b>" + (f" · colour {_dyn(_U_COL[st['color']][0])}" if top[0] == 'W' else "")]
         out += [f"{_tag(p)} · {len(st['hands'][p['id']])} card{'s' if len(st['hands'][p['id']]) != 1 else ''}" for p in g["players"]]
         return out
 
@@ -313,7 +313,7 @@ class Uno(Spec):
             st["color"] = action[1:]
             card = st["wild"]
             st["wild"] = None
-            _log(g, f"{_tag(p)} chooses {_U_COL[st['color']][0]}")
+            _log(g, f"{_tag(p)} chooses {_dyn(_U_COL[st['color']][0])}")
             if card[1] == "+4":
                 self._next(g)
                 v = _current(g)
@@ -337,7 +337,7 @@ class Uno(Spec):
             hand.pop(i)
             st["pile"].append(card)
             st["last"] = _u_name(card)
-            _log(g, f"{_tag(p)} plays <b>{_u_name(card)}</b>" + (" · UNO!" if len(hand) == 1 else ""))
+            _log(g, f"{_tag(p)} plays <b>{_dyn(_u_name(card))}</b>" + (" · UNO!" if len(hand) == 1 else ""))
             if not hand:
                 _win(g, p)
                 return None
@@ -730,7 +730,7 @@ class Scramble(Spec):
 
     def turn_text(self, g):
         st = g["st"]
-        return f"👉 Round {st['round']}/{_SCR_ROUNDS} · category <b>{st['cat']}</b> · type the word: <code>{st['scr']}</code>"
+        return f"👉 Round {st['round']}/{_SCR_ROUNDS} · category <b>{_dyn(st['cat'])}</b> · type the word: <code>{_dyn(st['scr'])}</code>"
 
     def caption(self, g):
         sc = _scores(g)
@@ -753,10 +753,10 @@ class Scramble(Spec):
         if p["bot"]:
             st["tried"].add(p["id"])
         if guess != st["word"]:
-            _log(g, f"{_tag(p)} tries <b>{_esc(guess[:16])}</b> ❌")
+            _log(g, f"{_tag(p)} tries <b>{_dyn(_esc(guess[:16]))}</b> ❌")
             return None
         st["score"][p["id"]] += 1
-        _log(g, f"✅ {_tag(p)} got it - <b>{st['word']}</b>")
+        _log(g, f"✅ {_tag(p)} got it - <b>{_dyn(st['word'])}</b>")
         if st["round"] >= _SCR_ROUNDS:
             best = max(st["score"].values())
             tops = [q for q in g["players"] if st["score"][q["id"]] == best]
@@ -964,8 +964,8 @@ class Boxing(Spec):
         da, db = self._dmg(ma, mb), self._dmg(mb, ma)
         st["hp"][b["id"]] = max(0, st["hp"][b["id"]] - da)
         st["hp"][a["id"]] = max(0, st["hp"][a["id"]] - db)
-        st["last"] = f"{a['name']}: {ma.upper()}   {b['name']}: {mb.upper()}"
-        _log(g, f"R{st['round']} · {_tag(a)} {_BOX[ma]} ({da}) · {_tag(b)} {_BOX[mb]} ({db})")
+        st["last"] = f"{_dyn(a['name'])}: {ma.upper()}   {_dyn(b['name'])}: {mb.upper()}"
+        _log(g, f"Round {st['round']} · {_tag(a)} {_BOX[ma]} ({da}) · {_tag(b)} {_BOX[mb]} ({db})")
         st["picks"] = {}
         ha, hb = st["hp"][a["id"]], st["hp"][b["id"]]
         if ha <= 0 and hb <= 0:
@@ -1087,7 +1087,7 @@ class Zombie(Spec):
                 st["hp"][pid] = 0
                 q["out"] = True
                 st["note"][pid] += " 💀"
-        _log(g, f"Wave {wave}: " + " · ".join(f"{COLORS[q['c']][0]} {st['note'][q['id']]}" for q in alive))
+        _log(g, f"Wave {wave}" + "".join(f" · {_dyn(COLORS[q['c']][0])} {st['note'][q['id']]}" for q in alive))
         st["picks"] = {}
         alive = _alive(g)
         if wave >= _Z_WAVES or not alive:

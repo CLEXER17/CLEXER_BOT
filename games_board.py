@@ -11,7 +11,7 @@ from PIL import ImageDraw
 from games import (Spec, _register, COLORS, TOP, S, GOLD, INK, CELL_A, CELL_B,
                    _canvas, _finish, _frame, _panel, _cell, _txt, _token, _plabel, _die,
                    _score_rows, _shade, _sx, _font, _log, _advance, _win, _draw_game,
-                   _current, _alive, _find, _tag, _scores, _esc)
+                   _current, _alive, _find, _tag, _tags, _scores, _esc, _dyn)
 
 try:
     import chess as _chess
@@ -377,7 +377,7 @@ if _chess:
                 st["sel"] = None
                 st["last"] = (frm, to)
                 st["moves"] += 1
-                _log(g, f"{_tag(p)} · <b>{_esc(san)}</b>")
+                _log(g, f"{_tag(p)} · <b>{_dyn(_esc(san))}</b>")
                 if b.is_checkmate():
                     _log(g, "Checkmate!")
                     _win(g, p)
@@ -569,7 +569,7 @@ class Checkers(Spec):
             crowned = self._apply(st, mv, owner)
             st["sel"] = None
             st["last"] = (frm, to)
-            line = f"{_tag(p)} · {_ck_name(frm)} → {_ck_name(to)}" + (" ✂️ captures" if mv[2] is not None else "") + (" 👑 king!" if crowned else "")
+            line = f"{_tag(p)} · {_dyn(_ck_name(frm))} → {_dyn(_ck_name(to))}" + (" ✂️ captures" if mv[2] is not None else "") + (" 👑 king!" if crowned else "")
             _log(g, line)
             other = 1 - owner
             if not any(v[0] == other for v in st["b"].values()):
@@ -714,7 +714,7 @@ class Battleship(Spec):
         hit = any(i in s for s in st["fleet"][e["id"]])
         shots[i] = hit
         st["last"] = (p["id"], i)
-        name = "abcdefgh"[i % _BS_N] + str(i // _BS_N + 1)
+        name = _dyn("abcdefgh"[i % _BS_N] + str(i // _BS_N + 1))
         if hit:
             ship = next(s for s in st["fleet"][e["id"]] if i in s)
             if all(c in shots for c in ship):
@@ -871,7 +871,7 @@ class Blackjack(Spec):
                 st["result"][p["id"]] = "🤝"
             else:
                 st["result"][p["id"]] = "❌"
-        _log(g, f"Dealer shows <b>{dt}</b>{' - bust!' if dt > 21 else ''} · " + (", ".join(_tag(p) for p in wins) + " win" if wins else "dealer takes the round"))
+        _log(g, f"Dealer shows <b>{dt}</b>{' - bust!' if dt > 21 else ''} · " + (_tags(wins) + " win" if wins else "dealer takes the round"))
         if st["round"] >= 3:
             best = max(st["score"][p["id"]] for p in _alive(g))
             tops = [p for p in _alive(g) if st["score"][p["id"]] == best]
@@ -886,10 +886,10 @@ class Blackjack(Spec):
             h.append(st["deck"].pop())
             t = _bj_total(h)
             if t > 21:
-                _log(g, f"{_tag(p)} hits · {h[-1][0]}{h[-1][1]} · <b>{t} bust</b>")
+                _log(g, f"{_tag(p)} hits · {_dyn(h[-1][0] + h[-1][1])} · <b>{t} bust</b>")
                 st["done"].add(p["id"])
             else:
-                _log(g, f"{_tag(p)} hits · {h[-1][0]}{h[-1][1]} · {t}")
+                _log(g, f"{_tag(p)} hits · {_dyn(h[-1][0] + h[-1][1])} · {t}")
                 if t == 21:
                     st["done"].add(p["id"])
         elif action == "stand":

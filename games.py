@@ -36,6 +36,7 @@ wants game buttons plain, with only Quit / Cancel in red.
 
 import copy
 import io
+import uuid
 import json
 import math
 import os
@@ -51,7 +52,11 @@ _TOKEN = None
 _STORE = None              # hidden chat that boards are uploaded to ahead of time
 PRELOAD = True             # upload-first-swap-second (see _prepare)
 _lock = threading.RLock()
-_games: dict = {}          # chat id (str) -> game dict
+_games: dict = {}          # game id -> game dict (many per chat; a player may sit in several)
+_votes: dict = {}          # vote message id -> {"gid", "target", "by", "yes": set, "at"}
+IDLE_KICK_SECS = 15 * 60   # groups: a player who has not acted for this long is removed
+ABANDON_SECS = 25 * 60     # a game nobody touched for this long is closed
+VOTE_SECS = 5 * 60
 _fonts: dict = {}
 _watch_started = False
 
@@ -155,7 +160,7 @@ def _count_kb(kind):
 # ── game state ─────────────────────────────────────────────────────────────
 
 def _new_game(kind, chat, chat_type, host_id, host_name):
-    return {"kind": kind, "chat": str(chat), "chat_type": chat_type, "host": str(host_id),
+    return {"gid": uuid.uuid4().hex[:8], "kind": kind, "chat": str(chat), "chat_type": chat_type, "host": str(host_id),
             "msg_id": None, "phase": "lobby", "want": 0, "players": [], "turn": 0,
             "log": [], "confirm": None, "winner": None, "draw": False, "busy": False,
             "ver": 0, "pre": None, "st": {},
@@ -165,7 +170,7 @@ def _new_game(kind, chat, chat_type, host_id, host_name):
 def _seat(g, uid, name, bot=False):
     idx = len(g["players"])
     g["players"].append({"id": str(uid), "name": str(name)[:20], "pos": 0, "c": idx,
-                         "bot": bot, "out": False})
+                         "bot": bot, "out": False, "seen": time.time()})
     _bump(g)
 
 
@@ -184,8 +189,20 @@ def _alive(g):
     return [p for p in g["players"] if not p["out"]]
 
 
+def _dyn(s):
+    """Marks a dynamic value (a name, a coin, a word) so the language layer
+    treats it as a placeholder instead of part of the sentence. U+2063 is an
+    invisible separator - Telegram shows nothing for it."""
+    return f"\u2063{s}\u2063"
+
+
 def _tag(p):
-    return f"{COLORS[p['c']][0]} {_esc(p['name'])}"
+    return _dyn(f"{COLORS[p['c']][0]} {_esc(p['name'])}")
+
+
+def _tags(players):
+    """Several players as ONE placeholder ("🔴 Ana, 🟢 Bo")."""
+    return _dyn(", ".join(f"{COLORS[p['c']][0]} {_esc(p['name'])}" for p in players))
 
 
 def _bump(g):
@@ -220,6 +237,29 @@ def _draw_game(g):
 
 def _spec(g):
     return GAMES[g["kind"]]
+
+
+def _by_msg(chat, msg_id):
+    """The game whose board is this message."""
+    for g in _games.values():
+        if g["chat"] == str(chat) and msg_id and g["msg_id"] and int(g["msg_id"]) == int(msg_id):
+            return g
+    return None
+
+
+def _games_in(chat, uid=None, phases=("lobby", "play")):
+    out = [g for g in _games.values() if g["chat"] == str(chat) and g["phase"] in phases]
+    if uid is not None:
+        out = [g for g in out if _find(g, uid)]
+    return sorted(out, key=lambda g: g["created"])
+
+
+def _close(g, caption):
+    """Take a game off the table and leave a note on its board."""
+    _games.pop(g["gid"], None)
+    if g.get("msg_id"):
+        _api("editMessageCaption", {"chat_id": g["chat"], "message_id": g["msg_id"],
+                                    "caption": f"{_esc(_spec(g).title)}\n\n{caption}", "parse_mode": "HTML"})
 
 
 def _start(g):
@@ -278,7 +318,7 @@ def _caption(g):
     out.append("")
     if g["phase"] == "over":
         if g["winner"]:
-            out.append(f"🏆 <b>{_esc(g['winner']['name'])} wins!</b>")
+            out.append(f"🏆 <b>{_dyn(_esc(g['winner']['name']))} wins!</b>")
         else:
             out.append("🤝 <b>Draw - nobody wins.</b>")
     else:
@@ -615,11 +655,12 @@ def _push(g, kb_only=False, file_id=None, png=None):
     _prepare(g)
 
 
-def _robots_go(chat):
+def _robots_go(g_or_gid):
     """Let robots move, one every ROBOT_DELAY seconds (all at once in
     simultaneous games such as Rock Paper Scissors)."""
+    gid = g_or_gid["gid"] if isinstance(g_or_gid, dict) else str(g_or_gid)
     with _lock:
-        g = _games.get(str(chat))
+        g = _games.get(gid)
         if not g or g["phase"] != "play" or g["busy"]:
             return
         spec = _spec(g)
@@ -632,7 +673,7 @@ def _robots_go(chat):
             while True:
                 t0 = time.time()
                 with _lock:
-                    g2 = _games.get(str(chat))
+                    g2 = _games.get(gid)
                     if not g2 or g2 is not g or g2["phase"] != "play":
                         break
                     spec = _spec(g)
@@ -654,7 +695,7 @@ def _robots_go(chat):
                 if moved:
                     time.sleep(max(0.0, ROBOT_DELAY / 2 - (time.time() - t0)))
                     with _lock:
-                        if _games.get(str(chat)) is not g:
+                        if _games.get(gid) is not g:
                             break
                     _push(g)
                 else:
@@ -668,7 +709,7 @@ def _robots_go(chat):
                             fid = png = None
                     time.sleep(max(0.0, ROBOT_DELAY - (time.time() - t0)))
                     with _lock:
-                        g2 = _games.get(str(chat))
+                        g2 = _games.get(gid)
                         if not g2 or g2 is not g or g2["phase"] != "play":
                             break
                         p = _find(g, pid)
@@ -685,7 +726,7 @@ def _robots_go(chat):
                     break
         finally:
             g["busy"] = False
-    threading.Thread(target=run, daemon=True, name=f"games-robot-{chat}").start()
+    threading.Thread(target=run, daemon=True, name=f"games-robot-{gid}").start()
 
 
 # ── callbacks ──────────────────────────────────────────────────────────────
@@ -710,10 +751,6 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
         kind = parts[2] if len(parts) > 2 else ""
         if kind not in GAMES:
             return "That game isn't ready yet."
-        with _lock:
-            g = _games.get(chat)
-            if g and g["phase"] in ("lobby", "play"):
-                return "A game is already running in this chat. Finish or cancel it first."
         spec = GAMES[kind]
         hint = ("Every other seat will be a robot 🤖" if chat_type == "private"
                 else "Friends join by tapping Join on the board.")
@@ -734,9 +771,6 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
         if not (spec.min <= n <= spec.max):
             return f"{spec.title} takes {spec.min}-{spec.max} players."
         with _lock:
-            g = _games.get(chat)
-            if g and g["phase"] in ("lobby", "play"):
-                return "A game is already running in this chat."
             g = _new_game(kind, chat, chat_type, uid, name)
             g["want"] = n
             _seat(g, uid, name)
@@ -744,19 +778,22 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
                 for i in range(1, n):
                     _seat(g, f"bot{i}", f"Robo {i}", bot=True)
                 _start(g)
-            _games[chat] = g
+            _games[g["gid"]] = g
         _api("deleteMessage", {"chat_id": chat, "message_id": msg_id})
         _push(g)
-        _robots_go(chat)
+        _robots_go(g)
         return None
 
+    if act == "vote":
+        return _on_vote(parts, uid, chat, msg_id)
+
     with _lock:
-        g = _games.get(chat)
+        g = _by_msg(chat, msg_id)
     if not g:
-        return "No game here right now. Send /games to start one."
-    if msg_id and g["msg_id"] and int(msg_id) != int(g["msg_id"]):
-        return "That board is old - use the latest one below."
+        return "That board is old - use the latest one below." if _games_in(chat) else "No game here right now. Send /games to start one."
     me = _find(g, uid)
+    if me:
+        me["seen"] = time.time()
     spec = _spec(g)
 
     if act == "join":
@@ -771,7 +808,7 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
                 _start(g)
         _push(g)
         if full:
-            _robots_go(chat)
+            _robots_go(g)
         return None
 
     if act == "addbot":
@@ -787,7 +824,7 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
                 _start(g)
         _push(g)
         if full:
-            _robots_go(chat)
+            _robots_go(g)
         return None
 
     if act == "cancel":
@@ -796,10 +833,7 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
         if uid != g["host"]:
             return "Only the host can cancel."
         with _lock:
-            _games.pop(chat, None)
-        _api("editMessageCaption", {"chat_id": chat, "message_id": g["msg_id"],
-                                    "caption": f"{_esc(spec.title)}\n\n❌ Cancelled by the host.",
-                                    "parse_mode": "HTML"})
+            _close(g, "❌ Cancelled by the host.")
         return None
 
     if not me:
@@ -823,7 +857,7 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
                 return popup
             _bump(g)
         _push(g, file_id=pre["file_id"] if pre else None, png=pre["png"] if pre else None)
-        _robots_go(chat)
+        _robots_go(g)
         return None
 
     if act == "quit":
@@ -852,15 +886,11 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
             _remove_player(g, uid)
             humans = [p for p in g["players"] if not p["bot"]]
             if not humans:
-                _games.pop(chat, None)
+                _close(g, "Everyone left - game closed. Send /games to play again.")
         if not humans:
-            _api("editMessageCaption", {"chat_id": chat, "message_id": g["msg_id"],
-                                        "caption": f"{_esc(spec.title)}\n\n"
-                                                   "Everyone left - game closed. Send /games to play again.",
-                                        "parse_mode": "HTML"})
             return "You left the game."
         _push(g)
-        _robots_go(chat)
+        _robots_go(g)
         return "You left the game."
 
     if act == "again":
@@ -870,39 +900,156 @@ def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
             _start(g)
             g["created"] = time.time()
         _push(g)
-        _robots_go(chat)
+        _robots_go(g)
         return None
 
     return None
 
 
+# ── /out : vote a player out of a running game ─────────────────────────────
+
+def cmd_out(chat_id, uid, name):
+    """Lists the running games this user sits in, with a button per other
+    player. Tapping one opens a vote among the game's human players."""
+    chat = str(chat_id)
+    uid = str(uid)
+    with _lock:
+        mine = [g for g in _games_in(chat, uid, phases=("play",))]
+    if not mine:
+        _api("sendMessage", {"chat_id": chat, "text": "You're not in any running game here.", "parse_mode": "HTML"})
+        return
+    for g in mine:
+        rows = []
+        for p in g["players"]:
+            if p["id"] == uid:
+                continue
+            rows.append([{"text": f"{COLORS[p['c']][0]} {p['name']}" + (" 🤖" if p["bot"] else ""),
+                          "callback_data": f"game:vote:{g['gid']}:{p['id']}"}])
+        if not rows:
+            continue
+        rows.append([{"text": "↩ Cancel", "callback_data": "game:vote:x"}])
+        _api("sendMessage", {"chat_id": chat, "parse_mode": "HTML",
+                             "text": f"{_esc(_spec(g).title)} · {len(g['players'])} players\n\nWho should be voted out?",
+                             "reply_markup": {"inline_keyboard": rows}})
+
+
+def _vote_needed(g, target_id):
+    voters = [p for p in g["players"] if not p["bot"] and p["id"] != target_id]
+    return max(1, len(voters) // 2 + 1), voters
+
+
+def _vote_text(g, v):
+    target = _find(g, v["target"])
+    needed, voters = _vote_needed(g, v["target"])
+    who = _dyn(", ".join(_esc(_find(g, x)["name"]) for x in v["yes"] if _find(g, x)) or "-")
+    return (f"🗳 <b>Vote</b> · {_esc(_spec(g).title)}\n\nRemove {_tag(target)} from the game?\n"
+            f"Votes: <b>{len(v['yes'])}/{needed}</b> · voted: {who}\n"
+            f"Only the players in this game can vote. Expires in 5 minutes.")
+
+
+def _vote_kb(gid):
+    return {"inline_keyboard": [[{"text": "👍 Vote out", "callback_data": f"game:vote:{gid}:yes"},
+                                 {"text": "👎 Keep", "callback_data": f"game:vote:{gid}:no"}]]}
+
+
+def _on_vote(parts, uid, chat, msg_id):
+    if len(parts) < 3 or parts[2] == "x":
+        _api("deleteMessage", {"chat_id": chat, "message_id": msg_id})
+        return None
+    gid = parts[2]
+    arg = parts[3] if len(parts) > 3 else ""
+    with _lock:
+        g = _games.get(gid)
+        if not g or g["phase"] != "play":
+            return "That game is over."
+        me = _find(g, uid)
+        if not me or me["bot"]:
+            return "You're not in this game."
+        if arg in ("yes", "no"):
+            v = _votes.get(str(msg_id))
+            if not v or v["gid"] != gid:
+                return "This vote is closed."
+            if uid == v["target"]:
+                return "You can't vote on yourself."
+            if time.time() - v["at"] > VOTE_SECS:
+                _votes.pop(str(msg_id), None)
+                _api("editMessageText", {"chat_id": chat, "message_id": msg_id, "text": "🗳 Vote expired.", "parse_mode": "HTML"})
+                return "This vote has expired."
+            if arg == "yes":
+                v["yes"].add(uid)
+            else:
+                v["yes"].discard(uid)
+            needed, voters = _vote_needed(g, v["target"])
+            if len(v["yes"]) >= needed:
+                target = _find(g, v["target"])
+                _votes.pop(str(msg_id), None)
+                _remove_player(g, v["target"], why="was voted out")
+                humans = [p for p in g["players"] if not p["bot"]]
+                if not humans:
+                    _close(g, "Everyone left - game closed. Send /games to play again.")
+                _api("editMessageText", {"chat_id": chat, "message_id": msg_id, "parse_mode": "HTML",
+                                         "text": f"🗳 {_tag(target)} was voted out ({len(v['yes'])}/{needed})."})
+                if humans:
+                    threading.Thread(target=lambda: (_push(g), _robots_go(g)), daemon=True).start()
+                return "Done."
+            text, kb = _vote_text(g, v), _vote_kb(gid)
+            _api("editMessageText", {"chat_id": chat, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": kb})
+            return "Vote counted." if arg == "yes" else "Vote withdrawn."
+        # a name was tapped: open the vote
+        target = _find(g, arg)
+        if not target:
+            return "That player already left."
+        for v in _votes.values():
+            if v["gid"] == gid and v["target"] == arg and time.time() - v["at"] < VOTE_SECS:
+                return "A vote on this player is already open."
+        v = {"gid": gid, "target": arg, "by": uid, "yes": {uid}, "at": time.time()}
+        needed, voters = _vote_needed(g, arg)
+        if len(v["yes"]) >= needed:
+            _remove_player(g, arg, why="was voted out")
+            humans = [p for p in g["players"] if not p["bot"]]
+            if not humans:
+                _close(g, "Everyone left - game closed. Send /games to play again.")
+            _api("editMessageText", {"chat_id": chat, "message_id": msg_id, "parse_mode": "HTML",
+                                     "text": f"🗳 {_tag(target)} was voted out ({len(v['yes'])}/{needed})."})
+            if humans:
+                threading.Thread(target=lambda: (_push(g), _robots_go(g)), daemon=True).start()
+            return "Done."
+        text, kb = _vote_text(g, v), _vote_kb(gid)
+    j = _api("editMessageText", {"chat_id": chat, "message_id": msg_id, "text": text, "parse_mode": "HTML", "reply_markup": kb})
+    mid = msg_id if j.get("ok") else (_api("sendMessage", {"chat_id": chat, "text": text, "parse_mode": "HTML", "reply_markup": kb}).get("result") or {}).get("message_id")
+    if mid:
+        with _lock:
+            _votes[str(mid)] = v
+    return "Vote started."
+
+
 # ── typed input (number guessing etc.) ─────────────────────────────────────
 
 def wants_text(chat_id) -> bool:
-    g = _games.get(str(chat_id))
-    return bool(g and g["phase"] == "play" and _spec(g).uses_text)
+    return any(g["phase"] == "play" and _spec(g).uses_text for g in _games_in(chat_id, phases=("play",)))
 
 
 def on_text(chat_id, uid, name, text) -> bool:
-    """True when the text was consumed by the game."""
+    """True when the text was consumed by a game."""
     chat = str(chat_id)
+    hit = None
     with _lock:
-        g = _games.get(chat)
-        if not g or g["phase"] != "play":
-            return False
-        me = _find(g, str(uid))
-        if not me or me["out"] or g["confirm"]:
-            return False
-        spec = _spec(g)
-        if not spec.can_act(g, me):
-            return False
-        changed = spec.on_text(g, me, text.strip())
-        if changed:
-            _bump(g)
-    if changed:
-        _push(g)
-        _robots_go(chat)
-    return bool(changed)
+        for g in _games_in(chat, str(uid), phases=("play",)):
+            spec = _spec(g)
+            if not spec.uses_text or g["confirm"]:
+                continue
+            me = _find(g, str(uid))
+            if not me or me["out"] or not spec.can_act(g, me):
+                continue
+            if spec.on_text(g, me, text.strip()):
+                me["seen"] = time.time()
+                _bump(g)
+                hit = g
+                break
+    if hit:
+        _push(hit)
+        _robots_go(hit)
+    return hit is not None
 
 
 # ── watchdog ───────────────────────────────────────────────────────────────
@@ -914,22 +1061,33 @@ def _watchdog():
             now = time.time()
             with _lock:
                 items = list(_games.items())
-            for chat, g in items:
+            for gid, g in items:
                 if g["phase"] == "lobby" and now - g["created"] > LOBBY_SECS:
                     with _lock:
-                        _games.pop(chat, None)
-                    _api("editMessageCaption", {"chat_id": chat, "message_id": g["msg_id"],
-                                                "caption": f"{_esc(_spec(g).title)}\n\n"
-                                                           "⌛ Nobody joined - lobby closed.",
-                                                "parse_mode": "HTML"})
+                        _close(g, "⌛ Nobody joined - lobby closed.")
                 elif g["phase"] == "play":
-                    if now - g["updated"] > 6 * 3600:
+                    # abandoned: nobody touched this board for 25 minutes
+                    if now - g["updated"] > ABANDON_SECS:
                         with _lock:
-                            _games.pop(chat, None)
-                        continue
-                    if g["chat_type"] == "private" or g["confirm"] or now - g["turn_at"] <= TURN_SECS:
+                            _close(g, "⌛ Closed - no activity for 25 minutes.")
                         continue
                     spec = _spec(g)
+                    # groups: a player who has not acted for 15 minutes is removed
+                    if g["chat_type"] != "private":
+                        gone = [p for p in g["players"] if not p["bot"] and now - p.get("seen", now) > IDLE_KICK_SECS]
+                        if gone:
+                            with _lock:
+                                for p in gone:
+                                    _remove_player(g, p["id"], why="was removed - inactive for 15 minutes")
+                                humans = [p for p in g["players"] if not p["bot"]]
+                                if not humans:
+                                    _close(g, "Everyone left - game closed. Send /games to play again.")
+                            if humans:
+                                _push(g)
+                                _robots_go(g)
+                            continue
+                    if g["chat_type"] == "private" or g["confirm"] or now - g["turn_at"] <= TURN_SECS:
+                        continue
                     idle = [p for p in g["players"] if not p["bot"] and spec.can_act(g, p)]
                     if not idle:
                         continue
@@ -939,10 +1097,14 @@ def _watchdog():
                             _log(g, f"⏱ {_tag(p)} idle - moved for them")
                         _bump(g)
                     _push(g)
-                    _robots_go(chat)
+                    _robots_go(g)
                 elif g["phase"] == "over" and now - g["updated"] > FINISHED_KEEP:
                     with _lock:
-                        _games.pop(chat, None)
+                        _games.pop(gid, None)
+            # stale votes
+            with _lock:
+                for mid in [m for m, v in _votes.items() if now - v["at"] > VOTE_SECS]:
+                    _votes.pop(mid, None)
         except Exception as e:
             print(f"  [GAMES] watchdog: {e}")
 
@@ -970,7 +1132,7 @@ class Spec:
     def can_act(self, g, p): return g["phase"] == "play" and _current(g) is p
     def deny(self, g, p):
         cur = _current(g)
-        return f"Not your turn - it's {cur['name']}'s." if cur else "Not now."
+        return f"Not your turn - it's {_dyn(cur['name'])}'s." if cur else "Not now."
     def act(self, g, p, action, secret=None): return "Nothing happened."
     def robot(self, g, p): return self.default_action
     def secret(self, g, p): return None
@@ -979,7 +1141,7 @@ class Spec:
     def turn_text(self, g):
         if self.simultaneous:
             w = [p for p in g["players"] if self.can_act(g, p)]
-            return "👉 Waiting for: " + ", ".join(_tag(p) for p in w)
+            return "👉 Waiting for: " + _tags(w)
         cur = _current(g)
         if cur["bot"]:
             return f"🤖 {_tag(cur)} is thinking…"
@@ -1541,14 +1703,14 @@ class RPS(Spec):
                 if a is not b and _RPS_BEATS[st["picks"][a["id"]]] == st["picks"][b["id"]]:
                     wins[a["id"]] += 1
         best = max(wins.values())
-        _log(g, "  ".join(f"{COLORS[q['c']][0]}{_RPS_NAME[st['picks'][q['id']]].split()[0]}" for q in alive))
+        _log(g, _dyn("  ".join(f"{COLORS[q['c']][0]}{_RPS_NAME[st['picks'][q['id']]].split()[0]}" for q in alive)))
         if best == 0:
             _log(g, f"Round {st['round']}: nobody wins")
         else:
             tops = [q for q in alive if wins[q["id"]] == best]
             for q in tops:
                 st["score"][q["id"]] += 1
-            _log(g, f"🏅 Round {st['round']} to " + ", ".join(_tag(q) for q in tops))
+            _log(g, f"🏅 Round {st['round']} to {_tags(tops)}")
             top = max(st["score"][q["id"]] for q in alive)
             leaders = [q for q in alive if st["score"][q["id"]] == top]
             if top >= 3 and len(leaders) == 1:      # a shared lead plays on until someone pulls clear
@@ -1703,7 +1865,7 @@ class Hangman(Spec):
         st = g["st"]
         shown = " ".join(c if c in st["used"] else "_" for c in st["word"])
         sc = _scores(g)
-        return [f"Category: <b>{st['cat']}</b>", f"<code>{shown}</code>", f"Misses: {st['miss']}/{_HANG_MAX}"] + \
+        return [f"Category: <b>{_dyn(st['cat'])}</b>", f"<code>{shown}</code>", f"Misses: {st['miss']}/{_HANG_MAX}"] + \
                [f"{_tag(p)} · {sc[p['id']]} pt" for p in g["players"]]
 
     def robot(self, g, p):
@@ -1722,17 +1884,17 @@ class Hangman(Spec):
         hits = st["word"].count(c)
         if hits:
             st["score"][p["id"]] += hits
-            _log(g, f"{_tag(p)} · <b>{c}</b> ✅ ×{hits} - goes again")
+            _log(g, f"{_tag(p)} · <b>{_dyn(c)}</b> ✅ ×{hits} - goes again")
             if all(ch in st["used"] for ch in st["word"]):
-                _log(g, f"Word: <b>{st['word']}</b>")
+                _log(g, f"Word: <b>{_dyn(st['word'])}</b>")
                 best = max(st["score"].values())
                 tops = [q for q in g["players"] if st["score"][q["id"]] == best]
                 _win(g, p if p in tops else tops[0])
         else:
             st["miss"] += 1
-            _log(g, f"{_tag(p)} · <b>{c}</b> ❌")
+            _log(g, f"{_tag(p)} · <b>{_dyn(c)}</b> ❌")
             if st["miss"] >= _HANG_MAX:
-                _log(g, f"The man hangs. Word: <b>{st['word']}</b>")
+                _log(g, f"The man hangs. Word: <b>{_dyn(st['word'])}</b>")
                 _draw_game(g)
             else:
                 _advance(g)
@@ -2083,14 +2245,14 @@ class Memory(Spec):
             st["found"][a] = st["found"][b] = p["c"]
             st["score"][p["id"]] += 1
             st["open"] = []
-            _log(g, f"{_tag(p)} found a pair - <b>{_MEM_SYMS[st['deck'][a]][0]}</b> - goes again")
+            _log(g, f"{_tag(p)} found a pair - <b>{_dyn(_MEM_SYMS[st['deck'][a]][0])}</b> - goes again")
             if len(st["found"]) == 16:
                 best = max(st["score"].values())
                 tops = [q for q in g["players"] if st["score"][q["id"]] == best]
                 _win(g, tops[0]) if len(tops) == 1 else _draw_game(g)
         else:
             st["hide"] = True
-            _log(g, f"{_tag(p)} · {_MEM_SYMS[st['deck'][a]][0]} and {_MEM_SYMS[st['deck'][b]][0]} - no match")
+            _log(g, f"{_tag(p)} · {_dyn(_MEM_SYMS[st['deck'][a]][0])} and {_dyn(_MEM_SYMS[st['deck'][b]][0])} - no match")
             _advance(g)
         return None
 
@@ -2248,19 +2410,19 @@ class Duel(Spec):
             else:
                 note = " 💥 critical!" if crit else ""
             st["hp"][other["id"]] = max(0, st["hp"][other["id"]] - dmg)
-            st["last"] = f"{p['name']} hits {other['name']} for {dmg}"
+            st["last"] = f"{_dyn(p['name'])} hits {_dyn(other['name'])} for {dmg}"
             _log(g, f"{_tag(p)} ⚔️ hits {_tag(other)} for <b>{dmg}</b>{note}")
             if st["hp"][other["id"]] <= 0:
                 _win(g, p)
                 return None
         elif action == "def":
             st["guard"][p["id"]] = True
-            st["last"] = f"{p['name']} raises the shield"
+            st["last"] = f"{_dyn(p['name'])} raises the shield"
             _log(g, f"{_tag(p)} 🛡 defends - next hit halved")
         elif action == "heal":
             h = random.randint(10, 22)
             st["hp"][p["id"]] = min(100, st["hp"][p["id"]] + h)
-            st["last"] = f"{p['name']} heals {h}"
+            st["last"] = f"{_dyn(p['name'])} heals {h}"
             _log(g, f"{_tag(p)} ❤️ heals <b>{h}</b>")
         else:
             return "Attack, defend or heal."
@@ -2329,7 +2491,7 @@ class Penalty(Spec):
 
     def turn_text(self, g):
         w = [p for p in g["players"] if self.can_act(g, p)]
-        return "👉 Waiting for: " + ", ".join(_tag(p) for p in w) + " - pick a side"
+        return "👉 Waiting for: " + _tags(w) + " - pick a side"
 
     def robot(self, g, p):
         return random.choice("lcr")
@@ -2536,7 +2698,7 @@ class Slots(Spec):
             pay = 0
             note = "nothing"
         st["total"][p["id"]] += pay
-        _log(g, f"{_tag(p)} · {' '.join(reels)} · {note} <b>+{pay}</b>")
+        _log(g, f"{_tag(p)} · {_dyn(' '.join(reels))} · {note} <b>+{pay}</b>")
         alive = _alive(g)
         if all(q["id"] in st["spun"] for q in alive):
             if st["round"] >= 3:
