@@ -651,6 +651,16 @@ def serve_miniapp():
     return FileResponse(_MINIAPP_HTML_PATH, media_type="text/html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
 
+@app.get("/app/lang.json")
+def serve_miniapp_lang():
+    """The Mini App's translation table (lang/miniapp.json)."""
+    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lang", "miniapp.json")
+    if not os.path.exists(_p):
+        return JSONResponse({})
+    return FileResponse(_p, media_type="application/json",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "ts": int(time.time())}
@@ -1246,98 +1256,141 @@ def get_public_klines(sym: str = "BTC-USDT", tf: str = "15m", limit: int = 200):
 
 
 @app.get("/virtual/state")
-def get_virtual_state(user: dict = Depends(get_current_user)):
-    """Paper-trading state for the Mini App's Virtual tab — settings, open
-    positions and closed history, all driven server-side by bot.py's
-    ct.virtual_on_signal/tp1/close hooks (see copytrade.py), keyed under each
-    user's own ct_users record same as real trade_log."""
-    ct_users = _kv_dict("ct_users")
+def get_virtual_state(month: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Paper-trading v2 state for the Mini App's Virtual tab: run status and
+    settings from ct_users, the month books from vbook_<cid>, plus which
+    control taps are still waiting for bot.py's poller (up to ~30 s) so the
+    screen can show "applying" instead of snapping back."""
+    import virtual as _v
     cid = str(user.get("id", ""))
-    urec = ct_users.get(cid, {}) or {}
-    v = urec.get("virtual") or {}
-    log = list(reversed((v.get("trade_log") or [])[-50:]))
-    history = [{
-        "symbol": t.get("symbol"), "side": t.get("side"),
-        "pnl": t.get("pnl"), "result": t.get("result"),
-        "closed_at": t.get("closed_at"),
-    } for t in log]
-    open_positions = [{"symbol": sym, **pos} for sym, pos in (v.get("open") or {}).items()]
-    enabled = bool(v.get("enabled", False))
-    # A toggle tap is only APPLIED once bot.py's payment-events poller picks it
-    # up (up to ~30s later) — without this check, re-opening the Virtual tab
-    # inside that window read the still-stale ct_users value and visibly
-    # flipped the switch back off/on right after the user had just tapped it.
-    # An unprocessed toggle event is the user's own most recent intent, so it
-    # wins over the possibly-stale ct_users snapshot.
+    urec = (_kv_dict("ct_users").get(cid, {}) or {})
+    book = _kv_dict(f"vbook_{cid}")
+    st = _v.state_from(urec, book, month)
+    pending = []
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT meta FROM payment_events
-                    WHERE cid = %s AND event_type = 'virtual_toggle' AND processed = FALSE
-                    ORDER BY id DESC LIMIT 1
+                    SELECT event_type, meta FROM payment_events
+                    WHERE cid = %s AND event_type LIKE 'virtual_%%' AND processed = FALSE
+                    ORDER BY id ASC
                 """, (cid,))
-                row = cur.fetchone()
-        if row:
-            enabled = bool((row["meta"] or {}).get("enabled", enabled))
+                rows = cur.fetchall()
+        for r in rows:
+            pending.append(r["event_type"].replace("virtual_", ""))
+            if r["event_type"] == "virtual_setup":
+                m = r["meta"] or {}
+                st.update({"status": "running", "capital": m.get("capital"), "balance": m.get("capital"),
+                           "lev_mode": m.get("lev_mode"), "lev": m.get("lev"), "risk_mode": m.get("risk_mode"),
+                           "risk": m.get("risk"), "margin_mode": m.get("margin_mode"), "margin": m.get("margin")})
+            elif r["event_type"] == "virtual_stop":
+                st["status"] = "stopped"
+            elif r["event_type"] == "virtual_resume":
+                st["status"] = "running"
+            elif r["event_type"] == "virtual_reset":
+                st.update({"status": "setup", "open": [], "months": [], "trades": [], "pages": 1, "page": 1})
     except Exception as e:
-        print(f"[VIRTUAL STATE] pending-toggle check error: {e}")
-    # Balance/leverage need exactly the same treatment, and did not have it.
-    # Saving them only QUEUES a virtual_settings event; until bot.py's poller
-    # applies it (up to ~30s), ct_users still holds the old numbers - so
-    # reloading the page inside that window showed the balance snapping back to
-    # 1000 and the leverage to 10, as if the setting had never saved (admin
-    # 2026-09-07).
-    _bal = v.get("balance", 1000.0)
-    _lev = v.get("leverage", 10.0)
-    try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT meta FROM payment_events
-                    WHERE cid = %s AND event_type = 'virtual_settings' AND processed = FALSE
-                    ORDER BY id DESC LIMIT 1
-                """, (cid,))
-                srow = cur.fetchone()
-        if srow:
-            _meta = srow["meta"] or {}
-            # A pending event may carry only one of the two - the calculator
-            # sends whichever the user actually changed.
-            if _meta.get("balance") is not None:
-                _bal = float(_meta["balance"])
-            if _meta.get("leverage") is not None:
-                _lev = float(_meta["leverage"])
-    except Exception as e:
-        print(f"[VIRTUAL STATE] pending-settings check error: {e}")
-    return {
-        "enabled":  enabled,
-        "balance":  _bal,
-        "leverage": _lev,
-        "open":     open_positions,
-        "history":  history,
-        "tier":     urec.get("tier", "free"),
-    }
+        print(f"[VIRTUAL STATE] pending check error: {e}")
+    st["pending"] = pending
+    return st
 
 
+def _queue_virtual(cid: str, etype: str, meta: dict):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO payment_events (cid, event_type, amount, meta)
+                VALUES (%s, %s, 0, %s)
+            """, (str(cid), etype, json.dumps(meta or {})))
+        conn.commit()
+
+
+class VirtualSetup(BaseModel):
+    capital: float
+    lev_mode: str = "auto"
+    lev: Optional[float] = 10
+    risk_mode: str = "usd"
+    risk: Optional[float] = 0
+    margin_mode: str = "usd"
+    margin: float
+
+
+@app.post("/virtual/setup")
+def virtual_setup(body: VirtualSetup, user: dict = Depends(get_current_user)):
+    """Validates here (instant feedback) and queues the start for bot.py's
+    poller, which owns ct_users in memory - same race-free pattern as
+    CryptoBot payments/VIP grants."""
+    import virtual as _v
+    err = _v.validate(body.capital, body.lev_mode, body.lev, body.risk_mode, body.risk, body.margin_mode, body.margin)
+    if err:
+        raise HTTPException(400, err)
+    _queue_virtual(user["id"], "virtual_setup", body.dict())
+    return {"queued": True}
+
+
+@app.post("/virtual/preview")
+def virtual_preview(body: VirtualSetup, user: dict = Depends(get_current_user)):
+    """What a typical signal would look like with these settings - a 1.2 %
+    stop, TP1 at 1.5 %, TP2 at 3 % - plus the tight-stop and wide-stop cases."""
+    import virtual as _v
+    err = _v.validate(body.capital, body.lev_mode, body.lev, body.risk_mode, body.risk, body.margin_mode, body.margin)
+    if err:
+        raise HTTPException(400, err)
+    v = _v.default()
+    v.update({"balance": body.capital, "capital": body.capital, "lev_mode": body.lev_mode, "lev": body.lev or 10,
+              "risk_mode": body.risk_mode, "risk": body.risk or 0, "margin_mode": body.margin_mode, "margin": body.margin})
+    return {"normal": _v.preview(v, 100, 98.8, 101.5, 103), "tight": _v.preview(v, 100, 99.7, 100.6, 101.2),
+            "wide": _v.preview(v, 100, 94, 104, 108)}
+
+
+@app.post("/virtual/stop")
+def virtual_stop(user: dict = Depends(get_current_user)):
+    _queue_virtual(user["id"], "virtual_stop", {})
+    return {"queued": True}
+
+
+@app.post("/virtual/resume")
+def virtual_resume(user: dict = Depends(get_current_user)):
+    _queue_virtual(user["id"], "virtual_resume", {})
+    return {"queued": True}
+
+
+@app.post("/virtual/reset")
+def virtual_reset(user: dict = Depends(get_current_user)):
+    """The bot DMs a PDF of the whole run first, then wipes it."""
+    _queue_virtual(user["id"], "virtual_reset", {})
+    return {"queued": True}
+
+
+class VirtualPdf(BaseModel):
+    month: Optional[str] = None
+
+
+@app.post("/virtual/pdf")
+def virtual_pdf(body: VirtualPdf, user: dict = Depends(get_current_user)):
+    """Asks the bot to DM the report for a month (5 a month Free, 17 VIP -
+    the bot enforces the count when it sends)."""
+    import virtual as _v
+    cid = str(user["id"])
+    urec = (_kv_dict("ct_users").get(cid, {}) or {})
+    tier = "vip" if urec.get("tier") == "vip" else "free"
+    book = _kv_dict(f"vbook_{cid}")
+    used = int(((book or {}).get("exports") or {}).get(_v.month_key(), 0))
+    if used >= _v.EXPORT_LIMIT[tier]:
+        raise HTTPException(429, f"PDF limit reached - {_v.EXPORT_LIMIT[tier]} exports this month.")
+    _queue_virtual(cid, "virtual_pdf", {"month": body.month})
+    return {"queued": True, "used": used + 1, "limit": _v.EXPORT_LIMIT[tier]}
+
+
+# Legacy endpoints the old Mini App build still calls - harmless no-ops.
 class VirtualToggle(BaseModel):
     enabled: bool
 
 @app.post("/virtual/toggle")
 def virtual_toggle(body: VirtualToggle, user: dict = Depends(get_current_user)):
-    """Queues an event for bot.py's existing payment-events poller to apply —
-    same race-free pattern as CryptoBot payments/VIP grants (see payment_events
-    above): api.py never writes ct_users directly since bot.py's copytrade.py
-    is the one long-running process that owns it in memory. Takes effect within
-    the poller's ~30s cycle."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO payment_events (cid, event_type, amount, meta)
-                VALUES (%s, 'virtual_toggle', 0, %s)
-            """, (str(user["id"]), json.dumps({"enabled": body.enabled})))
-        conn.commit()
+    if not body.enabled:
+        _queue_virtual(user["id"], "virtual_stop", {})
     return {"queued": True, "enabled": body.enabled}
-
 
 class VirtualSettings(BaseModel):
     balance:  Optional[float] = None
@@ -1345,17 +1398,42 @@ class VirtualSettings(BaseModel):
 
 @app.post("/virtual/settings")
 def virtual_settings(body: VirtualSettings, user: dict = Depends(get_current_user)):
-    """Syncs the Mini App's Virtual Calculator (balance/leverage) into the
-    backend so new server-driven virtual positions size off it. Same queued
-    pattern as virtual_toggle above."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO payment_events (cid, event_type, amount, meta)
-                VALUES (%s, 'virtual_settings', 0, %s)
-            """, (str(user["id"]), json.dumps({"balance": body.balance, "leverage": body.leverage})))
-        conn.commit()
-    return {"queued": True}
+    return {"queued": False}
+
+
+class LangBody(BaseModel):
+    lang: str
+
+
+@app.get("/lang")
+def get_lang(user: dict = Depends(get_current_user)):
+    """The user's bot language (set in the DM with /language or here)."""
+    cid = str(user.get("id", ""))
+    urec = (_kv_dict("ct_users").get(cid, {}) or {})
+    lang = urec.get("lang") or "en"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT meta FROM payment_events
+                    WHERE cid = %s AND event_type = 'set_lang' AND processed = FALSE
+                    ORDER BY id DESC LIMIT 1
+                """, (cid,))
+                row = cur.fetchone()
+        if row and (row["meta"] or {}).get("lang"):
+            lang = row["meta"]["lang"]
+    except Exception as e:
+        print(f"[LANG] pending check error: {e}")
+    return {"lang": lang}
+
+
+@app.post("/lang")
+def set_lang(body: LangBody, user: dict = Depends(get_current_user)):
+    import i18n as _i18n
+    if body.lang not in _i18n.CODES:
+        raise HTTPException(400, "Unknown language")
+    _queue_virtual(user["id"], "set_lang", {"lang": body.lang})
+    return {"queued": True, "lang": body.lang}
 
 
 def _session_for_hm(hour: int, minute: int) -> str:

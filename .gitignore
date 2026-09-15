@@ -26,3 +26,6 @@ CLEXER_BOT_BRIEF.md
 # Downloaded kline history — large, regenerable
 data/klines/
 data/klines_binance/
+
+# Language catalogs - plain text, no secrets, the bot and Mini App need them
+!lang/*.json

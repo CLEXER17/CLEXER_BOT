@@ -44,6 +44,7 @@
   .search input::placeholder{color:var(--muted);text-transform:none;letter-spacing:0;}
   .quick{display:flex;gap:6px;margin-top:8px;overflow-x:auto;scrollbar-width:none;}
   .quick::-webkit-scrollbar{display:none;}
+  .vt-in{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;box-sizing:border-box;}
   .chip{flex:none;font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--bg3);border:1px solid var(--border);padding:5px 10px;border-radius:7px;cursor:pointer;letter-spacing:.03em;}
   .chip.on{color:var(--bg);background:var(--gold);border-color:var(--gold);font-weight:700;}
   .chartzone{height:72vh;min-height:340px;position:relative;background:var(--bg);}
@@ -189,7 +190,14 @@
     <div class="hd">
       <div class="brandrow">
         <div class="brand"><span class="dot"></span>CLEXER</div>
-        <div class="live"><span class="pulse"></span>LIVE</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <select id="langSel" onchange="setLang(this.value, true)" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 6px;font-family:var(--mono);font-size:11px">
+            <option value="en">🇬🇧 EN</option><option value="ru">🇷🇺 RU</option><option value="tl">🇵🇭 TL</option><option value="ur">🇵🇰 UR</option>
+            <option value="id">🇮🇩 ID</option><option value="pt">🇧🇷 PT</option><option value="es">🇪🇸 ES</option><option value="ar">🇸🇦 AR</option>
+            <option value="zh">🇨🇳 ZH</option><option value="tr">🇹🇷 TR</option><option value="vi">🇻🇳 VI</option><option value="fr">🇫🇷 FR</option>
+          </select>
+          <div class="live"><span class="pulse"></span>LIVE</div>
+        </div>
       </div>
       <div class="pair" id="pairlabel">BTC / USDT · PERP</div>
       <div class="priceline"><span id="price">—</span><span id="chg" class="up">+0.00%</span></div>
@@ -336,34 +344,82 @@
   <section id="virtual-section">
     <div class="wrap" style="padding-top:16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-        <div style="font-weight:500;font-size:15px">Virtual Trading</div>
-        <span style="font-size:10px;background:var(--gold-dim);color:var(--gold);padding:3px 8px;border-radius:20px">Practice mode</span>
+        <div style="font-weight:500;font-size:15px" data-i18n="vt.title">Virtual Trading</div>
+        <span style="font-size:10px;background:var(--gold-dim);color:var(--gold);padding:3px 8px;border-radius:20px" data-i18n="vt.practice">Practice mode</span>
       </div>
 
-      <button id="vToggleBtn" onclick="toggleVirtual()" style="width:100%;margin-bottom:14px;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-family:var(--mono);font-size:13px;font-weight:600;cursor:pointer">⚪ Virtual Trading: OFF</button>
-      <div style="font-size:11px;color:var(--muted);margin:-8px 0 14px;line-height:1.5">When ON, every real CLEXER signal for your tier is mirrored here automatically as a paper trade — VIP gets every VIP signal, Free gets every Free-channel signal. No real money moves.</div>
+      <!-- SETUP -->
+      <div id="vtSetup" class="card" hidden style="border:1px solid var(--gold-dim)">
+        <div class="ttl" style="color:var(--gold)" data-i18n="vt.setup">Set up your run</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.5" data-i18n="vt.setup_hint">Set a capital, choose how leverage is decided and how much each trade uses. After Start, every signal of your tier is copied here on paper — no real money.</div>
 
-      <!-- Virtual Calculator -->
-      <div class="card" id="vcalc-card" style="border:1px solid var(--gold-dim);">
-        <div class="ttl" style="color:var(--gold)">⚡ Signal Profit Calculator</div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Set your balance & leverage to see potential gain/loss if you follow CLEXER signals</div>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
-          <div style="flex:1">
-            <div class="k" style="margin-bottom:4px">Virtual Balance (USDT)</div>
-            <input id="vcBalance" value="1000" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="vcSave();calcVirtual()"/>
-          </div>
-          <div style="flex:1">
-            <div class="k" style="margin-bottom:4px">Leverage</div>
-            <input id="vcLev" value="10" inputmode="decimal" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-family:var(--mono);font-size:14px;" oninput="vcSave();calcVirtual()"/>
+        <div class="k" style="margin-bottom:4px" data-i18n="vt.capital">Total capital (USDT)</div>
+        <input id="vtCapital" value="20" inputmode="decimal" class="vt-in" oninput="vtPreview()"/>
+
+        <div class="k" style="margin:12px 0 6px" data-i18n="vt.leverage">Leverage</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="chip on" id="vtLevAuto" onclick="vtLevMode('auto')" data-i18n="vt.auto">Auto</button>
+          <button class="chip" id="vtLevManual" onclick="vtLevMode('manual')" data-i18n="vt.manual">Manual</button>
+        </div>
+
+        <div id="vtAutoBox">
+          <div class="k" style="margin-bottom:4px" data-i18n="vt.risk">Risk per trade at stop-loss</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input id="vtRisk" value="0.5" inputmode="decimal" class="vt-in" style="flex:1" oninput="vtPreview()"/>
+            <button class="chip on" id="vtRiskUsd" onclick="vtUnit('risk','usd')">$</button>
+            <button class="chip" id="vtRiskPct" onclick="vtUnit('risk','pct')" data-i18n="vt.pct_margin">% of margin</button>
           </div>
         </div>
-        <div id="vcResults"></div>
+        <div id="vtManualBox" hidden>
+          <div class="k" style="margin-bottom:4px" data-i18n="vt.lev_value">Leverage (1–100x)</div>
+          <input id="vtLev" value="10" inputmode="decimal" class="vt-in" style="margin-bottom:10px" oninput="vtPreview()"/>
+        </div>
+
+        <div class="k" style="margin-bottom:4px" data-i18n="vt.margin">Margin per trade</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="vtMargin" value="2" inputmode="decimal" class="vt-in" style="flex:1" oninput="vtPreview()"/>
+          <button class="chip on" id="vtMarginUsd" onclick="vtUnit('margin','usd')">$</button>
+          <button class="chip" id="vtMarginPct" onclick="vtUnit('margin','pct')" data-i18n="vt.pct_balance">% of balance</button>
+        </div>
+
+        <div id="vtPreview" style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6;margin:6px 0 12px"></div>
+        <div id="vtErr" class="down" style="font-size:12px;margin-bottom:8px" hidden></div>
+        <button class="tvbtn" style="background:var(--gold);color:var(--bg);margin-top:0" onclick="vtStart()" data-i18n="vt.start">▶ START</button>
       </div>
 
-      <!-- Virtual Trade History -->
-      <div class="card" style="margin-top:0">
-        <div class="ttl" style="margin-bottom:10px">Virtual Trade History</div>
-        <div id="vhList"></div>
+      <!-- RUNNING / STOPPED / WIPED -->
+      <div id="vtRun" class="card" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span id="vtStatus" class="status running">RUNNING</span>
+          <span id="vtSince" style="font-size:10px;color:var(--muted)"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;text-align:center;font-family:var(--mono)">
+          <div class="sumcard"><div class="k" data-i18n="vt.capital_s">Capital</div><div id="vtCap" style="font-size:14px;font-weight:700"></div></div>
+          <div class="sumcard"><div class="k" data-i18n="vt.balance">Balance</div><div id="vtBal" style="font-size:14px;font-weight:700"></div></div>
+          <div class="sumcard"><div class="k" data-i18n="vt.result">Result</div><div id="vtPct" style="font-size:14px;font-weight:700"></div></div>
+        </div>
+        <div id="vtCfg" style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:10px"></div>
+        <div id="vtWiped" class="down" style="font-size:12px;margin-bottom:10px;line-height:1.5" hidden data-i18n="vt.wiped">💀 The balance can no longer fund a trade, so trading stopped. Reset to start a new run.</div>
+        <div id="vtOpen"></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button id="vtStopBtn" class="tvbtn" style="margin-top:0" onclick="vtStop()" data-i18n="vt.stop">⏸ Stop</button>
+          <button id="vtResumeBtn" class="tvbtn" style="margin-top:0" onclick="vtResume()" hidden data-i18n="vt.resume">▶ Resume</button>
+          <button class="tvbtn" style="margin-top:0;border-color:var(--short);color:var(--short)" onclick="vtReset()" data-i18n="vt.reset">↺ Reset</button>
+        </div>
+        <div id="vtPending" style="font-size:10px;color:var(--gold);margin-top:8px" hidden data-i18n="vt.applying">Applying… this takes up to 30 seconds.</div>
+      </div>
+
+      <!-- MONTH PAGES -->
+      <div id="vtPages" class="card" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <button class="chip" id="vtPrev" onclick="vtGo(-1)">◀</button>
+          <div style="text-align:center"><div id="vtMonth" style="font-weight:600;font-size:13px"></div><div id="vtPageNo" style="font-size:10px;color:var(--muted)"></div></div>
+          <button class="chip" id="vtNext" onclick="vtGo(1)">▶</button>
+        </div>
+        <div id="vtStats" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px;text-align:center;margin-bottom:10px"></div>
+        <div id="vtList"></div>
+        <button class="tvbtn" onclick="vtPdf()" id="vtPdfBtn" data-i18n="vt.pdf">📄 Send this month's PDF to my DM</button>
+        <div id="vtPdfNote" style="font-size:10px;color:var(--muted);margin-top:6px;text-align:center"></div>
       </div>
     </div>
   </section>
@@ -383,6 +439,64 @@
   // No more manual edits needed here when the server migrates.
   const API = window.location.origin;
   const TG = window.Telegram && window.Telegram.WebApp;
+
+  /* ---------- languages ----------
+     lang/miniapp.json (served at /app/lang.json) maps English UI text to
+     each language. Static text is translated by walking the DOM; anything
+     rendered later is caught by a MutationObserver; dynamic strings go
+     through t(key, englishFallback). The choice is shared with the bot DM
+     (/language) through the API. */
+  let LANG = "en", I18N = {};
+  const RTL = {ar: 1, ur: 1};
+  function t(k, fb){ const d = I18N[LANG]; if(!d) return fb; return d[fb] !== undefined ? d[fb] : (d[k] !== undefined ? d[k] : fb); }
+  window.t = t;
+  function i18nApply(root){
+    const d = I18N[LANG]; if(!d || LANG === "en" || !root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const todo = []; let n;
+    while((n = walker.nextNode())) todo.push(n);
+    for(const node of todo){
+      if(node.__en === undefined) node.__en = node.nodeValue;
+      const raw = node.__en, tr = raw.trim();
+      if(!tr) continue;
+      const v = d[tr];
+      if(v !== undefined && node.nodeValue !== raw.replace(tr, v)) node.nodeValue = raw.replace(tr, v);
+    }
+    if(root.querySelectorAll){
+      root.querySelectorAll("[placeholder],[title]").forEach(el => {
+        for(const a of ["placeholder", "title"]){
+          const cur = el.getAttribute(a); if(!cur) continue;
+          if(el["__en_" + a] === undefined) el["__en_" + a] = cur;
+          const v = d[el["__en_" + a]]; if(v !== undefined) el.setAttribute(a, v);
+        }
+      });
+    }
+  }
+  function i18nRestore(){
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n;
+    while((n = walker.nextNode())) if(n.__en !== undefined) n.nodeValue = n.__en;
+    document.querySelectorAll("[placeholder],[title]").forEach(el => { for(const a of ["placeholder","title"]) if(el["__en_"+a] !== undefined) el.setAttribute(a, el["__en_"+a]); });
+  }
+  function setLang(code, save){
+    if(!code) code = "en";
+    i18nRestore();
+    LANG = code;
+    document.documentElement.dir = RTL[code] ? "rtl" : "ltr";
+    document.documentElement.lang = code;
+    i18nApply(document.body);
+    const sel = document.getElementById("langSel"); if(sel && sel.value !== code) sel.value = code;
+    if(save){ try{ localStorage.setItem("clexer_lang", code); }catch(e){} api("/lang", {method:"POST", body: JSON.stringify({lang: code})}).catch(e => console.warn("lang save:", e)); }
+  }
+  async function i18nBoot(){
+    try{ const d = await fetch(API + "/app/lang.json", {cache: "no-store"}).then(r => r.json()); I18N = d || {}; }catch(e){ console.warn("lang table:", e); }
+    let code = "en";
+    try{ code = localStorage.getItem("clexer_lang") || "en"; }catch(e){}
+    try{ const me = await api("/lang"); if(me && me.lang) code = me.lang; }catch(e){}
+    setLang(code, false);
+    new MutationObserver(muts => {
+      for(const m of muts) for(const node of m.addedNodes){ if(node.nodeType === 1) i18nApply(node); else if(node.nodeType === 3 && node.parentNode) i18nApply(node.parentNode); }
+    }).observe(document.body, {childList: true, subtree: true});
+  }
   if(TG){try{TG.ready();TG.expand();TG.setHeaderColor&&TG.setHeaderColor("#0A0D12");TG.disableVerticalSwipes&&TG.disableVerticalSwipes();}catch(e){}}
   const haptic = t=>{try{TG&&TG.HapticFeedback&&(t==="sel"?TG.HapticFeedback.selectionChanged():TG.HapticFeedback.impactOccurred("light"));}catch(e){}};
   const initData = TG ? TG.initData : "";
@@ -486,7 +600,6 @@
       console.warn("loadTrades error:", e);
     }
     try{ renderTradeCards(); }catch(e){ console.warn("renderTradeCards error:", e); }
-    try{ calcVirtual(); }catch(e){ console.warn("calcVirtual error:", e); }
   }
 
   function renderTradeCards(){
@@ -1124,197 +1237,165 @@
     b.classList.add("on"); haptic("sel"); loadPortfolio(b.dataset.p);
   });
 
-  /* ---------- Virtual Calculator — Telegram CloudStorage (persistent) ---------- */
-  const CS = TG && TG.CloudStorage;
+  /* ---------- Virtual Trading v2 ----------
+     Capital + auto/manual leverage + margin per trade, run control, month
+     pages and PDF export. Every control tap is QUEUED through api.py and
+     applied by bot.py's poller within ~30 s - the screen shows "applying"
+     and re-polls until the server confirms, instead of snapping back. */
+  const vt = { levMode:"auto", riskMode:"usd", marginMode:"usd", month:null, state:null, pollTimer:null, previewTimer:null };
 
-  function vcSave(){
-    const bal = document.getElementById("vcBalance").value;
-    const lev = document.getElementById("vcLev").value;
-    // CloudStorage.setItem/getItem throw synchronously (WebAppMethodUnsupported)
-    // on Telegram client versions that don't support CloudStorage (pre-6.1) —
-    // this used to abort the ENTIRE boot() sequence since vcLoad() runs first,
-    // taking the whole mini app down with it (blank chart, price stuck at "—").
-    // Always fall back to localStorage on any CS failure, not just when CS is absent.
-    try{
-      if(CS){ CS.setItem("vc_settings", JSON.stringify({bal, lev})); }
-    }catch(e){}
-    try{ localStorage.setItem("clexer_vc", JSON.stringify({bal, lev})); }catch(e){}
-    // Sync into the backend too — server-driven virtual positions (opened when
-    // a signal fires) size off this, not just the on-screen calculator preview.
-    api("/virtual/settings", {method:"POST", body: JSON.stringify({
-      balance: parseFloat(bal) || null, leverage: parseFloat(lev) || null,
-    })}).catch(e => console.warn("virtual settings sync:", e));
+  // price text that survives 8-decimal coins: exactly the digits it has, never 1.2e-05
+  function vtPx(x){
+    x = Number(x); if(!isFinite(x)) return "—"; if(x === 0) return "0";
+    const a = Math.abs(x), dec = a >= 1000 ? 2 : a >= 1 ? 4 : a >= 0.01 ? 6 : 8;
+    let s = x.toFixed(dec).replace(/0+$/, "").replace(/\.$/, "");
+    return (s === "" || s === "-" || s === "-0") ? x.toFixed(8) : s;
   }
-  function vcLoad(){
-    try{
-      if(CS){
-        CS.getItem("vc_settings", (err, val) => {
-          if(!err && val){
-            try{
-              const d = JSON.parse(val);
-              if(d.bal) document.getElementById("vcBalance").value = d.bal;
-              if(d.lev) document.getElementById("vcLev").value = d.lev;
-              calcVirtual();
-            }catch(e){}
-          }
-        });
-        return;
+  function vtMoney(x){ x = Number(x)||0; return (x<0?"-":"") + "$" + Math.abs(x).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function vtSigned(x){ x = Number(x)||0; return (x>=0?"+":"") + vtMoney(x); }
+
+  function vtLevMode(m){ vt.levMode = m; haptic("sel");
+    document.getElementById("vtLevAuto").classList.toggle("on", m==="auto");
+    document.getElementById("vtLevManual").classList.toggle("on", m==="manual");
+    document.getElementById("vtAutoBox").hidden = m!=="auto";
+    document.getElementById("vtManualBox").hidden = m!=="manual";
+    vtPreview();
+  }
+  function vtUnit(field, unit){ haptic("sel");
+    if(field==="risk"){ vt.riskMode = unit; document.getElementById("vtRiskUsd").classList.toggle("on", unit==="usd"); document.getElementById("vtRiskPct").classList.toggle("on", unit==="pct"); }
+    else { vt.marginMode = unit; document.getElementById("vtMarginUsd").classList.toggle("on", unit==="usd"); document.getElementById("vtMarginPct").classList.toggle("on", unit==="pct"); }
+    vtPreview();
+  }
+  function vtForm(){
+    return { capital: parseFloat(document.getElementById("vtCapital").value)||0,
+             lev_mode: vt.levMode, lev: parseFloat(document.getElementById("vtLev").value)||10,
+             risk_mode: vt.riskMode, risk: parseFloat(document.getElementById("vtRisk").value)||0,
+             margin_mode: vt.marginMode, margin: parseFloat(document.getElementById("vtMargin").value)||0 };
+  }
+  function vtPreview(){
+    clearTimeout(vt.previewTimer);
+    vt.previewTimer = setTimeout(async () => {
+      const el = document.getElementById("vtPreview"), err = document.getElementById("vtErr");
+      try{
+        const p = await api("/virtual/preview", {method:"POST", body: JSON.stringify(vtForm())});
+        err.hidden = true;
+        const line = (name, r) => r.skip ? `${name}: <span class="down">${r.skip}</span>` :
+          `${name}: <b>${r.lev}x</b> · position ${vtMoney(r.position)} · SL <span class="down">${vtMoney(r.sl)}</span> · TP1 <span class="up">${vtSigned(r.tp1)}</span> · TP2 <span class="up">${vtSigned(r.tp2)}</span>${r.note?` · <span style="color:var(--gold)">${r.note}</span>`:""}`;
+        el.innerHTML = `<div style="color:var(--gold);font-size:10px;letter-spacing:.1em;margin-bottom:4px">${t("vt.example","EXAMPLE SIGNALS WITH THESE SETTINGS")}</div>` +
+          line(t("vt.ex_normal","Normal 1.2% stop"), p.normal) + "<br>" + line(t("vt.ex_tight","Tight 0.3% stop"), p.tight) + "<br>" + line(t("vt.ex_wide","Wide 6% stop"), p.wide);
+      }catch(e){
+        err.hidden = false; err.textContent = (e.message||"").replace(/^.*"detail":"?/,"").replace(/"?}$/,"");
+        el.innerHTML = "";
       }
-    }catch(e){}
-    try{
-      const d = JSON.parse(localStorage.getItem("clexer_vc")||"{}");
-      if(d.bal) document.getElementById("vcBalance").value = d.bal;
-      if(d.lev) document.getElementById("vcLev").value = d.lev;
-    }catch(e){}
+    }, 350);
   }
-
-  // Virtual trade history — CloudStorage with localStorage fallback
-  function vhLoad(){
-    try{ return JSON.parse(localStorage.getItem("clexer_vh")||"[]"); }catch(e){ return []; }
-  }
-  function vhSave(arr){
-    const data = JSON.stringify(arr.slice(-100));
-    try{ if(CS) CS.setItem("vc_history", data); }catch(e){}
-    try{ localStorage.setItem("clexer_vh", data); }catch(e){}
-  }
-  // Virtual on/off toggle — defaults OFF for everyone, opt-in only. Gates
-  // server-side mirroring in copytrade.py (ct.virtual_on_signal), not just
-  // this calculator preview.
-  let virtualEnabled = false;
-  function setVirtualToggle(on){
-    virtualEnabled = !!on;
-    const btn = document.getElementById("vToggleBtn");
-    if(!btn) return;
-    btn.textContent = virtualEnabled ? "🟢 Virtual Trading: ON" : "⚪ Virtual Trading: OFF";
-    btn.style.background = virtualEnabled ? "rgba(0,209,143,.12)" : "var(--bg3)";
-    btn.style.color = virtualEnabled ? "var(--up)" : "var(--text)";
-    btn.style.borderColor = virtualEnabled ? "var(--up)" : "var(--border)";
-  }
-  async function toggleVirtual(){
+  async function vtStart(){
     haptic("sel");
-    const next = !virtualEnabled;
-    setVirtualToggle(next);
-    try{ await api("/virtual/toggle", {method:"POST", body: JSON.stringify({enabled: next})}); }
-    catch(e){ console.warn("virtual toggle:", e); setVirtualToggle(!next); }
+    const err = document.getElementById("vtErr");
+    try{
+      await api("/virtual/setup", {method:"POST", body: JSON.stringify(vtForm())});
+      err.hidden = true;
+      vtShowPending();
+    }catch(e){ err.hidden = false; err.textContent = (e.message||"").replace(/^.*"detail":"?/,"").replace(/"?}$/,""); }
   }
-
-  function renderVirtualHistory(hist){
-    hist = (hist || vhLoad()).slice().reverse().slice(0,20);
-    if(!hist.length) return '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:8px 0">No closed virtual trades yet.</div>';
-    let total = 0;
-    let rows = hist.map(h => {
-      total += h.pnl;
-      const win = h.pnl >= 0;
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-        <div><span class="side ${(h.side||'long').toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${h.side}</span>
-        <span style="font-family:var(--mono);font-size:12px">${(h.symbol||'').replace(/-?USDT$/,'')}/USDT</span>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">${h.result||''} · ${(h.time||'').slice(0,16)}</div></div>
-        <div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:14px;font-weight:700">${win?'+':''} $${Math.abs(h.pnl).toFixed(2)}</div>
-      </div>`;
-    }).join('');
-    const totCls = total >= 0 ? 'up' : 'down';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-size:12px;color:var(--muted)">Virtual P/L (last ${hist.length} trades)</span>
-      <span class="${totCls}" style="font-family:var(--mono);font-size:15px;font-weight:700">${total>=0?'+':''}$${total.toFixed(2)}</span>
-    </div>${rows}`;
+  async function vtStop(){ haptic("sel"); try{ await api("/virtual/stop", {method:"POST", body:"{}"}); vtShowPending(); }catch(e){ alert(e.message); } }
+  async function vtResume(){ haptic("sel"); try{ await api("/virtual/resume", {method:"POST", body:"{}"}); vtShowPending(); }catch(e){ alert(e.message); } }
+  function vtConfirm(msg, cb){
+    if(TG && TG.showConfirm){ try{ TG.showConfirm(msg, ok => { if(ok) cb(); }); return; }catch(e){} }
+    if(confirm(msg)) cb();
+  }
+  function vtReset(){
+    haptic("sel");
+    vtConfirm(t("vt.reset_confirm","Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?"), async () => {
+      try{ await api("/virtual/reset", {method:"POST", body:"{}"}); vt.month = null; vtShowPending(); }catch(e){ alert(e.message); }
+    });
+  }
+  async function vtPdf(){
+    haptic("sel");
+    const note = document.getElementById("vtPdfNote");
+    try{
+      const r = await api("/virtual/pdf", {method:"POST", body: JSON.stringify({month: vt.month})});
+      note.textContent = t("vt.pdf_sent","Sent to your Telegram DM") + ` · ${r.used}/${r.limit} ` + t("vt.this_month","this month");
+    }catch(e){ note.textContent = (e.message||"").replace(/^.*"detail":"?/,"").replace(/"?}$/,""); }
+  }
+  function vtGo(dir){
+    const st = vt.state; if(!st) return;
+    const k = dir < 0 ? st.prev : st.next; if(!k) return;
+    vt.month = k; haptic("sel"); loadVirtual();
+  }
+  function vtShowPending(){
+    document.getElementById("vtPending").hidden = false;
+    clearTimeout(vt.pollTimer);
+    let tries = 0;
+    const poll = async () => { await loadVirtual(); tries++; if((vt.state && vt.state.pending && vt.state.pending.length) && tries < 12) vt.pollTimer = setTimeout(poll, 5000); };
+    vt.pollTimer = setTimeout(poll, 3000);
   }
 
   async function loadVirtual(){
-    document.getElementById("vhList").innerHTML = renderVirtualHistory(vhLoad());
-    try{
-      const st = await api("/virtual/state");
-      document.getElementById("vcBalance").value = st.balance;
-      document.getElementById("vcLev").value = st.leverage;
-      setVirtualToggle(st.enabled);
-      const hist = (st.history || []).map(h => ({
-        symbol: h.symbol, side: h.side === "BUY" ? "LONG" : "SHORT",
-        pnl: h.pnl, result: h.result, time: h.closed_at,
-      }));
-      vhSave(hist);
-      document.getElementById("vhList").innerHTML = renderVirtualHistory(hist);
-    }catch(e){ console.warn("virtual state fetch:", e); }
-    calcVirtual();
-  }
-
-  function calcVirtual(){
-    const bal  = parseFloat(document.getElementById("vcBalance").value) || 0;
-    const lev  = parseFloat(document.getElementById("vcLev").value)     || 1;
-    const el   = document.getElementById("vcResults");
-    if(!bal || Object.keys(TRADES).length === 0){
-      el.innerHTML = '<div style="color:var(--muted);font-size:12px;font-family:var(--mono)">No active signals yet.</div>';
-      return;
+    let st;
+    try{ st = await api("/virtual/state" + (vt.month ? "?month=" + vt.month : "")); }
+    catch(e){ console.warn("virtual state:", e); return; }
+    vt.state = st;
+    const pending = (st.pending || []).length > 0;
+    const setup = document.getElementById("vtSetup"), run = document.getElementById("vtRun"), pages = document.getElementById("vtPages");
+    document.getElementById("vtPending").hidden = !pending;
+    if(st.status === "setup"){
+      setup.hidden = false; run.hidden = true;
+      // prefill from the last run's settings
+      if(st.capital) document.getElementById("vtCapital").value = st.capital;
+      if(st.lev) document.getElementById("vtLev").value = st.lev;
+      if(st.risk) document.getElementById("vtRisk").value = st.risk;
+      if(st.margin) document.getElementById("vtMargin").value = st.margin;
+      vt.riskMode = st.risk_mode || "usd"; vt.marginMode = st.margin_mode || "usd";
+      vtLevMode(st.lev_mode || "auto"); vtUnit("risk", vt.riskMode); vtUnit("margin", vt.marginMode);
+    }else{
+      setup.hidden = true; run.hidden = false;
+      const s = document.getElementById("vtStatus");
+      const label = {running: t("vt.running","RUNNING"), stopped: t("vt.stopped","STOPPED"), wiped: t("vt.exhausted","CAPITAL EXHAUSTED")}[st.status] || st.status;
+      s.textContent = label; s.className = "status " + (st.status === "running" ? "running" : "");
+      document.getElementById("vtSince").textContent = st.started_at ? `${t("vt.since","since")} ${st.started_at} · run #${st.run}` : "";
+      document.getElementById("vtCap").textContent = vtMoney(st.capital);
+      document.getElementById("vtBal").textContent = vtMoney(st.balance);
+      const pc = document.getElementById("vtPct"); pc.textContent = (st.pnl_pct>=0?"+":"") + st.pnl_pct + "%"; pc.className = st.pnl_pct >= 0 ? "up" : "down";
+      const riskTxt = st.risk_mode === "usd" ? vtMoney(st.risk) : `${st.risk}% ${t("vt.of_margin","of margin")}`;
+      const marginTxt = st.margin_mode === "usd" ? vtMoney(st.margin) : `${st.margin}% ${t("vt.of_balance","of balance")}`;
+      document.getElementById("vtCfg").textContent = (st.lev_mode === "auto" ? `${t("vt.auto","Auto")} · ${t("vt.risk_s","risk")} ${riskTxt}` : `${t("vt.manual","Manual")} ${st.lev}x`) +
+        ` · ${t("vt.margin_s","margin")} ${marginTxt} · ${st.closed} ${t("vt.closed","closed")} · ${st.skipped} ${t("vt.skipped","skipped")}`;
+      document.getElementById("vtWiped").hidden = st.status !== "wiped";
+      document.getElementById("vtStopBtn").hidden = st.status !== "running";
+      document.getElementById("vtResumeBtn").hidden = st.status !== "stopped";
+      const open = document.getElementById("vtOpen");
+      open.innerHTML = (st.open || []).length ? `<div class="k" style="margin-bottom:4px">${t("vt.open_now","OPEN NOW")}</div>` + st.open.map(p => {
+        const side = p.side === "BUY" ? "LONG" : "SHORT";
+        return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px">
+          <span><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>${(p.symbol||"").replace(/-?USDT$/,"")} ${p.lev}x${p.tp1_hit?" · TP1 ✅":""}</span>
+          <span style="color:var(--muted)">${vtPx(p.entry)} · SL ${vtPx(p.sl)} · TP1 ${vtPx(p.tp1)}</span></div>`;
+      }).join("") : `<div style="font-size:11px;color:var(--muted)">${t("vt.no_open","No open virtual trades right now.")}</div>`;
     }
-    let html = "";
-    let totalTP1 = 0, totalTP2 = 0, totalSL = 0;
-    for(const sym in TRADES){
-      const t = TRADES[sym];
-      const p = prices[sym];
-      const entry  = t.entry || (p ? p.last : 0);
-      if(!entry) continue;
-      const tp1    = t.tp;
-      const tp2    = t.tp2 || tp1;
-      const sl     = t.sl;
-      const isLong = t.side === "LONG";
-      const sign   = isLong ? 1 : -1;
-      const isRunning = t.status === "RUNNING";
-      if(!isRunning) continue;
-      const posSize = bal * lev;
-      const qty     = posSize / entry;
-      const pnlTP1  = (tp1 - entry) * qty * sign;
-      const pnlTP2  = (tp2 - entry) * qty * sign;
-      const pnlSL   = (sl  - entry) * qty * sign;
-      const pctTP1  = (pnlTP1 / bal * 100);
-      const pctTP2  = (pnlTP2 / bal * 100);
-      const pctSL   = (pnlSL  / bal * 100);
-      totalTP1 += pnlTP1; totalTP2 += pnlTP2; totalSL += pnlSL;
-      const dispS = sym.replace(/-?USDT$/,'').replace(/-$/,'');
-      const d = sym==="BTCUSDT"?1:sym==="ETHUSDT"||sym==="BNBUSDT"?2:8;
-      html += `<div style="border:1px solid ${isRunning?'var(--border)':'rgba(255,176,32,.2)'};border-radius:10px;padding:12px;margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-family:var(--mono);font-size:13px;font-weight:700">${dispS}/USDT</span>
-          <div style="display:flex;gap:6px;align-items:center">
-            ${!isRunning?'<span style="font-size:10px;color:var(--gold);font-family:var(--mono)">⏳ PENDING</span>':''}
-            <span class="side ${t.side.toLowerCase()}" style="padding:3px 8px;border-radius:5px;font-size:11px">${t.side}</span>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px">
-          <div style="background:var(--bg3);border-radius:7px;padding:8px">
-            <div style="color:var(--muted);margin-bottom:3px">Position Size</div>
-            <div style="font-size:13px;font-weight:600">$${fmt(posSize,0)} <span style="color:var(--muted);font-size:10px">${lev}×</span></div>
-          </div>
-          <div style="background:var(--bg3);border-radius:7px;padding:8px">
-            <div style="color:var(--muted);margin-bottom:3px">Entry</div>
-            <div style="font-size:13px;font-weight:600">${fmt(entry,d)}</div>
-          </div>
-          <div style="background:rgba(0,209,143,.08);border-radius:7px;padding:8px">
-            <div style="color:var(--muted);margin-bottom:3px">TP1 Gain</div>
-            <div class="up" style="font-size:13px;font-weight:700">+$${fmt(pnlTP1,2)}</div>
-            <div class="up" style="font-size:10px">+${pctTP1.toFixed(1)}% on balance</div>
-          </div>
-          <div style="background:rgba(0,209,143,.08);border-radius:7px;padding:8px">
-            <div style="color:var(--muted);margin-bottom:3px">TP2 Gain</div>
-            <div class="up" style="font-size:13px;font-weight:700">+$${fmt(pnlTP2,2)}</div>
-            <div class="up" style="font-size:10px">+${pctTP2.toFixed(1)}% on balance</div>
-          </div>
-          <div style="background:rgba(255,77,94,.08);border-radius:7px;padding:8px;grid-column:1/-1">
-            <div style="color:var(--muted);margin-bottom:3px">SL Loss</div>
-            <div class="down" style="font-size:13px;font-weight:700">-$${fmt(Math.abs(pnlSL),2)} <span style="font-size:10px">(${Math.abs(pctSL).toFixed(1)}% of balance)</span></div>
-          </div>
-        </div>
-      </div>`;
+    // month pages
+    const hasMonths = (st.months || []).length > 0;
+    pages.hidden = !hasMonths && st.status === "setup";
+    if(!pages.hidden){
+      document.getElementById("vtMonth").textContent = st.month_label;
+      document.getElementById("vtPageNo").textContent = `${t("vt.page","page")} ${st.page}/${st.pages}`;
+      document.getElementById("vtPrev").disabled = !st.prev; document.getElementById("vtPrev").style.opacity = st.prev ? 1 : .3;
+      document.getElementById("vtNext").disabled = !st.next; document.getElementById("vtNext").style.opacity = st.next ? 1 : .3;
+      const s = st.stats || {};
+      const cell = (k, v, cls) => `<div class="sumcard"><div class="k">${k}</div><div class="${cls||""}" style="font-size:13px;font-weight:700">${v}</div></div>`;
+      document.getElementById("vtStats").innerHTML = s.trades ?
+        cell(t("vt.trades","Trades"), s.trades) + cell(t("vt.winrate","Win rate"), s.wr + "%") + cell(t("vt.net","Net"), vtSigned(s.net), s.net >= 0 ? "up" : "down") +
+        cell(t("vt.best","Best"), vtSigned(s.best), "up") + cell(t("vt.worst","Worst"), vtMoney(s.worst), "down") + cell(t("vt.drawdown","Max DD"), vtMoney(s.dd), "down")
+        : `<div style="grid-column:1/-1;color:var(--muted);font-size:11px;text-align:left">${t("vt.no_trades","No closed trades this month yet.")}</div>`;
+      document.getElementById("vtList").innerHTML = (st.trades || []).map(tr => {
+        const side = tr.side === "BUY" ? "LONG" : "SHORT", win = tr.pnl >= 0;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+          <div><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>
+            <span style="font-family:var(--mono);font-size:12px">${(tr.sym||"").replace(/-?USDT$/,"")} ${tr.lev}x</span>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">${tr.res} · ${vtPx(tr.entry)} → ${vtPx(tr.exit)} · ${(tr.t||"").slice(5,16)}${tr.note?" · "+tr.note:""}</div></div>
+          <div class="${win?"up":"down"}" style="font-family:var(--mono);font-size:13px;font-weight:700">${vtSigned(tr.pnl)}</div></div>`;
+      }).join("");
+      document.getElementById("vtPdfNote").textContent = `${t("vt.exports","PDF exports this month")}: ${st.exports_used}/${st.exports_limit}`;
     }
-    // Summary row if multiple trades
-    if(Object.keys(TRADES).length > 1){
-      html += `<div style="border:1px solid var(--gold-dim);border-radius:10px;padding:12px;background:var(--gold-dim)">
-        <div style="font-family:var(--mono);font-size:12px;color:var(--gold);font-weight:700;margin-bottom:8px">TOTAL — All Signals</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px;text-align:center">
-          <div><div style="color:var(--muted)">Best (TP2)</div><div class="up" style="font-size:14px;font-weight:700">+$${fmt(totalTP2,0)}</div></div>
-          <div><div style="color:var(--muted)">Mid (TP1)</div><div class="up" style="font-size:14px;font-weight:700">+$${fmt(totalTP1,0)}</div></div>
-          <div><div style="color:var(--muted)">Worst (SL)</div><div class="down" style="font-size:14px;font-weight:700">-$${fmt(Math.abs(totalSL),0)}</div></div>
-        </div>
-      </div>`;
-    }
-    el.innerHTML = html;
   }
 
   /* ---------- sleep mode (12:30 AM – 6:30 AM IST) ---------- */
@@ -1328,7 +1409,7 @@
 
   /* ---------- boot ---------- */
   async function boot(){
-    vcLoad();
+    i18nBoot();
     if(isSleepTime()){
       document.body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0A0D12;color:#6B7480;font-family:ui-monospace,monospace;text-align:center;gap:12px">
         <div style="font-size:28px">🌙</div>

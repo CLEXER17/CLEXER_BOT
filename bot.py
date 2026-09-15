@@ -9140,6 +9140,63 @@ import games as _games_mod
 # flashing under the admin's own game - admin 2026-09-14).
 _games_mod.init(TELEGRAM_BOT_TOKEN, os.getenv("GAMES_STORE_CHAT") or None)
 
+# Virtual trading v2 - engine in virtual.py (through copytrade), DM screens
+# in virtual_dm.py, Mini App through api.py's queued events.
+import virtual as _virt
+import virtual_dm as _vdm
+_vdm.init(TELEGRAM_BOT_TOKEN)
+
+# Languages: every Telegram call to a DM is rewritten in the user's language
+# at the requests.post hook (see i18n.py and _tg_hooked_post). The choice
+# lives in the copytrade record so the Mini App reads the same value.
+import i18n as _i18n
+_i18n.lang_getter = lambda _cid: (ct._db.get(str(_cid)) or {}).get("lang", "en")
+print(f"[I18N] catalogs loaded: {_i18n.load()}")
+
+
+def _set_user_lang(cid, code):
+    _u = ct._db.get(str(cid)) or ct._default_user()
+    _u["lang"] = code if code in _i18n.CODES else "en"
+    _u["lang_asked"] = True
+    ct._set(str(cid), _u)
+
+
+def send_language_screen(chat_id, message_id=None):
+    _rows = []
+    _codes = _i18n.LANGS
+    for _i in range(0, len(_codes), 2):
+        _rows.append([{"text": f"{f} {n}", "callback_data": f"lang:{c}"} for c, n, f in _codes[_i:_i + 2]])
+    _txt = "🌐 <b>Language</b>\n\nPick the language for everything the bot sends you here and in the Mini App."
+    _payload = {"chat_id": chat_id, "text": _txt, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": _rows}}
+    if message_id:
+        _payload["message_id"] = message_id
+        _r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText", json=_payload, timeout=10)
+        if _r.json().get("ok"):
+            return
+        _payload.pop("message_id", None)
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=_payload, timeout=10)
+
+
+def _maybe_suggest_language(cid, tg_code):
+    """First contact: if Telegram says the user's app is in a language we
+    have, offer it once - in that language."""
+    _u = ct._db.get(str(cid)) or {}
+    if _u.get("lang_asked") or _u.get("lang"):
+        return
+    _code = _i18n.from_telegram(tg_code)
+    if not _code or _code == "en" or not _i18n.has(_code):
+        return
+    _u = _u or ct._default_user()
+    _u["lang_asked"] = True
+    ct._set(str(cid), _u)
+    _q = _i18n.tr_text(_code, "🌐 Use the bot in {}?".replace("{}", _i18n.name_of(_code)))
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                  json={"chat_id": cid, "text": _q, "parse_mode": "HTML",
+                        "reply_markup": {"inline_keyboard": [[{"text": _i18n.tr_line("✅ Yes", _code), "callback_data": f"lang:{_code}"},
+                                                              {"text": "English", "callback_data": "lang:en"}]]}}, timeout=10)
+
+_virt.on_wiped = lambda _cid: send_to_user(_cid, "💀 <b>Virtual trading stopped</b>\n\nYour virtual balance can no longer fund a trade, so the run is over. Open /virtual and press Reset to start a new one.")
+
 # --- TELEGRAM -----------------------------------------------------------------
 _SETTINGS_FILE = os.path.join(os.getenv("DATA_DIR", "."), "settings.json")
 
@@ -10019,6 +10076,12 @@ def _tg_hooked_post(url, *args, **kwargs):
             _tg_note_send(_m)
             _tg_chat_note(_chat)
             _tg_pace()
+            try:
+                _pl = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else kwargs.get("data")
+                if isinstance(_pl, dict):
+                    _i18n.translate_payload(_m, _pl)
+            except Exception as _ie:
+                print(f"  [I18N] translate {_m}: {_ie}")
     _r = _tg_real_post(url, *args, **kwargs)
     if "api.telegram.org" in str(url):
         try:
@@ -10948,7 +11011,7 @@ def _mtf_report(coin: str):
     dfs = {tf: _mtf_candles(_sym, tf) for tf in _MTF_TFS}
     _live = [tf for tf in _MTF_TFS if dfs.get(tf) is not None and len(dfs[tf]) >= 10]
     if not _live:
-        return None, (f"⚠️ No market data for <b>{_html.escape(coin)}</b>. "
+        return None, (f"⚠️ No market data for <b>\u2063{_html.escape(coin)}\u2063</b>. "
                       f"Check the ticker — e.g. <code>/mtf SOL</code>.")
     price = get_bingx_price(_sym)
     if not price:
@@ -15628,10 +15691,10 @@ def _poll_payment_events():
                     elif etype == "vip":
                         _grant_vip(cid, days=30)
                         send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.")
-                    elif etype == "virtual_toggle":
-                        ct.virtual_set_enabled(cid, bool(meta.get("enabled")))
-                    elif etype == "virtual_settings":
-                        ct.virtual_set_settings(cid, balance=meta.get("balance"), leverage=meta.get("leverage"))
+                    elif etype.startswith("virtual_"):
+                        _vdm.apply_event(cid, etype, meta)
+                    elif etype == "set_lang":
+                        _set_user_lang(cid, str(meta.get("lang", "en")))
                     requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
                 except Exception as e:
                     print(f"  [PAYMENT EVENTS] apply error for event {ev.get('id')}: {e}")
@@ -16245,6 +16308,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # message since a message can only carry one reply_markup, and the
         # help menu above already has its own inline keyboard.
         send_reply(chat_id, "👇 Quick actions", reply_markup=_reply_keyboard_for_chat(chat_id))
+        if not str(chat_id).startswith("-"):
+            try:
+                _maybe_suggest_language(_check_id, (message or {}).get("from", {}).get("language_code", ""))
+            except Exception as _le:
+                print(f"  [I18N] suggest: {_le}")
 
     elif cmd == "/cmd":
         # Flat text list of every command — /help is the button menu, /cmd
@@ -17474,7 +17542,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         else:
             _pv = _get_live_price("alt", f"{_pq}-USDT")
             if not _pv:
-                send_reply(chat_id, f"⚠️ No price found for <b>{_html.escape(_pq)}</b>. "
+                send_reply(chat_id, f"⚠️ No price found for <b>\u2063{_html.escape(_pq)}\u2063</b>. "
                                     f"Check the ticker, e.g. <code>/price SOL</code>.")
                 return
             # 6dp so a sub-cent coin still shows something, trimmed back for
@@ -17914,6 +17982,16 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/wallet":
         send_wallet_screen(chat_id, _check_id)
+
+    elif cmd in ("/language", "/lang"):
+        if str(chat_id).startswith("-"):
+            send_reply(chat_id, "🌐 Language is a personal setting - open it in a DM with me."); return
+        send_language_screen(chat_id)
+
+    elif cmd == "/virtual":
+        if str(chat_id).startswith("-"):
+            send_reply(chat_id, "📊 Virtual trading is personal - open it in a DM with me."); return
+        _vdm.cmd_virtual(chat_id, _check_id)
 
     elif cmd == "/addfunds":
         send_addfunds_screen(chat_id)
@@ -22292,7 +22370,7 @@ def send_help_menu(chat_id, is_admin, message_id=None, uname=None, cid=None):
     markup = {"inline_keyboard": rows}
     _is_co = is_co_admin(cid) if cid is not None else False
     role = "👑 Admin" if is_admin else ("🤝 Co-Admin" if _is_co else "👤 User")
-    _greeting = f"👋 Welcome back, <b>{uname}</b>!\n\n" if uname else ""
+    _greeting = f"👋 Welcome back, <b>\u2063{uname}\u2063</b>!\n\n" if uname else ""
     _pnl_line = ""
     _tier_line = ""
     if cid is not None:
@@ -22359,6 +22437,8 @@ _MONITOR_SUBCATS = {
         ("/vip",      "⭐", "VIP Plans", "See VIP plans and pricing"),
         ("/wallet",   "💳", "My Wallet", "Your balance — topped up, spent, and what is left"),
         ("/addfunds", "💵", "Add Funds", "Top up your copy-trade wallet"),
+        ("/virtual",  "📊", "Virtual Trading", "Practice with a virtual capital — set capital, leverage and margin, then every signal of your tier is copied on paper"),
+        ("/language", "🌐", "Language", "Pick the language the bot talks to you in — 12 languages"),
     ]),
     "aichat": ("💬 Chat With Clex", [
         ("/chat",    "💬", "Start Chat", "Start a chat session with Clex"),
@@ -23095,6 +23175,7 @@ def command_listener():
                 if cb:
                     cb_data     = cb.get("data","")
                     cb_cid      = cb["from"]["id"]
+                    _i18n.cb_user = cb_cid   # popups (answerCallbackQuery) carry no chat_id
                     _cb_fname   = cb["from"].get("first_name") or cb["from"].get("username") or "User"
                     cb_uname    = cb["from"].get("username") or _cb_fname
                     cb_mention  = f'<a href="tg://user?id={cb_cid}">{_cb_fname}</a>'
@@ -23114,6 +23195,30 @@ def command_listener():
                     # Chat games answer their own callback: a popup ("not your
                     # turn") needs the answer to carry text, so it can't be
                     # acked blindly first like every other button below.
+                    if cb_data.startswith("lang:"):
+                        _lc = cb_data.split(":", 1)[1]
+                        _set_user_lang(cb_cid, _lc)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"]}, timeout=5)
+                        _done = "✅ Language set to {}.".replace("{}", "\u2063" + _i18n.name_of(_lc) + "\u2063")
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                                      json={"chat_id": cb_chat_id, "message_id": cb_msg_id, "text": _done, "parse_mode": "HTML",
+                                            "reply_markup": {"inline_keyboard": [[{"text": "📋 Menu", "callback_data": "help_main"}]]}}, timeout=10)
+                        continue
+
+                    if cb_data.startswith("vt:"):
+                        try:
+                            _vt_pop = _vdm.on_callback(cb_data, cb_cid, cb_chat_id, cb_msg_id)
+                        except Exception as _ve:
+                            print(f"  [VIRTUAL DM] callback {cb_data}: {_ve}")
+                            _vt_pop = "Something went wrong - try again."
+                        _vt_ans = {"callback_query_id": cb["id"]}
+                        if _vt_pop:
+                            _vt_ans.update({"text": _vt_pop, "show_alert": True})
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json=_vt_ans, timeout=5)
+                        continue
+
                     if cb_data.startswith("game:"):
                         try:
                             _gm_pop = _games_mod.on_callback(
@@ -23407,6 +23512,8 @@ def command_listener():
                             "/addfunds": lambda ch, uid, mid: send_addfunds_screen(ch, message_id=mid),
                             "/wallet":   lambda ch, uid, mid: send_wallet_screen(ch, uid, message_id=mid),
                             "/games":    lambda ch, uid, mid: _games_mod.cmd_games(ch, None, message_id=mid),
+                            "/virtual":  lambda ch, uid, mid: _vdm._show(str(uid), ch, mid),
+                            "/language": lambda ch, uid, mid: send_language_screen(ch, message_id=mid),
                         }
                         _SCAN_SCREEN_CMDS = {"/scancopy": send_ctpause_screen, "/ctpause": send_ctpause_screen,
                                              "/aiconfig": send_aiconfig_screen, "/entrystyle": send_entrystyle_screen,
@@ -23481,7 +23588,7 @@ def command_listener():
                         _nc_coin = cb_data.split(":", 1)[1]
                         _nc_back_cb, _ = _find_back_target("/nocopy")
                         _ask_confirm(cb_chat_id, cb_cid, f"nocopy_blk:{_nc_coin}",
-                            f"Block {_nc_coin} from being auto-copied?", _nc_back_cb, message_id=cb_msg_id)
+                            f"Block ⁣{_nc_coin}⁣ from being auto-copied?", _nc_back_cb, message_id=cb_msg_id)
                     elif cb_data.startswith("nocopy_clr:"):
                         _nc_coin = cb_data.split(":", 1)[1]
                         _nc_cmd = f"/nocopy clear {_nc_coin}"
@@ -24456,6 +24563,14 @@ def command_listener():
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
+
+                # /virtual setup form waiting for a number
+                if text and not text.startswith("/") and _vdm.wants_text(cid):
+                    try:
+                        if _vdm.on_text(cid, cid, text):
+                            continue
+                    except Exception as _ve:
+                        print(f"  [VIRTUAL DM] on_text: {_ve}")
 
                 # A running chat game that takes typed input (number guessing)
                 # gets first look at plain text in its chat. It only consumes
@@ -26380,6 +26495,21 @@ def main():
     threading.Thread(target=_bingx_whale_ws_loop, daemon=True).start()
     # threading.Thread(target=_bingx_bookwall_ws_loop, daemon=True).start()
     threading.Thread(target=_poll_payment_events, daemon=True).start()
+
+    def _virtual_report_loop():
+        # On the 1st of the month (IST, from 09:00) DM last month's virtual
+        # trading PDF to everyone who closed a trade in it - see virtual.py.
+        time.sleep(120)
+        while True:
+            try:
+                if not CLEXER_API_URL or is_active_server():
+                    _n = _virt.monthly_reports(_vdm.send_doc)
+                    if _n:
+                        print(f"[VIRTUAL] monthly reports sent: {_n}")
+            except Exception as e:
+                print(f"[VIRTUAL] monthly report loop: {e}")
+            time.sleep(3600)
+    threading.Thread(target=_virtual_report_loop, daemon=True).start()
 
     def _active_server_loop():
         while True:
