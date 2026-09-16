@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+import base64
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -399,7 +400,8 @@ def on_signal(symbol, side, entry, sl, tp1, tp2, tier_routed=True, share_free=Tr
         v["open"][symbol] = {"side": side, "entry": entry, "sl": float(sl or 0), "tp1": float(tp1 or 0),
                              "tp2": float(tp2 or 0), "qty": notional / entry, "qty0": notional / entry,
                              "margin": plan["margin"], "lev": plan["lev"], "risk": plan["risk"],
-                             "fee": fee, "realized": 0.0, "tp1_hit": False, "opened_at": _stamp(), "note": note}
+                             "fee": fee, "realized": 0.0, "tp1_hit": False, "opened_at": _stamp(), "note": note,
+                             "mk": month_key()}          # the month this trade belongs to, whenever it closes
         ct._set(cid, user)
 
 
@@ -462,7 +464,7 @@ def on_close(symbol, price, result):
                "res": res, "pnl": round(total, 4), "fee": round(pos.get("fee", 0) + fee, 6),
                "bal": round(float(v["balance"]), 4), "note": note, "run": v.get("run", 0)}
         b = book(cid)
-        m = b["months"].setdefault(month_key(), {"run": v.get("run", 0), "trades": [], "start_bal": None})
+        m = b["months"].setdefault(pos.get("mk") or month_key(), {"run": v.get("run", 0), "trades": [], "start_bal": None})
         if m.get("start_bal") is None:
             m["start_bal"] = round(rec["bal"] - rec["pnl"], 4)
         m["trades"].append(rec)
@@ -696,30 +698,77 @@ def pdf_for(cid: str, month: str = None):
 
 # ── month-end job ──────────────────────────────────────────────────────────
 
-def monthly_reports(send_doc):
-    """Call once an hour. On the 1st (IST) from 09:00, sends last month's
-    report to everyone who closed at least one virtual trade in it. send_doc
-    is bot.py's (cid, bytes, filename, caption) sender."""
-    now = _now()
-    if now.day != 1 or now.hour < 9:
-        return 0
-    mk = prev_month_key(now)
-    sent = 0
+def month_rollover(send_doc):
+    """Call once an hour. Closes out every finished month (admin 2026-09-16):
+
+    - waits until every trade opened in that month has closed;
+    - builds the month's PDF and DMs it once - if the DM fails (blocked bot,
+      closed chat) the PDF is parked in the book and handed over the next
+      time the user opens /virtual, with no further retries here;
+    - wipes the month's trades and export counter from the book;
+    - the new month starts from the carried balance: capital := balance, so
+      the Result % is the new month's own.
+
+    send_doc is bot.py's (cid, bytes, filename, caption) sender, returning
+    truthy on delivery."""
+    cur = month_key()
+    done = 0
     for cid, user in list(ct._db.items()):
         try:
             v = user.get("virtual")
             if not isinstance(v, dict) or v.get("v") != 2:
                 continue
             b = book(cid)
-            if mk in b.get("reports_sent", []) or not b["months"].get(mk, {}).get("trades"):
+            old = [mk for mk in sorted(b["months"]) if mk < cur]
+            if not old:
                 continue
-            data = build_pdf(cid, user, v, b, mk)
-            send_doc(cid, data, f"CLEXER_virtual_{mk}.pdf",
-                     f"📄 Your virtual trading report for {month_label(mk)}.")
-            b.setdefault("reports_sent", []).append(mk)
-            _save_book(cid)
-            sent += 1
-            time.sleep(1.2)
+            changed = False
+            for mk in old:
+                if any((p.get("mk") or cur) == mk for p in v.get("open", {}).values()):
+                    continue                                   # a trade from that month is still running
+                trades = b["months"].get(mk, {}).get("trades", [])
+                if trades:
+                    data = build_pdf(cid, user, v, b, mk)
+                    ok = False
+                    try:
+                        ok = bool(send_doc(cid, data, f"CLEXER_virtual_{mk}.pdf",
+                                           f"📄 Your virtual trading report for {month_label(mk)}."))
+                    except Exception as e:
+                        print(f"[VIRTUAL] month report DM {cid} {mk}: {e}")
+                    if not ok:
+                        b.setdefault("pending", {})[mk] = base64.b64encode(data).decode("ascii")
+                    time.sleep(1.2)
+                b["months"].pop(mk, None)
+                b.get("exports", {}).pop(mk, None)
+                b.setdefault("reports_sent", []).append(mk)
+                changed = True
+                done += 1
+            if changed:
+                # the next month starts from what is actually in the account
+                v["capital"] = round(float(v["balance"]), 4) if float(v["balance"]) > 0 else v["capital"]
+                _save_book(cid)
+                ct._set(cid, user)
         except Exception as e:
-            print(f"[VIRTUAL] monthly report {cid}: {e}")
-    return sent
+            print(f"[VIRTUAL] month rollover {cid}: {e}")
+    return done
+
+
+monthly_reports = month_rollover      # bot.py's hourly loop calls this name
+
+
+def pending_reports(cid: str):
+    """[(month_key, pdf_bytes)] parked because the month-end DM failed."""
+    b = book(cid)
+    out = []
+    for mk, b64 in sorted((b.get("pending") or {}).items()):
+        try:
+            out.append((mk, base64.b64decode(b64)))
+        except Exception:
+            pass
+    return out
+
+
+def clear_pending(cid: str, mk: str):
+    b = book(cid)
+    if (b.get("pending") or {}).pop(mk, None) is not None:
+        _save_book(cid)

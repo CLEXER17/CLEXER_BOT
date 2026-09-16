@@ -43,8 +43,18 @@ def _api(method, payload=None, files=None, timeout=15):
 
 
 def send_doc(cid, data: bytes, filename: str, caption: str = ""):
-    return _api("sendDocument", {"chat_id": cid, "caption": caption, "parse_mode": "HTML"},
-                files={"document": (filename, data, "application/pdf")})
+    j = _api("sendDocument", {"chat_id": cid, "caption": caption, "parse_mode": "HTML"},
+             files={"document": (filename, data, "application/pdf")})
+    return bool(isinstance(j, dict) and j.get("ok"))
+
+
+def deliver_pending(cid, chat_id):
+    """A month-end report whose DM failed is handed over the next time the
+    user opens /virtual - once, no retries in between (admin 2026-09-16)."""
+    for mk, data in V.pending_reports(cid):
+        if send_doc(chat_id, data, f"CLEXER_virtual_{mk}.pdf",
+                    f"📄 Your virtual trading report for {V.month_label(mk)}."):
+            V.clear_pending(cid, mk)
 
 
 def _esc(s):
@@ -206,6 +216,10 @@ def _show(cid, chat_id, msg_id=None, month=None, err=None):
 def cmd_virtual(chat_id, cid):
     cid = str(cid)
     _forms.pop(cid, None)
+    try:
+        deliver_pending(cid, chat_id)
+    except Exception as e:
+        print(f"  [VIRTUAL DM] pending report: {e}")
     _show(cid, chat_id)
 
 
