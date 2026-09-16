@@ -723,7 +723,7 @@ def _card_note(card, text):
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
                                        "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
-                                       "video_on": True, "up_next": None, "quality": VIDEO_H})
+                                       "video_on": True, "up_next": None, "quality": VIDEO_H, "pending": None})
 
 
 def _drop_file(s):
@@ -799,9 +799,12 @@ def _remember(chat_id, mid):
         _st(chat_id)["msgs"] = (_st(chat_id)["msgs"] + [int(mid)])[-200:]
 
 
-def _say(chat_id, text):
+def _say(chat_id, text, markup=None):
     """A music reply in the group, tracked so it can be swept away later."""
-    j = bot_api("sendMessage", {"chat_id": chat_id, "text": _pe(text), "parse_mode": "HTML"}, timeout=10)
+    pl = {"chat_id": chat_id, "text": _pe(text), "parse_mode": "HTML"}
+    if markup:
+        pl["reply_markup"] = markup
+    j = bot_api("sendMessage", pl, timeout=10)
     if j.get("ok"):
         _remember(chat_id, j["result"]["message_id"])
     return bool(j.get("ok"))
@@ -1038,6 +1041,45 @@ async def _on_end(_, update: StreamEnded):
         await _next(update.chat_id)
 
 
+PENDING_MAX_AGE = 30 * 60
+
+
+async def _on_me_added(_, upd):
+    """The assistant account just became a member of a group: if someone
+    asked for a song there while it was missing, start it now."""
+    try:
+        new = getattr(upd, "new_chat_member", None)
+        if not new or not new.user or new.user.id != _me["id"]:
+            return
+        if str(getattr(new, "status", "")).split(".")[-1].lower() not in ("member", "administrator", "owner"):
+            return
+        chat_id = upd.chat.id
+    except Exception:
+        return
+    s = _st(chat_id)
+    pend = s.get("pending")
+    s["pending"] = None
+    if not pend or time.time() - pend["ts"] > PENDING_MAX_AGE:
+        return
+    track = pend["track"]
+    print(f"[MUSIC] added to {chat_id} - starting pending {track.get('title', '')[:40]!r}")
+    async with _lock:
+        if s["now"]:
+            s["queue"].append(track)
+            await asyncio.to_thread(_refresh_card, chat_id)
+            _say(chat_id, f"➕ Queued: <b>{_esc(track['title'])}</b>")
+            return
+        try:
+            await _start(chat_id, track)
+        except NoActiveGroupCall:
+            s["now"] = None
+            _say(chat_id, f"🎙 I'm in! Start a voice chat in this group, then send /play again for <b>{_esc(track['title'])}</b>.")
+        except Exception as e:
+            s["now"] = None
+            print(f"[MUSIC] pending play {chat_id}: {e!r}")
+            _say(chat_id, "⚠️ I'm in, but couldn't join the voice chat - is it running? Send /play again.")
+
+
 async def _on_chat_update(_, update: ChatUpdate):
     """The voice chat was closed, or the assistant was kicked / removed."""
     chat_id = update.chat_id
@@ -1099,7 +1141,7 @@ def _ytdlp_version():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "assistant": _me["username"], "chats": len([c for c, s in _state.items() if s["now"]]),
+    return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
             "yt_dlp": _ytdlp_version(), "clients": _CLIENTS}
 
@@ -1138,7 +1180,19 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     track["by"] = by
     ok, why = await _ensure_member(chat_id, body.get("invite_link"))
     if not ok:
-        return reply(f"⚠️ {why}")
+        # Remember the song: the moment the assistant is added, it plays.
+        _st(chat_id)["pending"] = {"track": track, "ts": time.time(), "video": bool(body.get("video"))}
+        u = _me["username"]
+        kb = {"inline_keyboard": [[{"text": f"➕ Add @{u} to this group", "url": f"https://t.me/{u}", "style": "primary"}]]}
+        if "unban" in why:
+            txt = (f"⚠️ @{u} was removed from this group. An admin has to unban it "
+                   f"(Group → Removed users) and add it back - then <b>{_esc(track['title'])}</b> starts by itself.")
+        else:
+            txt = (f"🎵 <b>{_esc(track['title'])}</b> is ready - but @{u} (the music account) is not in this group yet.\n\n"
+                   f"Tap the button, choose <b>Add to Group</b> and pick this group. "
+                   f"Anyone allowed to add members can do it. The song starts by itself once it is in.")
+        _say(chat_id, txt, kb)
+        return {"text": "", "sent": True}
     async with _lock:
         s = _st(chat_id)
         if s["now"]:
@@ -1264,6 +1318,8 @@ async def main():
     call = PyTgCalls(client)
     call.on_update(fl.stream_end())(_on_end)
     call.on_update(fl.chat_update(ChatUpdate.Status.LEFT_CALL))(_on_chat_update)
+    from pyrogram.handlers import ChatMemberUpdatedHandler
+    client.add_handler(ChatMemberUpdatedHandler(_on_me_added))
     # One session, one place. If Telegram reports the key as duplicated or
     # revoked the string has to be regenerated with music/login.py.
     try:

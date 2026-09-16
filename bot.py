@@ -9205,6 +9205,23 @@ def _music_call(path, payload, timeout=40):
         return {"text": "⚠️ Music service is not answering - try again in a minute."}
 
 
+_music_asst = {"id": 0, "t": 0.0}
+
+
+def _music_assistant_id():
+    """The music account's user id (cached 10 min) - its own joins and
+    leaves get no welcome / goodbye card."""
+    if not MUSIC_URL:
+        return 0
+    if time.time() - _music_asst["t"] > 600:
+        _music_asst["t"] = time.time()
+        try:
+            _music_asst["id"] = int((requests.get(f"{MUSIC_URL}/health", timeout=5).json() or {}).get("assistant_id") or 0)
+        except Exception:
+            pass
+    return _music_asst["id"]
+
+
 def _music_invite_link(chat_id):
     """A link the assistant can use to enter the group, if the bot may make one."""
     try:
@@ -24783,9 +24800,14 @@ def command_listener():
 
                 if msg.get("new_chat_members"):
                     try:
-                        _gj.on_new_members(msg)
+                        _aid = _music_assistant_id()
+                        _humans = [m for m in msg["new_chat_members"] if not _aid or m.get("id") != _aid]
+                        if _humans:
+                            _gj.on_new_members({**msg, "new_chat_members": _humans})
                     except Exception as _je:
                         print(f"  [JOIN] welcome: {_je}")
+                    continue
+                if msg.get("left_chat_member") and _music_assistant_id() and msg["left_chat_member"].get("id") == _music_assistant_id():
                     continue
                 if msg.get("left_chat_member"):
                     try:
