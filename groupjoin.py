@@ -206,12 +206,12 @@ def goodbye(chat_id, user: dict, title: str):
         print(f"  [JOIN] leave card render: {e}")
         data = None
     uname = user.get("username")
-    caption = (f"👋 {_mention(user)} left <b>{_esc(title)}</b>" + chr(10) + chr(10)
-               + "<blockquote>📄 <b>Their info</b>" + chr(10)
+    caption = ("<blockquote>" + f"👋 {_mention(user)} left <b>{_esc(title)}</b>" + chr(10) + chr(10)
+               + "📄 <b>Their info</b>" + chr(10)
                + f"👤 Name » {_mention(user)}" + chr(10)
                + f"💬 Username » {('@' + _esc(uname)) if uname else '-'}" + chr(10)
-               + f"🪪 ID » <code>{user.get('id')}</code></blockquote>" + chr(10) + chr(10)
-               + "The door stays open - see you around. 🤝")
+               + f"🪪 ID » <code>{user.get('id')}</code>" + chr(10) + chr(10)
+               + "The door stays open - see you around. 🤝</blockquote>")
     if data:
         j = _api("sendPhoto", {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
                  files={"photo": ("goodbye.jpg", data, "image/jpeg")})
@@ -352,12 +352,12 @@ def welcome(chat_id, user: dict, title: str):
         print(f"  [JOIN] card render: {e}")
         data = None
     uname = user.get("username")
-    caption = (f"🎉 {_mention(user)} joined <b>{_esc(title)}</b>\n\n"
-               f"<blockquote>📄 <b>Your info</b>\n"
+    caption = (f"<blockquote>🎉 {_mention(user)} joined <b>{_esc(title)}</b>\n\n"
+               f"📄 <b>Your info</b>\n"
                f"👤 Name » {_mention(user)}\n"
                f"💬 Username » {('@' + _esc(uname)) if uname else '-'}\n"
-               f"🪪 ID » <code>{user.get('id')}</code></blockquote>\n\n"
-               f"Welcome aboard, {_esc(user.get('first_name') or 'friend')}! Glad to have you with us - say hi and enjoy your stay. 🤝")
+               f"🪪 ID » <code>{user.get('id')}</code>\n\n"
+               f"Welcome aboard, {_esc(user.get('first_name') or 'friend')}! Glad to have you with us - say hi and enjoy your stay. 🤝</blockquote>")
     if data:
         j = _api("sendPhoto", {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
                  files={"photo": ("welcome.jpg", data, "image/jpeg")})

@@ -9182,6 +9182,23 @@ _vdm.init(TELEGRAM_BOT_TOKEN)
 import groupjoin as _gj
 _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
          is_vip=lambda _uid: bool((ct._get(str(_uid)) or {}).get("tier") == "vip"))
+import userinfo as _uinfo
+
+
+def _uinfo_rank(uid):
+    if ADMIN_CHAT_ID and str(uid) == str(ADMIN_CHAT_ID):
+        return "👑 CLEXER Admin"
+    if is_co_admin(uid):
+        return "🛡 Co-Admin"
+    if (ct._get(str(uid)) or {}).get("tier") == "vip":
+        return "⭐ VIP Member"
+    return "👤 Regular Member"
+
+
+_uinfo.init(rank=_uinfo_rank,
+            vip=lambda _uid: (bool((ct._get(str(_uid)) or {}).get("tier") == "vip"), (ct._get(str(_uid)) or {}).get("vip_end") or ""),
+            copy=lambda _uid: bool((ct._get(str(_uid)) or {}).get("connected")),
+            blocked=lambda _uid: int(_uid) in blocked_users)
 
 # Music (music/service.py on its own Railway service). The bot only relays:
 # commands and the now-playing buttons go there over HTTP, the assistant
@@ -9189,6 +9206,7 @@ _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
 # purpose: this is a trading bot (admin 2026-09-16).
 MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
 MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
+_uinfo._MUSIC.update(url=MUSIC_URL, secret=MUSIC_SECRET)      # /info asks the music account for DC / premium / scam flags
 _MUSIC_CMDS = {"/play": "play", "/find": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
                "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/video": "video",
                "/quality": "quality", "/q": "quality"}
@@ -17649,6 +17667,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd in ("/games", "/game"):
         _games_mod.cmd_games(chat_id, (message or {}).get("chat", {}).get("type") or "private")
 
+    elif cmd in ("/info", "/whois"):
+        _uinfo.cmd_info(chat_id, message)
+
     elif cmd == "/out":
         _games_mod.cmd_out(chat_id, _check_id, (message or {}).get("from", {}).get("first_name") or _uname)
 
@@ -21253,6 +21274,9 @@ _CMD_ONLY_CATS = {
         ("/now",    "🎧", "Now",    "The song playing right now"),
         ("/volume", "🔊", "Volume", "Set the volume — /volume 80 (10–200)"),
         ("/prev",   "⏮", "Previous", "Play the previous song again"),
+    ]),
+    "tools": ("🪪 Tools", False, [
+        ("/info",    "🪪", "Info",     "Profile card of a member — reply to their message with /info (plain /info shows your own)"),
     ]),
     "games": ("🎮 Games", False, [
         ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group. Type /games"),

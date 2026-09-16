@@ -1176,6 +1176,21 @@ def _video_gate(chat_id, body):
     return s["video_ok"]
 
 
+@app.post("/user")
+async def user_facts(req: Request, x_music_secret: str = Header(default="")):
+    """Facts the Bot API cannot see: DC, premium, verified, scam / fake."""
+    _auth(x_music_secret)
+    body = await req.json()
+    try:
+        u = await client.get_users(int(body["user_id"]))
+    except Exception as e:
+        return {"error": str(e)[:120]}
+    return {"dc_id": getattr(u, "dc_id", None), "is_premium": bool(getattr(u, "is_premium", False)),
+            "is_verified": bool(getattr(u, "is_verified", False)), "is_scam": bool(getattr(u, "is_scam", False)),
+            "is_fake": bool(getattr(u, "is_fake", False)), "is_bot": bool(getattr(u, "is_bot", False)),
+            "username": getattr(u, "username", None)}
+
+
 @app.post("/play")
 async def play(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
