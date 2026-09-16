@@ -17613,6 +17613,24 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd in _MUSIC_CMDS:
         _music_command(cmd, parts, chat_id, message, _check_id, _uname)
 
+    elif cmd == "/music" and is_admin:
+        # Admin check-up: what this bot process can see, and whether the
+        # music service answers - so "not set up" is never a guessing game.
+        _ml = [f"MUSIC_URL: <b>{'set' if MUSIC_URL else '❌ missing'}</b>" + (f" ({_html.escape(MUSIC_URL)})" if MUSIC_URL else ""),
+               f"MUSIC_SECRET: <b>{'set' if MUSIC_SECRET else '❌ missing'}</b>"]
+        if MUSIC_URL:
+            try:
+                _hr = requests.get(f"{MUSIC_URL}/health", timeout=10)
+                _hj = _hr.json() if _hr.ok else {}
+                _ml.append(f"Service: <b>{'✅ up' if _hj.get('ok') else '❌ HTTP ' + str(_hr.status_code)}</b>"
+                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s)" if _hj.get("ok") else ""))
+            except Exception as _he:
+                _ml.append(f"Service: <b>❌ unreachable</b> ({_html.escape(str(_he)[:80])})")
+            if MUSIC_SECRET:
+                _pr = _music_call("/control", {"chat_id": 0, "action": "queue"}, timeout=10)
+                _ml.append("Secret: <b>" + ("✅ accepted" if "queue" in str(_pr.get("text", "")).lower() or "nothing" in str(_pr.get("text", "")).lower() else "❌ rejected - must match on both services") + "</b>")
+        send_reply(chat_id, "🎵 <b>Music check</b>" + chr(10) + chr(10) + chr(10).join(_ml))
+
     elif cmd == "/mtf":
         _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
         _coin = _coin.replace("-USDT", "").replace("USDT", "").strip()
