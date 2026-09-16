@@ -39,11 +39,18 @@ MAX_QUEUE = 25
 # Premium emoji: MUSIC_EMOJI_JSON = {"🎵": "5231200819986047254", ...}. Text gets
 # <tg-emoji> wrappers, buttons get icon_custom_emoji_id (glyph dropped from the
 # label, as bot.py does). Empty map = plain emoji everywhere.
+_DEFAULT_EMOJI = {          # the admin's premium set (2026-09-16); MUSIC_EMOJI_JSON overrides/extends
+    "🎵": "6026256492619895014", "⏸": "5947029782121155470", "🎙": "5377544228505134960",
+    "⚠️": "5911295297736154925", "🔎": "5309965701241379366", "🔍": "5409298261754258920",
+    "➕": "5359529383319084413", "👤": "5262742999678329061", "⏱": "5382194935057372936",
+    "📜": "5264821604935804414", "🔊": "5260325873688518261", "🔉": "5264718164943446901",
+    "⏹": "6282581974796211552", "▶️": "5269410150426356158", "▶": "5269410150426356158",
+}
 try:
     import json as _json
-    EMOJI = {k: str(v) for k, v in _json.loads(os.getenv("MUSIC_EMOJI_JSON", "") or "{}").items()}
+    EMOJI = {**_DEFAULT_EMOJI, **{k: str(v) for k, v in _json.loads(os.getenv("MUSIC_EMOJI_JSON", "") or "{}").items()}}
 except Exception:
-    EMOJI = {}
+    EMOJI = dict(_DEFAULT_EMOJI)
 MAX_SECONDS = 20 * 60          # mixes / hour-long uploads are skipped
 
 app = FastAPI()
