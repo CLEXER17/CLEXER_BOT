@@ -9298,9 +9298,60 @@ def _music_dm_notice(chat_id):
                reply_markup=_kb)
 
 
+# Every music request - typed command or button - goes through one worker
+# thread, one at a time, with a breath between them. The poll loop never
+# waits on the music service (a /play lookup can take 15 s), a burst of taps
+# is handled in order, and a failure is reported once, calmly, without
+# stopping the line (admin request 2026-09-17).
+import queue as _queue
+_music_q: "_queue.Queue" = _queue.Queue()
+_music_fail_note: dict = {}      # chat_id -> last time a failure notice went out
+
+
+def _music_enqueue(fn, chat_id=None):
+    """Put a task in line; returns a Future-like holder for its result."""
+    holder = {"done": threading.Event(), "result": None}
+    _music_q.put((fn, holder, chat_id))
+    return holder
+
+
+def _music_worker():
+    while True:
+        fn, holder, chat_id = _music_q.get()
+        try:
+            holder["result"] = fn()
+        except Exception as e:
+            print(f"  [MUSIC] task failed in {chat_id}: {e!r}")
+            holder["result"] = {"text": "⚠️ That didn't go through - try again in a moment."}
+            if chat_id and time.time() - _music_fail_note.get(chat_id, 0) > 120:
+                _music_fail_note[chat_id] = time.time()
+                try:
+                    send_reply(chat_id, "⚠️ Music hit a snag with that request - the music itself keeps going, and the next requests are being handled in order.")
+                except Exception:
+                    pass
+        finally:
+            holder["done"].set()
+            _music_q.task_done()
+        time.sleep(1.0)                          # no rush: one thing, then the next
+
+
+threading.Thread(target=_music_worker, daemon=True, name="music-worker").start()
+
+
 def _music_command(cmd, parts, chat_id, message, sender_id, uname):
+    """Poll-loop side: validate, then hand the work to the music worker."""
     if not str(chat_id).startswith("-"):
         _music_dm_notice(chat_id); return
+    if cmd in ("/play", "/find") and not " ".join(parts[1:]).strip():
+        send_reply(chat_id, "Usage: <code>/play song name</code> or a YouTube link" if cmd == "/play"
+                   else "Usage: <code>/find episode / movie / any video name</code>"); return
+    waiting = _music_q.qsize()
+    if waiting >= 2:
+        send_reply(chat_id, f"⏳ Got it - {waiting} request(s) ahead of yours, handling them one by one.")
+    _music_enqueue(lambda: _music_command_run(cmd, parts, chat_id, message, sender_id, uname), chat_id)
+
+
+def _music_command_run(cmd, parts, chat_id, message, sender_id, uname):
     who = (message or {}).get("from", {}).get("first_name") or uname or "someone"
     if cmd in ("/play", "/find"):
         q = " ".join(parts[1:]).strip()
@@ -9324,7 +9375,8 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             send_reply(chat_id, r["text"])
         return
     act = _MUSIC_CMDS[cmd]
-    payload = {"chat_id": chat_id, "action": act, "msg_ids": [m for m in [(message or {}).get("message_id")] if m]}
+    payload = {"chat_id": chat_id, "action": act, "msg_ids": [m for m in [(message or {}).get("message_id")] if m],
+               "by": who, "by_id": sender_id}
     if cmd == "/volume":
         try:
             payload["value"] = int(parts[1])
@@ -23479,9 +23531,13 @@ def command_listener():
                     if cb_data.startswith("mu:"):
                         try:
                             _, _mact, _mchat = cb_data.split(":", 2)
-                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact},
-                                              timeout=60 if _mact in ("von", "voff", "vup", "vdown") else 20)
-                            _mu_pop = (_mr.get("text") or "Done.")
+                            _mpl = {"chat_id": int(_mchat), "action": _mact, "by": _cb_fname, "by_id": cb_cid}
+                            _mto = 60 if _mact in ("von", "voff", "vup", "vdown") else 20
+                            _mh = _music_enqueue(lambda _p=_mpl, _t=_mto: _music_call("/control", _p, timeout=_t), int(_mchat))
+                            if _mh["done"].wait(18):
+                                _mu_pop = ((_mh["result"] or {}).get("text") or "Done.")
+                            else:
+                                _mu_pop = "⏳ In line - the card updates when it's done."
                         except Exception as _me_:
                             print(f"  [MUSIC] callback {cb_data}: {_me_}")
                             _mu_pop = "Something went wrong - try again."

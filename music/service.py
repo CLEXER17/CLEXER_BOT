@@ -726,7 +726,7 @@ def _card_note(card, text):
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
                                        "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
-                                       "video_on": True, "up_next": None, "quality": VIDEO_H, "pending": None, "video_ok": True})
+                                       "video_on": True, "up_next": None, "quality": VIDEO_H, "pending": None, "video_ok": True, "last": None})
 
 
 def _drop_file(s):
@@ -775,6 +775,8 @@ def _card_text(chat_id):
     head = "⏸ <b>Paused</b>" if s["paused"] else "🎵 <b>Now playing</b>"
     state = "⏸ paused - press Resume to continue" if s["paused"] else "▶ playing"
     who = "🔁 Similar to the last request" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
+    if s.get("last"):
+        who += f"\n🕐 Last: {_esc(s['last']['what'])} · {_esc(s['last']['by'])}"
     mode = ("📺 %dp" % s["quality"]) if (t.get("video") and s["video_on"]) else ("🎧 audio only" if s["video_ok"] else "🎧 audio")
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
@@ -1047,17 +1049,33 @@ async def _on_end(_, update: StreamEnded):
 PENDING_MAX_AGE = 30 * 60
 
 
+def _actor(upd):
+    u = getattr(upd, "from_user", None)
+    if not u or u.id == _me["id"]:
+        return ""
+    return (u.first_name or u.username or str(u.id))[:32]
+
+
 async def _on_me_added(_, upd):
-    """The assistant account just became a member of a group: if someone
-    asked for a song there while it was missing, start it now."""
+    """The assistant account's membership changed. Added -> play what was
+    asked for while it was missing. Removed -> say by whom."""
     try:
         new = getattr(upd, "new_chat_member", None)
         if not new or not new.user or new.user.id != _me["id"]:
             return
-        if str(getattr(new, "status", "")).split(".")[-1].lower() not in ("member", "administrator", "owner"):
-            return
+        status = str(getattr(new, "status", "")).split(".")[-1].lower()
         chat_id = upd.chat.id
     except Exception:
+        return
+    if status in ("banned", "kicked", "left", "restricted"):
+        who = _actor(upd)
+        s = _st(chat_id)
+        if who:
+            s["last"] = {"what": "⛔ Removed @" + _me["username"], "by": who, "at": time.time()}
+            _say(chat_id, f"⛔ @{_me['username']} was removed from this group by <b>{_esc(who)}</b>"
+                          + (" - music stopped." if s["now"] else "."))
+        return
+    if status not in ("member", "administrator", "owner"):
         return
     s = _st(chat_id)
     pend = s.get("pending")
@@ -1083,6 +1101,43 @@ async def _on_me_added(_, upd):
             _say(chat_id, "⚠️ I'm in, but couldn't join the voice chat - is it running? Send /play again.")
 
 
+async def _who_deleted(chat_id, msg_id):
+    """Recent Actions (admin log) - readable only when the assistant is an
+    admin of the group; otherwise Telegram does not say who deleted."""
+    try:
+        async for ev in client.get_chat_event_log(chat_id, limit=8):
+            act = getattr(ev, "action", None)
+            if act and "delete" in str(act).lower():
+                m = getattr(ev, "deleted_message", None)
+                if m is None or getattr(m, "id", None) == msg_id:
+                    u = getattr(ev, "user", None)
+                    if u:
+                        return (u.first_name or u.username or str(u.id))[:32]
+    except Exception:
+        pass
+    return ""
+
+
+async def _on_deleted(_, messages):
+    """Someone deleted the music card: post it again and say who did it."""
+    for m in messages:
+        try:
+            chat_id = m.chat.id if m.chat else None
+            if chat_id is None:
+                continue
+            s = _state.get(chat_id)
+            if not s or not s["now"] or not s["card"] or s["card"][1] != m.id:
+                continue
+        except Exception:
+            continue
+        who = await _who_deleted(chat_id, m.id)
+        s["card"] = None
+        s["last"] = {"what": "🗑 Deleted the music card", "by": who or "an admin", "at": time.time()}
+        await asyncio.to_thread(_post_card, chat_id)
+        _say(chat_id, f"🗑 The music card was deleted by <b>{_esc(who)}</b> - posted again." if who
+             else "🗑 The music card was deleted - posted again.")
+
+
 async def _on_chat_update(_, update: ChatUpdate):
     """The voice chat was closed, or the assistant was kicked / removed."""
     chat_id = update.chat_id
@@ -1095,6 +1150,8 @@ async def _on_chat_update(_, update: ChatUpdate):
                else "left the group" if update.status & ChatUpdate.Status.LEFT_GROUP else "removed from the call")
         print(f"[MUSIC] {chat_id}: {why} - cleaning up")
         s["queue"].clear(); _drop_all(s); s["now"] = None; s["paused"] = False
+        if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT:
+            s["last"] = {"what": "⏹ Voice chat closed", "by": "-", "at": time.time()}
         await asyncio.to_thread(_sweep, chat_id)
         try:
             await call.leave_call(chat_id)
@@ -1240,6 +1297,15 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
                    f"Anyone allowed to add members can do it. The song starts by itself once it is in.")
         _say(chat_id, txt, kb)
         return {"text": "", "sent": True}
+    try:
+        return await _play_locked(chat_id, track, reply)
+    except Exception as e:
+        print(f"[MUSIC] play {chat_id}: {e!r}")
+        _st(chat_id)["now"] = None
+        return reply("⚠️ Something went wrong while starting that - the queue is kept, send /play again in a moment.")
+
+
+async def _play_locked(chat_id, track, reply):
     async with _lock:
         s = _st(chat_id)
         if s["now"]:
@@ -1273,7 +1339,18 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     if not _video_gate(chat_id, body) and act in ("von", "voff", "video", "quality"):
         res = {"text": NO_VIDEO}
     else:
-        res = await _control(chat_id, act, body)
+        try:
+            res = await _control(chat_id, act, body)
+        except Exception as e:
+            print(f"[MUSIC] control {act} in {chat_id}: {e!r}")
+            res = {"text": "⚠️ That didn't work just now - the music keeps going, try again in a moment."}
+    by = str(body.get("by") or "").strip()
+    if by and act in _ACTING and res.get("text", "").startswith(_DONE_PREFIXES) and "already" not in res["text"].lower():
+        s = _st(chat_id)
+        s["last"] = {"what": res["text"].rstrip(".").split(" for this group")[0][:40], "by": by[:32], "at": time.time()}
+        res["text"] = res["text"].rstrip(".") + f" · by {_esc(by)}"
+        if s["now"] and act not in ("stop",):
+            await asyncio.to_thread(_refresh_card, chat_id)
     if act == "stop" and body.get("msg_ids"):
         return {"text": "", "sent": True}           # everything was just swept - leave nothing behind
     if body.get("msg_ids") and res.get("text"):
@@ -1281,6 +1358,10 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
         _say(chat_id, res["text"])
         return {"text": "", "sent": True}
     return res
+
+
+_ACTING = {"pause", "resume", "skip", "prev", "stop", "vup", "vdown", "volume", "von", "voff", "video", "quality"}
+_DONE_PREFIXES = ("⏸ Paused", "▶ Resumed", "⏭ Next", "⏮ Previous", "⏹ Stopped", "🔊 Volume", "📺 Video on", "🎧 Audio only", "📺 Video ")
 
 
 async def _control(chat_id, act, body):
@@ -1368,8 +1449,9 @@ async def main():
     call = PyTgCalls(client)
     call.on_update(fl.stream_end())(_on_end)
     call.on_update(fl.chat_update(ChatUpdate.Status.LEFT_CALL))(_on_chat_update)
-    from pyrogram.handlers import ChatMemberUpdatedHandler
+    from pyrogram.handlers import ChatMemberUpdatedHandler, DeletedMessagesHandler
     client.add_handler(ChatMemberUpdatedHandler(_on_me_added))
+    client.add_handler(DeletedMessagesHandler(_on_deleted))
     # One session, one place. If Telegram reports the key as duplicated or
     # revoked the string has to be regenerated with music/login.py.
     try:
