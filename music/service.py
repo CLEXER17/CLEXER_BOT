@@ -123,10 +123,19 @@ def _dur(sec):
 VIDEO_H = int(os.getenv("MUSIC_VIDEO_HEIGHT", "360") or 360)
 _VQ = {360: VideoQuality.SD_360p, 480: VideoQuality.SD_480p, 720: VideoQuality.HD_720p}
 VQ = _VQ.get(VIDEO_H, VideoQuality.SD_360p)
-_YDL = {"format": (f"b[height<={VIDEO_H}][vcodec^=avc1][acodec!=none]/bv*[height<={VIDEO_H}][vcodec^=avc1]+ba"
-                   f"/b[height<={VIDEO_H}][acodec!=none][vcodec!=none]/bv*[height<={VIDEO_H}]+ba/b[height<={VIDEO_H}]/bestaudio/best"),
+def _fmt(h):
+    return (f"b[height<={h}][vcodec^=avc1][acodec!=none]/bv*[height<={h}][vcodec^=avc1]+ba"
+            f"/b[height<={h}][acodec!=none][vcodec!=none]/bv*[height<={h}]+ba/b[height<={h}]/bestaudio/best")
+
+
+_YDL = {"format": _fmt(VIDEO_H),
         "noplaylist": True, "quiet": True, "no_warnings": True, "default_search": "ytsearch1", "skip_download": True,
         "extract_flat": False}
+
+
+def _ydl(h=None):
+    """yt-dlp options for a given video height (per-group /quality)."""
+    return {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else _YDL
 
 
 def _track_from(e, fallback_title=""):
@@ -252,7 +261,7 @@ async def _prefetch_locked(chat_id):
                 t = up                                  # picked earlier, file still missing
             else:
                 seed = next((x for x in [now] + s["history"][::-1] if x.get("by") != "autoplay"), now)
-                t = await asyncio.to_thread(_related, seed if seed.get("id") else now, set(s["played"]))
+                t = await asyncio.to_thread(_related, seed if seed.get("id") else now, set(s["played"]), s["quality"])
                 if not t or s["now"] is not now:
                     return
                 t["after"] = now.get("id")
@@ -262,7 +271,8 @@ async def _prefetch_locked(chat_id):
         print(f"[MUSIC] prefetch {chat_id}: {e!r}")
 
 
-def _stream(track, file=None, video_on=True):
+def _stream(track, file=None, video_on=True, height=None):
+    VQ = _VQ.get(height or VIDEO_H, VideoQuality.SD_360p)
     if not video_on:
         src = file or track.get("local") or track["url"]
         return MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE)
@@ -405,7 +415,7 @@ def _piped_search(q):
     return []
 
 
-def _lookup(query: str) -> Optional[dict]:
+def _lookup(query: str, height=None) -> Optional[dict]:
     """Title / duration / direct audio url for a search or a YouTube link.
     Search order: YouTube search, YouTube Music search, web search - the
     first one that answers wins; the full extraction runs on the first
@@ -432,7 +442,7 @@ def _lookup(query: str) -> Optional[dict]:
                 break
     for u in cands[:5]:
         try:
-            with YoutubeDL(_YDL) as y:
+            with YoutubeDL(_ydl(height)) as y:
                 e = y.extract_info(u, download=False)
         except Exception as ex:
             msg = str(ex)
@@ -452,7 +462,7 @@ def _lookup(query: str) -> Optional[dict]:
     return None
 
 
-def _related(track, played_ids):
+def _related(track, played_ids, height=None):
     """The next song for autoplay: YouTube's own Mix for the last song,
     skipping anything already played in this chat."""
     vid = track.get("id")
@@ -475,7 +485,7 @@ def _related(track, played_ids):
     cands.sort(key=lambda x: -x[0])
     for _, cid in cands[:4]:
         try:
-            with YoutubeDL(_YDL) as y:
+            with YoutubeDL(_ydl(height)) as y:
                 e = y.extract_info(f"https://www.youtube.com/watch?v={cid}", download=False)
         except Exception as ex:
             print(f"[MUSIC] related extract {cid}: {str(ex)[:120]}")
@@ -498,7 +508,7 @@ def _snapshot():
         out[str(chat_id)] = {"now": st["now"], "queue": st["queue"], "paused": st["paused"], "volume": st["volume"],
                              "card": st["card"], "position": st["offset"] + pos, "saved": time.time(),
                              "autoplay": st["autoplay"], "played": st["played"][-40:], "history": st["history"][-5:],
-                             "video_on": st["video_on"]}
+                             "video_on": st["video_on"], "quality": st["quality"]}
     return out
 
 
@@ -618,20 +628,20 @@ async def _resume_all():
         s = _st(chat_id)
         s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None,
                  autoplay=bool(st.get("autoplay", True)), played=st.get("played", []), history=st.get("history", []),
-                 video_on=bool(st.get("video_on", True)))
+                 video_on=bool(st.get("video_on", True)), quality=int(st.get("quality", VIDEO_H)))
         track = st["now"]
         start = float(st.get("position", 0))
         try:
             if track.get("live"):
                 s["now"] = track; s["file"] = None; s["offset"] = 0
-                await call.play(chat_id, _stream(track, None, s["video_on"]))
+                await call.play(chat_id, _stream(track, None, s["video_on"], s["quality"]))
             else:
                 if track.get("local") and not os.path.exists(track["local"]):
                     track["local"] = None
                 await _fetch(track)
                 f = await asyncio.to_thread(_encode, track, start, s["volume"], s["video_on"])
                 s["now"] = track; s["file"] = f; s["offset"] = start
-                await call.play(chat_id, _stream(track, f, s["video_on"]))
+                await call.play(chat_id, _stream(track, f, s["video_on"], s["quality"]))
             await asyncio.to_thread(_post_card, chat_id)
             print(f"[MUSIC] resumed {track['title'][:40]!r} in {chat_id} at {start:.0f}s")
             fresh[cid] = True
@@ -658,7 +668,7 @@ def _card_note(card, text):
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
                                        "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
-                                       "video_on": True, "up_next": None})
+                                       "video_on": True, "up_next": None, "quality": VIDEO_H})
 
 
 def _drop_file(s):
@@ -709,7 +719,7 @@ def _card_text(chat_id):
     who = "🔁 Similar to the last request" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
-               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if (t.get('video') and s['video_on']) else '🎧 audio only'}\n"
+               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {f"📺 {s['quality']}p" if (t.get('video') and s['video_on']) else '🎧 audio only'}\n"
                f"{state}\n"
                f"{who}\n\n"
                f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue\n"
@@ -819,11 +829,53 @@ async def _start(chat_id, track):
     if s["volume"] != 100 and not track.get("live"):
         f = await asyncio.to_thread(_encode, track, 0, s["volume"], s["video_on"])
         s["file"] = f
-    await call.play(chat_id, _stream(track, f, s["video_on"]))
+    await call.play(chat_id, _stream(track, f, s["video_on"], s["quality"]))
     s["_pos"] = 0
     await asyncio.to_thread(_post_card, chat_id)
     await asyncio.to_thread(_save_state)
     asyncio.create_task(_prefetch(chat_id))
+
+
+async def _set_quality(chat_id, h: int):
+    """Per-group video size. The song playing now is re-fetched at the new
+    size and continues from the same position; the prefetched next song is
+    thrown away so it gets fetched at the new size too."""
+    s = _st(chat_id); s["quality"] = h
+    _drop_track(s.get("up_next")); s["up_next"] = None
+    t = s["now"]
+    if not t or not t.get("video"):
+        return True
+    src = t.get("page") or (t.get("id") and f"https://www.youtube.com/watch?v={t['id']}")
+    if not src:
+        return False
+    fresh = await asyncio.to_thread(_lookup, src, h)
+    if not fresh:
+        return False
+    for k in ("by", "after"):
+        if k in t:
+            fresh[k] = t[k]
+    try:
+        pos = await call.time(chat_id)
+    except Exception:
+        pos = 0
+    start = s["offset"] + (pos or 0)
+    _drop_track(t); s["now"] = fresh
+    await _fetch(fresh)
+    f = await asyncio.to_thread(_encode, fresh, start, s["volume"], s["video_on"])
+    old = s.get("file"); s["file"] = f; s["offset"] = start
+    await call.play(chat_id, _stream(fresh, f, s["video_on"], h))
+    if s["paused"]:
+        try:
+            await call.pause(chat_id)
+        except Exception:
+            pass
+    if old:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+    asyncio.create_task(_prefetch(chat_id))
+    return True
 
 
 async def _set_video(chat_id, on: bool):
@@ -833,7 +885,7 @@ async def _set_video(chat_id, on: bool):
     if not t:
         return
     if t.get("live"):
-        await call.play(chat_id, _stream(t, None, on)); return
+        await call.play(chat_id, _stream(t, None, on, s["quality"])); return
     try:
         pos = await call.time(chat_id)
     except Exception:
@@ -841,7 +893,7 @@ async def _set_video(chat_id, on: bool):
     start = s["offset"] + (pos or 0)
     f = await asyncio.to_thread(_encode, t, start, s["volume"], on)
     old = s.get("file"); s["file"] = f; s["offset"] = start
-    await call.play(chat_id, _stream(t, f, on))
+    await call.play(chat_id, _stream(t, f, on, s["quality"]))
     if s["paused"]:
         try:
             await call.pause(chat_id)
@@ -884,7 +936,7 @@ async def _set_volume(chat_id, volume):
         return
     old = s.get("file")
     s["file"] = f; s["offset"] = start
-    await call.play(chat_id, _stream(t, f, s["video_on"]))
+    await call.play(chat_id, _stream(t, f, s["video_on"], s["quality"]))
     if s["paused"]:
         try:
             await call.pause(chat_id)
@@ -910,7 +962,7 @@ async def _next(chat_id):
             await _start(chat_id, up)
             return True
         seed = next((t for t in [s["now"]] + s["history"][::-1] if t.get("by") != "autoplay"), s["now"])
-        rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]))
+        rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]), s["quality"])
         if rel:
             await _start(chat_id, rel)
             return True
@@ -999,7 +1051,7 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     if not query:
         return reply("Usage: /play song name (or a YouTube link)")
     try:
-        track = await asyncio.to_thread(_lookup, query)
+        track = await asyncio.to_thread(_lookup, query, _st(chat_id)["quality"])
     except Exception as e:
         print(f"[MUSIC] search {query!r}: {e}")
         _last_error["text"] = str(e); track = None
@@ -1062,6 +1114,20 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
 async def _control(chat_id, act, body):
     async with _lock:
         s = _st(chat_id)
+        if act == "quality":
+            try:
+                h = int(str(body.get("value", "")).lower().rstrip("p"))
+            except Exception:
+                h = 0
+            if h not in _VQ:
+                return {"text": "Usage: /quality 360 · 480 · 720"}
+            if h == s["quality"]:
+                return {"text": f"📺 Already {h}p."}
+            ok = await _set_quality(chat_id, h)
+            await asyncio.to_thread(_save_state)
+            if s["now"]:
+                await asyncio.to_thread(_refresh_card, chat_id)
+            return {"text": f"📺 Video {h}p for this group." + ("" if ok else " (couldn't switch the current song - applies from the next one)")}
         if not s["now"] and act not in ("queue",):
             return {"text": "⏹ Nothing is playing."}
         try:

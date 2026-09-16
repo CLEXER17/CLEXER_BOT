@@ -9190,7 +9190,8 @@ _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
 MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
 MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
 _MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
-               "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/video": "video"}
+               "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/video": "video",
+               "/quality": "quality", "/q": "quality"}
 
 
 def _music_call(path, payload, timeout=40):
@@ -9251,6 +9252,11 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             payload["value"] = int(parts[1])
         except Exception:
             send_reply(chat_id, "Usage: <code>/volume 80</code> (10-200)"); return
+    if cmd in ("/quality", "/q"):
+        _v = (parts[1].lower().rstrip("p") if len(parts) > 1 else "")
+        if _v not in ("360", "480", "720"):
+            send_reply(chat_id, "Usage: <code>/q 360</code> · <code>/q 480</code> · <code>/q 720</code> - video size for this group"); return
+        payload["value"] = int(_v)
     if cmd == "/video":
         _v = (parts[1].lower() if len(parts) > 1 else "")
         if _v not in ("s", "r", "on", "off", "stop", "resume", "start"):
@@ -21219,6 +21225,7 @@ _CMD_ONLY_CATS = {
         ("/next",   "⏭", "Next",   "Next song — the queue, or a similar song when the queue is empty"),
         ("/skip",   "⏭", "Skip",   "Same as /next"),
         ("/video",  "📺", "Video",  "/video s — audio only, /video r — video back on"),
+        ("/q",      "🎚", "Quality", "Video size for this group — /q 360, /q 480 or /q 720 (also /quality)"),
         ("/pause",  "⏸", "Pause",  "Pause the music"),
         ("/resume", "▶️", "Resume", "Resume the music"),
         ("/stop",   "⏹", "Stop",   "Stop the music, clear the queue and leave the voice chat"),
