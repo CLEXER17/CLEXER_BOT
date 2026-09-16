@@ -39,8 +39,8 @@ MAX_QUEUE = 25
 MAX_SECONDS = 20 * 60          # mixes / hour-long uploads are skipped
 
 app = FastAPI()
-client = Client("clexer-music", api_id=API_ID, api_hash=API_HASH, session_string=SESSION, in_memory=True)
-call = PyTgCalls(client)
+client: Client = None      # both are created inside main(), on the loop that runs everything
+call: PyTgCalls = None
 
 # chat_id -> {"queue": [track], "now": track|None, "paused": bool, "volume": int, "card": (chat, msg_id)}
 _state: dict = {}
@@ -200,7 +200,6 @@ async def _next(chat_id):
     return False
 
 
-@call.on_update(fl.stream_end())
 async def _on_end(_, update: StreamEnded):
     async with _lock:
         await _next(update.chat_id)
@@ -308,11 +307,17 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     return {"text": "Unknown action."}
 
 
-@app.on_event("startup")
-async def _startup():
+async def main():
+    """One asyncio loop for Pyrogram, PyTgCalls and the HTTP server - a client
+    built on a different loop than the one serving requests fails at start
+    ("attached to a different loop")."""
+    global client, call
+    import uvicorn
+    client = Client("clexer-music", api_id=API_ID, api_hash=API_HASH, session_string=SESSION, in_memory=True)
+    call = PyTgCalls(client)
+    call.on_update(fl.stream_end())(_on_end)
     # One session, one place. If Telegram reports the key as duplicated or
-    # revoked, say so plainly - the string has to be regenerated with
-    # music/login.py; restarting will not bring it back.
+    # revoked the string has to be regenerated with music/login.py.
     try:
         await client.start()
     except Exception as e:
@@ -325,16 +330,15 @@ async def _startup():
     _me.update(id=me.id, username=me.username or "")
     await call.start()
     print(f"[MUSIC] assistant @{_me['username']} ready")
-
-
-@app.on_event("shutdown")
-async def _shutdown():
+    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="none", lifespan="off"))
     try:
-        await client.stop()
-    except Exception:
-        pass
+        await server.serve()
+    finally:
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="asyncio")
+    asyncio.run(main())
