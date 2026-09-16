@@ -133,9 +133,32 @@ _YDL = {"format": _fmt(VIDEO_H),
         "extract_flat": False}
 
 
-def _ydl(h=None):
+# Which YouTube player clients yt-dlp may use. With a cookies file the default
+# "tv" client answers "The page needs to be reloaded", so it is left out;
+# MUSIC_YT_CLIENTS overrides (comma separated, e.g. "web_safari,web").
+_CLIENTS = [c.strip() for c in os.getenv("MUSIC_YT_CLIENTS", "default,-tv").split(",") if c.strip()]
+_YDL["extractor_args"] = {"youtube": {"player_client": _CLIENTS}}
+def _ydl(h=None, cookies=True):
     """yt-dlp options for a given video height (per-group /quality)."""
-    return {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else _YDL
+    o = {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else dict(_YDL)
+    if not cookies:
+        o.pop("cookiefile", None)
+    return o
+
+
+def _extract(u, height=None):
+    """Full extraction; if YouTube answers 'reloaded' / 'unplayable' with the
+    cookies, the same video is tried once more without them."""
+    try:
+        with YoutubeDL(_ydl(height)) as y:
+            return y.extract_info(u, download=False)
+    except Exception as ex:
+        m = str(ex).lower()
+        if "cookiefile" not in _YDL or ("reloaded" not in m and "unplayable" not in m and "not available on this app" not in m):
+            raise
+        print(f"[MUSIC] retry without cookies for {u}")
+        with YoutubeDL(_ydl(height, cookies=False)) as y:
+            return y.extract_info(u, download=False)
 
 
 def _track_from(e, fallback_title=""):
@@ -350,17 +373,14 @@ _LABELS = ("t-series", "sony music", "zee music", "yrf", "tips", "saregama", "er
            "- topic", "melodies", "vevo", "records", "universal", "warner", "pen movies", "goldmines", "aditya music", "lahari")
 
 
-_VIDEO_WORDS = ("episode", "episodes", "ep ", "cartoon", "anime", "movie", "film", "trailer", "teaser", "podcast",
-                "interview", "lecture", "class", "tutorial", "news", "match", "highlights", "comedy", "show", "season",
-                "part ", "vlog", "documentary", "recipe", "review", "gameplay", "doraemon", "doremon", "shinchan",
-                "shin chan", "pokemon", "motu patlu", "chhota bheem", "ninja hattori", "kids", "story", "stories")
+import contextvars
+_VIDEO_MODE = contextvars.ContextVar("clx_video_mode", default=False)
 
 
-def _wants_video(q: str) -> bool:
-    """True when the request is clearly not a song, so the search runs as a
-    plain YouTube search (no ' song', no song ranking, longer results ok)."""
-    ql = " " + q.lower() + " "
-    return any((" " + w) in ql for w in _VIDEO_WORDS)
+def _wants_video(q: str = "") -> bool:
+    """True for a /find request: a plain YouTube search (no ' song' added,
+    no song ranking, results up to the link limit) instead of a song search."""
+    return _VIDEO_MODE.get()
 
 
 def _score(e, query=""):
@@ -437,7 +457,15 @@ def _piped_search(q):
     return []
 
 
-def _lookup(query: str, height=None) -> Optional[dict]:
+def _lookup(query: str, height=None, video=False) -> Optional[dict]:
+    tok = _VIDEO_MODE.set(bool(video))
+    try:
+        return _lookup_inner(query, height)
+    finally:
+        _VIDEO_MODE.reset(tok)
+
+
+def _lookup_inner(query: str, height=None) -> Optional[dict]:
     """Title / duration / direct audio url for a search or a YouTube link.
     Search order: YouTube search, YouTube Music search, web search - the
     first one that answers wins; the full extraction runs on the first
@@ -464,8 +492,7 @@ def _lookup(query: str, height=None) -> Optional[dict]:
                 break
     for u in cands[:5]:
         try:
-            with YoutubeDL(_ydl(height)) as y:
-                e = y.extract_info(u, download=False)
+            e = _extract(u, height)
         except Exception as ex:
             msg = str(ex)
             print(f"[MUSIC] extract {u}: {msg[:200]}")
@@ -507,8 +534,7 @@ def _related(track, played_ids, height=None):
     cands.sort(key=lambda x: -x[0])
     for _, cid in cands[:4]:
         try:
-            with YoutubeDL(_ydl(height)) as y:
-                e = y.extract_info(f"https://www.youtube.com/watch?v={cid}", download=False)
+            e = _extract(f"https://www.youtube.com/watch?v={cid}", height)
         except Exception as ex:
             print(f"[MUSIC] related extract {cid}: {str(ex)[:120]}")
             continue
@@ -1054,10 +1080,19 @@ def _auth(secret):
         raise HTTPException(403, "bad secret")
 
 
+def _ytdlp_version():
+    try:
+        import yt_dlp
+        return yt_dlp.version.__version__
+    except Exception:
+        return "?"
+
+
 @app.get("/health")
 async def health():
     return {"ok": True, "assistant": _me["username"], "chats": len([c for c, s in _state.items() if s["now"]]),
-            "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H}
+            "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
+            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS}
 
 
 @app.post("/play")
@@ -1074,7 +1109,7 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     if not query:
         return reply("Usage: /play song name (or a YouTube link)")
     try:
-        track = await asyncio.to_thread(_lookup, query, _st(chat_id)["quality"])
+        track = await asyncio.to_thread(_lookup, query, _st(chat_id)["quality"], bool(body.get("video")))
     except Exception as e:
         print(f"[MUSIC] search {query!r}: {e}")
         _last_error["text"] = str(e); track = None
@@ -1089,7 +1124,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
                          + ("the cookies file is set but YouTube isn't accepting it - export a fresh one." if _cookie_info["loaded"] else "a cookies file fixes it."))
         if err:
             return reply("⚠️ YouTube didn't give me that song - try again in a moment, or paste a YouTube link.")
-        return reply("🔍 Couldn't find that - try another name or paste a YouTube link.")
+        return reply("🔍 Couldn't find that - try another name or paste a YouTube link."
+                     + ("" if body.get("video") else " For an episode, movie or any other video use /find."))
     track["by"] = by
     ok, why = await _ensure_member(chat_id, body.get("invite_link"))
     if not ok:

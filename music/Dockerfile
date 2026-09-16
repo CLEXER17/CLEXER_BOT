@@ -6,5 +6,9 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# yt-dlp must be current - YouTube changes break old versions. This layer is
+# rebuilt on every deploy (the ARG changes with the git commit), never cached.
+ARG RAILWAY_GIT_COMMIT_SHA=dev
+RUN echo "build $RAILWAY_GIT_COMMIT_SHA" && pip install --no-cache-dir -U yt-dlp && python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
 COPY service.py .
 CMD ["python", "service.py"]

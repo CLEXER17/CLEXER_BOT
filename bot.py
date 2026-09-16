@@ -9189,7 +9189,7 @@ _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
 # purpose: this is a trading bot (admin 2026-09-16).
 MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
 MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
-_MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
+_MUSIC_CMDS = {"/play": "play", "/find": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
                "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/video": "video",
                "/quality": "quality", "/q": "quality"}
 
@@ -9226,10 +9226,11 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
     if not str(chat_id).startswith("-"):
         _music_dm_notice(chat_id); return
     who = (message or {}).get("from", {}).get("first_name") or uname or "someone"
-    if cmd == "/play":
+    if cmd in ("/play", "/find"):
         q = " ".join(parts[1:]).strip()
         if not q:
-            send_reply(chat_id, "Usage: <code>/play song name</code> or a YouTube link"); return
+            send_reply(chat_id, "Usage: <code>/play song name</code> or a YouTube link" if cmd == "/play"
+                       else "Usage: <code>/find episode / movie / any video name</code>"); return
         _wait = None
         try:
             _wj = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -9238,7 +9239,8 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
         except Exception:
             pass
         _ids = [m for m in ((message or {}).get("message_id"), _wait) if m]
-        r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id), "msg_ids": _ids}, timeout=90)
+        r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id), "msg_ids": _ids,
+                                  "video": cmd == "/find"}, timeout=90)
         if _wait:
             try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage", json={"chat_id": chat_id, "message_id": _wait}, timeout=5)
             except Exception: pass
@@ -17646,7 +17648,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _hr = requests.get(f"{MUSIC_URL}/health", timeout=10)
                 _hj = _hr.json() if _hr.ok else {}
                 _ml.append(f"Service: <b>{'✅ up' if _hj.get('ok') else '❌ HTTP ' + str(_hr.status_code)}</b>"
-                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p" if _hj.get("ok") else ""))
+                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p · yt-dlp {_hj.get('yt_dlp', '?')}" if _hj.get("ok") else ""))
                 _ck = _hj.get("cookies") or {}
                 if _ck:
                     if _ck.get("loaded") and not _ck.get("problem"):
@@ -21222,6 +21224,7 @@ _HELP_CATS = {
 _CMD_ONLY_CATS = {
     "music": ("🎵 Music", False, [
         ("/play",   "🎵", "Play",   "Play a song (video + audio) in the group's voice chat — /play song name, a YouTube link or a live link. Start the voice chat first"),
+        ("/find",   "🎬", "Find",   "Play a video that is not a song — /find doraemon new episode hindi, a movie, a trailer, a match (up to 3 h)"),
         ("/next",   "⏭", "Next",   "Next song — the queue, or a similar song when the queue is empty"),
         ("/skip",   "⏭", "Skip",   "Same as /next"),
         ("/video",  "📺", "Video",  "/video s — audio only, /video r — video back on"),
