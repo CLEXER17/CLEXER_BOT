@@ -1152,11 +1152,25 @@ async def health():
 NO_VIDEO = "🎧 This group is audio only - video plays in CLEXER's own groups."
 
 
+def _admin_present(chat_id, admin_id):
+    """Is the CLEX admin a member of this group? One Bot API lookup."""
+    try:
+        j = bot_api("getChatMember", {"chat_id": chat_id, "user_id": int(admin_id)}, timeout=8)
+        return (j.get("result") or {}).get("status") in ("creator", "administrator", "member", "restricted")
+    except Exception:
+        return False
+
+
 def _video_gate(chat_id, body):
-    """Per-group video permission, sent by the bot with every request."""
+    """Video is allowed only where the CLEX admin is a member. The check runs
+    once per session - on the /play that starts the music - and the answer
+    holds until the music ends (stop, queue over, voice chat closed, kicked).
+    The next session's first /play checks again."""
     s = _st(chat_id)
-    if "video_ok" in body:
-        s["video_ok"] = bool(body["video_ok"])
+    admin_id = body.get("admin_id")
+    if admin_id and not s["now"]:
+        s["video_ok"] = _admin_present(chat_id, admin_id)
+        print(f"[MUSIC] {chat_id}: new session, video {'on' if s['video_ok'] else 'off'} (admin {'present' if s['video_ok'] else 'absent'})")
     if not s["video_ok"]:
         s["video_on"] = False
     return s["video_ok"]
