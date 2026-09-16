@@ -61,7 +61,8 @@ try:
     EMOJI = {**_DEFAULT_EMOJI, **{k: str(v) for k, v in _json.loads(os.getenv("MUSIC_EMOJI_JSON", "") or "{}").items()}}
 except Exception:
     EMOJI = dict(_DEFAULT_EMOJI)
-MAX_SECONDS = 20 * 60          # mixes / hour-long uploads are skipped
+MAX_SECONDS = 20 * 60          # search results longer than this are skipped (mixes, hour-long uploads)
+MAX_LINK_SECONDS = int(os.getenv("MUSIC_MAX_LINK_MINUTES", "180") or 180) * 60   # a pasted link is wanted as is: episodes, films
 
 app = FastAPI()
 client: Client = None      # both are created inside main(), on the loop that runs everything
@@ -160,6 +161,7 @@ def _track_from(e, fallback_title=""):
 # stream. The next song (queue head, or the similar song that autoplay will
 # pick) is fetched while the current one plays, so there is no gap either.
 DL_MAX = int(os.getenv("MUSIC_DOWNLOAD_SECONDS", "70") or 70)   # give up and stream from the URL after this
+DL_LONG = 12 * 60              # longer than this (episodes, films) is streamed straight from the URL, not fetched first
 
 
 def _download(track):
@@ -190,7 +192,7 @@ _fetching: dict = {}          # id(track) -> running download, so two callers sh
 
 async def _fetch(track):
     """Make sure the track has a local file (unless it is live)."""
-    if track.get("live") or track.get("local"):
+    if track.get("live") or track.get("local") or (track.get("duration") or 0) > DL_LONG:
         return
     key = id(track)
     if key in _fetching:
@@ -440,7 +442,9 @@ def _lookup(query: str) -> Optional[dict]:
         if not e:
             continue
         dur = e.get("duration") or 0
-        if not e.get("is_live") and dur and (dur > MAX_SECONDS or dur < 30):
+        is_link = q.startswith(("http://", "https://"))
+        if not e.get("is_live") and dur and (dur > (MAX_LINK_SECONDS if is_link else MAX_SECONDS) or (dur < 30 and not is_link)):
+            _last_error["text"] = f"too long: {int(dur // 60)} min (limit {MAX_LINK_SECONDS // 60} min)" if dur > MAX_SECONDS else ""
             continue
         t = _track_from(e, q)
         if t:
@@ -1001,6 +1005,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
         _last_error["text"] = str(e); track = None
     if not track:
         err = _last_error["text"].lower()
+        if err.startswith("too long"):
+            return reply(f"⏱ That video is {err.split(':')[1].split('(')[0].strip()} - the limit is {MAX_LINK_SECONDS // 60} min.")
         if "netscape" in err or "cookie" in err and ("parse" in err or "load" in err or "format" in err):
             return reply("⚠️ The YouTube cookies file on the server is broken. Tell the admin - /music shows what's wrong.")
         if "sign in" in err or "not a bot" in err or "cookies" in err:
