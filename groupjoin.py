@@ -17,6 +17,8 @@ and expire with the request.
 """
 import html as _html
 import io
+import re
+import json
 import os
 import threading
 import time
@@ -45,16 +47,91 @@ def init(token: str, bot_username_getter, admin_id="", is_vip=None):
         _IS_VIP = is_vip
 
 
+# Premium (animated) emoji for the join / leave / request cards and /info -
+# the admin's set (2026-09-16). Text and captions get <tg-emoji> wraps,
+# buttons get the glyph as their icon; non-Premium viewers see plain glyphs.
+PREMIUM_EMOJI = {
+    "👤": "5262742999678329061", "👑": "5357107601584693888", "⭐": "5870801633104891858",
+    "🛡": "5042328396193864923", "🤝": "6136198451282581752", "🆔": "6030656587830399914",
+    "💬": "5431448095294497393", "🌐": "5307768168339480417", "🖼": "5870782662234346251",
+    "👮": "5258021679568789405", "⚡": "5312016608254762256", "🔄": "5258420634785947640",
+    "🤖": "5870531058755178453", "⚠": "5233681064815249014", "📝": "5386761619164373912",
+    "🔗": "5911071731803495960", "🪪": "4907231385309152742", "🎮": "5309950797704865693",
+    "🎵": "6026256492619895014", "📩": "5472239203590888751", "👋": "6276133811545706331",
+    "🏠": "5312486108309757006", "🕐": "5363857580777029543", "✅": "6026257381678124710",
+    "😡": "5199569914859367436", "❌": "5042112436648281096", "📄": "5386515023617074741",
+    "🎉": "5039778134807806727",
+}
+_TEXT_METHODS = {"sendMessage", "editMessageText", "sendPhoto", "editMessageCaption", "editMessageMedia"}
+_EMO_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(PREMIUM_EMOJI, key=len, reverse=True)) + r")\ufe0f?")
+_LEAD_RE = re.compile("^(?:(" + "|".join(re.escape(g) for g in sorted(PREMIUM_EMOJI, key=len, reverse=True)) + r")|[^\w\s])\ufe0f?\s*")
+
+
+def _pe(text):
+    if not text or "<tg-emoji" in text:
+        return text
+    return _EMO_RE.sub(lambda m: f'<tg-emoji emoji-id="{PREMIUM_EMOJI[m.group(1)]}">{m.group(1)}</tg-emoji>', text)
+
+
+def _icon_buttons(markup):
+    """A button starting with a known glyph carries it as its premium icon."""
+    try:
+        kb = json.loads(markup) if isinstance(markup, str) else markup
+        rows = kb.get("inline_keyboard") if isinstance(kb, dict) else None
+        if not rows:
+            return markup
+        changed, new_rows = False, []
+        for row in rows:
+            new_row = []
+            for b in row:
+                rest, icon = b.get("text") or "", None
+                while True:
+                    m = _LEAD_RE.match(rest)
+                    if not m:
+                        break
+                    if m.group(1) and not icon:
+                        icon = PREMIUM_EMOJI[m.group(1)]
+                    rest = rest[m.end():]
+                if icon and rest.strip() and "icon_custom_emoji_id" not in b:
+                    b = {**b, "text": rest.strip(), "icon_custom_emoji_id": icon}; changed = True
+                new_row.append(b)
+            new_rows.append(new_row)
+        if not changed:
+            return markup
+        out = {**kb, "inline_keyboard": new_rows}
+        return json.dumps(out, ensure_ascii=False) if isinstance(markup, str) else out
+    except Exception:
+        return markup
+
+
+def _with_emoji(method, payload):
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    if out.get("reply_markup"):
+        out["reply_markup"] = _icon_buttons(out["reply_markup"])
+    if method in _TEXT_METHODS:
+        for k in ("text", "caption"):
+            if out.get(k):
+                out[k] = _pe(out[k])
+    return out
+
+
 def _api(method, payload=None, files=None, timeout=15):
     if not _TOKEN:
         return {}
-    try:
-        url = f"https://api.telegram.org/bot{_TOKEN}/{method}"
+    url = f"https://api.telegram.org/bot{_TOKEN}/{method}"
+    def post(pl):
         if files:
-            r = requests.post(url, data=payload, files=files, timeout=max(timeout, 30))
-        else:
-            r = requests.post(url, json=payload, timeout=timeout)
-        return r.json()
+            return requests.post(url, data=pl, files=files, timeout=max(timeout, 30)).json()
+        return requests.post(url, json=pl, timeout=timeout).json()
+    try:
+        rich = _with_emoji(method, payload)
+        j = post(rich)
+        if not j.get("ok") and rich != payload and any(w in str(j.get("description", "")).upper() for w in ("DOCUMENT_INVALID", "EMOJI")):
+            print(f"  [JOIN] {method}: {j.get('description')} - resent without premium emoji")
+            j = post(payload)
+        return j
     except Exception as e:
         print(f"  [JOIN] {method} failed: {e}")
         return {}
