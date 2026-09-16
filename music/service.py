@@ -147,7 +147,10 @@ if os.getenv("MUSIC_PROXY", "").strip():
     _YDL["proxy"] = os.getenv("MUSIC_PROXY").strip()
 def _ydl(h=None, cookies=True):
     """yt-dlp options for a given video height (per-group /quality)."""
-    o = {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else dict(_YDL)
+    if h == 0:
+        o = {**_YDL, "format": "bestaudio[ext=m4a]/bestaudio/best"}      # audio-only group
+    else:
+        o = {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else dict(_YDL)
     if not cookies:
         o.pop("cookiefile", None)
     return o
@@ -291,7 +294,7 @@ async def _prefetch_locked(chat_id):
                 t = up                                  # picked earlier, file still missing
             else:
                 seed = next((x for x in [now] + s["history"][::-1] if x.get("by") != "autoplay"), now)
-                t = await asyncio.to_thread(_related, seed if seed.get("id") else now, set(s["played"]), s["quality"])
+                t = await asyncio.to_thread(_related, seed if seed.get("id") else now, set(s["played"]), s["quality"] if s["video_ok"] else 0)
                 if not t or s["now"] is not now:
                     return
                 t["after"] = now.get("id")
@@ -563,7 +566,7 @@ def _snapshot():
         out[str(chat_id)] = {"now": st["now"], "queue": st["queue"], "paused": st["paused"], "volume": st["volume"],
                              "card": st["card"], "position": st["offset"] + pos, "saved": time.time(),
                              "autoplay": st["autoplay"], "played": st["played"][-40:], "history": st["history"][-5:],
-                             "video_on": st["video_on"], "quality": st["quality"]}
+                             "video_on": st["video_on"], "quality": st["quality"], "video_ok": st["video_ok"]}
     return out
 
 
@@ -683,7 +686,7 @@ async def _resume_all():
         s = _st(chat_id)
         s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None,
                  autoplay=bool(st.get("autoplay", True)), played=st.get("played", []), history=st.get("history", []),
-                 video_on=bool(st.get("video_on", True)), quality=int(st.get("quality", VIDEO_H)))
+                 video_on=bool(st.get("video_on", True)), quality=int(st.get("quality", VIDEO_H)), video_ok=bool(st.get("video_ok", True)))
         track = st["now"]
         start = float(st.get("position", 0))
         try:
@@ -723,7 +726,7 @@ def _card_note(card, text):
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
                                        "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
-                                       "video_on": True, "up_next": None, "quality": VIDEO_H, "pending": None})
+                                       "video_on": True, "up_next": None, "quality": VIDEO_H, "pending": None, "video_ok": True})
 
 
 def _drop_file(s):
@@ -772,7 +775,7 @@ def _card_text(chat_id):
     head = "⏸ <b>Paused</b>" if s["paused"] else "🎵 <b>Now playing</b>"
     state = "⏸ paused - press Resume to continue" if s["paused"] else "▶ playing"
     who = "🔁 Similar to the last request" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
-    mode = ("📺 %dp" % s["quality"]) if (t.get("video") and s["video_on"]) else "🎧 audio only"
+    mode = ("📺 %dp" % s["quality"]) if (t.get("video") and s["video_on"]) else ("🎧 audio only" if s["video_ok"] else "🎧 audio")
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
                f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {mode}\n"
@@ -791,7 +794,7 @@ def _card_kb(chat_id):
     return {"inline_keyboard": [
         [_btn("⏮ Prev", f"mu:prev:{chat_id}"), _btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Next", f"mu:skip:{chat_id}")],
         [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
-        [_btn("🎧 Audio only" if s["video_on"] else "📺 Video on", f"mu:{'voff' if s['video_on'] else 'von'}:{chat_id}")]]}
+        *([[_btn("🎧 Audio only" if s["video_on"] else "📺 Video on", f"mu:{'voff' if s['video_on'] else 'von'}:{chat_id}")]] if s["video_ok"] else [])]}
 
 
 def _remember(chat_id, mid):
@@ -1021,7 +1024,7 @@ async def _next(chat_id):
             await _start(chat_id, up)
             return True
         seed = next((t for t in [s["now"]] + s["history"][::-1] if t.get("by") != "autoplay"), s["now"])
-        rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]), s["quality"])
+        rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]), s["quality"] if s["video_ok"] else 0)
         if rel:
             await _start(chat_id, rel)
             return True
@@ -1146,11 +1149,25 @@ async def health():
             "yt_dlp": _ytdlp_version(), "clients": _CLIENTS}
 
 
+NO_VIDEO = "🎧 This group is audio only - video plays in CLEXER's own groups."
+
+
+def _video_gate(chat_id, body):
+    """Per-group video permission, sent by the bot with every request."""
+    s = _st(chat_id)
+    if "video_ok" in body:
+        s["video_ok"] = bool(body["video_ok"])
+    if not s["video_ok"]:
+        s["video_on"] = False
+    return s["video_ok"]
+
+
 @app.post("/play")
 async def play(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
     body = await req.json()
     chat_id, query = int(body["chat_id"]), str(body.get("query", "")).strip()
+    _video_gate(chat_id, body)
     by = str(body.get("by", "someone"))
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)                     # the user's /play line and the bot's "Searching…"
@@ -1160,7 +1177,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     if not query:
         return reply("Usage: /play song name (or a YouTube link)")
     try:
-        track = await asyncio.to_thread(_lookup, query, _st(chat_id)["quality"], bool(body.get("video")))
+        _h = _st(chat_id)["quality"] if _st(chat_id)["video_ok"] else 0
+        track = await asyncio.to_thread(_lookup, query, _h, bool(body.get("video")))
     except Exception as e:
         print(f"[MUSIC] search {query!r}: {e}")
         _last_error["text"] = str(e); track = None
@@ -1223,7 +1241,10 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     chat_id, act = int(body["chat_id"]), str(body.get("action", ""))
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)
-    res = await _control(chat_id, act, body)
+    if not _video_gate(chat_id, body) and act in ("von", "voff", "video", "quality"):
+        res = {"text": NO_VIDEO}
+    else:
+        res = await _control(chat_id, act, body)
     if act == "stop" and body.get("msg_ids"):
         return {"text": "", "sent": True}           # everything was just swept - leave nothing behind
     if body.get("msg_ids") and res.get("text"):

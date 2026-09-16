@@ -9222,6 +9222,28 @@ def _music_assistant_id():
     return _music_asst["id"]
 
 
+_music_vok = {}
+
+
+def _music_video_ok(chat_id):
+    """Video is for groups the CLEX admin is in; everywhere else the music
+    is audio only. Checked through getChatMember, cached 10 min per group."""
+    if not ADMIN_CHAT_ID:
+        return True
+    ok, t = _music_vok.get(chat_id, (None, 0))
+    if ok is not None and time.time() - t < 600:
+        return ok
+    ok = False
+    try:
+        j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember",
+                          json={"chat_id": chat_id, "user_id": int(ADMIN_CHAT_ID)}, timeout=8).json()
+        ok = (j.get("result") or {}).get("status") in ("creator", "administrator", "member", "restricted")
+    except Exception:
+        pass
+    _music_vok[chat_id] = (ok, time.time())
+    return ok
+
+
 def _music_invite_link(chat_id):
     """A link the assistant can use to enter the group, if the bot may make one."""
     try:
@@ -9257,7 +9279,7 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             pass
         _ids = [m for m in ((message or {}).get("message_id"), _wait) if m]
         r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id), "msg_ids": _ids,
-                                  "video": cmd == "/find"}, timeout=90)
+                                  "video": cmd == "/find", "video_ok": _music_video_ok(chat_id)}, timeout=90)
         if _wait:
             try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage", json={"chat_id": chat_id, "message_id": _wait}, timeout=5)
             except Exception: pass
@@ -9265,7 +9287,8 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             send_reply(chat_id, r["text"])
         return
     act = _MUSIC_CMDS[cmd]
-    payload = {"chat_id": chat_id, "action": act, "msg_ids": [m for m in [(message or {}).get("message_id")] if m]}
+    payload = {"chat_id": chat_id, "action": act, "msg_ids": [m for m in [(message or {}).get("message_id")] if m],
+               "video_ok": _music_video_ok(chat_id)}
     if cmd == "/volume":
         try:
             payload["value"] = int(parts[1])
@@ -21244,8 +21267,8 @@ _CMD_ONLY_CATS = {
         ("/find",   "🎬", "Find",   "Play a video that is not a song — /find doraemon new episode hindi, a movie, a trailer, a match (up to 3 h)"),
         ("/next",   "⏭", "Next",   "Next song — the queue, or a similar song when the queue is empty"),
         ("/skip",   "⏭", "Skip",   "Same as /next"),
-        ("/video",  "📺", "Video",  "/video s — audio only, /video r — video back on"),
-        ("/q",      "🎚", "Quality", "Video size for this group — /q 360, /q 480 or /q 720 (also /quality)"),
+        ("/video",  "📺", "Video",  "/video s — audio only, /video r — video back on (CLEXER's own groups)"),
+        ("/q",      "🎚", "Quality", "Video size — /q 360, /q 480 or /q 720 (CLEXER's own groups)"),
         ("/pause",  "⏸", "Pause",  "Pause the music"),
         ("/resume", "▶️", "Resume", "Resume the music"),
         ("/stop",   "⏹", "Stop",   "Stop the music, clear the queue and leave the voice chat"),
@@ -23414,7 +23437,7 @@ def command_listener():
                     if cb_data.startswith("mu:"):
                         try:
                             _, _mact, _mchat = cb_data.split(":", 2)
-                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact},
+                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact, "video_ok": _music_video_ok(int(_mchat))},
                                               timeout=60 if _mact in ("von", "voff", "vup", "vdown") else 20)
                             _mu_pop = (_mr.get("text") or "Done.")
                         except Exception as _me_:
