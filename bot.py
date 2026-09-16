@@ -9236,15 +9236,16 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             _wait = (_wj.get("result") or {}).get("message_id")
         except Exception:
             pass
-        r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id)}, timeout=90)
+        _ids = [m for m in ((message or {}).get("message_id"), _wait) if m]
+        r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id), "msg_ids": _ids}, timeout=90)
         if _wait:
             try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage", json={"chat_id": chat_id, "message_id": _wait}, timeout=5)
             except Exception: pass
-        if r.get("text"):
+        if r.get("text") and not r.get("sent"):
             send_reply(chat_id, r["text"])
         return
     act = _MUSIC_CMDS[cmd]
-    payload = {"chat_id": chat_id, "action": act}
+    payload = {"chat_id": chat_id, "action": act, "msg_ids": [m for m in [(message or {}).get("message_id")] if m]}
     if cmd == "/volume":
         try:
             payload["value"] = int(parts[1])
@@ -9253,7 +9254,7 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
     if cmd == "/autoplay":
         payload["value"] = (parts[1].lower() if len(parts) > 1 else "on")
     r = _music_call("/control", payload)
-    if r.get("text"):
+    if r.get("text") and not r.get("sent"):
         send_reply(chat_id, r["text"])
 
 # Languages: every Telegram call to a DM is rewritten in the user's language

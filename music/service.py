@@ -118,7 +118,8 @@ def _dur(sec):
 # 480p video track plus the best audio track (streamed together). Video is
 # capped at 480p to keep the server's encoder comfortable.
 VIDEO_H = int(os.getenv("MUSIC_VIDEO_HEIGHT", "480") or 480)
-_YDL = {"format": f"b[height<={VIDEO_H}][acodec!=none][vcodec!=none]/bv*[height<={VIDEO_H}]+ba/b[height<={VIDEO_H}]/bestaudio/best",
+_YDL = {"format": (f"b[height<={VIDEO_H}][vcodec^=avc1][acodec!=none]/bv*[height<={VIDEO_H}][vcodec^=avc1]+ba"
+                   f"/b[height<={VIDEO_H}][acodec!=none][vcodec!=none]/bv*[height<={VIDEO_H}]+ba/b[height<={VIDEO_H}]/bestaudio/best"),
         "noplaylist": True, "quiet": True, "no_warnings": True, "default_search": "ytsearch1", "skip_download": True,
         "extract_flat": False}
 
@@ -432,7 +433,7 @@ def _card_note(card, text):
 # ── player ─────────────────────────────────────────────────────────────────
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
-                                       "offset": 0, "file": None, "history": [], "played": [], "autoplay": True})
+                                       "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": []})
 
 
 def _drop_file(s):
@@ -480,7 +481,9 @@ def _card_text(chat_id):
                f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if t.get('video') else '🎧 audio'}\n"
                f"{state}\n"
                f"{who}\n\n"
-               f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue")
+               f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue
+"
+               f"➕ Send /play song name to add to the queue")
 
 
 def _card_kb(chat_id):
@@ -492,6 +495,32 @@ def _card_kb(chat_id):
     return {"inline_keyboard": [
         [_btn("⏮ Prev", f"mu:prev:{chat_id}"), _btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Next", f"mu:skip:{chat_id}")],
         [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")]]}
+
+
+def _remember(chat_id, mid):
+    if mid:
+        _st(chat_id)["msgs"] = (_st(chat_id)["msgs"] + [int(mid)])[-200:]
+
+
+def _say(chat_id, text):
+    """A music reply in the group, tracked so it can be swept away later."""
+    j = bot_api("sendMessage", {"chat_id": chat_id, "text": _pe(text), "parse_mode": "HTML"}, timeout=10)
+    if j.get("ok"):
+        _remember(chat_id, j["result"]["message_id"])
+    return bool(j.get("ok"))
+
+
+def _sweep(chat_id, keep_card=False):
+    """Delete every music message this chat has - replies, the users'
+    /play lines and the card - once the music is over."""
+    s = _st(chat_id)
+    if s["card"] and not keep_card:
+        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
+        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
+        s["card"] = None
+    for mid in s["msgs"]:
+        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": mid}, timeout=8)
+    s["msgs"] = []
 
 
 def _post_card(chat_id):
@@ -614,14 +643,7 @@ async def _next(chat_id):
     except Exception:
         pass
     await asyncio.to_thread(_save_state)
-    if s["card"]:
-        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
-        done = _pe("⏹ Queue finished - left the voice chat.")
-        if s["card"][2] == "photo":
-            bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": done, "parse_mode": "HTML"})
-        else:
-            bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": done, "parse_mode": "HTML"})
-        s["card"] = None
+    await asyncio.to_thread(_sweep, chat_id)
     return False
 
 
@@ -639,10 +661,7 @@ async def _on_chat_update(_, update: ChatUpdate):
             return
         why = "⏹ Voice chat ended." if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT else "⏹ I was removed from the voice chat."
         s["queue"].clear(); s["now"] = None; _drop_file(s)
-        if s["card"]:
-            bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
-            _card_note(s["card"], why + " Send /play to start again.")
-            s["card"] = None
+        await asyncio.to_thread(_sweep, chat_id)
         try:
             await call.leave_call(chat_id)
         except Exception:
@@ -683,8 +702,13 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     body = await req.json()
     chat_id, query = int(body["chat_id"]), str(body.get("query", "")).strip()
     by = str(body.get("by", "someone"))
+    for mid in (body.get("msg_ids") or []):
+        _remember(chat_id, mid)                     # the user's /play line and the bot's "Searching…"
+    def reply(text):
+        _say(chat_id, text)
+        return {"text": "", "sent": True}
     if not query:
-        return {"text": "Usage: /play song name (or a YouTube link)"}
+        return reply("Usage: /play song name (or a YouTube link)")
     try:
         track = await asyncio.to_thread(_lookup, query)
     except Exception as e:
@@ -693,31 +717,32 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     if not track:
         err = _last_error["text"].lower()
         if "sign in" in err or "not a bot" in err or "cookies" in err:
-            return {"text": "⚠️ YouTube is blocking this server right now (it wants a login). Tell the admin - a cookies file fixes it."}
+            return reply("⚠️ YouTube is blocking this server right now (it wants a login). Tell the admin - a cookies file fixes it.")
         if err:
-            return {"text": "⚠️ YouTube didn't give me that song - try again in a moment, or paste a YouTube link."}
-        return {"text": "🔍 Couldn't find that - try another name or paste a YouTube link."}
+            return reply("⚠️ YouTube didn't give me that song - try again in a moment, or paste a YouTube link.")
+        return reply("🔍 Couldn't find that - try another name or paste a YouTube link.")
     track["by"] = by
     ok, why = await _ensure_member(chat_id, body.get("invite_link"))
     if not ok:
-        return {"text": f"⚠️ {why}"}
+        return reply(f"⚠️ {why}")
     async with _lock:
         s = _st(chat_id)
         if s["now"]:
             if len(s["queue"]) >= MAX_QUEUE:
-                return {"text": f"📜 Queue is full ({MAX_QUEUE})."}
+                return reply(f"📜 Queue is full ({MAX_QUEUE}).")
             s["queue"].append(track)
             await asyncio.to_thread(_refresh_card, chat_id)
-            return {"text": f"➕ Queued #{len(s['queue'])}: <b>{_esc(track['title'])}</b> ({_dur(track['duration'])})"}
+            return reply(f"➕ Queued #{len(s['queue'])}: <b>{_esc(track['title'])}</b> ({_dur(track['duration'])})")
         try:
             await _start(chat_id, track)
         except NoActiveGroupCall:
             s["now"] = None
-            return {"text": "🎙 Start a voice chat in this group first, then send /play again."}
+            return reply("🎙 Start a voice chat in this group first, then send /play again.")
         except Exception as e:
             s["now"] = None
             print(f"[MUSIC] play {chat_id}: {e!r}")
-            return {"text": "⚠️ Couldn't join the voice chat - is it running, and am I allowed in?"}
+            return reply("⚠️ Couldn't join the voice chat - is it running, and am I allowed in?")
+    print(f"[MUSIC] playing {track['title'][:50]!r} in {chat_id} video={bool(track.get('video'))}")
     return {"text": "", "started": True}
 
 
@@ -726,6 +751,17 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
     body = await req.json()
     chat_id, act = int(body["chat_id"]), str(body.get("action", ""))
+    for mid in (body.get("msg_ids") or []):
+        _remember(chat_id, mid)
+    res = await _control(chat_id, act, body)
+    if body.get("msg_ids") and res.get("text"):
+        # typed command: answer in the group ourselves, tracked for the sweep
+        _say(chat_id, res["text"])
+        return {"text": "", "sent": True}
+    return res
+
+
+async def _control(chat_id, act, body):
     async with _lock:
         s = _st(chat_id)
         if act == "autoplay":
