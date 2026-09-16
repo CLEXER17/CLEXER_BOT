@@ -9190,7 +9190,7 @@ _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
 MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
 MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
 _MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
-               "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume"}
+               "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/video": "video"}
 
 
 def _music_call(path, payload, timeout=40):
@@ -9251,6 +9251,11 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             payload["value"] = int(parts[1])
         except Exception:
             send_reply(chat_id, "Usage: <code>/volume 80</code> (10-200)"); return
+    if cmd == "/video":
+        _v = (parts[1].lower() if len(parts) > 1 else "")
+        if _v not in ("s", "r", "on", "off", "stop", "resume", "start"):
+            send_reply(chat_id, "Usage: <code>/video s</code> - audio only · <code>/video r</code> - video back on"); return
+        payload["value"] = "r" if _v in ("r", "on", "resume", "start") else "s"
     r = _music_call("/control", payload)
     if r.get("text") and not r.get("sent"):
         send_reply(chat_id, r["text"])
@@ -21198,8 +21203,10 @@ _HELP_CATS = {
 # games are reachable by typing /games, not from the menu (admin 2026-09-16).
 _CMD_ONLY_CATS = {
     "music": ("🎵 Music", False, [
-        ("/play",   "🎵", "Play",   "Play a song in the group's voice chat — /play song name or a YouTube link. Start the voice chat first"),
-        ("/skip",   "⏭", "Skip",   "Skip to the next song in the queue"),
+        ("/play",   "🎵", "Play",   "Play a song (video + audio) in the group's voice chat — /play song name, a YouTube link or a live link. Start the voice chat first"),
+        ("/next",   "⏭", "Next",   "Next song — the queue, or a similar song when the queue is empty"),
+        ("/skip",   "⏭", "Skip",   "Same as /next"),
+        ("/video",  "📺", "Video",  "/video s — audio only, /video r — video back on"),
         ("/pause",  "⏸", "Pause",  "Pause the music"),
         ("/resume", "▶️", "Resume", "Resume the music"),
         ("/stop",   "⏹", "Stop",   "Stop the music, clear the queue and leave the voice chat"),
@@ -23368,7 +23375,8 @@ def command_listener():
                     if cb_data.startswith("mu:"):
                         try:
                             _, _mact, _mchat = cb_data.split(":", 2)
-                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact}, timeout=20)
+                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact},
+                                              timeout=60 if _mact in ("von", "voff", "vup", "vdown") else 20)
                             _mu_pop = (_mr.get("text") or "Done.")
                         except Exception as _me_:
                             print(f"  [MUSIC] callback {cb_data}: {_me_}")

@@ -153,7 +153,10 @@ def _track_from(e, fallback_title=""):
             "uploader": e.get("uploader") or e.get("channel") or ""}
 
 
-def _stream(track, file=None):
+def _stream(track, file=None, video_on=True):
+    if not video_on:
+        src = file or track["url"]
+        return MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE)
     if track.get("live") and not file:
         return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
     if file:
@@ -339,7 +342,8 @@ def _snapshot():
         pos = st.get("_pos", 0)
         out[str(chat_id)] = {"now": st["now"], "queue": st["queue"], "paused": st["paused"], "volume": st["volume"],
                              "card": st["card"], "position": st["offset"] + pos, "saved": time.time(),
-                             "autoplay": st["autoplay"], "played": st["played"][-40:], "history": st["history"][-5:]}
+                             "autoplay": st["autoplay"], "played": st["played"][-40:], "history": st["history"][-5:],
+                             "video_on": st["video_on"]}
     return out
 
 
@@ -392,6 +396,35 @@ async def _track_positions():
             await asyncio.to_thread(_save_state)
 
 
+def _card_alive(card):
+    """True while the card message still exists. A no-op markup edit is the
+    cheapest probe the Bot API offers: 'not modified' means it is there,
+    'message to edit not found' means someone deleted it."""
+    j = bot_api("editMessageReplyMarkup", {"chat_id": card[0], "message_id": card[1], "reply_markup": _card_kb(card[0])}, timeout=8)
+    if j.get("ok"):
+        return True
+    d = str(j.get("description", "")).lower()
+    return "not found" not in d and "message_id_invalid" not in d and "can't be edited" not in d
+
+
+async def _card_watch():
+    """Every 40 s: if a playing chat's card was deleted by someone, post it
+    again so the controls never disappear mid-song."""
+    while True:
+        await asyncio.sleep(40)
+        for chat_id, st in list(_state.items()):
+            if not st["now"]:
+                continue
+            try:
+                if st["card"] and not await asyncio.to_thread(_card_alive, st["card"]):
+                    print(f"[MUSIC] card {chat_id} was deleted - posting again")
+                    st["card"] = None
+                if not st["card"]:
+                    await asyncio.to_thread(_post_card, chat_id)
+            except Exception as e:
+                print(f"[MUSIC] card watch {chat_id}: {e!r}")
+
+
 async def _resume_all():
     """After a restart: pick every chat up where it was, or tidy its card."""
     snap = _load_state()
@@ -408,17 +441,18 @@ async def _resume_all():
             continue
         s = _st(chat_id)
         s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None,
-                 autoplay=bool(st.get("autoplay", True)), played=st.get("played", []), history=st.get("history", []))
+                 autoplay=bool(st.get("autoplay", True)), played=st.get("played", []), history=st.get("history", []),
+                 video_on=bool(st.get("video_on", True)))
         track = st["now"]
         start = float(st.get("position", 0))
         try:
             if track.get("live"):
                 s["now"] = track; s["file"] = None; s["offset"] = 0
-                await call.play(chat_id, _stream(track))
+                await call.play(chat_id, _stream(track, None, s["video_on"]))
             else:
-                f = await asyncio.to_thread(_encode, track, start, s["volume"])
+                f = await asyncio.to_thread(_encode, track, start, s["volume"], s["video_on"])
                 s["now"] = track; s["file"] = f; s["offset"] = start
-                await call.play(chat_id, _stream(track, f))
+                await call.play(chat_id, _stream(track, f, s["video_on"]))
             await asyncio.to_thread(_post_card, chat_id)
             print(f"[MUSIC] resumed {track['title'][:40]!r} in {chat_id} at {start:.0f}s")
             fresh[cid] = True
@@ -444,7 +478,8 @@ def _card_note(card, text):
 # ── player ─────────────────────────────────────────────────────────────────
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
-                                       "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": []})
+                                       "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
+                                       "video_on": True})
 
 
 def _drop_file(s):
@@ -457,12 +492,12 @@ def _drop_file(s):
             pass
 
 
-def _encode(track, start, volume):
+def _encode(track, start, volume, video=True):
     """The rest of the song from `start` seconds at `volume`% into a temp
     file. Volume cannot be set through Telegram for a plain member of the
     call, so it is baked into the audio; the video track is copied as is."""
     start = max(0, float(start)); vol = f"volume={max(0.05, volume / 100):.2f}"
-    if track.get("video"):
+    if track.get("video") and video:
         out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".mkv", delete=False).name
         if track["video"] == track["url"]:
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["video"],
@@ -489,7 +524,7 @@ def _card_text(chat_id):
     who = "🔁 Similar to the last request" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
-               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if t.get('video') else '🎧 audio'}\n"
+               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if (t.get('video') and s['video_on']) else '🎧 audio only'}\n"
                f"{state}\n"
                f"{who}\n\n"
                f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue\n"
@@ -504,7 +539,8 @@ def _card_kb(chat_id):
             [_btn("📜 Queue", f"mu:queue:{chat_id}")]]}
     return {"inline_keyboard": [
         [_btn("⏮ Prev", f"mu:prev:{chat_id}"), _btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Next", f"mu:skip:{chat_id}")],
-        [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")]]}
+        [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
+        [_btn("🎧 Audio only" if s["video_on"] else "📺 Video on", f"mu:{'voff' if s['video_on'] else 'von'}:{chat_id}")]]}
 
 
 def _remember(chat_id, mid):
@@ -589,12 +625,40 @@ async def _start(chat_id, track):
     _drop_file(s)
     f = None
     if s["volume"] != 100 and not track.get("live"):
-        f = await asyncio.to_thread(_encode, track, 0, s["volume"])
+        f = await asyncio.to_thread(_encode, track, 0, s["volume"], s["video_on"])
         s["file"] = f
-    await call.play(chat_id, _stream(track, f))
+    await call.play(chat_id, _stream(track, f, s["video_on"]))
     s["_pos"] = 0
     await asyncio.to_thread(_post_card, chat_id)
     await asyncio.to_thread(_save_state)
+
+
+async def _set_video(chat_id, on: bool):
+    """Video on/off while playing: re-stream from the current position."""
+    s = _st(chat_id); t = s["now"]
+    s["video_on"] = on
+    if not t:
+        return
+    if t.get("live"):
+        await call.play(chat_id, _stream(t, None, on)); return
+    try:
+        pos = await call.time(chat_id)
+    except Exception:
+        pos = 0
+    start = s["offset"] + (pos or 0)
+    f = await asyncio.to_thread(_encode, t, start, s["volume"], on)
+    old = s.get("file"); s["file"] = f; s["offset"] = start
+    await call.play(chat_id, _stream(t, f, on))
+    if s["paused"]:
+        try:
+            await call.pause(chat_id)
+        except Exception:
+            pass
+    if old:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
 
 
 async def _set_volume(chat_id, volume):
@@ -617,7 +681,7 @@ async def _set_volume(chat_id, volume):
         pos = 0
     start = s["offset"] + (pos or 0)
     try:
-        f = await asyncio.to_thread(_encode, t, start, volume)
+        f = await asyncio.to_thread(_encode, t, start, volume, s["video_on"])
     except Exception as e:
         print(f"[MUSIC] volume encode {chat_id}: {e}")
         try:
@@ -627,7 +691,7 @@ async def _set_volume(chat_id, volume):
         return
     old = s.get("file")
     s["file"] = f; s["offset"] = start
-    await call.play(chat_id, _stream(t, f))
+    await call.play(chat_id, _stream(t, f, s["video_on"]))
     if s["paused"]:
         try:
             await call.pause(chat_id)
@@ -675,8 +739,11 @@ async def _on_chat_update(_, update: ChatUpdate):
         s = _state.get(chat_id)
         if not s or not s["now"]:
             return
-        why = "⏹ Voice chat ended." if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT else "⏹ I was removed from the voice chat."
-        s["queue"].clear(); s["now"] = None; _drop_file(s)
+        why = ("voice chat ended" if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT
+               else "kicked" if update.status & ChatUpdate.Status.KICKED
+               else "left the group" if update.status & ChatUpdate.Status.LEFT_GROUP else "removed from the call")
+        print(f"[MUSIC] {chat_id}: {why} - cleaning up")
+        s["queue"].clear(); s["now"] = None; s["paused"] = False; _drop_file(s)
         await asyncio.to_thread(_sweep, chat_id)
         try:
             await call.leave_call(chat_id)
@@ -688,8 +755,12 @@ async def _on_chat_update(_, update: ChatUpdate):
 async def _ensure_member(chat_id, invite_link):
     """The assistant must be in the group before it can join the call."""
     try:
-        await client.get_chat_member(chat_id, "me")
-        return True, ""
+        m = await client.get_chat_member(chat_id, "me")
+        status = str(getattr(m, "status", "")).lower()
+        if "banned" in status or "kicked" in status:
+            return False, f"@{_me['username']} was removed from this group - an admin has to unban it (Group → Removed users) and add it back."
+        if "left" not in status:
+            return True, ""
     except RPCError:
         pass
     if not invite_link:
@@ -698,7 +769,10 @@ async def _ensure_member(chat_id, invite_link):
         await client.join_chat(invite_link)
         return True, ""
     except RPCError as e:
-        return False, f"I could not join the group: {e.MESSAGE if hasattr(e, 'MESSAGE') else e}"
+        name = type(e).__name__
+        if "Banned" in name or "Kicked" in name or "USER_BANNED" in str(e) or "KICKED" in str(e):
+            return False, f"@{_me['username']} was removed from this group - an admin has to unban it (Group → Removed users) and add it back."
+        return False, f"I could not join the group: {getattr(e, 'MESSAGE', e)}"
 
 
 # ── HTTP ───────────────────────────────────────────────────────────────────
@@ -792,6 +866,13 @@ async def _control(chat_id, act, body):
             if act == "skip":
                 had = await _next(chat_id)
                 return {"text": "⏭ Next song." if had else "⏭ Nothing similar found - queue is empty, left the voice chat."}
+            if act in ("von", "voff", "video"):
+                on = (act == "von") if act != "video" else str(body.get("value", "")).lower() in ("r", "on", "resume", "start", "1")
+                if on == s["video_on"]:
+                    return {"text": "📺 Video is already on." if on else "🎧 Already audio only."}
+                await _set_video(chat_id, on)
+                await asyncio.to_thread(_refresh_card, chat_id)
+                return {"text": "📺 Video on." if on else "🎧 Audio only - video stopped."}
             if act == "prev":
                 if not s["history"]:
                     return {"text": "⏮ No previous song."}
@@ -856,6 +937,7 @@ async def main():
     except Exception as e:
         print(f"[MUSIC] resume: {e!r}")
     asyncio.create_task(_track_positions())
+    asyncio.create_task(_card_watch())
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="none", lifespan="off"))
     try:
         await server.serve()

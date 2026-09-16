@@ -19,6 +19,6 @@ Bot service gets two extra variables: `MUSIC_URL` (this service's public URL,
 e.g. `https://clexer-music.up.railway.app`) and the same `MUSIC_SECRET`.
 
 Users: `/play <song or YouTube link>` in a group with a running voice chat;
-`/skip` `/pause` `/resume` `/stop` `/queue` `/now` `/volume 80`. The assistant
+`/next` `/prev` `/pause` `/resume` `/stop` `/queue` `/now` `/volume 80` `/video s` (audio only) `/video r` (video back). The assistant
 account must be a member of the group (the bot invites it when it has the
 invite-users right; otherwise add it by hand).
