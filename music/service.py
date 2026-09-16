@@ -128,25 +128,75 @@ if _COOKIES.strip():
 _last_error = {"text": ""}
 
 
+def _flat_search(url, q=None):
+    """Titles/ids only (fast). Returns candidate watch URLs, best first.
+    `url` is a yt-dlp search prefix ("ytsearch6:") or a full search page."""
+    with YoutubeDL({**_YDL, "extract_flat": "in_playlist", "playlistend": 6}) as y:
+        info = y.extract_info(url + (q or ""), download=False)
+    out = []
+    for e in (info or {}).get("entries") or []:
+        if not e:
+            continue
+        dur = e.get("duration") or 0
+        if dur and (dur > MAX_SECONDS or dur < 30):
+            continue                       # hour-long mixes and shorts
+        vid = e.get("id")
+        u = e.get("url") or e.get("webpage_url") or (vid and f"https://www.youtube.com/watch?v={vid}")
+        if u and "watch" in u or (u and len(u) == 11):
+            out.append(u if u.startswith("http") else f"https://www.youtube.com/watch?v={u}")
+    return out
+
+
+_PIPED = ["https://pipedapi.kavin.rocks", "https://api.piped.yt", "https://pipedapi.adminforge.de"]
+
+
+def _piped_search(q):
+    """Third option: a public Piped instance's search API (plain JSON)."""
+    from urllib.parse import quote_plus
+    for base in _PIPED:
+        try:
+            r = _rq.get(f"{base}/search?q={quote_plus(q + ' song')}&filter=videos", timeout=8)
+            items = (r.json() or {}).get("items") or []
+        except Exception:
+            continue
+        out = []
+        for it in items:
+            dur = it.get("duration") or 0
+            if dur and (dur > MAX_SECONDS or dur < 30):
+                continue
+            u = it.get("url") or ""
+            if "watch?v=" in u:
+                out.append("https://www.youtube.com" + u if u.startswith("/") else u)
+        if out:
+            return out[:6]
+    return []
+
+
 def _lookup(query: str) -> Optional[dict]:
     """Title / duration / direct audio url for a search or a YouTube link.
-    Search is done flat (titles + durations only, fast); the full extraction
-    runs once, on the first result that is a plausible song."""
+    Search order: YouTube search, YouTube Music search, web search - the
+    first one that answers wins; the full extraction runs on the first
+    candidate that is a plausible song."""
     q = query.strip()
+    _last_error["text"] = ""
     if q.startswith(("http://", "https://")):
         cands = [q]
     else:
-        with YoutubeDL({**_YDL, "extract_flat": "in_playlist"}) as y:
-            info = y.extract_info(f"ytsearch6:{q} song", download=False)
         cands = []
-        for e in (info or {}).get("entries") or []:
-            dur = (e or {}).get("duration") or 0
-            if dur and (dur > MAX_SECONDS or dur < 30):
-                continue                   # hour-long mixes and shorts
-            u = e.get("url") or e.get("webpage_url") or (e.get("id") and f"https://www.youtube.com/watch?v={e['id']}")
-            if u:
-                cands.append(u)
-    _last_error["text"] = ""
+        from urllib.parse import quote_plus
+        for label, fn in (("ytsearch", lambda: _flat_search("ytsearch6:", q + " song")),
+                          ("ytmusic", lambda: _flat_search("https://music.youtube.com/search?q=" + quote_plus(q))),
+                          ("piped", lambda: _piped_search(q))):
+            try:
+                cands = fn()
+            except Exception as ex:
+                print(f"[MUSIC] {label} {q!r}: {str(ex)[:160]}")
+                _last_error["text"] = str(ex)
+                cands = []
+            if cands:
+                if label != "ytsearch":
+                    print(f"[MUSIC] {label} answered for {q!r}")
+                break
     for u in cands[:5]:
         try:
             with YoutubeDL(_YDL) as y:

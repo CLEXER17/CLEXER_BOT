@@ -13,6 +13,7 @@ from the Dockerfile here). Variables:
 | `TELEGRAM_BOT_TOKEN` | the bot's token (used only to send the now-playing card) |
 | `MUSIC_SECRET` | any long random string - the same value goes on the bot service |
 | `CLEXER_API_URL` / `PUSH_STATE_SECRET` | optional, same values as on the bot service: lets a redeploy resume the music where it was |
+| `MUSIC_COOKIES` | optional: contents of a cookies.txt exported from a logged-in YouTube session, for when YouTube refuses the server IP (search falls back to YouTube Music first) |
 
 Bot service gets two extra variables: `MUSIC_URL` (this service's public URL,
 e.g. `https://clexer-music.up.railway.app`) and the same `MUSIC_SECRET`.
