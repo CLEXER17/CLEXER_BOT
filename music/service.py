@@ -16,6 +16,8 @@ Env: MUSIC_API_ID, MUSIC_API_HASH, MUSIC_SESSION_STRING, TELEGRAM_BOT_TOKEN,
 import asyncio
 import html as _html
 import os
+import subprocess
+import tempfile
 import time
 from typing import Optional
 
@@ -147,7 +149,29 @@ def _lookup(query: str) -> Optional[dict]:
 
 # ── player ─────────────────────────────────────────────────────────────────
 def _st(chat_id):
-    return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None})
+    return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
+                                       "offset": 0, "file": None})
+
+
+def _drop_file(s):
+    f = s.get("file")
+    s["file"] = None
+    if f:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+
+def _encode(src, start, volume):
+    """The rest of the song from `start` seconds at `volume`% into a temp file.
+    Volume cannot be set through Telegram for a plain member of the call, so it
+    is baked into the audio instead."""
+    out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".ogg", delete=False).name
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0, start):.1f}", "-i", src, "-vn",
+           "-af", f"volume={max(0.05, volume / 100):.2f}", "-c:a", "libopus", "-b:a", "128k", "-ar", "48000", out]
+    subprocess.run(cmd, check=True, timeout=180)
+    return out
 
 
 def _card_text(chat_id):
@@ -217,18 +241,56 @@ def _refresh_card(chat_id):
 
 async def _start(chat_id, track):
     s = _st(chat_id)
-    s["now"] = track; s["paused"] = False
-    await call.play(chat_id, MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+    s["now"] = track; s["paused"] = False; s["offset"] = 0
+    _drop_file(s)
+    src = track["url"]
     if s["volume"] != 100:
+        src = await asyncio.to_thread(_encode, track["url"], 0, s["volume"])
+        s["file"] = src
+    await call.play(chat_id, MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+    await asyncio.to_thread(_post_card, chat_id)
+
+
+async def _set_volume(chat_id, volume):
+    """Re-encode from the current position with the new gain and swap the
+    stream; the listener hears a short gap, then the same song at the new
+    level. Falls back to Telegram's participant volume when it is allowed."""
+    s = _st(chat_id); t = s["now"]
+    s["volume"] = volume
+    if not t:
+        return
+    try:
+        pos = await call.time(chat_id)
+    except Exception:
+        pos = 0
+    start = s["offset"] + (pos or 0)
+    try:
+        f = await asyncio.to_thread(_encode, t["url"], start, volume)
+    except Exception as e:
+        print(f"[MUSIC] volume encode {chat_id}: {e}")
         try:
-            await call.change_volume_call(chat_id, s["volume"])
+            await call.change_volume_call(chat_id, volume)
         except Exception:
             pass
-    await asyncio.to_thread(_post_card, chat_id)
+        return
+    old = s.get("file")
+    s["file"] = f; s["offset"] = start
+    await call.play(chat_id, MediaStream(f, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+    if s["paused"]:
+        try:
+            await call.pause(chat_id)
+        except Exception:
+            pass
+    if old:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
 
 
 async def _next(chat_id):
     s = _st(chat_id)
+    _drop_file(s)
     if s["queue"]:
         await _start(chat_id, s["queue"].pop(0))
         return True
@@ -337,8 +399,11 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
                 s["queue"].clear(); await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
                 v = int(body.get("value") or (s["volume"] + (20 if act == "vup" else -20)))
-                s["volume"] = max(10, min(200, v))
-                await call.change_volume_call(chat_id, s["volume"]); await asyncio.to_thread(_refresh_card, chat_id)
+                v = max(10, min(200, v))
+                if v == s["volume"]:
+                    return {"text": f"🔊 Volume already {v}%"}
+                await _set_volume(chat_id, v)
+                await asyncio.to_thread(_refresh_card, chat_id)
                 return {"text": f"🔊 Volume {s['volume']}%"}
             if act == "queue":
                 if not s["now"]:
