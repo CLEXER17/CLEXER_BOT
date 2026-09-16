@@ -917,7 +917,12 @@ def get_active_trades(request: Request):
                 # is on) — requiring both keeps a VST-demoted trade's real numbers
                 # from leaking to VIP viewers on the website when Telegram VIP
                 # subscribers correctly never saw it.
-                reveal, tag = (cat == "verified" and tier_routed), None
+                # tier_routed alone: it is bot.py's final routing decision
+                # (schedule category, weekday promotion, /vsttimes, slot-day
+                # lock). Requiring cat == "verified" as well hid every
+                # weekday-promoted trade from VIP viewers here, exactly as it
+                # did in bot.py's /trade (admin 2026-09-16).
+                reveal, tag = bool(tier_routed), None
             else:
                 reveal, tag = share_free, None
             if not reveal and t.get("symbol") in my_symbols:

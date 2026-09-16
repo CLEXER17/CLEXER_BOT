@@ -1498,6 +1498,12 @@ def _tp_buttons():
         row.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     return {"inline_keyboard": [row]} if row else None
 
+def _redact_levels(text: str) -> str:
+    """The Free-channel copy of a locked trade's follow-up: every price
+    (they all sit in <code>) becomes a lock, the outcome and P/L % stay."""
+    return re.sub(r"<code>[^<]*</code>", "🔒", text)
+
+
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None,
                           locked_text: str = None, exclude_ch2: bool = False, react_category: str = None):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
@@ -1517,6 +1523,12 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
     their feed (admin request, same reasoning as no-signal notices)."""
     reply_map = reply_map or {}
     ids = {}
+    # A locked signal (Free saw only the 🔒 card) used to get NO closing
+    # post in Free on SL / BE / timeout - the card just sat there open
+    # forever (admin 2026-09-16, $ARB timeout). TP1/TP2 already have their
+    # own Free catch-up (_notify_free_late), so those stay as they are.
+    if tier_routed and not share_free and not locked_text and react_category in ("sl", "be", "timeout_win", "timeout_loss"):
+        locked_text = _redact_levels(text)
     channels = [("1", TELEGRAM_CHANNEL_ID)]  # channel 2 retired — see send_entry_signal's matching comment
     for key, cid in channels:
         if not cid: continue
@@ -6483,7 +6495,13 @@ def _trade_reveal(cat: str, share_free: bool, tier_routed: bool, viewer_tier: st
     if not actually_shared:
         tier_routed = False
     if viewer_tier == "vip":
-        return (cat == "verified"), False
+        # The trade's own tier_routed is the bot's final routing decision -
+        # schedule category, weekday promotion, /vsttimes and the slot-day
+        # lock all included. Re-deriving "verified" from the schedule here
+        # hid every weekday-promoted trade (cat stays "unverified") from VIP
+        # viewers even though it sat in their channel with full numbers
+        # (admin 2026-09-16: AAVE, XRP, ARB, TAO all missing from /trade).
+        return tier_routed, False
     # free / unregistered — tier_routed required too, so a stray share_free=True
     # on a never-VIP-routed (Signal-only) trade can never leak it to Free.
     if tier_routed and share_free:
