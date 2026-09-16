@@ -813,5 +813,6 @@
 "⚠️ Önce çevirin.",
 "⚠️ Yetersiz bakiye ({}) — önce Bakiye Ekle'ye dokunun.",
 "<b>🎮 Oyunlar</b>",
-"<blockquote>Hemen çalıştırmak için bir komuta dokunun 👇</blockquote>"
+"<blockquote>Hemen çalıştırmak için bir komuta dokunun 👇</blockquote>",
+"bölüm {}/{}"
 ]

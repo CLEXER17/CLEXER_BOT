@@ -813,5 +813,6 @@
 "⚠️ Tournez d'abord.",
 "⚠️ Solde insuffisant ({}) — appuyez d'abord sur Ajouter des fonds.",
 "<b>🎮 Jeux</b>",
-"<blockquote>Appuyez sur une commande pour la lancer immédiatement 👇</blockquote>"
+"<blockquote>Appuyez sur une commande pour la lancer immédiatement 👇</blockquote>",
+"partie {}/{}"
 ]

@@ -132,6 +132,7 @@ EXTRA = [
     "⚠️ Not enough balance ({}) — tap Add Funds first.",
     "<b>🎮 Games</b>",
     "<blockquote>Tap any command to run it instantly 👇</blockquote>",
+    "part {}/{}",
 ]
 
 

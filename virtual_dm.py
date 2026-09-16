@@ -150,7 +150,8 @@ def _status_text(cid, month=None):
         out += ["", "The balance can no longer fund a trade, so trading stopped. Reset to start a new run."]
     # month page
     stt = st["stats"]
-    out += ["", f"📅 <b>{_dyn(st['month_label'])}</b> · page {st['page']}/{st['pages']}"]
+    out += ["", f"📅 <b>{_dyn(st['month_label'])}</b> · page {st['page']}/{st['pages']}"
+                + (f" · part {st['part']}/{st['parts']}" if st.get("parts", 1) > 1 else "")]
     if stt["trades"]:
         out.append(f"Trades {stt['trades']} · wins {stt['wins']} · losses {stt['losses']} · win rate {stt['wr']}%")
         out.append(f"Net {'+' if stt['net'] >= 0 else ''}{_money(stt['net'])} · best +{_money(stt['best'])} · worst {_money(stt['worst'])} · max drawdown {_money(stt['dd'])}")
@@ -182,7 +183,7 @@ def _status_kb(cid, month=None):
     if st["next"]:
         nav.append({"text": "Next ▶", "callback_data": f"vt:page:{st['next']}"})
     rows.append(nav)
-    rows.append([{"text": "🔄 Refresh", "callback_data": f"vt:page:{st['month']}"}])
+    rows.append([{"text": "🔄 Refresh", "callback_data": f"vt:page:{st.get('key') or st['month']}"}])
     return {"inline_keyboard": rows}
 
 

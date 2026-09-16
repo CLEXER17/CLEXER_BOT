@@ -1366,7 +1366,7 @@
     haptic("sel");
     const note = document.getElementById("vtPdfNote");
     try{
-      const r = await api("/virtual/pdf", {method:"POST", body: JSON.stringify({month: vt.month})});
+      const r = await api("/virtual/pdf", {method:"POST", body: JSON.stringify({month: vt.month ? String(vt.month).split("#")[0] : vt.month})});
       note.textContent = t("vt.pdf_sent","Sent to your Telegram DM") + ` · ${r.used}/${r.limit} ` + t("vt.this_month","this month");
     }catch(e){ note.textContent = (e.message||"").replace(/^.*"detail":"?/,"").replace(/"?}$/,""); }
   }
@@ -1429,7 +1429,7 @@
     pages.hidden = !hasMonths && st.status === "setup";
     if(!pages.hidden){
       document.getElementById("vtMonth").textContent = st.month_label;
-      document.getElementById("vtPageNo").textContent = `${t("vt.page","page")} ${st.page}/${st.pages}`;
+      document.getElementById("vtPageNo").textContent = `${t("vt.page","page")} ${st.page}/${st.pages}` + ((st.parts||1) > 1 ? ` · ${st.part}/${st.parts}` : "");
       document.getElementById("vtPrev").disabled = !st.prev; document.getElementById("vtPrev").style.opacity = st.prev ? 1 : .3;
       document.getElementById("vtNext").disabled = !st.next; document.getElementById("vtNext").style.opacity = st.next ? 1 : .3;
       const s = st.stats || {};

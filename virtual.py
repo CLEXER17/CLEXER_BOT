@@ -65,9 +65,43 @@ def month_key(dt=None):
 
 def month_label(key):
     try:
-        return datetime.strptime(key, "%Y-%m").strftime("%B %Y")
+        return datetime.strptime(str(key).split("#")[0], "%Y-%m").strftime("%B %Y")
     except Exception:
         return key
+
+
+# A page is at most this many closed trades. A busy month splits into parts:
+# page keys are "2026-09" (its newest part) or "2026-09#2" (the next older
+# one), so Prev / Next always step back or forward in time, across months.
+PAGE_ROWS = 30
+
+
+def _page_list(b: dict):
+    """Every page in time order: [(month_key, part, trades_newest_first)]."""
+    out = []
+    for mk in sorted(b["months"]):
+        tr = b["months"][mk].get("trades", [])
+        parts = max(1, -(-len(tr) // PAGE_ROWS))
+        for part in range(parts, 0, -1):              # oldest chunk first
+            hi = len(tr) - (part - 1) * PAGE_ROWS
+            lo = max(0, hi - PAGE_ROWS)
+            out.append((mk, part, list(reversed(tr[lo:hi]))))
+    return out
+
+
+def page_key(mk: str, part: int) -> str:
+    return mk if part <= 1 else f"{mk}#{part}"
+
+
+def split_key(key):
+    """'2026-09#2' -> ('2026-09', 2); '2026-09' -> ('2026-09', 1)."""
+    if not key:
+        return None, 1
+    mk, _, part = str(key).partition("#")
+    try:
+        return mk, max(1, int(part or 1))
+    except Exception:
+        return mk, 1
 
 
 def prev_month_key(dt=None):
@@ -480,11 +514,20 @@ def state_from(user: dict, b: dict, month: str = None) -> dict:
     v = user.get("virtual") if isinstance(user.get("virtual"), dict) and user["virtual"].get("v") == 2 else default()
     b = b if isinstance(b, dict) and "months" in b else _empty_book()
     keys = sorted(b["months"])
-    if month is None or month not in b["months"]:
-        month = keys[-1] if keys else month_key()
+    pages = _page_list(b)
+    mk, part = split_key(month)
+    idx = next((i for i, pg in enumerate(pages) if pg[0] == mk and pg[1] == part), None)
+    if idx is None:
+        idx = next((i for i in range(len(pages) - 1, -1, -1) if pages[i][0] == mk), None)   # part out of range -> that month's newest
+    if idx is None:
+        idx = len(pages) - 1                                                  # unknown month -> newest page
+    if idx >= 0:
+        month, part, page_trades = pages[idx][0], pages[idx][1], pages[idx][2]
+        parts = sum(1 for pg in pages if pg[0] == month)
+    else:
+        month, part, page_trades, parts = month_key(), 1, [], 1
     m = b["months"].get(month, {"trades": []})
     trades = m.get("trades", [])
-    idx = keys.index(month) if month in keys else len(keys)
     used = sum(float(p.get("margin", 0)) for p in v["open"].values())
     open_list = [{"symbol": s, **p} for s, p in v["open"].items()]
     lim = EXPORT_LIMIT[_tier(user)]
@@ -497,9 +540,12 @@ def state_from(user: dict, b: dict, month: str = None) -> dict:
         "margin_mode": v["margin_mode"], "margin": v["margin"], "started_at": v.get("started_at", ""),
         "run": v.get("run", 0), "closed": v.get("closed", 0), "skipped": v.get("skipped", 0),
         "open": open_list, "tier": _tier(user),
-        "months": keys, "month": month, "month_label": month_label(month), "page": idx + 1, "pages": max(1, len(keys)),
-        "prev": keys[idx - 1] if idx > 0 else None, "next": keys[idx + 1] if idx + 1 < len(keys) else None,
-        "stats": stats(trades), "trades": list(reversed(trades))[:60],
+        "months": keys, "month": month, "month_label": month_label(month),
+        "key": page_key(month, part), "part": part, "parts": parts,
+        "page": idx + 1 if idx >= 0 else 1, "pages": max(1, len(pages)),
+        "prev": page_key(*pages[idx - 1][:2]) if idx > 0 else None,
+        "next": page_key(*pages[idx + 1][:2]) if 0 <= idx < len(pages) - 1 else None,
+        "stats": stats(trades), "trades": page_trades,
         "exports_used": int(b["exports"].get(month_key(), 0)), "exports_limit": lim,
     }
 
@@ -639,6 +685,7 @@ def pdf_for(cid: str, month: str = None):
     user = ct._get(cid) or {}
     v = get(user) if user else default()
     b = book(cid)
+    month = split_key(month)[0] if month else None      # a page key names its month
     if month and month not in b["months"]:
         return None, "No trades in that month."
     if not month and not any(m.get("trades") for m in b["months"].values()):

@@ -813,5 +813,6 @@
 "⚠️ Gira primero.",
 "⚠️ Saldo insuficiente ({}) — pulsa Añadir fondos primero.",
 "<b>🎮 Juegos</b>",
-"<blockquote>Toca cualquier comando para ejecutarlo al instante 👇</blockquote>"
+"<blockquote>Toca cualquier comando para ejecutarlo al instante 👇</blockquote>",
+"parte {}/{}"
 ]
