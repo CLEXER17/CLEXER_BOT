@@ -1076,6 +1076,8 @@ async def _ensure_member(chat_id, invite_link):
         return True, ""
     except RPCError as e:
         name = type(e).__name__
+        if "InviteRequestSent" in name:
+            return False, f"I've asked to join - approve @{_me['username']}'s join request, then send /play again."
         if "Banned" in name or "Kicked" in name or "USER_BANNED" in str(e) or "KICKED" in str(e):
             return False, f"@{_me['username']} was removed from this group - an admin has to unban it (Group → Removed users) and add it back."
         return False, f"I could not join the group: {getattr(e, 'MESSAGE', e)}"
