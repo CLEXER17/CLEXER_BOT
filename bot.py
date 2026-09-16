@@ -9180,7 +9180,8 @@ _vdm.init(TELEGRAM_BOT_TOKEN)
 # Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
 # its auto-approve rule below; every other chat's request goes to this.
 import groupjoin as _gj
-_gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID)
+_gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
+         is_vip=lambda _uid: bool((ct._get(str(_uid)) or {}).get("tier") == "vip"))
 
 # Music (music/service.py on its own Railway service). The bot only relays:
 # commands and the now-playing buttons go there over HTTP, the assistant
@@ -16409,6 +16410,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             return
         if cmd == "/start" and len(parts) > 1 and parts[1] == "vip":
             send_vip_offer_screen(chat_id, str(_hm_uid))
+            return
+        # Deep links from the join-request DM (t.me/bot?start=games / virtual)
+        if cmd == "/start" and len(parts) > 1 and parts[1] == "games":
+            _games_mod.cmd_games(chat_id, "private")
+            return
+        if cmd == "/start" and len(parts) > 1 and parts[1] == "virtual":
+            _vdm.cmd_virtual(chat_id, str(_hm_uid))
             return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
         # Persistent reply keyboard, role-tailored — sent as its own small

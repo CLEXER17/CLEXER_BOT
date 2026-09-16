@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 _TOKEN = ""
 _BOT_USERNAME = lambda: ""
 _ADMIN_ID = ""
+_IS_VIP = lambda uid: False      # set by bot.py: does this user hold VIP?
 IST = timedelta(hours=5, minutes=30)
 
 # (chat_id, user_id) -> {"cards": [(admin_chat_id, message_id)], "name", "uname", "title", "at"}
@@ -37,9 +38,11 @@ _fonts: dict = {}
 _admins_cache: dict = {}      # chat_id -> (fetched_at, [admin user dicts])
 
 
-def init(token: str, bot_username_getter, admin_id=""):
-    global _TOKEN, _BOT_USERNAME, _ADMIN_ID
+def init(token: str, bot_username_getter, admin_id="", is_vip=None):
+    global _TOKEN, _BOT_USERNAME, _ADMIN_ID, _IS_VIP
     _TOKEN, _BOT_USERNAME, _ADMIN_ID = token, bot_username_getter, str(admin_id or "")
+    if is_vip:
+        _IS_VIP = is_vip
 
 
 def _api(method, payload=None, files=None, timeout=15):
@@ -94,9 +97,10 @@ def _admins(chat_id):
 
 # ── join request ───────────────────────────────────────────────────────────
 def on_join_request(jr: dict):
+    """Groups only - channels keep bot.py's own VIP auto-approve."""
     chat, user = jr.get("chat") or {}, jr.get("from") or {}
     chat_id, uid = chat.get("id"), user.get("id")
-    if not chat_id or not uid:
+    if not chat_id or not uid or chat.get("type") not in ("group", "supergroup"):
         return
     title = chat.get("title") or "the group"
     name = user.get("first_name") or user.get("username") or "there"
@@ -105,8 +109,11 @@ def on_join_request(jr: dict):
     bot_u = _BOT_USERNAME() or ""
     btns = []
     if bot_u:
-        btns = [[{"text": "🤖 Open Bot", "url": f"https://t.me/{bot_u}", "style": "primary"},
-                 {"text": "👑 Get VIP", "url": f"https://t.me/{bot_u}?start=vip", "style": "primary"}]]
+        games = {"text": "🎮 Games", "url": f"https://t.me/{bot_u}?start=games", "style": "primary"}
+        if _IS_VIP(uid):
+            btns = [[games, {"text": "📊 Virtual trading", "url": f"https://t.me/{bot_u}?start=virtual", "style": "primary"}]]
+        else:
+            btns = [[{"text": "👑 Get VIP", "url": f"https://t.me/{bot_u}?start=vip", "style": "primary"}, games]]
     _api("sendMessage", {
         "chat_id": jr.get("user_chat_id") or uid, "parse_mode": "HTML",
         "text": (f"📩 <b>Request received</b>\n\n"
@@ -125,18 +132,16 @@ def on_join_request(jr: dict):
             f"Awaiting admin approval…")
     kb = {"inline_keyboard": [[{"text": "👑 Approve", "callback_data": f"jn:a:{chat_id}:{uid}", "style": "success"},
                                {"text": "😡 Decline", "callback_data": f"jn:d:{chat_id}:{uid}", "style": "danger"}]]}
+    # 2. the card goes into the group itself; only that group's admins can
+    #    press the buttons (checked on tap)
     cards = []
-    targets = [a.get("id") for a in _admins(chat_id)]
-    if _ADMIN_ID and _ADMIN_ID not in [str(t) for t in targets]:
-        targets.append(_ADMIN_ID)                    # the bot admin always gets a copy
-    for aid in targets:
-        j = _api("sendMessage", {"chat_id": aid, "text": text, "parse_mode": "HTML", "reply_markup": kb}, timeout=10)
-        if j.get("ok"):
-            cards.append((aid, j["result"]["message_id"]))
+    j = _api("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": kb}, timeout=10)
+    if j.get("ok"):
+        cards.append((chat_id, j["result"]["message_id"]))
+    else:
+        print(f"  [JOIN] card in {title} ({chat_id}) failed: {j.get('description')}")
     with _lock:
         _open[(str(chat_id), str(uid))] = {"cards": cards, "user": user, "title": title, "at": time.time(), "text": text}
-    if not cards:
-        print(f"  [JOIN] no admin reachable for {title} ({chat_id}); request from {uid} left pending")
 
 
 def on_callback(data: str, admin_uid, admin_name: str) -> str:
@@ -169,6 +174,8 @@ def on_callback(data: str, admin_uid, admin_name: str) -> str:
     with _lock:
         _open.pop((chat_id, uid), None)
     if act == "a":
+        _api("sendMessage", {"chat_id": int(uid), "parse_mode": "HTML",
+                             "text": f"✅ <b>Approved</b> - welcome to {_dyn(_esc(rec['title']))}! Say hi in the group."}, timeout=8)
         threading.Thread(target=welcome, args=(int(chat_id), rec["user"], rec["title"]), daemon=True).start()
     else:
         _api("sendMessage", {"chat_id": int(uid), "text": f"❌ Your request to join {_dyn(_esc(rec['title']))} was declined."}, timeout=8)
