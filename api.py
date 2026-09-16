@@ -974,6 +974,13 @@ def get_active_trades(request: Request):
         _add(t, "demo1", filterable=True)
     for t in (demo2 if isinstance(demo2, list) else demo2.values()):
         _add(t, "demo2", filterable=True)
+    # BTC / XAUT intraday pullback slots: always routed to every tier (see
+    # bot.py's intraday entry send: tier_routed=True, share_free=True) and
+    # shown to everyone by /trade, so no tier filter here either. They were
+    # simply never included, which is why the website and the mini app had
+    # no BTC card while /trade showed BTC-INTRADAY (admin 2026-09-16).
+    for t in (state.get("intraday_trades") or []):
+        _add(t, "intra_" + str(t.get("kind") or "btc"), filterable=False)
 
     return {"positions": positions, "count": len(positions)}
 
