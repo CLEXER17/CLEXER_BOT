@@ -14,6 +14,8 @@ from the Dockerfile here). Variables:
 | `MUSIC_SECRET` | any long random string - the same value goes on the bot service |
 | `CLEXER_API_URL` / `PUSH_STATE_SECRET` | optional, same values as on the bot service: lets a redeploy resume the music where it was |
 | `MUSIC_COOKIES` | optional: contents of a cookies.txt exported from a logged-in YouTube session, for when YouTube refuses the server IP (search falls back to YouTube Music first) |
+| `MUSIC_VIDEO_HEIGHT` | optional: video size, 360 (default) / 480 / 720 - higher costs more CPU |
+| `MUSIC_DOWNLOAD_SECONDS` | optional: songs are fetched to disk before playing (no CDN stutter); after this many seconds (70) it streams the URL instead |
 
 Bot service gets two extra variables: `MUSIC_URL` (this service's public URL,
 e.g. `https://clexer-music.up.railway.app`) and the same `MUSIC_SECRET`.

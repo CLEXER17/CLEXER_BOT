@@ -118,8 +118,10 @@ def _dur(sec):
 # ── YouTube lookup ─────────────────────────────────────────────────────────
 # Video + audio: a combined 480p file when YouTube has one, else the best
 # 480p video track plus the best audio track (streamed together). Video is
-# capped at 480p to keep the server's encoder comfortable.
-VIDEO_H = int(os.getenv("MUSIC_VIDEO_HEIGHT", "480") or 480)
+# capped at 360p (MUSIC_VIDEO_HEIGHT) to keep the server's encoder comfortable.
+VIDEO_H = int(os.getenv("MUSIC_VIDEO_HEIGHT", "360") or 360)
+_VQ = {360: VideoQuality.SD_360p, 480: VideoQuality.SD_480p, 720: VideoQuality.HD_720p}
+VQ = _VQ.get(VIDEO_H, VideoQuality.SD_360p)
 _YDL = {"format": (f"b[height<={VIDEO_H}][vcodec^=avc1][acodec!=none]/bv*[height<={VIDEO_H}][vcodec^=avc1]+ba"
                    f"/b[height<={VIDEO_H}][acodec!=none][vcodec!=none]/bv*[height<={VIDEO_H}]+ba/b[height<={VIDEO_H}]/bestaudio/best"),
         "noplaylist": True, "quiet": True, "no_warnings": True, "default_search": "ytsearch1", "skip_download": True,
@@ -153,18 +155,124 @@ def _track_from(e, fallback_title=""):
             "uploader": e.get("uploader") or e.get("channel") or ""}
 
 
+# Songs are fetched to disk first and played from the local file: YouTube's
+# CDN is never in the playback path, so a slow moment there cannot stall the
+# stream. The next song (queue head, or the similar song that autoplay will
+# pick) is fetched while the current one plays, so there is no gap either.
+DL_MAX = int(os.getenv("MUSIC_DOWNLOAD_SECONDS", "70") or 70)   # give up and stream from the URL after this
+
+
+def _download(track):
+    """Grab the track into one local .mkv (streams copied, no re-encode)."""
+    out = tempfile.NamedTemporaryFile(prefix="clx_dl_", suffix=".mkv", delete=False).name
+    v, a = track.get("video"), track["url"]
+    if v and v != a:
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", v, "-i", a, "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", out]
+    elif v:
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", v, "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", out]
+    else:
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", a, "-vn", "-c", "copy", out]
+    try:
+        subprocess.run(cmd, check=True, timeout=DL_MAX)
+        if os.path.getsize(out) > 10_000:
+            return out
+    except Exception as e:
+        print(f"[MUSIC] download {track.get('title', '')[:40]!r}: {e!r}")
+    try:
+        os.remove(out)
+    except Exception:
+        pass
+    return None
+
+
+_fetching: dict = {}          # id(track) -> running download, so two callers share one
+
+
+async def _fetch(track):
+    """Make sure the track has a local file (unless it is live)."""
+    if track.get("live") or track.get("local"):
+        return
+    key = id(track)
+    if key in _fetching:
+        await _fetching[key]; return
+    fut = asyncio.ensure_future(asyncio.to_thread(_download, track))
+    _fetching[key] = fut
+    try:
+        track["local"] = await fut
+    finally:
+        _fetching.pop(key, None)
+    if track["local"]:
+        print(f"[MUSIC] fetched {track.get('title', '')[:40]!r} ({os.path.getsize(track['local']) // 1_000_000} MB)")
+
+
+def _drop_track(t):
+    """Delete a track's local file (the URL stays for a replay via Prev)."""
+    f = (t or {}).get("local")
+    if f:
+        t["local"] = None
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+
+def _drop_all(s):
+    """Everything on disk for this chat: encoded file, current song, queue, prefetched next."""
+    _drop_file(s)
+    _drop_track(s.get("now"))
+    for t in s["queue"]:
+        _drop_track(t)
+    _drop_track(s.get("up_next")); s["up_next"] = None
+
+
+_prefetch_locks: dict = {}
+
+
+async def _prefetch(chat_id):
+    """Runs in the background while a song plays: fetch what comes next."""
+    lock = _prefetch_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        await _prefetch_locked(chat_id)
+
+
+async def _prefetch_locked(chat_id):
+    s = _st(chat_id); now = s["now"]
+    if not now:
+        return
+    try:
+        if s["queue"]:
+            t = s["queue"][0]
+        else:
+            up = s.get("up_next")
+            if up and up.get("after") == now.get("id"):
+                if up.get("local") or up.get("live"):
+                    return
+                t = up                                  # picked earlier, file still missing
+            else:
+                seed = next((x for x in [now] + s["history"][::-1] if x.get("by") != "autoplay"), now)
+                t = await asyncio.to_thread(_related, seed if seed.get("id") else now, set(s["played"]))
+                if not t or s["now"] is not now:
+                    return
+                t["after"] = now.get("id")
+                _drop_track(s.get("up_next")); s["up_next"] = t
+        await _fetch(t)
+    except Exception as e:
+        print(f"[MUSIC] prefetch {chat_id}: {e!r}")
+
+
 def _stream(track, file=None, video_on=True):
     if not video_on:
-        src = file or track["url"]
+        src = file or track.get("local") or track["url"]
         return MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE)
     if track.get("live") and not file:
-        return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+        return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VQ)
+    file = file or track.get("local")
     if file:
-        return MediaStream(file, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+        return MediaStream(file, audio_parameters=AudioQuality.HIGH, video_parameters=VQ)
     if track.get("video"):
         if track["video"] == track["url"]:
-            return MediaStream(track["video"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
-        return MediaStream(track["video"], audio_path=track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+            return MediaStream(track["video"], audio_parameters=AudioQuality.HIGH, video_parameters=VQ)
+        return MediaStream(track["video"], audio_path=track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VQ)
     return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE)
 # YouTube sometimes refuses datacenter IPs ("Sign in to confirm you're not a
 # bot"). MUSIC_COOKIES = the text of a Netscape cookies.txt exported from a
@@ -394,6 +502,27 @@ async def _track_positions():
         n += 1
         if n % 10 == 0 and any(st["now"] for st in _state.values()):
             await asyncio.to_thread(_save_state)
+        if n % 300 == 0:
+            await asyncio.to_thread(_janitor)
+
+
+def _janitor():
+    """Delete temp media nobody refers to any more (older than 10 min), so a
+    missed cleanup can never fill the disk."""
+    import glob
+    keep = set()
+    for st in _state.values():
+        for t in [st.get("now"), st.get("up_next")] + list(st["queue"]):
+            if t and t.get("local"):
+                keep.add(t["local"])
+        if st.get("file"):
+            keep.add(st["file"])
+    for f in glob.glob(os.path.join(tempfile.gettempdir(), "clx_*")):
+        try:
+            if f not in keep and time.time() - os.path.getmtime(f) > 600:
+                os.remove(f)
+        except Exception:
+            pass
 
 
 def _card_alive(card):
@@ -450,6 +579,9 @@ async def _resume_all():
                 s["now"] = track; s["file"] = None; s["offset"] = 0
                 await call.play(chat_id, _stream(track, None, s["video_on"]))
             else:
+                if track.get("local") and not os.path.exists(track["local"]):
+                    track["local"] = None
+                await _fetch(track)
                 f = await asyncio.to_thread(_encode, track, start, s["volume"], s["video_on"])
                 s["now"] = track; s["file"] = f; s["offset"] = start
                 await call.play(chat_id, _stream(track, f, s["video_on"]))
@@ -479,7 +611,7 @@ def _card_note(card, text):
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
                                        "offset": 0, "file": None, "history": [], "played": [], "autoplay": True, "msgs": [],
-                                       "video_on": True})
+                                       "video_on": True, "up_next": None})
 
 
 def _drop_file(s):
@@ -497,9 +629,15 @@ def _encode(track, start, volume, video=True):
     file. Volume cannot be set through Telegram for a plain member of the
     call, so it is baked into the audio; the video track is copied as is."""
     start = max(0, float(start)); vol = f"volume={max(0.05, volume / 100):.2f}"
+    loc = track.get("local")
+    if loc and not os.path.exists(loc):
+        loc = track["local"] = None
     if track.get("video") and video:
         out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".mkv", delete=False).name
-        if track["video"] == track["url"]:
+        if loc:
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", loc,
+                   "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", vol, "-c:a", "libopus", "-b:a", "128k", out]
+        elif track["video"] == track["url"]:
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["video"],
                    "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", vol, "-c:a", "libopus", "-b:a", "128k", out]
         else:
@@ -508,7 +646,7 @@ def _encode(track, start, volume, video=True):
                    "-c:v", "copy", "-af", vol, "-c:a", "libopus", "-b:a", "128k", "-shortest", out]
     else:
         out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".ogg", delete=False).name
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["url"], "-vn",
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", loc or track["url"], "-vn",
                "-af", vol, "-c:a", "libopus", "-b:a", "128k", "-ar", "48000", out]
     subprocess.run(cmd, check=True, timeout=300)
     return out
@@ -621,8 +759,15 @@ async def _start(chat_id, track):
         s["history"] = (s["history"] + [s["now"]])[-20:]
     if track.get("id"):
         s["played"] = (s["played"] + [track["id"]])[-40:]
+    if s["now"] is not track and s["now"] not in s["queue"]:
+        _drop_track(s["now"])                       # Prev keeps it in the queue, so keep its file too
+    if s.get("up_next") is track:
+        s["up_next"] = None
     s["now"] = track; s["paused"] = False; s["offset"] = 0
     _drop_file(s)
+    if track.get("local") and not os.path.exists(track["local"]):
+        track["local"] = None                       # a restart wiped the temp dir
+    await _fetch(track)
     f = None
     if s["volume"] != 100 and not track.get("live"):
         f = await asyncio.to_thread(_encode, track, 0, s["volume"], s["video_on"])
@@ -631,6 +776,7 @@ async def _start(chat_id, track):
     s["_pos"] = 0
     await asyncio.to_thread(_post_card, chat_id)
     await asyncio.to_thread(_save_state)
+    asyncio.create_task(_prefetch(chat_id))
 
 
 async def _set_video(chat_id, on: bool):
@@ -712,11 +858,16 @@ async def _next(chat_id):
         return True
     if s["now"]:
         # nothing queued: keep the room going with a song like the last one
+        up = s.get("up_next")
+        if up and up.get("after") == s["now"].get("id") and (up.get("local") or up.get("live")):
+            await _start(chat_id, up)
+            return True
         seed = next((t for t in [s["now"]] + s["history"][::-1] if t.get("by") != "autoplay"), s["now"])
         rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]))
         if rel:
             await _start(chat_id, rel)
             return True
+    _drop_all(s)
     s["now"] = None
     try:
         await call.leave_call(chat_id)
@@ -743,7 +894,7 @@ async def _on_chat_update(_, update: ChatUpdate):
                else "kicked" if update.status & ChatUpdate.Status.KICKED
                else "left the group" if update.status & ChatUpdate.Status.LEFT_GROUP else "removed from the call")
         print(f"[MUSIC] {chat_id}: {why} - cleaning up")
-        s["queue"].clear(); s["now"] = None; s["paused"] = False; _drop_file(s)
+        s["queue"].clear(); _drop_all(s); s["now"] = None; s["paused"] = False
         await asyncio.to_thread(_sweep, chat_id)
         try:
             await call.leave_call(chat_id)
@@ -821,6 +972,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
             if len(s["queue"]) >= MAX_QUEUE:
                 return reply(f"📜 Queue is full ({MAX_QUEUE}).")
             s["queue"].append(track)
+            if len(s["queue"]) == 1:
+                asyncio.create_task(_fetch(track))
             await asyncio.to_thread(_refresh_card, chat_id)
             return reply(f"➕ Queued #{len(s['queue'])}: <b>{_esc(track['title'])}</b> ({_dur(track['duration'])})")
         try:
@@ -883,7 +1036,8 @@ async def _control(chat_id, act, body):
                 return {"text": "⏮ Previous song."}
 
             if act == "stop":
-                s["queue"].clear(); await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
+                s["queue"].clear(); _drop_all(s); s["now"] = None
+                await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
                 v = int(body.get("value") or (s["volume"] + (20 if act == "vup" else -20)))
                 v = max(10, min(200, v))
@@ -913,7 +1067,12 @@ async def main():
     built on a different loop than the one serving requests fails at start
     ("attached to a different loop")."""
     global client, call
-    import uvicorn
+    import uvicorn, glob
+    for f in glob.glob(os.path.join(tempfile.gettempdir(), "clx_*")):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
     client = Client("clexer-music", api_id=API_ID, api_hash=API_HASH, session_string=SESSION, in_memory=True)
     call = PyTgCalls(client)
     call.on_update(fl.stream_end())(_on_end)
