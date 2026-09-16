@@ -29,10 +29,12 @@ from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
 from yt_dlp import YoutubeDL
 
 API_ID = int(os.getenv("MUSIC_API_ID", "0") or 0)
-API_HASH = os.getenv("MUSIC_API_HASH", "")
-SESSION = os.getenv("MUSIC_SESSION_STRING", "")
+API_HASH = os.getenv("MUSIC_API_HASH", "").strip()
+# whitespace / line breaks that ride along when the string is pasted would
+# break the base64 decode ("Incorrect padding")
+SESSION = "".join(os.getenv("MUSIC_SESSION_STRING", "").split())
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-SECRET = os.getenv("MUSIC_SECRET", "")
+SECRET = os.getenv("MUSIC_SECRET", "").strip()
 MAX_QUEUE = 25
 MAX_SECONDS = 20 * 60          # mixes / hour-long uploads are skipped
 
