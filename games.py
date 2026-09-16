@@ -41,6 +41,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 import html as _html
@@ -96,16 +97,81 @@ def set_store(chat):
     _STORE = str(chat).strip() if chat and str(chat).strip() else None
 
 
+# Premium (animated) emoji for the games' text and captions - the admin's
+# set (2026-09-16). Wrapped as <tg-emoji> on the way out; non-Premium
+# viewers see the plain glyph. Buttons cannot carry them (Bot API limit).
+GAME_EMOJI = {
+    "🔴": "4974595911532413987", "🟢": "6025904064783454041", "🔵": "5332760200782823634",
+    "🟡": "5215553987838749679", "🟣": "5422522367274401343", "🟠": "6136301169720433155",
+    "⚪": "5873022839866527761", "⚫": "5215684653628795584", "🤖": "5309832892262654231",
+    "🎮": "5309950797704865693", "🏆": "5312315739842026755", "🤝": "6264720734820505831",
+    "❌": "5260342697075416641", "✅": "6026257381678124710", "◀": "6222046674206857117",
+    "⬆": "5332677857669823307", "⬇": "5406745015365943482", "⬅": "5258236805890710909",
+    "➡": "5415736593824621798", "👉": "6221910901700695001", "🗳": "5350387571199319521",
+    "👍": "5265144423267706488", "👎": "5265162221612180460", "🎲": "5260547274957672345",
+    "⭕": "5291940913206012756", "🏅": "4972187525801051164", "✋": "5870948572526022116",
+    "✌": "5911355311314181096", "🪙": "5377690785674175481", "🔢": "5226513232549664618",
+    "🎯": "5310278924616356636", "❔": "5192835217160681324", "💣": "6174451053518394408",
+    "💥": "4972406912730530826", "🃏": "5039998939076494446", "🏎": "5366046901701460455",
+    "🚀": "5283080528818360566", "🏁": "5408906741125490282", "⚔": "6138874963232299816",
+    "🛡": "5042328396193864923", "❤": "5393319875311593088", "⚽": "5375159220280762629",
+    "🧤": "5041833220824368077", "🏴": "6138677996032105020", "☠": "5042167377869932162",
+    "💰": "5350452584119279096", "🔥": "5312241539987020022", "🌤": "6017036129843285945",
+    "❄": "5265047760733741763", "🎰": "5415683280395585071", "🏠": "5312486108309757006",
+    "✂": "5318804172705910750", "👑": "5357107601584693888", "🌊": "5361774508753572353",
+    "🧠": "5237889595894414384", "🌈": "5411253481191254324", "🧩": "5213306719215577669",
+    "👀": "5357121491508928442", "💀": "5041947406824899614", "💨": "5298854260069389723",
+    "🏹": "5298508966173619874", "🥊": "5231406626228948265", "🙈": "5233649277762290956",
+    "🎒": "5375103600454280005", "🔫": "6136294216168381485", "🎉": "5039778134807806727",
+}
+_TG_EMOJI_METHODS = {"sendMessage", "editMessageText", "sendPhoto", "editMessageCaption", "editMessageMedia",
+                     "sendAnimation", "sendDocument", "sendVideo"}
+_TG_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")\ufe0f?")
+
+
+def _pe(text):
+    """Wrap every known glyph (with or without the VS16 selector) once."""
+    if not text or "<tg-emoji" in text:
+        return text
+    return _TG_RE.sub(lambda m: f'<tg-emoji emoji-id="{GAME_EMOJI[m.group(1)]}">{m.group(1)}</tg-emoji>', text)
+
+
+def _with_emoji(method, payload):
+    """A copy of the payload with premium emoji in text / caption."""
+    if method not in _TG_EMOJI_METHODS or not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    for k in ("text", "caption"):
+        if out.get(k):
+            out[k] = _pe(out[k])
+    m = out.get("media")
+    if m:
+        try:
+            md = json.loads(m) if isinstance(m, str) else dict(m)
+            if isinstance(md, dict) and md.get("caption"):
+                md["caption"] = _pe(md["caption"])
+                out["media"] = json.dumps(md, ensure_ascii=False) if isinstance(m, str) else md
+        except Exception:
+            pass
+    return out
+
+
 def _api(method, payload=None, files=None, timeout=15):
     if not _TOKEN:
         return {}
     url = f"https://api.telegram.org/bot{_TOKEN}/{method}"
-    try:
+    def post(pl):
         if files:
-            r = requests.post(url, data=payload, files=files, timeout=max(timeout, 25))
-        else:
-            r = requests.post(url, json=payload, timeout=timeout)
-        j = r.json()
+            return requests.post(url, data=pl, files=files, timeout=max(timeout, 25)).json()
+        return requests.post(url, json=pl, timeout=timeout).json()
+    try:
+        rich = _with_emoji(method, payload)
+        j = post(rich)
+        if not j.get("ok") and rich is not payload and any(w in str(j.get("description", "")).upper()
+                                                          for w in ("DOCUMENT_INVALID", "EMOJI")):
+            # a bad custom-emoji id kills the whole message: send it plain
+            print(f"  [GAMES] {method}: {j.get('description')} - resent without premium emoji")
+            j = post(payload)
         if not j.get("ok"):
             print(f"  [GAMES] {method}: {j.get('description')}")
         return j
