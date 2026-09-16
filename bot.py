@@ -7555,11 +7555,12 @@ def save_state():
         # re-pushes the whole state anyway (admin 2026-09-07).
         def _push():
             try:
-                # A standby server loading its own (older) state file must not
-                # overwrite what the active one just pushed - the mini app's
-                # Trades tab reads exactly this row.
-                if not is_active_server():
-                    return
+                # No active-server gate here (tried 2026-09-15, reverted 09-16):
+                # when the running server is not the one flagged active - or the
+                # flag lookup fails and falls back to "main" - the gate silently
+                # stopped every push, and the next redeploy then loaded the stale
+                # central copy and dropped the trades opened since ($ZEC S2 went
+                # missing with no SL post). Every server pushes, as before.
                 requests.post(f"{CLEXER_API_URL}/push_state", json=state,
                     headers=({"X-Push-Secret": PUSH_STATE_SECRET} if PUSH_STATE_SECRET else {}),
                     timeout=8)
