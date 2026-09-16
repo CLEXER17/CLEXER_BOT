@@ -36,6 +36,14 @@ SESSION = "".join(os.getenv("MUSIC_SESSION_STRING", "").split())
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SECRET = os.getenv("MUSIC_SECRET", "").strip()
 MAX_QUEUE = 25
+# Premium emoji: MUSIC_EMOJI_JSON = {"🎵": "5231200819986047254", ...}. Text gets
+# <tg-emoji> wrappers, buttons get icon_custom_emoji_id (glyph dropped from the
+# label, as bot.py does). Empty map = plain emoji everywhere.
+try:
+    import json as _json
+    EMOJI = {k: str(v) for k, v in _json.loads(os.getenv("MUSIC_EMOJI_JSON", "") or "{}").items()}
+except Exception:
+    EMOJI = {}
 MAX_SECONDS = 20 * 60          # mixes / hour-long uploads are skipped
 
 app = FastAPI()
@@ -61,6 +69,26 @@ def bot_api(method, payload=None, timeout=15):
 
 def _esc(s):
     return _html.escape(str(s or ""), quote=False)
+
+
+def _pe(text: str) -> str:
+    """Wrap known glyphs in premium-emoji tags (longest glyph first)."""
+    for g in sorted(EMOJI, key=len, reverse=True):
+        text = text.replace(g, f'<tg-emoji emoji-id="{EMOJI[g]}">{g}</tg-emoji>')
+    return text
+
+
+def _btn(label, data, style=None):
+    b = {"text": label, "callback_data": data}
+    if style:
+        b["style"] = style
+    for g, eid in EMOJI.items():
+        if label.startswith(g):
+            b["icon_custom_emoji_id"] = eid
+            rest = label[len(g):].strip()
+            b["text"] = rest or label
+            break
+    return b
 
 
 def _dur(sec):
@@ -118,24 +146,27 @@ def _st(chat_id):
 def _card_text(chat_id):
     s = _st(chat_id); t = s["now"]
     if not t:
-        return "⏹ Nothing playing."
+        return _pe("⏹ Nothing playing.")
     nxt = s["queue"][0]["title"] if s["queue"] else "—"
-    return (f"🎵 <b>Now playing</b>\n\n"
-            f"<b>{_esc(t['title'])}</b>\n"
-            f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'⏸ paused' if s['paused'] else '▶ playing'}\n"
-            f"👤 Requested by {_esc(t['by'])}\n\n"
-            f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue")
+    head = "⏸ <b>Paused</b>" if s["paused"] else "🎵 <b>Now playing</b>"
+    state = "⏸ paused - press Resume to continue" if s["paused"] else "▶ playing"
+    return _pe(f"{head}\n\n"
+               f"<b>{_esc(t['title'])}</b>\n"
+               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%\n"
+               f"{state}\n"
+               f"👤 Requested by {_esc(t['by'])}\n\n"
+               f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue")
 
 
 def _card_kb(chat_id):
     s = _st(chat_id)
+    if s["paused"]:
+        return {"inline_keyboard": [
+            [_btn("▶ Resume", f"mu:resume:{chat_id}", "success"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
+            [_btn("📜 Queue", f"mu:queue:{chat_id}")]]}
     return {"inline_keyboard": [
-        [{"text": "▶ Resume" if s["paused"] else "⏸ Pause", "callback_data": f"mu:{'resume' if s['paused'] else 'pause'}:{chat_id}"},
-         {"text": "⏭ Skip", "callback_data": f"mu:skip:{chat_id}"},
-         {"text": "⏹ Stop", "callback_data": f"mu:stop:{chat_id}", "style": "danger"}],
-        [{"text": "🔉", "callback_data": f"mu:vdown:{chat_id}"},
-         {"text": "🔊", "callback_data": f"mu:vup:{chat_id}"},
-         {"text": "📜 Queue", "callback_data": f"mu:queue:{chat_id}"}]]}
+        [_btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Skip", f"mu:skip:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
+        [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}")]]}
 
 
 def _post_card(chat_id):
@@ -157,15 +188,24 @@ def _post_card(chat_id):
 
 
 def _refresh_card(chat_id):
+    """Edit the card in place after every button / command; if the edit is
+    refused (old message, deleted), post a fresh card instead."""
     s = _st(chat_id)
     if not s["card"]:
+        if s["now"]:
+            _post_card(chat_id)
         return
     if s["card"][2] == "photo":
-        bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": _card_text(chat_id),
-                                       "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+        j = bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": _card_text(chat_id),
+                                           "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
     else:
-        bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": _card_text(chat_id),
-                                    "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+        j = bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": _card_text(chat_id),
+                                        "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+    if not j.get("ok") and "not modified" not in str(j.get("description", "")):
+        print(f"[MUSIC] card edit {chat_id}: {j.get('description')}")
+        s["card"] = None
+        if s["now"]:
+            _post_card(chat_id)
 
 
 async def _start(chat_id, track):
@@ -191,11 +231,11 @@ async def _next(chat_id):
     except Exception:
         pass
     if s["card"]:
-        done = "⏹ Queue finished - left the voice chat."
+        done = _pe("⏹ Queue finished - left the voice chat.")
         if s["card"][2] == "photo":
-            bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": done})
+            bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": done, "parse_mode": "HTML"})
         else:
-            bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": done})
+            bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": done, "parse_mode": "HTML"})
         s["card"] = None
     return False
 
@@ -253,7 +293,7 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
             if len(s["queue"]) >= MAX_QUEUE:
                 return {"text": f"📜 Queue is full ({MAX_QUEUE})."}
             s["queue"].append(track)
-            _refresh_card(chat_id)
+            await asyncio.to_thread(_refresh_card, chat_id)
             return {"text": f"➕ Queued #{len(s['queue'])}: <b>{_esc(track['title'])}</b> ({_dur(track['duration'])})"}
         try:
             await _start(chat_id, track)
@@ -278,18 +318,20 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
             return {"text": "⏹ Nothing is playing."}
         try:
             if act == "pause":
-                await call.pause(chat_id); s["paused"] = True; _refresh_card(chat_id); return {"text": "⏸ Paused."}
+                await call.pause(chat_id); s["paused"] = True; await asyncio.to_thread(_refresh_card, chat_id); return {"text": "⏸ Paused."}
             if act == "resume":
-                await call.resume(chat_id); s["paused"] = False; _refresh_card(chat_id); return {"text": "▶ Resumed."}
+                await call.resume(chat_id); s["paused"] = False; await asyncio.to_thread(_refresh_card, chat_id); return {"text": "▶ Resumed."}
             if act == "skip":
-                had = await _next(chat_id)
-                return {"text": "⏭ Skipped." if had else "⏭ Skipped - queue is empty, left the voice chat."}
+                if not s["queue"]:
+                    return {"text": "📜 Nothing queued after this song - add one with /play, or press ⏹ Stop."}
+                await _next(chat_id)
+                return {"text": "⏭ Skipped."}
             if act == "stop":
                 s["queue"].clear(); await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
                 v = int(body.get("value") or (s["volume"] + (20 if act == "vup" else -20)))
                 s["volume"] = max(10, min(200, v))
-                await call.change_volume_call(chat_id, s["volume"]); _refresh_card(chat_id)
+                await call.change_volume_call(chat_id, s["volume"]); await asyncio.to_thread(_refresh_card, chat_id)
                 return {"text": f"🔊 Volume {s['volume']}%"}
             if act == "queue":
                 if not s["now"]:
