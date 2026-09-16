@@ -1385,7 +1385,7 @@
 
   async function loadVirtual(){
     let st;
-    try{ st = await api("/virtual/state" + (vt.month ? "?month=" + vt.month : "")); }
+    try{ st = await api("/virtual/state" + (vt.month ? "?month=" + encodeURIComponent(vt.month) : "")); }
     catch(e){ console.warn("virtual state:", e); return; }
     vt.state = st;
     const pending = (st.pending || []).length > 0;
