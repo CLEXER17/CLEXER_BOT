@@ -753,6 +753,8 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)
     res = await _control(chat_id, act, body)
+    if act == "stop" and body.get("msg_ids"):
+        return {"text": "", "sent": True}           # everything was just swept - leave nothing behind
     if body.get("msg_ids") and res.get("text"):
         # typed command: answer in the group ourselves, tracked for the sweep
         _say(chat_id, res["text"])
