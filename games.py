@@ -126,7 +126,7 @@ GAME_EMOJI = {
 }
 _TG_EMOJI_METHODS = {"sendMessage", "editMessageText", "sendPhoto", "editMessageCaption", "editMessageMedia",
                      "sendAnimation", "sendDocument", "sendVideo"}
-_TG_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")\ufe0f?")
+_TG_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")️?")
 
 
 def _pe(text):
@@ -136,11 +136,56 @@ def _pe(text):
     return _TG_RE.sub(lambda m: f'<tg-emoji emoji-id="{GAME_EMOJI[m.group(1)]}">{m.group(1)}</tg-emoji>', text)
 
 
+_LEAD_RE = re.compile("^(?:(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")|[^\w\s])️?\s*")
+
+
+def _icon_buttons(markup):
+    """Inline buttons that start with a known glyph get it as the button's
+    premium icon (icon_custom_emoji_id) and the glyph run leaves the label:
+    "🔴🟢 Connect 4" -> icon 🔴, label "Connect 4". Buttons that are only
+    an emoji (board cells, arrows) are left alone."""
+    try:
+        kb = json.loads(markup) if isinstance(markup, str) else markup
+        rows = kb.get("inline_keyboard") if isinstance(kb, dict) else None
+        if not rows:
+            return markup
+        changed = False
+        new_rows = []
+        for row in rows:
+            new_row = []
+            for b in row:
+                t = b.get("text") or ""
+                icon = None
+                rest = t
+                while True:
+                    m = _LEAD_RE.match(rest)
+                    if not m:
+                        break
+                    if m.group(1) and not icon:
+                        icon = GAME_EMOJI[m.group(1)]
+                    rest = rest[m.end():]
+                if icon and rest.strip() and "icon_custom_emoji_id" not in b:
+                    b = {**b, "text": rest.strip(), "icon_custom_emoji_id": icon}
+                    changed = True
+                new_row.append(b)
+            new_rows.append(new_row)
+        if not changed:
+            return markup
+        out = {**kb, "inline_keyboard": new_rows}
+        return json.dumps(out, ensure_ascii=False) if isinstance(markup, str) else out
+    except Exception:
+        return markup
+
+
 def _with_emoji(method, payload):
-    """A copy of the payload with premium emoji in text / caption."""
-    if method not in _TG_EMOJI_METHODS or not isinstance(payload, dict):
+    """A copy of the payload with premium emoji in text / caption / buttons."""
+    if not isinstance(payload, dict):
         return payload
     out = dict(payload)
+    if out.get("reply_markup"):
+        out["reply_markup"] = _icon_buttons(out["reply_markup"])
+    if method not in _TG_EMOJI_METHODS:
+        return out if out.get("reply_markup") is not payload.get("reply_markup") else payload
     for k in ("text", "caption"):
         if out.get(k):
             out[k] = _pe(out[k])
