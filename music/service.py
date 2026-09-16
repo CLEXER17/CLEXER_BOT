@@ -481,8 +481,7 @@ def _card_text(chat_id):
                f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if t.get('video') else '🎧 audio'}\n"
                f"{state}\n"
                f"{who}\n\n"
-               f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue
-"
+               f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue\n"
                f"➕ Send /play song name to add to the queue")
 
 
