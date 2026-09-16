@@ -28,7 +28,7 @@ from pyrogram import Client
 from pyrogram.errors import RPCError
 from pytgcalls import PyTgCalls, filters as fl
 from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
-from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
+from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded
 from yt_dlp import YoutubeDL
 
 API_ID = int(os.getenv("MUSIC_API_ID", "0") or 0)
@@ -128,12 +128,37 @@ if _COOKIES.strip():
 _last_error = {"text": ""}
 
 
+_BAD = ("non stop", "nonstop", "non-stop", "10 minutes", "1 hour", "loop", "slowed", "reverb", "8d", "remix", "mashup",
+        "cover", "karaoke", "instrumental", "ringtone", "status", "whatsapp", "shorts", "jukebox", "medley", "mix",
+        "dj ", "bass boosted", "lofi", "lo-fi", "speed up", "sped up", "reaction", "tutorial", "lyrics video by", "live ",
+        "re-create", "recreate", "recreated", "2.o", "2.0", "unplugged", "flute", "piano", "guitar", "sad version", "female version")
+_GOOD = ("official", "lyrical", "full song", "full video", "video song", "title track", "audio")
+_LABELS = ("t-series", "sony music", "zee music", "yrf", "tips", "saregama", "eros", "times music", "speed records",
+           "- topic", "melodies", "vevo", "records", "universal", "warner", "pen movies", "goldmines", "aditya music", "lahari")
+
+
+def _score(e, query=""):
+    """Higher = more likely the real, original song - and the one asked for."""
+    t = (e.get("title") or "").lower()
+    ch = (e.get("channel") or e.get("uploader") or "").lower()
+    dur = e.get("duration") or 0
+    sc = 0
+    words = [w for w in query.lower().split() if len(w) > 2]
+    sc += 2 * min(3, sum(1 for w in words if w in t))
+    sc -= 6 * sum(1 for w in _BAD if w in t)
+    sc += 2 * sum(1 for w in _GOOD if w in t)
+    sc += 5 if any(w in ch for w in _LABELS) else 0
+    if dur:
+        sc += 3 if 120 <= dur <= 480 else (-2 if dur < 60 else -4)
+    return sc
+
+
 def _flat_search(url, q=None):
     """Titles/ids only (fast). Returns candidate watch URLs, best first.
     `url` is a yt-dlp search prefix ("ytsearch6:") or a full search page."""
     with YoutubeDL({**_YDL, "extract_flat": "in_playlist", "playlistend": 6}) as y:
         info = y.extract_info(url + (q or ""), download=False)
-    out = []
+    scored = []
     for e in (info or {}).get("entries") or []:
         if not e:
             continue
@@ -142,9 +167,14 @@ def _flat_search(url, q=None):
             continue                       # hour-long mixes and shorts
         vid = e.get("id")
         u = e.get("url") or e.get("webpage_url") or (vid and f"https://www.youtube.com/watch?v={vid}")
-        if u and "watch" in u or (u and len(u) == 11):
-            out.append(u if u.startswith("http") else f"https://www.youtube.com/watch?v={u}")
-    return out
+        if not u:
+            continue
+        if not u.startswith("http"):
+            u = f"https://www.youtube.com/watch?v={u}"
+        if "watch" in u:
+            scored.append((_score(e, q or ""), u))
+    scored.sort(key=lambda x: -x[0])       # the real song outranks loops, remixes and mixes
+    return [u for _, u in scored]
 
 
 _PIPED = ["https://pipedapi.kavin.rocks", "https://api.piped.yt", "https://pipedapi.adminforge.de"]
@@ -211,9 +241,44 @@ def _lookup(query: str) -> Optional[dict]:
         dur = e.get("duration") or 0
         if dur and (dur > MAX_SECONDS or dur < 30):
             continue
-        return {"title": e.get("title") or q, "duration": dur, "url": e["url"],
+        return {"title": e.get("title") or q, "duration": dur, "url": e["url"], "id": e.get("id") or "",
                 "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
                 "uploader": e.get("uploader") or e.get("channel") or ""}
+    return None
+
+
+def _related(track, played_ids):
+    """The next song for autoplay: YouTube's own Mix for the last song,
+    skipping anything already played in this chat."""
+    vid = track.get("id")
+    if not vid:
+        return None
+    try:
+        with YoutubeDL({**_YDL, "extract_flat": "in_playlist", "playlistend": 12}) as y:
+            info = y.extract_info(f"https://www.youtube.com/watch?v={vid}&list=RD{vid}", download=False)
+    except Exception as e:
+        print(f"[MUSIC] related {vid}: {str(e)[:120]}")
+        return None
+    cands = []
+    for e in (info or {}).get("entries") or []:
+        if not e or not e.get("id") or e["id"] in played_ids:
+            continue
+        dur = e.get("duration") or 0
+        if dur and (dur > MAX_SECONDS or dur < 60):
+            continue
+        cands.append((_score(e), e["id"]))
+    cands.sort(key=lambda x: -x[0])
+    for _, cid in cands[:4]:
+        try:
+            with YoutubeDL(_YDL) as y:
+                e = y.extract_info(f"https://www.youtube.com/watch?v={cid}", download=False)
+        except Exception as ex:
+            print(f"[MUSIC] related extract {cid}: {str(ex)[:120]}")
+            continue
+        if e and e.get("url"):
+            return {"title": e.get("title") or "", "duration": e.get("duration") or 0, "url": e["url"], "id": cid,
+                    "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
+                    "uploader": e.get("uploader") or e.get("channel") or "", "by": "autoplay"}
     return None
 
 
@@ -226,7 +291,8 @@ def _snapshot():
             continue
         pos = st.get("_pos", 0)
         out[str(chat_id)] = {"now": st["now"], "queue": st["queue"], "paused": st["paused"], "volume": st["volume"],
-                             "card": st["card"], "position": st["offset"] + pos, "saved": time.time()}
+                             "card": st["card"], "position": st["offset"] + pos, "saved": time.time(),
+                             "autoplay": st["autoplay"], "played": st["played"][-40:], "history": st["history"][-5:]}
     return out
 
 
@@ -294,7 +360,8 @@ async def _resume_all():
                 _card_note(card, "⏹ Playback ended while I was restarting - send /play to start again.")
             continue
         s = _st(chat_id)
-        s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None)
+        s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None,
+                 autoplay=bool(st.get("autoplay", True)), played=st.get("played", []), history=st.get("history", []))
         track = st["now"]
         start = float(st.get("position", 0))
         try:
@@ -326,7 +393,7 @@ def _card_note(card, text):
 # ── player ─────────────────────────────────────────────────────────────────
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
-                                       "offset": 0, "file": None})
+                                       "offset": 0, "file": None, "history": [], "played": [], "autoplay": True})
 
 
 def _drop_file(s):
@@ -354,14 +421,15 @@ def _card_text(chat_id):
     s = _st(chat_id); t = s["now"]
     if not t:
         return _pe("⏹ Nothing playing.")
-    nxt = s["queue"][0]["title"] if s["queue"] else "—"
+    nxt = s["queue"][0]["title"] if s["queue"] else ("🔁 autoplay picks a similar song" if s["autoplay"] else "—")
     head = "⏸ <b>Paused</b>" if s["paused"] else "🎵 <b>Now playing</b>"
     state = "⏸ paused - press Resume to continue" if s["paused"] else "▶ playing"
+    who = "🔁 Autoplay (similar to the last request)" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
                f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%\n"
                f"{state}\n"
-               f"👤 Requested by {_esc(t['by'])}\n\n"
+               f"{who}\n\n"
                f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue")
 
 
@@ -372,8 +440,8 @@ def _card_kb(chat_id):
             [_btn("▶ Resume", f"mu:resume:{chat_id}", "success"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
             [_btn("📜 Queue", f"mu:queue:{chat_id}")]]}
     return {"inline_keyboard": [
-        [_btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Skip", f"mu:skip:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")],
-        [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}")]]}
+        [_btn("⏮ Prev", f"mu:prev:{chat_id}"), _btn("⏸ Pause", f"mu:pause:{chat_id}"), _btn("⏭ Next", f"mu:skip:{chat_id}")],
+        [_btn("🔉", f"mu:vdown:{chat_id}"), _btn("🔊", f"mu:vup:{chat_id}"), _btn("📜 Queue", f"mu:queue:{chat_id}"), _btn("⏹ Stop", f"mu:stop:{chat_id}", "danger")]]}
 
 
 def _post_card(chat_id):
@@ -417,6 +485,10 @@ def _refresh_card(chat_id):
 
 async def _start(chat_id, track):
     s = _st(chat_id)
+    if s["now"] and (not s["history"] or s["history"][-1] is not s["now"]):
+        s["history"] = (s["history"] + [s["now"]])[-20:]
+    if track.get("id"):
+        s["played"] = (s["played"] + [track["id"]])[-40:]
     s["now"] = track; s["paused"] = False; s["offset"] = 0
     _drop_file(s)
     src = track["url"]
@@ -472,6 +544,13 @@ async def _next(chat_id):
     if s["queue"]:
         await _start(chat_id, s["queue"].pop(0))
         return True
+    if s["autoplay"] and s["now"]:
+        # nothing queued: keep the room going with a song like the last one
+        seed = next((t for t in [s["now"]] + s["history"][::-1] if t.get("by") != "autoplay"), s["now"])
+        rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]))
+        if rel:
+            await _start(chat_id, rel)
+            return True
     s["now"] = None
     try:
         await call.leave_call(chat_id)
@@ -491,6 +570,25 @@ async def _next(chat_id):
 async def _on_end(_, update: StreamEnded):
     async with _lock:
         await _next(update.chat_id)
+
+
+async def _on_chat_update(_, update: ChatUpdate):
+    """The voice chat was closed, or the assistant was kicked / removed."""
+    chat_id = update.chat_id
+    async with _lock:
+        s = _state.get(chat_id)
+        if not s or not s["now"]:
+            return
+        why = "⏹ Voice chat ended." if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT else "⏹ I was removed from the voice chat."
+        s["queue"].clear(); s["now"] = None; _drop_file(s)
+        if s["card"]:
+            _card_note(s["card"], why + " Send /play to start again.")
+            s["card"] = None
+        try:
+            await call.leave_call(chat_id)
+        except Exception:
+            pass
+        await asyncio.to_thread(_save_state)
 
 
 async def _ensure_member(chat_id, invite_link):
@@ -571,6 +669,11 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     chat_id, act = int(body["chat_id"]), str(body.get("action", ""))
     async with _lock:
         s = _st(chat_id)
+        if act == "autoplay":
+            s["autoplay"] = str(body.get("value", "")).lower() not in ("off", "0", "false")
+            if s["now"]:
+                await asyncio.to_thread(_refresh_card, chat_id)
+            return {"text": f"🔁 Autoplay {'on' if s['autoplay'] else 'off'} - when the queue is empty I {'keep playing similar songs' if s['autoplay'] else 'stop'}."}
         if not s["now"] and act not in ("queue",):
             return {"text": "⏹ Nothing is playing."}
         try:
@@ -579,10 +682,22 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
             if act == "resume":
                 await call.resume(chat_id); s["paused"] = False; await asyncio.to_thread(_refresh_card, chat_id); return {"text": "▶ Resumed."}
             if act == "skip":
-                if not s["queue"]:
+                if not s["queue"] and not s["autoplay"]:
                     return {"text": "📜 Nothing queued after this song - add one with /play, or press ⏹ Stop."}
-                await _next(chat_id)
-                return {"text": "⏭ Skipped."}
+                had = await _next(chat_id)
+                return {"text": "⏭ Next song." if had else "⏭ Nothing similar found - queue is empty, left the voice chat."}
+            if act == "prev":
+                if not s["history"]:
+                    return {"text": "⏮ No previous song."}
+                prev = s["history"].pop()
+                s["queue"].insert(0, s["now"])          # Next brings the current one back
+                _drop_file(s)
+                await _start(chat_id, prev)
+                return {"text": "⏮ Previous song."}
+            if act == "autoplay":
+                s["autoplay"] = str(body.get("value", "")).lower() not in ("off", "0", "false")
+                await asyncio.to_thread(_refresh_card, chat_id)
+                return {"text": f"🔁 Autoplay {'on' if s['autoplay'] else 'off'}."}
             if act == "stop":
                 s["queue"].clear(); await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
@@ -618,6 +733,7 @@ async def main():
     client = Client("clexer-music", api_id=API_ID, api_hash=API_HASH, session_string=SESSION, in_memory=True)
     call = PyTgCalls(client)
     call.on_update(fl.stream_end())(_on_end)
+    call.on_update(fl.chat_update(ChatUpdate.Status.LEFT_CALL))(_on_chat_update)
     # One session, one place. If Telegram reports the key as duplicated or
     # revoked the string has to be regenerated with music/login.py.
     try:

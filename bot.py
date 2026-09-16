@@ -9189,8 +9189,8 @@ _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
 # purpose: this is a trading bot (admin 2026-09-16).
 MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
 MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
-_MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/pause": "pause", "/resume": "resume", "/stop": "stop",
-               "/queue": "queue", "/now": "now", "/volume": "volume"}
+_MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/next": "skip", "/prev": "prev", "/pause": "pause", "/resume": "resume",
+               "/stop": "stop", "/queue": "queue", "/now": "now", "/volume": "volume", "/autoplay": "autoplay"}
 
 
 def _music_call(path, payload, timeout=40):
@@ -9250,6 +9250,8 @@ def _music_command(cmd, parts, chat_id, message, sender_id, uname):
             payload["value"] = int(parts[1])
         except Exception:
             send_reply(chat_id, "Usage: <code>/volume 80</code> (10-200)"); return
+    if cmd == "/autoplay":
+        payload["value"] = (parts[1].lower() if len(parts) > 1 else "on")
     r = _music_call("/control", payload)
     if r.get("text"):
         send_reply(chat_id, r["text"])
@@ -21205,6 +21207,8 @@ _CMD_ONLY_CATS = {
         ("/queue",  "📜", "Queue",  "Show what is playing and what is queued"),
         ("/now",    "🎧", "Now",    "The song playing right now"),
         ("/volume", "🔊", "Volume", "Set the volume — /volume 80 (10–200)"),
+        ("/prev",   "⏮", "Previous", "Play the previous song again"),
+        ("/autoplay", "🔁", "Autoplay", "When the queue is empty, keep playing songs similar to the last request — /autoplay on|off"),
     ]),
     "games": ("🎮 Games", False, [
         ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group. Type /games"),
