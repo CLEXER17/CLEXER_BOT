@@ -14,6 +14,8 @@ from the Dockerfile here). Variables:
 | `MUSIC_SECRET` | any long random string - the same value goes on the bot service |
 | `CLEXER_API_URL` / `PUSH_STATE_SECRET` | optional, same values as on the bot service: lets a redeploy resume the music where it was |
 | `MUSIC_COOKIES` | optional: contents of a cookies.txt exported from a logged-in YouTube session, for when YouTube refuses the server IP (search falls back to YouTube Music first) |
+| `MUSIC_YT_CLIENTS` | optional: yt-dlp YouTube player clients, default `default,web_embedded` (the mix that works with a cookies file) |
+| `MUSIC_PROXY` | optional: `http://user:pass@host:port` - send YouTube traffic through a proxy if the server IP stays walled off |
 | `MUSIC_VIDEO_HEIGHT` | optional: video size, 360 (default) / 480 / 720 - higher costs more CPU |
 | `MUSIC_DOWNLOAD_SECONDS` | optional: songs are fetched to disk before playing (no CDN stutter); after this many seconds (70) it streams the URL instead |
 

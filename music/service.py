@@ -133,11 +133,17 @@ _YDL = {"format": _fmt(VIDEO_H),
         "extract_flat": False}
 
 
-# Which YouTube player clients yt-dlp may use. With a cookies file the default
-# "tv" client answers "The page needs to be reloaded", so it is left out;
-# MUSIC_YT_CLIENTS overrides (comma separated, e.g. "web_safari,web").
-_CLIENTS = [c.strip() for c in os.getenv("MUSIC_YT_CLIENTS", "default,-tv").split(",") if c.strip()]
+# Which YouTube player clients yt-dlp may use. With a cookies file the
+# logged-in default ("tv_downgraded") answers "The page needs to be
+# reloaded" and the web clients get the "not a bot" wall on a server IP;
+# the yt-dlp maintainers' answer for cookies is default + web_embedded.
+# MUSIC_YT_CLIENTS overrides (comma separated).
+_CLIENTS = [c.strip() for c in os.getenv("MUSIC_YT_CLIENTS", "default,web_embedded").split(",") if c.strip()]
 _YDL["extractor_args"] = {"youtube": {"player_client": _CLIENTS}}
+# MUSIC_PROXY = http://user:pass@host:port - routes YouTube traffic through a
+# proxy when the server's own IP is walled off.
+if os.getenv("MUSIC_PROXY", "").strip():
+    _YDL["proxy"] = os.getenv("MUSIC_PROXY").strip()
 def _ydl(h=None, cookies=True):
     """yt-dlp options for a given video height (per-group /quality)."""
     o = {**_YDL, "format": _fmt(h or VIDEO_H)} if h and h != VIDEO_H else dict(_YDL)
