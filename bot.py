@@ -24766,6 +24766,15 @@ def command_listener():
                     except Exception as _je:
                         print(f"  [JOIN] goodbye: {_je}")
                     continue
+                # "CLEX BOT pinned a message" service line - the bot's own pins
+                # (the music card) are pinned quietly, so the notice is noise
+                if msg.get("pinned_message") and str(msg.get("from", {}).get("id")) == TELEGRAM_BOT_TOKEN.split(":")[0]:
+                    try:
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                                      json={"chat_id": cid, "message_id": msg.get("message_id")}, timeout=5)
+                    except Exception:
+                        pass
+                    continue
 
                 # /virtual setup form waiting for a number
                 if text and not text.startswith("/") and _vdm.wants_text(cid):
