@@ -126,7 +126,7 @@ GAME_EMOJI = {
 }
 _TG_EMOJI_METHODS = {"sendMessage", "editMessageText", "sendPhoto", "editMessageCaption", "editMessageMedia",
                      "sendAnimation", "sendDocument", "sendVideo"}
-_TG_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")️?")
+_TG_RE = re.compile("(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")\ufe0f?")
 
 
 def _pe(text):
@@ -136,7 +136,7 @@ def _pe(text):
     return _TG_RE.sub(lambda m: f'<tg-emoji emoji-id="{GAME_EMOJI[m.group(1)]}">{m.group(1)}</tg-emoji>', text)
 
 
-_LEAD_RE = re.compile("^(?:(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")|[^\w\s])️?\s*")
+_LEAD_RE = re.compile("^(?:(" + "|".join(re.escape(g) for g in sorted(GAME_EMOJI, key=len, reverse=True)) + r")|[^\w\s])\ufe0f?\s*")
 
 
 def _icon_buttons(markup):
