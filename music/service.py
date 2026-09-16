@@ -110,6 +110,8 @@ def _btn(label, data, style=None):
 
 def _dur(sec):
     sec = int(sec or 0)
+    if sec <= 0:
+        return "🔴 LIVE"
     return f"{sec // 60}:{sec % 60:02d}"
 
 
@@ -142,13 +144,18 @@ def _track_from(e, fallback_title=""):
             audio = u
     if not audio and not video:
         return None
-    return {"title": e.get("title") or fallback_title, "duration": e.get("duration") or 0,
+    live = bool(e.get("is_live"))
+    if live and not video:
+        video = audio                       # a live manifest carries both
+    return {"title": e.get("title") or fallback_title, "duration": 0 if live else (e.get("duration") or 0), "live": live,
             "url": audio or video, "video": video, "id": e.get("id") or "",
             "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
             "uploader": e.get("uploader") or e.get("channel") or ""}
 
 
 def _stream(track, file=None):
+    if track.get("live") and not file:
+        return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
     if file:
         return MediaStream(file, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
     if track.get("video"):
@@ -279,7 +286,7 @@ def _lookup(query: str) -> Optional[dict]:
         if not e:
             continue
         dur = e.get("duration") or 0
-        if dur and (dur > MAX_SECONDS or dur < 30):
+        if not e.get("is_live") and dur and (dur > MAX_SECONDS or dur < 30):
             continue
         t = _track_from(e, q)
         if t:
@@ -405,9 +412,13 @@ async def _resume_all():
         track = st["now"]
         start = float(st.get("position", 0))
         try:
-            f = await asyncio.to_thread(_encode, track, start, s["volume"])
-            s["now"] = track; s["file"] = f; s["offset"] = start
-            await call.play(chat_id, _stream(track, f))
+            if track.get("live"):
+                s["now"] = track; s["file"] = None; s["offset"] = 0
+                await call.play(chat_id, _stream(track))
+            else:
+                f = await asyncio.to_thread(_encode, track, start, s["volume"])
+                s["now"] = track; s["file"] = f; s["offset"] = start
+                await call.play(chat_id, _stream(track, f))
             await asyncio.to_thread(_post_card, chat_id)
             print(f"[MUSIC] resumed {track['title'][:40]!r} in {chat_id} at {start:.0f}s")
             fresh[cid] = True
@@ -577,7 +588,7 @@ async def _start(chat_id, track):
     s["now"] = track; s["paused"] = False; s["offset"] = 0
     _drop_file(s)
     f = None
-    if s["volume"] != 100:
+    if s["volume"] != 100 and not track.get("live"):
         f = await asyncio.to_thread(_encode, track, 0, s["volume"])
         s["file"] = f
     await call.play(chat_id, _stream(track, f))
@@ -593,6 +604,12 @@ async def _set_volume(chat_id, volume):
     s = _st(chat_id); t = s["now"]
     s["volume"] = volume
     if not t:
+        return
+    if t.get("live"):
+        try:
+            await call.change_volume_call(chat_id, volume)
+        except Exception:
+            pass
         return
     try:
         pos = await call.time(chat_id)
