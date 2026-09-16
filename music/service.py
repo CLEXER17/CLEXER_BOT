@@ -483,10 +483,10 @@ def _card_text(chat_id):
     s = _st(chat_id); t = s["now"]
     if not t:
         return _pe("⏹ Nothing playing.")
-    nxt = s["queue"][0]["title"] if s["queue"] else ("🔁 autoplay picks a similar song" if s["autoplay"] else "—")
+    nxt = s["queue"][0]["title"] if s["queue"] else "🔁 a similar song"
     head = "⏸ <b>Paused</b>" if s["paused"] else "🎵 <b>Now playing</b>"
     state = "⏸ paused - press Resume to continue" if s["paused"] else "▶ playing"
-    who = "🔁 Autoplay (similar to the last request)" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
+    who = "🔁 Similar to the last request" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
                f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if t.get('video') else '🎧 audio'}\n"
@@ -646,7 +646,7 @@ async def _next(chat_id):
     if s["queue"]:
         await _start(chat_id, s["queue"].pop(0))
         return True
-    if s["autoplay"] and s["now"]:
+    if s["now"]:
         # nothing queued: keep the room going with a song like the last one
         seed = next((t for t in [s["now"]] + s["history"][::-1] if t.get("by") != "autoplay"), s["now"])
         rel = await asyncio.to_thread(_related, seed if seed.get("id") else s["now"], set(s["played"]))
@@ -782,11 +782,6 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
 async def _control(chat_id, act, body):
     async with _lock:
         s = _st(chat_id)
-        if act == "autoplay":
-            s["autoplay"] = str(body.get("value", "")).lower() not in ("off", "0", "false")
-            if s["now"]:
-                await asyncio.to_thread(_refresh_card, chat_id)
-            return {"text": f"🔁 Autoplay {'on' if s['autoplay'] else 'off'} - when the queue is empty I {'keep playing similar songs' if s['autoplay'] else 'stop'}."}
         if not s["now"] and act not in ("queue",):
             return {"text": "⏹ Nothing is playing."}
         try:
@@ -795,8 +790,6 @@ async def _control(chat_id, act, body):
             if act == "resume":
                 await call.resume(chat_id); s["paused"] = False; await asyncio.to_thread(_refresh_card, chat_id); return {"text": "▶ Resumed."}
             if act == "skip":
-                if not s["queue"] and not s["autoplay"]:
-                    return {"text": "📜 Nothing queued after this song - add one with /play, or press ⏹ Stop."}
                 had = await _next(chat_id)
                 return {"text": "⏭ Next song." if had else "⏭ Nothing similar found - queue is empty, left the voice chat."}
             if act == "prev":
@@ -807,10 +800,7 @@ async def _control(chat_id, act, body):
                 _drop_file(s)
                 await _start(chat_id, prev)
                 return {"text": "⏮ Previous song."}
-            if act == "autoplay":
-                s["autoplay"] = str(body.get("value", "")).lower() not in ("off", "0", "false")
-                await asyncio.to_thread(_refresh_card, chat_id)
-                return {"text": f"🔁 Autoplay {'on' if s['autoplay'] else 'off'}."}
+
             if act == "stop":
                 s["queue"].clear(); await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
