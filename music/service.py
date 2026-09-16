@@ -499,17 +499,24 @@ def _post_card(chat_id):
     sits at the bottom of the chat when a new song starts)."""
     s = _st(chat_id)
     if s["card"]:
+        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
         bot_api("deleteMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
         s["card"] = None
     t = s["now"]
+    j = {}
     if t and t.get("thumb"):
         j = bot_api("sendPhoto", {"chat_id": chat_id, "photo": t["thumb"], "caption": _card_text(chat_id),
                                   "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
         if j.get("ok"):
-            s["card"] = (chat_id, j["result"]["message_id"], "photo"); return
-    j = bot_api("sendMessage", {"chat_id": chat_id, "text": _card_text(chat_id), "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
-    if j.get("ok"):
-        s["card"] = (chat_id, j["result"]["message_id"], "text")
+            s["card"] = (chat_id, j["result"]["message_id"], "photo")
+    if not s["card"]:
+        j = bot_api("sendMessage", {"chat_id": chat_id, "text": _card_text(chat_id), "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+        if j.get("ok"):
+            s["card"] = (chat_id, j["result"]["message_id"], "text")
+    if s["card"]:
+        # pinned so the controls stay one tap away; needs the bot's "pin
+        # messages" right, silently skipped otherwise
+        bot_api("pinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1], "disable_notification": True}, timeout=8)
 
 
 def _refresh_card(chat_id):
@@ -608,6 +615,7 @@ async def _next(chat_id):
         pass
     await asyncio.to_thread(_save_state)
     if s["card"]:
+        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
         done = _pe("⏹ Queue finished - left the voice chat.")
         if s["card"][2] == "photo":
             bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": done, "parse_mode": "HTML"})
@@ -632,6 +640,7 @@ async def _on_chat_update(_, update: ChatUpdate):
         why = "⏹ Voice chat ended." if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT else "⏹ I was removed from the voice chat."
         s["queue"].clear(); s["now"] = None; _drop_file(s)
         if s["card"]:
+            bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
             _card_note(s["card"], why + " Send /play to start again.")
             s["card"] = None
         try:
