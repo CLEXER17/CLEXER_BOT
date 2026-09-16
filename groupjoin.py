@@ -357,7 +357,7 @@ def welcome(chat_id, user: dict, title: str):
                f"👤 Name » {_mention(user)}\n"
                f"💬 Username » {('@' + _esc(uname)) if uname else '-'}\n"
                f"🪪 ID » <code>{user.get('id')}</code></blockquote>\n\n"
-               f"Say hi, read the pinned rules, and keep it respectful. 🤝")
+               f"Welcome aboard, {_esc(user.get('first_name') or 'friend')}! Glad to have you with us - say hi and enjoy your stay. 🤝")
     if data:
         j = _api("sendPhoto", {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
                  files={"photo": ("welcome.jpg", data, "image/jpeg")})

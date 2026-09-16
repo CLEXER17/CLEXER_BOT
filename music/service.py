@@ -15,6 +15,7 @@ Env: MUSIC_API_ID, MUSIC_API_HASH, MUSIC_SESSION_STRING, TELEGRAM_BOT_TOKEN,
 """
 import asyncio
 import html as _html
+import json as _json
 import os
 import subprocess
 import tempfile
@@ -38,6 +39,13 @@ SESSION = "".join(os.getenv("MUSIC_SESSION_STRING", "").split())
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SECRET = os.getenv("MUSIC_SECRET", "").strip()
 MAX_QUEUE = 25
+# Where the player state survives a restart / redeploy: the bot's central
+# store when CLEXER_API_URL + PUSH_STATE_SECRET are set (same values as the
+# bot service), else a local file (survives a crash-restart, not a redeploy).
+CENTRAL_URL = (os.getenv("CLEXER_API_URL") or "").rstrip("/")
+CENTRAL_SECRET = os.getenv("PUSH_STATE_SECRET", "").strip()
+STATE_FILE = os.path.join(tempfile.gettempdir(), "clexer_music_state.json")
+RESUME_MAX_AGE = 3 * 3600      # a saved state older than this is just cleaned up, not resumed
 # Premium emoji: MUSIC_EMOJI_JSON = {"🎵": "5231200819986047254", ...}. Text gets
 # <tg-emoji> wrappers, buttons get icon_custom_emoji_id (glyph dropped from the
 # label, as bot.py does). Empty map = plain emoji everywhere.
@@ -147,6 +155,112 @@ def _lookup(query: str) -> Optional[dict]:
     return None
 
 
+# ── state persistence ─────────────────────────────────────────────────────
+def _snapshot():
+    """Everything needed to pick a chat's playback up again."""
+    out = {}
+    for chat_id, st in _state.items():
+        if not st["now"]:
+            continue
+        pos = st.get("_pos", 0)
+        out[str(chat_id)] = {"now": st["now"], "queue": st["queue"], "paused": st["paused"], "volume": st["volume"],
+                             "card": st["card"], "position": st["offset"] + pos, "saved": time.time()}
+    return out
+
+
+def _save_state(snap=None):
+    snap = _snapshot() if snap is None else snap
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            _json.dump(snap, f)
+    except Exception as e:
+        print(f"[MUSIC] state file: {e}")
+    if CENTRAL_URL and CENTRAL_SECRET:
+        try:
+            _rq.post(f"{CENTRAL_URL}/kv/music_state", json=snap, headers={"X-Push-Secret": CENTRAL_SECRET}, timeout=8)
+        except Exception as e:
+            print(f"[MUSIC] state push: {e}")
+
+
+def _load_state():
+    snap = None
+    if CENTRAL_URL and CENTRAL_SECRET:
+        try:
+            r = _rq.get(f"{CENTRAL_URL}/kv/music_state", headers={"X-Push-Secret": CENTRAL_SECRET}, timeout=8)
+            if r.ok and r.json().get("found"):
+                snap = r.json().get("data")
+        except Exception as e:
+            print(f"[MUSIC] state pull: {e}")
+    if snap is None:
+        try:
+            with open(STATE_FILE, encoding="utf-8") as f:
+                snap = _json.load(f)
+        except Exception:
+            snap = None
+    return snap if isinstance(snap, dict) else {}
+
+
+async def _track_positions():
+    """Once a second, remember how far each playing chat is - so a restart
+    can resume near the same spot - and save the state every 10 s."""
+    n = 0
+    while True:
+        await asyncio.sleep(1)
+        for chat_id, st in list(_state.items()):
+            if st["now"] and not st["paused"]:
+                try:
+                    st["_pos"] = await call.time(chat_id)
+                except Exception:
+                    pass
+        n += 1
+        if n % 10 == 0 and any(st["now"] for st in _state.values()):
+            await asyncio.to_thread(_save_state)
+
+
+async def _resume_all():
+    """After a restart: pick every chat up where it was, or tidy its card."""
+    snap = _load_state()
+    if not snap:
+        return
+    fresh = {}
+    for cid, st in snap.items():
+        chat_id = int(cid)
+        too_old = time.time() - float(st.get("saved", 0)) > RESUME_MAX_AGE
+        card = st.get("card")
+        if too_old or not st.get("now"):
+            if card:
+                _card_note(card, "⏹ Playback ended while I was restarting - send /play to start again.")
+            continue
+        s = _st(chat_id)
+        s.update(queue=st.get("queue", []), volume=int(st.get("volume", 100)), paused=False, card=tuple(card) if card else None)
+        track = st["now"]
+        start = float(st.get("position", 0))
+        try:
+            f = await asyncio.to_thread(_encode, track["url"], start, s["volume"])
+            s["now"] = track; s["file"] = f; s["offset"] = start
+            await call.play(chat_id, MediaStream(f, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+            await asyncio.to_thread(_post_card, chat_id)
+            print(f"[MUSIC] resumed {track['title'][:40]!r} in {chat_id} at {start:.0f}s")
+            fresh[cid] = True
+        except Exception as e:
+            print(f"[MUSIC] resume {chat_id}: {e!r}")
+            s["now"] = None; s["queue"] = []; s["file"] = None
+            if card:
+                _card_note(tuple(card), "⏹ I restarted and could not rejoin the voice chat - send /play to start again.")
+            s["card"] = None
+    if not fresh:
+        _save_state({})
+
+
+def _card_note(card, text):
+    try:
+        chat_id, mid, kind = card
+        m = "editMessageCaption" if kind == "photo" else "editMessageText"
+        bot_api(m, {"chat_id": chat_id, "message_id": mid, ("caption" if kind == "photo" else "text"): _pe(text), "parse_mode": "HTML"})
+    except Exception:
+        pass
+
+
 # ── player ─────────────────────────────────────────────────────────────────
 def _st(chat_id):
     return _state.setdefault(chat_id, {"queue": [], "now": None, "paused": False, "volume": 100, "card": None,
@@ -248,7 +362,9 @@ async def _start(chat_id, track):
         src = await asyncio.to_thread(_encode, track["url"], 0, s["volume"])
         s["file"] = src
     await call.play(chat_id, MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+    s["_pos"] = 0
     await asyncio.to_thread(_post_card, chat_id)
+    await asyncio.to_thread(_save_state)
 
 
 async def _set_volume(chat_id, volume):
@@ -299,6 +415,7 @@ async def _next(chat_id):
         await call.leave_call(chat_id)
     except Exception:
         pass
+    await asyncio.to_thread(_save_state)
     if s["card"]:
         done = _pe("⏹ Queue finished - left the voice chat.")
         if s["card"][2] == "photo":
@@ -444,10 +561,24 @@ async def main():
     _me.update(id=me.id, username=me.username or "")
     await call.start()
     print(f"[MUSIC] assistant @{_me['username']} ready")
+    try:
+        await _resume_all()
+    except Exception as e:
+        print(f"[MUSIC] resume: {e!r}")
+    asyncio.create_task(_track_positions())
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="none", lifespan="off"))
     try:
         await server.serve()
     finally:
+        # going down (redeploy / restart): remember where every chat was so the
+        # next process can carry on, and say so on the cards
+        try:
+            await asyncio.to_thread(_save_state)
+            for chat_id, st in list(_state.items()):
+                if st["now"] and st["card"]:
+                    _card_note(st["card"], "🔄 Restarting - the music continues in a moment…")
+        except Exception:
+            pass
         try:
             await client.stop()
         except Exception:
