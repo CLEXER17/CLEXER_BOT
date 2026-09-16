@@ -308,7 +308,17 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
 
 @app.on_event("startup")
 async def _startup():
-    await client.start()
+    # One session, one place. If Telegram reports the key as duplicated or
+    # revoked, say so plainly - the string has to be regenerated with
+    # music/login.py; restarting will not bring it back.
+    try:
+        await client.start()
+    except Exception as e:
+        name = type(e).__name__
+        if "AuthKey" in name or "SessionRevoked" in name or "Unauthorized" in name:
+            print(f"[MUSIC] SESSION DEAD ({name}): the string was used from two places at once or was logged out. "
+                  f"Run music/login.py again and replace MUSIC_SESSION_STRING.")
+        raise
     me = await client.get_me()
     _me.update(id=me.id, username=me.username or "")
     await call.start()
