@@ -133,6 +133,13 @@ EXTRA = [
     "<b>🎮 Games</b>",
     "<blockquote>Tap any command to run it instantly 👇</blockquote>",
     "part {}/{}",
+    "📩 <b>Request received</b>",
+    "Hey {} 👋",
+    "Your request to join {} has been received - an admin will look at it shortly.",
+    "Meanwhile, CLEXER is right here: live BTC and altcoin signals, copy trading and virtual trading.",
+    "🤖 Open Bot",
+    "👑 Get VIP",
+    "❌ Your request to join {} was declined.",
 ]
 
 

@@ -9177,6 +9177,11 @@ import virtual as _virt
 import virtual_dm as _vdm
 _vdm.init(TELEGRAM_BOT_TOKEN)
 
+# Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
+# its auto-approve rule below; every other chat's request goes to this.
+import groupjoin as _gj
+_gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID)
+
 # Languages: every Telegram call to a DM is rewritten in the user's language
 # at the requests.post hook (see i18n.py and _tg_hooked_post). The choice
 # lives in the copytrade record so the Mini App reads the same value.
@@ -21076,18 +21081,22 @@ _HELP_CATS = {
     # _XXX_SUBCATS dict (rooms), not here. Only the label/admin-only flag is used
     # for these; an empty list is intentional, not a bug.
     "copyuser":     ("💰 My Copy Trade",       False, []),
-    # Games get their own room - they are not status information
-    # (admin 2026-09-15). A flat list: two commands, no sub-rooms needed.
-    "games":        ("🎮 Games",               False, [
-        ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group"),
-        ("/out",     "🗳", "Vote Out", "Start a vote to remove a player from a game you are in — the game's players decide"),
-    ]),
     "tradecontrol": ("🎯 Trade Control",       True,  []),
     "scan":         ("🔍 Scan Control",        True,  []),
     "copyadmin":    ("👥 Copy Admin",          True,  []),
     "settings":     ("⚙️ Settings",            True,  []),
     "tv":           ("📡 TV & Advanced",       True,  []),
     "broadcast":    ("📢 Broadcast & Channels", True,  []),
+}
+
+# Command-only entries: listed in /cmd (and searchable by /help's command
+# lookup), but never rendered as a room or button. This is a trading bot -
+# games are reachable by typing /games, not from the menu (admin 2026-09-16).
+_CMD_ONLY_CATS = {
+    "games": ("🎮 Games", False, [
+        ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group. Type /games"),
+        ("/out",     "🗳", "Vote Out", "Start a vote to remove a player from a game you are in — the game's players decide"),
+    ]),
 }
 
 # ─── "My Copy Trade" is split into sub-sections (main gate → door) ────────────
@@ -22567,7 +22576,7 @@ def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
     ones (their real access, not everything); anyone else sees only the
     open-to-all categories."""
     out = []
-    for cat_id, (cat_label, admin_only, entries) in _HELP_CATS.items():
+    for cat_id, (cat_label, admin_only, entries) in list(_HELP_CATS.items()) + list(_CMD_ONLY_CATS.items()):
         if admin_only and not (is_admin_view or (is_co_admin_view and cat_id in _CO_ADMIN_CAT_IDS)):
             continue
         for cmd, emoji, title, desc in entries:
@@ -23239,6 +23248,16 @@ def command_listener():
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                                       json={"chat_id": cb_chat_id, "message_id": cb_msg_id, "text": _done, "parse_mode": "HTML",
                                             "reply_markup": {"inline_keyboard": [[{"text": "📋 Menu", "callback_data": "help_main"}]]}}, timeout=10)
+                        continue
+
+                    if cb_data.startswith("jn:"):
+                        try:
+                            _jn_pop = _gj.on_callback(cb_data, cb_cid, _cb_fname)
+                        except Exception as _je:
+                            print(f"  [JOIN] callback {cb_data}: {_je}")
+                            _jn_pop = "Something went wrong - try again."
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"], "text": _jn_pop, "show_alert": True}, timeout=5)
                         continue
 
                     if cb_data.startswith("vt:"):
@@ -24592,12 +24611,24 @@ def command_listener():
                             print(f"  [VIP CHANNEL] declined @{_jr_uname} ({_jr_user_id}) — not VIP")
                     except Exception as e:
                         print(f"  [VIP CHANNEL] join request error: {e}")
+                    if not _is_vip_chan:
+                        try:
+                            _gj.on_join_request(jr)
+                        except Exception as _je:
+                            print(f"  [JOIN] request: {_je}")
                     continue
 
                 msg = upd.get("message",{}); text = msg.get("text","") or ""
                 cid = msg.get("chat",{}).get("id"); uname = msg.get("from",{}).get("username","?")
                 sender_uid = msg.get("from",{}).get("id")
                 if not cid: continue
+
+                if msg.get("new_chat_members"):
+                    try:
+                        _gj.on_new_members(msg)
+                    except Exception as _je:
+                        print(f"  [JOIN] welcome: {_je}")
+                    continue
 
                 # /virtual setup form waiting for a number
                 if text and not text.startswith("/") and _vdm.wants_text(cid):

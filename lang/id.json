@@ -814,5 +814,12 @@
 "⚠️ Saldo tidak cukup ({}) — ketuk Tambah Dana dulu.",
 "<b>🎮 Game</b>",
 "<blockquote>Ketuk perintah mana pun untuk langsung menjalankannya 👇</blockquote>",
-"bagian {}/{}"
+"bagian {}/{}",
+"📩 <b>Permintaan diterima</b>",
+"Hai {} 👋",
+"Permintaan Anda untuk bergabung ke {} sudah diterima - admin akan segera memeriksanya.",
+"Sementara itu, CLEXER ada di sini: sinyal BTC dan altcoin langsung, copy trading, dan trading virtual.",
+"🤖 Buka bot",
+"👑 Dapatkan VIP",
+"❌ Permintaan Anda untuk bergabung ke {} ditolak."
 ]

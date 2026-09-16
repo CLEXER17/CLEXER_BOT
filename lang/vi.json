@@ -814,5 +814,12 @@
 "⚠️ Không đủ số dư ({}) — nhấn Nạp tiền trước.",
 "<b>🎮 Trò chơi</b>",
 "<blockquote>Nhấn vào lệnh bất kỳ để chạy ngay 👇</blockquote>",
-"phần {}/{}"
+"phần {}/{}",
+"📩 <b>Đã nhận yêu cầu</b>",
+"Chào {} 👋",
+"Yêu cầu tham gia {} của bạn đã được nhận - admin sẽ xem sớm.",
+"Trong lúc chờ, CLEXER ở ngay đây: tín hiệu BTC và altcoin trực tiếp, copy trading và giao dịch ảo.",
+"🤖 Mở bot",
+"👑 Nhận VIP",
+"❌ Yêu cầu tham gia {} của bạn đã bị từ chối."
 ]

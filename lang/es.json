@@ -814,5 +814,12 @@
 "⚠️ Saldo insuficiente ({}) — pulsa Añadir fondos primero.",
 "<b>🎮 Juegos</b>",
 "<blockquote>Toca cualquier comando para ejecutarlo al instante 👇</blockquote>",
-"parte {}/{}"
+"parte {}/{}",
+"📩 <b>Solicitud recibida</b>",
+"Hola {} 👋",
+"Tu solicitud para unirte a {} ha sido recibida - un admin la revisará en breve.",
+"Mientras tanto, CLEXER está aquí: señales en vivo de BTC y altcoins, copy trading y trading virtual.",
+"🤖 Abrir bot",
+"👑 Obtener VIP",
+"❌ Tu solicitud para unirte a {} fue rechazada."
 ]

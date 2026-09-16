@@ -814,5 +814,12 @@
 "⚠️ Kulang ang balanse ({}) — i-tap muna ang Magdagdag ng Pondo.",
 "<b>🎮 Mga Laro</b>",
 "<blockquote>I-tap ang kahit anong command para patakbuhin agad 👇</blockquote>",
-"bahagi {}/{}"
+"bahagi {}/{}",
+"📩 <b>Natanggap ang request</b>",
+"Hi {} 👋",
+"Natanggap na ang request mo na sumali sa {} - titingnan ito ng admin sa lalong madaling panahon.",
+"Habang naghihintay, nandito ang CLEXER: live na BTC at altcoin signals, copy trading at virtual trading.",
+"🤖 Buksan ang bot",
+"👑 Kumuha ng VIP",
+"❌ Tinanggihan ang request mo na sumali sa {}."
 ]

@@ -814,5 +814,12 @@
 "⚠️ Yetersiz bakiye ({}) — önce Bakiye Ekle'ye dokunun.",
 "<b>🎮 Oyunlar</b>",
 "<blockquote>Hemen çalıştırmak için bir komuta dokunun 👇</blockquote>",
-"bölüm {}/{}"
+"bölüm {}/{}",
+"📩 <b>İstek alındı</b>",
+"Selam {} 👋",
+"{} grubuna katılma isteğiniz alındı - bir yönetici kısa süre içinde bakacak.",
+"Bu arada CLEXER burada: canlı BTC ve altcoin sinyalleri, kopya işlem ve sanal işlem.",
+"🤖 Botu aç",
+"👑 VIP al",
+"❌ {} grubuna katılma isteğiniz reddedildi."
 ]
