@@ -190,6 +190,36 @@ def on_new_members(msg: dict):
         threading.Thread(target=welcome, args=(chat.get("id"), u, chat.get("title") or "the group"), daemon=True).start()
 
 
+def on_left_member(msg: dict):
+    """Someone left (or was removed) - the goodbye twin of the welcome card."""
+    chat = msg.get("chat") or {}
+    u = msg.get("left_chat_member") or {}
+    if chat.get("type") not in ("group", "supergroup") or not u or u.get("is_bot"):
+        return
+    threading.Thread(target=goodbye, args=(chat.get("id"), u, chat.get("title") or "the group"), daemon=True).start()
+
+
+def goodbye(chat_id, user: dict, title: str):
+    try:
+        data = render_card(user, title, left=True)
+    except Exception as e:
+        print(f"  [JOIN] leave card render: {e}")
+        data = None
+    uname = user.get("username")
+    caption = (f"👋 {_mention(user)} left <b>{_esc(title)}</b>" + chr(10) + chr(10)
+               + "<blockquote>📄 <b>Their info</b>" + chr(10)
+               + f"👤 Name » {_mention(user)}" + chr(10)
+               + f"💬 Username » {('@' + _esc(uname)) if uname else '-'}" + chr(10)
+               + f"🪪 ID » <code>{user.get('id')}</code></blockquote>" + chr(10) + chr(10)
+               + "The door stays open - see you around. 🤝")
+    if data:
+        j = _api("sendPhoto", {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+                 files={"photo": ("goodbye.jpg", data, "image/jpeg")})
+        if j.get("ok"):
+            return
+    _api("sendMessage", {"chat_id": chat_id, "text": caption, "parse_mode": "HTML"}, timeout=10)
+
+
 def expire(max_age=48 * 3600):
     """Drop cards nobody decided on (join requests stay open on Telegram's side)."""
     now = time.time()
@@ -251,7 +281,7 @@ def _avatar(uid, size):
     return out
 
 
-def render_card(user: dict, title: str) -> bytes:
+def render_card(user: dict, title: str, left: bool = False) -> bytes:
     W, H = 1000 * S, 520 * S
     NAVY, PANEL, GOLD, GOLD2, IVORY, MUTED, JADE = (10, 13, 20), (17, 24, 39), (201, 169, 106), (233, 207, 151), (242, 236, 223), (154, 162, 182), (87, 185, 142)
     im = Image.new("RGB", (W, H), NAVY)
@@ -264,7 +294,7 @@ def render_card(user: dict, title: str) -> bytes:
         d.line((x, y, x, y + 26 * S * dy), fill=GOLD, width=3 * S)
     # avatar ring
     cx, cy, R = 190 * S, H // 2, 118 * S
-    d.ellipse((cx - R - 10 * S, cy - R - 10 * S, cx + R + 10 * S, cy + R + 10 * S), outline=GOLD, width=4 * S)
+    d.ellipse((cx - R - 10 * S, cy - R - 10 * S, cx + R + 10 * S, cy + R + 10 * S), outline=(192, 91, 108) if left else GOLD, width=4 * S)
     av = _avatar(user.get("id"), 2 * R)
     if av is not None:
         im.paste(av, (cx - R, cy - R), av)
@@ -276,7 +306,8 @@ def render_card(user: dict, title: str) -> bytes:
         d.text((cx - tw / 2, cy - 62 * S), letter, font=f, fill=GOLD2)
     # text block
     x0 = 360 * S
-    d.text((x0, 86 * S), "WELCOME TO THE COMMUNITY", font=_font(15), fill=GOLD)
+    CRIMSON = (192, 91, 108)
+    d.text((x0, 86 * S), "LEFT THE COMMUNITY" if left else "WELCOME TO THE COMMUNITY", font=_font(15), fill=CRIMSON if left else GOLD)
     name = (user.get("first_name") or "") + (" " + user["last_name"] if user.get("last_name") else "")
     name = name.strip() or (user.get("username") or "New member")
     f = _font(44)
@@ -289,13 +320,13 @@ def render_card(user: dict, title: str) -> bytes:
     d.rounded_rectangle((bx, by, bx + bw, by + bh), radius=14 * S, outline=(99, 185, 199), width=2 * S)
     rows = [("USERNAME", ("@" + user["username"]) if user.get("username") else "-", IVORY),
             ("USER ID", str(user.get("id", "")), IVORY),
-            ("STATUS", "VERIFIED MEMBER", JADE)]
+            ("STATUS", "LEFT THE GROUP" if left else "VERIFIED MEMBER", CRIMSON if left else JADE)]
     yy = by + 24 * S
     for k, v, col in rows:
         d.text((bx + 26 * S, yy), k, font=_font(13, False), fill=MUTED)
         d.text((bx + 200 * S, yy - 2 * S), v, font=_font(19), fill=col)
         yy += 46 * S
-    d.text((bx + 26 * S, by + bh - 34 * S), f"VERIFIED · {(datetime.now(timezone.utc) + IST).strftime('%d-%b-%Y').upper()}", font=_font(11, False), fill=MUTED)
+    d.text((bx + 26 * S, by + bh - 34 * S), f"{'LEFT' if left else 'VERIFIED'} · {(datetime.now(timezone.utc) + IST).strftime('%d-%b-%Y').upper()}", font=_font(11, False), fill=MUTED)
     d.text((W - 300 * S, H - 70 * S), "CLEXER  ·  CLEX™ BOT", font=_font(13), fill=GOLD)
     im = im.resize((W // S, H // S), Image.LANCZOS)
     buf = io.BytesIO()

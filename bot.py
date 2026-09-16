@@ -24755,6 +24755,12 @@ def command_listener():
                     except Exception as _je:
                         print(f"  [JOIN] welcome: {_je}")
                     continue
+                if msg.get("left_chat_member"):
+                    try:
+                        _gj.on_left_member(msg)
+                    except Exception as _je:
+                        print(f"  [JOIN] goodbye: {_je}")
+                    continue
 
                 # /virtual setup form waiting for a number
                 if text and not text.startswith("/") and _vdm.wants_text(cid):
