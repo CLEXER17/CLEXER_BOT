@@ -350,6 +350,19 @@ _LABELS = ("t-series", "sony music", "zee music", "yrf", "tips", "saregama", "er
            "- topic", "melodies", "vevo", "records", "universal", "warner", "pen movies", "goldmines", "aditya music", "lahari")
 
 
+_VIDEO_WORDS = ("episode", "episodes", "ep ", "cartoon", "anime", "movie", "film", "trailer", "teaser", "podcast",
+                "interview", "lecture", "class", "tutorial", "news", "match", "highlights", "comedy", "show", "season",
+                "part ", "vlog", "documentary", "recipe", "review", "gameplay", "doraemon", "doremon", "shinchan",
+                "shin chan", "pokemon", "motu patlu", "chhota bheem", "ninja hattori", "kids", "story", "stories")
+
+
+def _wants_video(q: str) -> bool:
+    """True when the request is clearly not a song, so the search runs as a
+    plain YouTube search (no ' song', no song ranking, longer results ok)."""
+    ql = " " + q.lower() + " "
+    return any((" " + w) in ql for w in _VIDEO_WORDS)
+
+
 def _score(e, query=""):
     """Higher = more likely the real, original song - and the one asked for."""
     t = (e.get("title") or "").lower()
@@ -358,6 +371,13 @@ def _score(e, query=""):
     sc = 0
     words = [w for w in query.lower().split() if len(w) > 2]
     sc += 2 * min(3, sum(1 for w in words if w in t))
+    if _wants_video(query):
+        # a video request: match the words asked for, prefer full episodes
+        # over clips / shorts / compilations, keep YouTube's own order otherwise
+        sc += 3 * sum(1 for w in words if w in t)
+        sc -= 6 * sum(1 for w in ("shorts", "status", "compilation", "reaction", "explained", "recap", "promo", "#shorts") if w in t)
+        sc += 2 if 600 <= dur <= 3600 else 0
+        return sc
     sc -= 6 * sum(1 for w in _BAD if w in t)
     sc += 2 * sum(1 for w in _GOOD if w in t)
     sc += 5 if any(w in ch for w in _LABELS) else 0
@@ -372,11 +392,12 @@ def _flat_search(url, q=None):
     with YoutubeDL({**_YDL, "extract_flat": "in_playlist", "playlistend": 6}) as y:
         info = y.extract_info(url + (q or ""), download=False)
     scored = []
+    limit = MAX_LINK_SECONDS if _wants_video(q or "") else MAX_SECONDS
     for e in (info or {}).get("entries") or []:
         if not e:
             continue
         dur = e.get("duration") or 0
-        if dur and (dur > MAX_SECONDS or dur < 30):
+        if dur and (dur > limit or dur < 30):
             continue                       # hour-long mixes and shorts
         vid = e.get("id")
         u = e.get("url") or e.get("webpage_url") or (vid and f"https://www.youtube.com/watch?v={vid}")
@@ -398,14 +419,15 @@ def _piped_search(q):
     from urllib.parse import quote_plus
     for base in _PIPED:
         try:
-            r = _rq.get(f"{base}/search?q={quote_plus(q + ' song')}&filter=videos", timeout=8)
+            r = _rq.get(f"{base}/search?q={quote_plus(q if _wants_video(q) else q + ' song')}&filter=videos", timeout=8)
             items = (r.json() or {}).get("items") or []
         except Exception:
             continue
         out = []
+        limit = MAX_LINK_SECONDS if _wants_video(q) else MAX_SECONDS
         for it in items:
             dur = it.get("duration") or 0
-            if dur and (dur > MAX_SECONDS or dur < 30):
+            if dur and (dur > limit or dur < 30):
                 continue
             u = it.get("url") or ""
             if "watch?v=" in u:
@@ -427,7 +449,7 @@ def _lookup(query: str, height=None) -> Optional[dict]:
     else:
         cands = []
         from urllib.parse import quote_plus
-        for label, fn in (("ytsearch", lambda: _flat_search("ytsearch6:", q + " song")),
+        for label, fn in (("ytsearch", lambda: _flat_search("ytsearch6:", q if _wants_video(q) else q + " song")),
                           ("ytmusic", lambda: _flat_search("https://music.youtube.com/search?q=" + quote_plus(q))),
                           ("piped", lambda: _piped_search(q))):
             try:
@@ -452,7 +474,7 @@ def _lookup(query: str, height=None) -> Optional[dict]:
         if not e:
             continue
         dur = e.get("duration") or 0
-        is_link = q.startswith(("http://", "https://"))
+        is_link = q.startswith(("http://", "https://")) or _wants_video(q)
         if not e.get("is_live") and dur and (dur > (MAX_LINK_SECONDS if is_link else MAX_SECONDS) or (dur < 30 and not is_link)):
             _last_error["text"] = f"too long: {int(dur // 60)} min (limit {MAX_LINK_SECONDS // 60} min)" if dur > MAX_SECONDS else ""
             continue
