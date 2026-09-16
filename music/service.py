@@ -278,11 +278,54 @@ def _stream(track, file=None, video_on=True):
 # bot"). MUSIC_COOKIES = the text of a Netscape cookies.txt exported from a
 # logged-in browser; it is written to disk once and handed to yt-dlp.
 _COOKIES = os.getenv("MUSIC_COOKIES", "")
+_cookie_info = {"loaded": False, "problem": "", "lines": 0, "login": [], "expires": None}
+
+
+def _load_cookies(raw):
+    """Write the cookies.txt yt-dlp reads. Accepts the file as pasted (real
+    newlines), with literal \n, or base64 (safest way through an env editor
+    that mangles line breaks). Records what it found for /health."""
+    import base64, re as _re
+    txt = raw.strip()
+    if not txt:
+        return
+    if "\n" in txt and chr(10) not in txt:
+        txt = txt.replace("\n", chr(10))
+    if chr(10) not in txt and not txt.startswith("#"):
+        try:
+            txt = base64.b64decode(txt).decode("utf-8")
+        except Exception:
+            pass
+    if chr(10) not in txt and chr(9) in txt:
+        # one long line: an editor ate the line breaks - each record starts with a domain
+        txt = _re.sub(r"\s(?=(?:\.?[\w-]+\.)+[a-z]{2,}\t)", chr(10), txt)
+    lines = [l for l in txt.splitlines() if l.strip() and not l.startswith("#")]
+    recs = [l.split(chr(9)) for l in lines]
+    good = [r for r in recs if len(r) >= 7]
+    _cookie_info["lines"] = len(good)
+    if not good:
+        _cookie_info["problem"] = "not a Netscape cookies.txt (no tab-separated records) - export again"
+        return
+    names = {r[5]: r for r in good if "youtube" in r[0]}
+    login = [n for n in ("SID", "HSID", "SSID", "__Secure-3PSID", "LOGIN_INFO") if n in names]
+    _cookie_info["login"] = login
+    if not login:
+        _cookie_info["problem"] = "no login cookies (SID/LOGIN_INFO) - export while signed in to YouTube"
+    exp = [int(names[n][4]) for n in login if names[n][4].isdigit() and int(names[n][4]) > 0]
+    if exp:
+        _cookie_info["expires"] = min(exp)
+        if min(exp) < time.time():
+            _cookie_info["problem"] = "login cookies expired - export a fresh file"
+    path = os.path.join(tempfile.gettempdir(), "clexer_yt_cookies.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# Netscape HTTP Cookie File" + chr(10) + chr(10).join(chr(9).join(r[:7]) for r in good) + chr(10))
+    _YDL["cookiefile"] = path
+    _cookie_info["loaded"] = True
+
+
+_load_cookies(_COOKIES)
 if _COOKIES.strip():
-    _cp = os.path.join(tempfile.gettempdir(), "clexer_yt_cookies.txt")
-    with open(_cp, "w", encoding="utf-8") as _f:
-        _f.write(_COOKIES.replace(chr(92) + "n", chr(10)) if (chr(92) + "n") in _COOKIES else _COOKIES)
-    _YDL["cookiefile"] = _cp
+    print(f"[MUSIC] cookies: {_cookie_info}")
 _last_error = {"text": ""}
 
 
@@ -934,7 +977,8 @@ def _auth(secret):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "assistant": _me["username"], "chats": len([c for c, s in _state.items() if s["now"]])}
+    return {"ok": True, "assistant": _me["username"], "chats": len([c for c, s in _state.items() if s["now"]]),
+            "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H}
 
 
 @app.post("/play")
@@ -957,8 +1001,11 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
         _last_error["text"] = str(e); track = None
     if not track:
         err = _last_error["text"].lower()
+        if "netscape" in err or "cookie" in err and ("parse" in err or "load" in err or "format" in err):
+            return reply("⚠️ The YouTube cookies file on the server is broken. Tell the admin - /music shows what's wrong.")
         if "sign in" in err or "not a bot" in err or "cookies" in err:
-            return reply("⚠️ YouTube is blocking this server right now (it wants a login). Tell the admin - a cookies file fixes it.")
+            return reply("⚠️ YouTube is blocking this server right now (it wants a login). Tell the admin - "
+                         + ("the cookies file is set but YouTube isn't accepting it - export a fresh one." if _cookie_info["loaded"] else "a cookies file fixes it."))
         if err:
             return reply("⚠️ YouTube didn't give me that song - try again in a moment, or paste a YouTube link.")
         return reply("🔍 Couldn't find that - try another name or paste a YouTube link.")

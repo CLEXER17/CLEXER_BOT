@@ -17640,7 +17640,19 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _hr = requests.get(f"{MUSIC_URL}/health", timeout=10)
                 _hj = _hr.json() if _hr.ok else {}
                 _ml.append(f"Service: <b>{'✅ up' if _hj.get('ok') else '❌ HTTP ' + str(_hr.status_code)}</b>"
-                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s)" if _hj.get("ok") else ""))
+                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p" if _hj.get("ok") else ""))
+                _ck = _hj.get("cookies") or {}
+                if _ck:
+                    if _ck.get("loaded") and not _ck.get("problem"):
+                        _exp = _ck.get("expires")
+                        _ml.append(f"Cookies: <b>✅ loaded</b> · {_ck.get('lines', 0)} cookies · login {', '.join(_ck.get('login') or []) or '-'}"
+                                   + (f" · expires {datetime.fromtimestamp(_exp).strftime('%d %b %Y')}" if _exp else ""))
+                    elif _ck.get("loaded") or _ck.get("problem"):
+                        _ml.append(f"Cookies: <b>❌ {_html.escape(_ck.get('problem') or 'problem')}</b>")
+                    else:
+                        _ml.append("Cookies: <b>not set</b> (MUSIC_COOKIES on the music service)")
+                if _hj.get("last_error"):
+                    _ml.append(f"Last YouTube error: <code>{_html.escape(str(_hj['last_error'])[-200:])}</code>")
             except Exception as _he:
                 _ml.append(f"Service: <b>❌ unreachable</b> ({_html.escape(str(_he)[:80])})")
             if MUSIC_SECRET:
