@@ -24882,6 +24882,11 @@ def command_listener():
                 # stay silent in this group — no "Unknown command" replies to
                 # Kaito's own "/c <coin>", no normal command processing at all.
                 if str(cid) in COINTRENDZ_GROUP_IDS:
+                    # Music is the one thing CLEXER does answer here - /play
+                    # and friends cannot collide with Kaito's "/c <coin>".
+                    _t0 = text.split()[0].lower().split("@")[0] if text.startswith("/") else ""
+                    if _t0 in _MUSIC_CMDS:
+                        handle_command(text, cid, msg, sender_id=sender_uid)
                     continue
 
                 # Telegram Stars payment completed — arrives as a normal message
