@@ -38,6 +38,7 @@ EN = [
     "Applying… this takes up to 30 seconds.", "page", "Net", "Max DD", "No closed trades this month yet.",
     "📄 Send this month's PDF to my DM", "PDF exports this month", "Sent to your Telegram DM", "this month",
     "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?",
+    "Entry", "to TP1", "TP1 done · riding to TP2",
 ]
 
 T = {}
@@ -69,6 +70,7 @@ T["ru"] = [
     "Применяется… до 30 секунд.", "стр.", "Итого", "Макс. просадка", "В этом месяце закрытых сделок пока нет.",
     "📄 Отправить PDF за этот месяц в личку", "PDF-выгрузок в этом месяце", "Отправлено вам в Telegram", "в этом месяце",
     "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?",
+    "Вход", "до TP1", "TP1 взят · идём к TP2",
 ]
 
 T["tl"] = [
@@ -98,6 +100,7 @@ T["tl"] = [
     "Inaaplay… hanggang 30 segundo.", "pahina", "Neto", "Max DD", "Wala pang saradong trade ngayong buwan.",
     "📄 Ipadala ang PDF ng buwang ito sa DM ko", "PDF export ngayong buwan", "Ipinadala sa Telegram DM mo", "ngayong buwan",
     "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?",
+    "Entry", "papunta sa TP1", "Tapos ang TP1 · patungo sa TP2",
 ]
 
 T["ur"] = [
@@ -127,6 +130,7 @@ T["ur"] = [
     "لاگو ہو رہا ہے… 30 سیکنڈ تک لگ سکتے ہیں۔", "صفحہ", "خالص", "زیادہ سے زیادہ گراوٹ", "اس مہینے ابھی کوئی بند ٹریڈ نہیں۔",
     "📄 اس مہینے کی PDF میرے DM میں بھیجیں", "اس مہینے PDF ایکسپورٹس", "آپ کے Telegram DM میں بھیج دی گئی", "اس مہینے",
     "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟",
+    "انٹری", "TP1 تک", "TP1 ہو گیا · TP2 کی طرف",
 ]
 
 T["id"] = [
@@ -156,6 +160,7 @@ T["id"] = [
     "Menerapkan… hingga 30 detik.", "halaman", "Neto", "DD Maks", "Belum ada trade tertutup bulan ini.",
     "📄 Kirim PDF bulan ini ke DM saya", "Ekspor PDF bulan ini", "Terkirim ke DM Telegram Anda", "bulan ini",
     "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?",
+    "Entry", "ke TP1", "TP1 tercapai · menuju TP2",
 ]
 
 T["pt"] = [
@@ -185,6 +190,7 @@ T["pt"] = [
     "Aplicando… leva até 30 segundos.", "página", "Líquido", "DD Máx", "Nenhum trade fechado neste mês ainda.",
     "📄 Enviar o PDF deste mês para meu DM", "Exportações de PDF neste mês", "Enviado para seu DM no Telegram", "neste mês",
     "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?",
+    "Entrada", "até TP1", "TP1 feito · rumo ao TP2",
 ]
 
 T["es"] = [
@@ -214,6 +220,7 @@ T["es"] = [
     "Aplicando… tarda hasta 30 segundos.", "página", "Neto", "DD Máx", "Aún no hay trades cerrados este mes.",
     "📄 Enviar el PDF de este mes a mi DM", "Exportaciones de PDF este mes", "Enviado a tu DM de Telegram", "este mes",
     "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?",
+    "Entrada", "hasta TP1", "TP1 hecho · rumbo a TP2",
 ]
 
 T["ar"] = [
@@ -243,6 +250,7 @@ T["ar"] = [
     "جارٍ التطبيق… حتى 30 ثانية.", "صفحة", "الصافي", "أقصى تراجع", "لا توجد صفقات مغلقة هذا الشهر بعد.",
     "📄 أرسل PDF هذا الشهر إلى رسائلي", "تصديرات PDF هذا الشهر", "أُرسل إلى رسائلك على تيليجرام", "هذا الشهر",
     "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟",
+    "الدخول", "إلى TP1", "تم TP1 · نحو TP2",
 ]
 
 T["zh"] = [
@@ -272,6 +280,7 @@ T["zh"] = [
     "应用中… 最多需要 30 秒。", "页", "净值", "最大回撤", "本月暂无已平仓交易。",
     "📄 将本月 PDF 发送到我的私信", "本月 PDF 导出次数", "已发送到你的 Telegram 私信", "本月",
     "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？",
+    "入场", "至 TP1", "TP1 已达 · 冲向 TP2",
 ]
 
 T["tr"] = [
@@ -301,6 +310,7 @@ T["tr"] = [
     "Uygulanıyor… en fazla 30 saniye sürer.", "sayfa", "Net", "Maks DD", "Bu ay henüz kapanan işlem yok.",
     "📄 Bu ayın PDF'ini DM'ime gönder", "Bu ayki PDF dışa aktarımı", "Telegram DM'ine gönderildi", "bu ay",
     "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?",
+    "Giriş", "TP1'e", "TP1 tamam · TP2'ye gidiyor",
 ]
 
 T["vi"] = [
@@ -330,6 +340,7 @@ T["vi"] = [
     "Đang áp dụng… tối đa 30 giây.", "trang", "Ròng", "DD tối đa", "Tháng này chưa có lệnh đã đóng.",
     "📄 Gửi PDF tháng này vào DM của tôi", "Số lần xuất PDF tháng này", "Đã gửi vào DM Telegram của bạn", "tháng này",
     "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?",
+    "Vào lệnh", "tới TP1", "Xong TP1 · tiến tới TP2",
 ]
 
 T["fr"] = [
@@ -359,6 +370,7 @@ T["fr"] = [
     "Application… jusqu'à 30 secondes.", "page", "Net", "DD max", "Aucun trade clôturé ce mois-ci pour l'instant.",
     "📄 Envoyer le PDF de ce mois dans mes DM", "Exports PDF ce mois-ci", "Envoyé dans vos DM Telegram", "ce mois-ci",
     "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?",
+    "Entrée", "vers TP1", "TP1 atteint · vers TP2",
 ]
 
 

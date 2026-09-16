@@ -132,7 +132,9 @@
 "PDF exports this month": "PDF-выгрузок в этом месяце",
 "Sent to your Telegram DM": "Отправлено вам в Telegram",
 "this month": "в этом месяце",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?",
+"to TP1": "до TP1",
+"TP1 done · riding to TP2": "TP1 взят · идём к TP2"
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -228,7 +230,9 @@
 "PDF exports this month": "PDF export ngayong buwan",
 "Sent to your Telegram DM": "Ipinadala sa Telegram DM mo",
 "this month": "ngayong buwan",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?",
+"to TP1": "papunta sa TP1",
+"TP1 done · riding to TP2": "Tapos ang TP1 · patungo sa TP2"
 },
 "ur": {
 "Chart": "چارٹ",
@@ -364,7 +368,9 @@
 "PDF exports this month": "اس مہینے PDF ایکسپورٹس",
 "Sent to your Telegram DM": "آپ کے Telegram DM میں بھیج دی گئی",
 "this month": "اس مہینے",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟",
+"to TP1": "TP1 تک",
+"TP1 done · riding to TP2": "TP1 ہو گیا · TP2 کی طرف"
 },
 "id": {
 "Chart": "Grafik",
@@ -478,7 +484,9 @@
 "PDF exports this month": "Ekspor PDF bulan ini",
 "Sent to your Telegram DM": "Terkirim ke DM Telegram Anda",
 "this month": "bulan ini",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?",
+"to TP1": "ke TP1",
+"TP1 done · riding to TP2": "TP1 tercapai · menuju TP2"
 },
 "pt": {
 "Chart": "Gráfico",
@@ -602,7 +610,9 @@
 "PDF exports this month": "Exportações de PDF neste mês",
 "Sent to your Telegram DM": "Enviado para seu DM no Telegram",
 "this month": "neste mês",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?",
+"to TP1": "até TP1",
+"TP1 done · riding to TP2": "TP1 feito · rumo ao TP2"
 },
 "es": {
 "Chart": "Gráfico",
@@ -727,7 +737,9 @@
 "PDF exports this month": "Exportaciones de PDF este mes",
 "Sent to your Telegram DM": "Enviado a tu DM de Telegram",
 "this month": "este mes",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?",
+"to TP1": "hasta TP1",
+"TP1 done · riding to TP2": "TP1 hecho · rumbo a TP2"
 },
 "ar": {
 "Chart": "الرسم",
@@ -863,7 +875,9 @@
 "PDF exports this month": "تصديرات PDF هذا الشهر",
 "Sent to your Telegram DM": "أُرسل إلى رسائلك على تيليجرام",
 "this month": "هذا الشهر",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟",
+"to TP1": "إلى TP1",
+"TP1 done · riding to TP2": "تم TP1 · نحو TP2"
 },
 "zh": {
 "Chart": "图表",
@@ -997,7 +1011,9 @@
 "PDF exports this month": "本月 PDF 导出次数",
 "Sent to your Telegram DM": "已发送到你的 Telegram 私信",
 "this month": "本月",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？",
+"to TP1": "至 TP1",
+"TP1 done · riding to TP2": "TP1 已达 · 冲向 TP2"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1128,7 +1144,9 @@
 "PDF exports this month": "Bu ayki PDF dışa aktarımı",
 "Sent to your Telegram DM": "Telegram DM'ine gönderildi",
 "this month": "bu ay",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?",
+"to TP1": "TP1'e",
+"TP1 done · riding to TP2": "TP1 tamam · TP2'ye gidiyor"
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1262,7 +1280,9 @@
 "PDF exports this month": "Số lần xuất PDF tháng này",
 "Sent to your Telegram DM": "Đã gửi vào DM Telegram của bạn",
 "this month": "tháng này",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?",
+"to TP1": "tới TP1",
+"TP1 done · riding to TP2": "Xong TP1 · tiến tới TP2"
 },
 "fr": {
 "Chart": "Graphique",
@@ -1386,6 +1406,8 @@
 "PDF exports this month": "Exports PDF ce mois-ci",
 "Sent to your Telegram DM": "Envoyé dans vos DM Telegram",
 "this month": "ce mois-ci",
-"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?"
+"Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?",
+"to TP1": "vers TP1",
+"TP1 done · riding to TP2": "TP1 atteint · vers TP2"
 }
 }

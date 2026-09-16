@@ -99,6 +99,20 @@
   .tc-cell .v.up{color:var(--long);}
   .tc-cell .v.down{color:var(--short);}
   .tc-tpsl{display:flex;gap:8px;margin-top:2px;}
+  /* Trade track: SL ─ Entry ─ TP1 ─ TP2 with the live price riding along it */
+  .trk{position:relative;height:6px;border-radius:3px;background:var(--bg3);margin:16px 8px 26px;}
+  .trk .seg{position:absolute;top:0;bottom:0;}
+  .trk .seg.loss{left:0;background:rgba(240,80,80,.18);border-radius:3px 0 0 3px;}
+  .trk .seg.gain{right:0;background:rgba(60,200,120,.18);border-radius:0 3px 3px 0;}
+  .trk .fill{position:absolute;top:0;bottom:0;border-radius:3px;}
+  .trk .tick{position:absolute;top:-4px;width:2px;height:14px;background:var(--border);transform:translateX(-1px);}
+  .trk .tick.hit{background:var(--long);}
+  .trk .tick i{position:absolute;top:16px;left:50%;transform:translateX(-50%);font-style:normal;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--muted);white-space:nowrap;}
+  .trk .tick.hit i{color:var(--long);}
+  .trk .tick.sl{transform:none;}      .trk .tick.sl i{left:0;transform:none;}
+  .trk .tick.tp2{transform:translateX(-2px);} .trk .tick.tp2 i{left:auto;right:0;transform:none;}
+  .trk .dot{position:absolute;top:-5px;width:16px;height:16px;border-radius:50%;transform:translateX(-8px);border:3px solid var(--bg2);box-shadow:0 0 0 1px var(--border);z-index:2;}
+  .trk-note{font-family:var(--mono);font-size:10px;color:var(--muted);text-align:right;margin:-4px 8px 6px;}
   .tc-tpsl-box{flex:1;background:var(--bg3);border-radius:9px;padding:9px 11px;display:flex;justify-content:space-between;align-items:center;}
   .tc-tpsl-full{margin-top:8px;}
   .tc-tpsl-box .k{font-size:10px;color:var(--muted);}
@@ -590,7 +604,10 @@
       TRADES = {};
       for(const t of data.positions){
         if(t.locked || !t.symbol) continue; // VIP-locked placeholder has no real symbol/side — skip, don't crash the renderer
-        TRADES[t.symbol] = {
+        // The API says "ZEC-USDT"; the chart, quick chips and price cache use
+        // "ZECUSDT" - one key form, or the chart tab never finds the trade.
+        TRADES[t.symbol.replace(/[-\/]/g, "").toUpperCase()] = {
+          apiSym: t.symbol,
           side: t.side,
           status: t.status,
           entry: parseFloat(t.entry)||0,
@@ -607,6 +624,33 @@
       console.warn("loadTrades error:", e);
     }
     try{ renderTradeCards(); }catch(e){ console.warn("renderTradeCards error:", e); }
+  }
+
+  // One horizontal track per trade: SL at the left end, TP2 at the right,
+  // Entry and TP1 as ticks in between at their real distances, and a dot
+  // that moves with the mark price. Green fill from Entry toward the dot
+  // while in profit, red while under water. Works for LONG and SHORT the
+  // same way: the track always runs "away from the stop, toward the target".
+  function tradeTrack(tr, live){
+    const sl=tr.sl, en=tr.entry, tp1=tr.tp||0, tp2=tr.tp2||tr.tp||0;
+    if(!sl||!en||!tp2||sl===tp2) return "";
+    const pos = x => Math.max(0, Math.min(1, (x-sl)/(tp2-sl)));   // 0 at SL … 1 at TP2, either direction
+    const e=pos(en), p1=tp1?pos(tp1):null, v=pos(live);
+    const up = (tr.side==="LONG") ? live>=en : live<=en;
+    const col = up ? "var(--long)" : "var(--short)";
+    const lo=Math.min(e,v), hi=Math.max(e,v);
+    const slLbl = tr.tp1_hit ? "BE" : "SL";
+    const pct = tp1 && !tr.tp1_hit ? Math.round(Math.max(0,Math.min(1,(v-e)/((p1-e)||1)))*100) : null;
+    return `<div class="trk">
+      <div class="seg loss" style="width:${(e*100).toFixed(1)}%"></div>
+      <div class="seg gain" style="width:${((1-e)*100).toFixed(1)}%"></div>
+      <div class="fill" style="left:${(lo*100).toFixed(1)}%;width:${((hi-lo)*100).toFixed(1)}%;background:${col}"></div>
+      <div class="tick sl" style="left:0"><i>${slLbl}</i></div>
+      <div class="tick" style="left:${(e*100).toFixed(1)}%"><i>${t("trk.entry","Entry")}</i></div>
+      ${p1!==null?`<div class="tick${tr.tp1_hit?' hit':''}" style="left:${(p1*100).toFixed(1)}%"><i>TP1${tr.tp1_hit?' ✓':''}</i></div>`:''}
+      <div class="tick tp2" style="left:100%"><i>TP2</i></div>
+      <div class="dot" style="left:${(v*100).toFixed(1)}%;background:${col}"></div>
+    </div>${pct!==null?`<div class="trk-note">${pct}% ${t("trk.to_tp1","to TP1")}</div>`:(tr.tp1_hit?`<div class="trk-note">${t("trk.riding","TP1 done · riding to TP2")}</div>`:"")}`;
   }
 
   function renderTradeCards(){
@@ -670,7 +714,7 @@
           <div class="tc-tpsl-box"><span class="k">TP2</span><span class="v up">${t.tp2?fmt(t.tp2,d):'--'}</span></div>
         </div>
         <div class="tc-tpsl-box tc-tpsl-full"><span class="k">SL</span><span class="v down">${t.sl?fmt(t.sl,d):'--'}</span></div>
-        ${running?`<div class="prog"><i style="width:${prog}%;background:${col}"></i></div>`:''}
+        ${running?tradeTrack(t, live):''}
       </div>`;
     }
     if(!html) html=`<div class="notrade">No active trades</div>`;
@@ -723,6 +767,7 @@
     <div class="grid3"><div class="cell"><div class="k">Entry</div><div class="v">${fmt(t.entry,d)}</div><div class="s" style="color:var(--muted)">${running?'filled':'pending'}</div></div>
     <div class="cell"><div class="k">Take Profit</div><div class="v up">${fmt(t.tp,d)}</div><div class="s up">+${tpPct.toFixed(2)}%</div></div>
     <div class="cell"><div class="k">Stop Loss</div><div class="v down">${fmt(t.sl,d)}</div><div class="s down">${slPct.toFixed(2)}%</div></div></div>
+    ${running?tradeTrack(t, live):''}
     ${running?`<div class="pnlrow"><span class="k">Running P/L</span><span><span class="${cls}" style="font-family:var(--mono);font-size:18px;font-weight:700">${pnl>=0?'+':''}$${fmt(Math.abs(pnl),2)}</span><span class="${cls}" style="font-family:var(--mono);font-size:12px;margin-left:6px">(${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%)</span></span></div>`:`<div class="pnlrow"><span class="k">Status</span><span style="font-family:var(--mono);font-size:13px;color:var(--gold)">Waiting for entry fill…</span></div>`}
     <a class="tvbtn" href="${tv}" target="_blank">OPEN IN TRADINGVIEW ↗</a>`;
   }
@@ -821,7 +866,7 @@
     const sizeVal=parseFloat(document.getElementById("sizeVal").value)||50;
     const isAuto=copyState.levMode==="auto";
     const body={
-      symbol:s, side:t.side, entry:t.entry, tp:t.tp, sl:t.sl,
+      symbol:t.apiSym||s, side:t.side, entry:t.entry, tp:t.tp, sl:t.sl,
       size_usdt: sizeVal,
       lev_mode: copyState.levMode,
       leverage: isAuto ? null : (parseInt(document.getElementById("lev").value)||10),
