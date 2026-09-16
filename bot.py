@@ -3820,6 +3820,34 @@ def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
 def _is_claude_model(model_id: str) -> bool:
     return model_id.startswith("claude-")
 
+# Last resort for /chat (admin request 2026-09-16): when the configured
+# engine fails - Gemini quota, Aerolink down, Direct error - the reply comes
+# from Claude Sonnet 5 on the direct key instead of an error message. Paid,
+# so each user gets at most 4 such rescues per rolling hour.
+_CHAT_FALLBACK_MODEL = "claude-sonnet-5"
+_CHAT_FALLBACK_PER_HOUR = 4
+_chat_fallback_used: dict = {}      # cid -> [timestamps of rescues in the last hour]
+_chat_fallback_lock = threading.Lock()
+
+
+def _chat_fallback_take(cid) -> bool:
+    """True and one slot consumed if this user still has a rescue left this hour."""
+    now = time.time()
+    with _chat_fallback_lock:
+        used = [t for t in _chat_fallback_used.get(str(cid), []) if now - t < 3600]
+        if len(used) >= _CHAT_FALLBACK_PER_HOUR:
+            _chat_fallback_used[str(cid)] = used
+            return False
+        used.append(now)
+        _chat_fallback_used[str(cid)] = used
+        return True
+
+
+def _chat_fallback_left(cid) -> int:
+    now = time.time()
+    return max(0, _CHAT_FALLBACK_PER_HOUR - len([t for t in _chat_fallback_used.get(str(cid), []) if now - t < 3600]))
+
+
 def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "", gateway_override: str = None) -> str:
     """Same conversation history format as Gemini (role 'user'/'model', one
     text part each) — translated to Claude's 'user'/'assistant' shape so
@@ -5382,34 +5410,47 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                     reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx,
                                                           precomputed_model=_c["best_model"])
                 else:
-                    _active_model = CHAT_MODEL
-                    if CHAT_MODEL == "auto":
-                        _active_model = _c["best_model"]  # reuse the combined classify's pick, don't re-classify
-                        print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
-                    if _active_model != "google":
-                        _gw_override = sess.get("gateway")
-                        if _gw_override is not None:
-                            # Admin explicitly typed "switch direct"/"switch free" this
-                            # session — that single, explicit choice always wins, no
-                            # auto-fallback (they asked for exactly this one).
-                            reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                 gateway_override=_gw_override)
+                    try:
+                        _active_model = CHAT_MODEL
+                        if CHAT_MODEL == "auto":
+                            _active_model = _c["best_model"]  # reuse the combined classify's pick, don't re-classify
+                            print(f"  [CHAT ROUTE] '{_ai_text[:60]}' -> {_active_model}")
+                        if _active_model != "google":
+                            _gw_override = sess.get("gateway")
+                            if _gw_override is not None:
+                                # Admin explicitly typed "switch direct"/"switch free" this
+                                # session — that single, explicit choice always wins, no
+                                # auto-fallback (they asked for exactly this one).
+                                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                     gateway_override=_gw_override)
+                            else:
+                                # No explicit override: always try Aerolink (free) first,
+                                # fall back to Direct only if that fails (admin request,
+                                # 2026-08-07) — the MODEL itself (_active_model, picked via
+                                # /chatmodel) is completely untouched by this, still fully
+                                # admin-controlled; this only changes which gateway that
+                                # model runs on by default.
+                                try:
+                                    reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                         gateway_override="aerolink")
+                                except Exception as _gwe:
+                                    print(f"  [CHAT] free (Aerolink) attempt with {_active_model} failed ({_gwe}) — falling back to Direct")
+                                    reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
+                                                                         gateway_override="direct")
                         else:
-                            # No explicit override: always try Aerolink (free) first,
-                            # fall back to Direct only if that fails (admin request,
-                            # 2026-08-07) — the MODEL itself (_active_model, picked via
-                            # /chatmodel) is completely untouched by this, still fully
-                            # admin-controlled; this only changes which gateway that
-                            # model runs on by default.
-                            try:
-                                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                     gateway_override="aerolink")
-                            except Exception as _gwe:
-                                print(f"  [CHAT] free (Aerolink) attempt with {_active_model} failed ({_gwe}) — falling back to Direct")
-                                reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                     gateway_override="direct")
-                    else:
-                        reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
+                            reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
+                    except Exception as _primary_err:
+                        # Every configured engine failed - rescue with Sonnet 5 (direct key),
+                        # 4 per user per hour. If the primary already was that model, nothing
+                        # different is left to try.
+                        print(f"  [CHAT] {cid}: {_active_model} failed ({str(_primary_err)[:120]}) - rescue with {_CHAT_FALLBACK_MODEL}")
+                        if not ANTHROPIC_API_KEY or _active_model == _CHAT_FALLBACK_MODEL:
+                            raise
+                        if not _chat_fallback_take(cid):
+                            send_reply(cid, f"⚠️ Chat AI is having trouble right now, and your {_CHAT_FALLBACK_PER_HOUR} backup replies for this hour are used up. Try again a little later.")
+                            return
+                        reply_text = _chat_call_claude_text(sess["history"], _CHAT_FALLBACK_MODEL, extra_system=_extra_ctx, gateway_override="direct")
+                        print(f"  [CHAT] {cid}: rescued by {_CHAT_FALLBACK_MODEL} ({_chat_fallback_left(cid)} left this hour)")
                 sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
                 send_reply(cid, reply_text, skip_smallcaps=True)
         # Trim history to bound token usage
