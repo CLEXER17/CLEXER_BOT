@@ -306,7 +306,18 @@ def render_card(user: dict, title: str) -> bytes:
     return buf.getvalue()
 
 
+_welcomed: dict = {}     # (chat_id, user_id) -> time; an approval and the join notice both arrive
+
+
 def welcome(chat_id, user: dict, title: str):
+    key = (str(chat_id), str(user.get("id")))
+    now = time.time()
+    with _lock:
+        for k in [k for k, t in _welcomed.items() if now - t > 900]:
+            _welcomed.pop(k, None)
+        if key in _welcomed:
+            return                              # already welcomed in the last 15 minutes
+        _welcomed[key] = now
     try:
         data = render_card(user, title)
     except Exception as e:
