@@ -9182,6 +9182,77 @@ _vdm.init(TELEGRAM_BOT_TOKEN)
 import groupjoin as _gj
 _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID)
 
+# Music (music/service.py on its own Railway service). The bot only relays:
+# commands and the now-playing buttons go there over HTTP, the assistant
+# account there does the voice chat. Command-only - no menu button, on
+# purpose: this is a trading bot (admin 2026-09-16).
+MUSIC_URL = (os.getenv("MUSIC_URL") or "").rstrip("/")
+MUSIC_SECRET = os.getenv("MUSIC_SECRET") or ""
+_MUSIC_CMDS = {"/play": "play", "/skip": "skip", "/pause": "pause", "/resume": "resume", "/stop": "stop",
+               "/queue": "queue", "/now": "now", "/volume": "volume"}
+
+
+def _music_call(path, payload, timeout=40):
+    if not MUSIC_URL or not MUSIC_SECRET:
+        return {"text": "🎵 Music is not set up on this server yet."}
+    try:
+        r = requests.post(f"{MUSIC_URL}{path}", json=payload, headers={"X-Music-Secret": MUSIC_SECRET}, timeout=timeout)
+        return r.json() if r.ok else {"text": f"⚠️ Music service error ({r.status_code})."}
+    except Exception as e:
+        print(f"  [MUSIC] {path}: {e}")
+        return {"text": "⚠️ Music service is not answering - try again in a minute."}
+
+
+def _music_invite_link(chat_id):
+    """A link the assistant can use to enter the group, if the bot may make one."""
+    try:
+        j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createChatInviteLink",
+                          json={"chat_id": chat_id, "member_limit": 1, "name": "CLEXER music assistant"}, timeout=10).json()
+        return (j.get("result") or {}).get("invite_link", "")
+    except Exception:
+        return ""
+
+
+def _music_dm_notice(chat_id):
+    _u = _get_bot_username()
+    _kb = {"inline_keyboard": [[{"text": "➕ Add me to a group", "url": f"https://t.me/{_u}?startgroup=true"}]]} if _u else None
+    send_reply(chat_id, "🎵 Music plays in a group's voice chat. Add me to a group, start a voice chat there, and send /play song name.",
+               reply_markup=_kb)
+
+
+def _music_command(cmd, parts, chat_id, message, sender_id, uname):
+    if not str(chat_id).startswith("-"):
+        _music_dm_notice(chat_id); return
+    who = (message or {}).get("from", {}).get("first_name") or uname or "someone"
+    if cmd == "/play":
+        q = " ".join(parts[1:]).strip()
+        if not q:
+            send_reply(chat_id, "Usage: <code>/play song name</code> or a YouTube link"); return
+        _wait = None
+        try:
+            _wj = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": chat_id, "text": "🔎 Searching…"}, timeout=10).json()
+            _wait = (_wj.get("result") or {}).get("message_id")
+        except Exception:
+            pass
+        r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id)}, timeout=90)
+        if _wait:
+            try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage", json={"chat_id": chat_id, "message_id": _wait}, timeout=5)
+            except Exception: pass
+        if r.get("text"):
+            send_reply(chat_id, r["text"])
+        return
+    act = _MUSIC_CMDS[cmd]
+    payload = {"chat_id": chat_id, "action": act}
+    if cmd == "/volume":
+        try:
+            payload["value"] = int(parts[1])
+        except Exception:
+            send_reply(chat_id, "Usage: <code>/volume 80</code> (10-200)"); return
+    r = _music_call("/control", payload)
+    if r.get("text"):
+        send_reply(chat_id, r["text"])
+
 # Languages: every Telegram call to a DM is rewritten in the user's language
 # at the requests.post hook (see i18n.py and _tg_hooked_post). The choice
 # lives in the copytrade record so the Mini App reads the same value.
@@ -17539,6 +17610,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/out":
         _games_mod.cmd_out(chat_id, _check_id, (message or {}).get("from", {}).get("first_name") or _uname)
 
+    elif cmd in _MUSIC_CMDS:
+        _music_command(cmd, parts, chat_id, message, _check_id, _uname)
+
     elif cmd == "/mtf":
         _coin = (parts[1] if len(parts) > 1 else "").upper().replace("$", "")
         _coin = _coin.replace("-USDT", "").replace("USDT", "").strip()
@@ -21093,6 +21167,16 @@ _HELP_CATS = {
 # lookup), but never rendered as a room or button. This is a trading bot -
 # games are reachable by typing /games, not from the menu (admin 2026-09-16).
 _CMD_ONLY_CATS = {
+    "music": ("🎵 Music", False, [
+        ("/play",   "🎵", "Play",   "Play a song in the group's voice chat — /play song name or a YouTube link. Start the voice chat first"),
+        ("/skip",   "⏭", "Skip",   "Skip to the next song in the queue"),
+        ("/pause",  "⏸", "Pause",  "Pause the music"),
+        ("/resume", "▶️", "Resume", "Resume the music"),
+        ("/stop",   "⏹", "Stop",   "Stop the music, clear the queue and leave the voice chat"),
+        ("/queue",  "📜", "Queue",  "Show what is playing and what is queued"),
+        ("/now",    "🎧", "Now",    "The song playing right now"),
+        ("/volume", "🔊", "Volume", "Set the volume — /volume 80 (10–200)"),
+    ]),
     "games": ("🎮 Games", False, [
         ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group. Type /games"),
         ("/out",     "🗳", "Vote Out", "Start a vote to remove a player from a game you are in — the game's players decide"),
@@ -23248,6 +23332,19 @@ def command_listener():
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
                                       json={"chat_id": cb_chat_id, "message_id": cb_msg_id, "text": _done, "parse_mode": "HTML",
                                             "reply_markup": {"inline_keyboard": [[{"text": "📋 Menu", "callback_data": "help_main"}]]}}, timeout=10)
+                        continue
+
+                    if cb_data.startswith("mu:"):
+                        try:
+                            _, _mact, _mchat = cb_data.split(":", 2)
+                            _mr = _music_call("/control", {"chat_id": int(_mchat), "action": _mact}, timeout=20)
+                            _mu_pop = (_mr.get("text") or "Done.")
+                        except Exception as _me_:
+                            print(f"  [MUSIC] callback {cb_data}: {_me_}")
+                            _mu_pop = "Something went wrong - try again."
+                        _mu_pop = re.sub(r"<[^>]+>", "", _mu_pop)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"], "text": _mu_pop[:190], "show_alert": _mact == "queue"}, timeout=5)
                         continue
 
                     if cb_data.startswith("jn:"):

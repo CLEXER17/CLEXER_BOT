@@ -1,0 +1,7 @@
+kurigram==2.2.26
+tgcrypto==1.2.5
+py-tgcalls==2.3.3
+yt-dlp>=2025.9.1
+fastapi==0.115.6
+uvicorn==0.34.0
+requests>=2.31

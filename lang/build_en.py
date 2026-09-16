@@ -140,6 +140,8 @@ EXTRA = [
     "🤖 Open Bot",
     "👑 Get VIP",
     "❌ Your request to join {} was declined.",
+    "🎵 Music plays in a group's voice chat. Add me to a group, start a voice chat there, and send /play song name.",
+    "➕ Add me to a group",
 ]
 
 
