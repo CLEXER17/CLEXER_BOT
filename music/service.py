@@ -28,7 +28,7 @@ from pyrogram import Client
 from pyrogram.errors import RPCError
 from pytgcalls import PyTgCalls, filters as fl
 from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
-from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded
+from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded, VideoQuality
 from yt_dlp import YoutubeDL
 
 API_ID = int(os.getenv("MUSIC_API_ID", "0") or 0)
@@ -114,8 +114,47 @@ def _dur(sec):
 
 
 # ── YouTube lookup ─────────────────────────────────────────────────────────
-_YDL = {"format": "bestaudio[ext=m4a]/bestaudio/best", "noplaylist": True, "quiet": True, "no_warnings": True,
-        "default_search": "ytsearch1", "skip_download": True, "extract_flat": False}
+# Video + audio: a combined 480p file when YouTube has one, else the best
+# 480p video track plus the best audio track (streamed together). Video is
+# capped at 480p to keep the server's encoder comfortable.
+VIDEO_H = int(os.getenv("MUSIC_VIDEO_HEIGHT", "480") or 480)
+_YDL = {"format": f"b[height<={VIDEO_H}][acodec!=none][vcodec!=none]/bv*[height<={VIDEO_H}]+ba/b[height<={VIDEO_H}]/bestaudio/best",
+        "noplaylist": True, "quiet": True, "no_warnings": True, "default_search": "ytsearch1", "skip_download": True,
+        "extract_flat": False}
+
+
+def _track_from(e, fallback_title=""):
+    """Track dict from a full yt-dlp info: audio url + optional video url."""
+    audio = video = None
+    rf = e.get("requested_formats") or []
+    if rf:
+        for f in rf:
+            if f.get("vcodec") not in (None, "none") and not video:
+                video = f.get("url")
+            if f.get("acodec") not in (None, "none") and not audio:
+                audio = f.get("url")
+    else:
+        u = e.get("url")
+        if e.get("vcodec") not in (None, "none") and e.get("acodec") not in (None, "none"):
+            video = u                       # one file carrying both
+        else:
+            audio = u
+    if not audio and not video:
+        return None
+    return {"title": e.get("title") or fallback_title, "duration": e.get("duration") or 0,
+            "url": audio or video, "video": video, "id": e.get("id") or "",
+            "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
+            "uploader": e.get("uploader") or e.get("channel") or ""}
+
+
+def _stream(track, file=None):
+    if file:
+        return MediaStream(file, audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+    if track.get("video"):
+        if track["video"] == track["url"]:
+            return MediaStream(track["video"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+        return MediaStream(track["video"], audio_path=track["url"], audio_parameters=AudioQuality.HIGH, video_parameters=VideoQuality.SD_480p)
+    return MediaStream(track["url"], audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE)
 # YouTube sometimes refuses datacenter IPs ("Sign in to confirm you're not a
 # bot"). MUSIC_COOKIES = the text of a Netscape cookies.txt exported from a
 # logged-in browser; it is written to disk once and handed to yt-dlp.
@@ -236,14 +275,14 @@ def _lookup(query: str) -> Optional[dict]:
             print(f"[MUSIC] extract {u}: {msg[:200]}")
             _last_error["text"] = msg
             continue
-        if not e or not e.get("url"):
+        if not e:
             continue
         dur = e.get("duration") or 0
         if dur and (dur > MAX_SECONDS or dur < 30):
             continue
-        return {"title": e.get("title") or q, "duration": dur, "url": e["url"], "id": e.get("id") or "",
-                "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
-                "uploader": e.get("uploader") or e.get("channel") or ""}
+        t = _track_from(e, q)
+        if t:
+            return t
     return None
 
 
@@ -254,7 +293,7 @@ def _related(track, played_ids):
     if not vid:
         return None
     try:
-        with YoutubeDL({**_YDL, "extract_flat": "in_playlist", "playlistend": 12}) as y:
+        with YoutubeDL({**_YDL, "noplaylist": False, "extract_flat": "in_playlist", "playlistend": 12}) as y:
             info = y.extract_info(f"https://www.youtube.com/watch?v={vid}&list=RD{vid}", download=False)
     except Exception as e:
         print(f"[MUSIC] related {vid}: {str(e)[:120]}")
@@ -275,10 +314,10 @@ def _related(track, played_ids):
         except Exception as ex:
             print(f"[MUSIC] related extract {cid}: {str(ex)[:120]}")
             continue
-        if e and e.get("url"):
-            return {"title": e.get("title") or "", "duration": e.get("duration") or 0, "url": e["url"], "id": cid,
-                    "page": e.get("webpage_url") or "", "thumb": e.get("thumbnail") or "",
-                    "uploader": e.get("uploader") or e.get("channel") or "", "by": "autoplay"}
+        t = _track_from(e or {}, "")
+        if t:
+            t["by"] = "autoplay"
+            return t
     return None
 
 
@@ -365,9 +404,9 @@ async def _resume_all():
         track = st["now"]
         start = float(st.get("position", 0))
         try:
-            f = await asyncio.to_thread(_encode, track["url"], start, s["volume"])
+            f = await asyncio.to_thread(_encode, track, start, s["volume"])
             s["now"] = track; s["file"] = f; s["offset"] = start
-            await call.play(chat_id, MediaStream(f, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+            await call.play(chat_id, _stream(track, f))
             await asyncio.to_thread(_post_card, chat_id)
             print(f"[MUSIC] resumed {track['title'][:40]!r} in {chat_id} at {start:.0f}s")
             fresh[cid] = True
@@ -406,14 +445,25 @@ def _drop_file(s):
             pass
 
 
-def _encode(src, start, volume):
-    """The rest of the song from `start` seconds at `volume`% into a temp file.
-    Volume cannot be set through Telegram for a plain member of the call, so it
-    is baked into the audio instead."""
-    out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".ogg", delete=False).name
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0, start):.1f}", "-i", src, "-vn",
-           "-af", f"volume={max(0.05, volume / 100):.2f}", "-c:a", "libopus", "-b:a", "128k", "-ar", "48000", out]
-    subprocess.run(cmd, check=True, timeout=180)
+def _encode(track, start, volume):
+    """The rest of the song from `start` seconds at `volume`% into a temp
+    file. Volume cannot be set through Telegram for a plain member of the
+    call, so it is baked into the audio; the video track is copied as is."""
+    start = max(0, float(start)); vol = f"volume={max(0.05, volume / 100):.2f}"
+    if track.get("video"):
+        out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".mkv", delete=False).name
+        if track["video"] == track["url"]:
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["video"],
+                   "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", vol, "-c:a", "libopus", "-b:a", "128k", out]
+        else:
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["video"],
+                   "-ss", f"{start:.1f}", "-i", track["url"], "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "copy", "-af", vol, "-c:a", "libopus", "-b:a", "128k", "-shortest", out]
+    else:
+        out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".ogg", delete=False).name
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", track["url"], "-vn",
+               "-af", vol, "-c:a", "libopus", "-b:a", "128k", "-ar", "48000", out]
+    subprocess.run(cmd, check=True, timeout=300)
     return out
 
 
@@ -427,7 +477,7 @@ def _card_text(chat_id):
     who = "🔁 Autoplay (similar to the last request)" if t.get("by") == "autoplay" else f"👤 Requested by {_esc(t['by'])}"
     return _pe(f"{head}\n\n"
                f"<b>{_esc(t['title'])}</b>\n"
-               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%\n"
+               f"⏱ {_dur(t['duration'])}   ·   🔊 {s['volume']}%   ·   {'📺 video' if t.get('video') else '🎧 audio'}\n"
                f"{state}\n"
                f"{who}\n\n"
                f"⏭ Next: {_esc(nxt)}   ·   📜 {len(s['queue'])} in queue")
@@ -491,11 +541,11 @@ async def _start(chat_id, track):
         s["played"] = (s["played"] + [track["id"]])[-40:]
     s["now"] = track; s["paused"] = False; s["offset"] = 0
     _drop_file(s)
-    src = track["url"]
+    f = None
     if s["volume"] != 100:
-        src = await asyncio.to_thread(_encode, track["url"], 0, s["volume"])
-        s["file"] = src
-    await call.play(chat_id, MediaStream(src, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+        f = await asyncio.to_thread(_encode, track, 0, s["volume"])
+        s["file"] = f
+    await call.play(chat_id, _stream(track, f))
     s["_pos"] = 0
     await asyncio.to_thread(_post_card, chat_id)
     await asyncio.to_thread(_save_state)
@@ -515,7 +565,7 @@ async def _set_volume(chat_id, volume):
         pos = 0
     start = s["offset"] + (pos or 0)
     try:
-        f = await asyncio.to_thread(_encode, t["url"], start, volume)
+        f = await asyncio.to_thread(_encode, t, start, volume)
     except Exception as e:
         print(f"[MUSIC] volume encode {chat_id}: {e}")
         try:
@@ -525,7 +575,7 @@ async def _set_volume(chat_id, volume):
         return
     old = s.get("file")
     s["file"] = f; s["offset"] = start
-    await call.play(chat_id, MediaStream(f, audio_parameters=AudioQuality.HIGH, video_flags=MediaStream.Flags.IGNORE))
+    await call.play(chat_id, _stream(t, f))
     if s["paused"]:
         try:
             await call.pause(chat_id)
