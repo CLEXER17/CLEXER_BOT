@@ -109,11 +109,8 @@ def on_join_request(jr: dict):
     bot_u = _BOT_USERNAME() or ""
     btns = []
     if bot_u:
-        games = {"text": "🎮 Games", "url": f"https://t.me/{bot_u}?start=games", "style": "primary"}
-        if _IS_VIP(uid):
-            btns = [[games, {"text": "📊 Virtual trading", "url": f"https://t.me/{bot_u}?start=virtual", "style": "primary"}]]
-        else:
-            btns = [[{"text": "👑 Get VIP", "url": f"https://t.me/{bot_u}?start=vip", "style": "primary"}, games]]
+        btns = [[{"text": "🎮 Games", "url": f"https://t.me/{bot_u}?start=games", "style": "primary"},
+                 {"text": "🎵 Music", "url": f"https://t.me/{bot_u}?start=music", "style": "primary"}]]
     _api("sendMessage", {
         "chat_id": jr.get("user_chat_id") or uid, "parse_mode": "HTML",
         "text": (f"📩 <b>Request received</b>\n\n"

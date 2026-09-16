@@ -144,6 +144,7 @@ EXTRA = [
     "➕ Add me to a group",
     "📊 Virtual trading",
     "✅ <b>Approved</b> - welcome to {}! Say hi in the group.",
+    "🎵 Music",
 ]
 
 

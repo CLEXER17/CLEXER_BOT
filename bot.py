@@ -16418,6 +16418,9 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if cmd == "/start" and len(parts) > 1 and parts[1] == "virtual":
             _vdm.cmd_virtual(chat_id, str(_hm_uid))
             return
+        if cmd == "/start" and len(parts) > 1 and parts[1] == "music":
+            _music_dm_notice(chat_id)
+            return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
         # Persistent reply keyboard, role-tailored — sent as its own small
         # message since a message can only carry one reply_markup, and the
