@@ -115,8 +115,17 @@ def _dur(sec):
 
 # ── YouTube lookup ─────────────────────────────────────────────────────────
 _YDL = {"format": "bestaudio[ext=m4a]/bestaudio/best", "noplaylist": True, "quiet": True, "no_warnings": True,
-        "default_search": "ytsearch1", "skip_download": True, "extract_flat": False,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}}}
+        "default_search": "ytsearch1", "skip_download": True, "extract_flat": False}
+# YouTube sometimes refuses datacenter IPs ("Sign in to confirm you're not a
+# bot"). MUSIC_COOKIES = the text of a Netscape cookies.txt exported from a
+# logged-in browser; it is written to disk once and handed to yt-dlp.
+_COOKIES = os.getenv("MUSIC_COOKIES", "")
+if _COOKIES.strip():
+    _cp = os.path.join(tempfile.gettempdir(), "clexer_yt_cookies.txt")
+    with open(_cp, "w", encoding="utf-8") as _f:
+        _f.write(_COOKIES.replace(chr(92) + "n", chr(10)) if (chr(92) + "n") in _COOKIES else _COOKIES)
+    _YDL["cookiefile"] = _cp
+_last_error = {"text": ""}
 
 
 def _lookup(query: str) -> Optional[dict]:
@@ -137,12 +146,15 @@ def _lookup(query: str) -> Optional[dict]:
             u = e.get("url") or e.get("webpage_url") or (e.get("id") and f"https://www.youtube.com/watch?v={e['id']}")
             if u:
                 cands.append(u)
-    for u in cands[:3]:
+    _last_error["text"] = ""
+    for u in cands[:5]:
         try:
             with YoutubeDL(_YDL) as y:
                 e = y.extract_info(u, download=False)
         except Exception as ex:
-            print(f"[MUSIC] extract {u}: {ex}")
+            msg = str(ex)
+            print(f"[MUSIC] extract {u}: {msg[:200]}")
+            _last_error["text"] = msg
             continue
         if not e or not e.get("url"):
             continue
@@ -466,8 +478,17 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     by = str(body.get("by", "someone"))
     if not query:
         return {"text": "Usage: /play song name (or a YouTube link)"}
-    track = await asyncio.to_thread(_lookup, query)
+    try:
+        track = await asyncio.to_thread(_lookup, query)
+    except Exception as e:
+        print(f"[MUSIC] search {query!r}: {e}")
+        _last_error["text"] = str(e); track = None
     if not track:
+        err = _last_error["text"].lower()
+        if "sign in" in err or "not a bot" in err or "cookies" in err:
+            return {"text": "⚠️ YouTube is blocking this server right now (it wants a login). Tell the admin - a cookies file fixes it."}
+        if err:
+            return {"text": "⚠️ YouTube didn't give me that song - try again in a moment, or paste a YouTube link."}
         return {"text": "🔍 Couldn't find that - try another name or paste a YouTube link."}
     track["by"] = by
     ok, why = await _ensure_member(chat_id, body.get("invite_link"))
