@@ -135,7 +135,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?",
 "to TP1": "до TP1",
 "TP1 done · riding to TP2": "TP1 взят · идём к TP2",
-"Fees": "Комиссии"
+"Fees": "Комиссии",
+"⚙ Run settings": "⚙ Настройки запуска",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Запуск активен — настройки только для чтения. Сбросьте, чтобы начать новый запуск с другими значениями."
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -234,7 +236,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?",
 "to TP1": "papunta sa TP1",
 "TP1 done · riding to TP2": "Tapos ang TP1 · patungo sa TP2",
-"Fees": "Bayarin"
+"Fees": "Bayarin",
+"⚙ Run settings": "⚙ Mga setting ng run",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "May aktibong run — read-only ang mga setting. I-reset para magsimula ng bagong run na may ibang halaga."
 },
 "ur": {
 "Chart": "چارٹ",
@@ -373,7 +377,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟",
 "to TP1": "TP1 تک",
 "TP1 done · riding to TP2": "TP1 ہو گیا · TP2 کی طرف",
-"Fees": "فیس"
+"Fees": "فیس",
+"⚙ Run settings": "⚙ رن کی ترتیبات",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "رن فعال ہے — ترتیبات صرف پڑھنے کے لیے ہیں۔ مختلف اقدار کے ساتھ نیا رن شروع کرنے کے لیے ری سیٹ کریں۔"
 },
 "id": {
 "Chart": "Grafik",
@@ -490,7 +496,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?",
 "to TP1": "ke TP1",
 "TP1 done · riding to TP2": "TP1 tercapai · menuju TP2",
-"Fees": "Biaya"
+"Fees": "Biaya",
+"⚙ Run settings": "⚙ Pengaturan run",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Run sedang aktif — pengaturan hanya-baca. Reset untuk memulai run baru dengan nilai berbeda."
 },
 "pt": {
 "Chart": "Gráfico",
@@ -617,7 +625,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?",
 "to TP1": "até TP1",
 "TP1 done · riding to TP2": "TP1 feito · rumo ao TP2",
-"Fees": "Taxas"
+"Fees": "Taxas",
+"⚙ Run settings": "⚙ Configurações da execução",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Uma execução está ativa — as configurações são somente leitura. Redefina para iniciar uma nova execução com outros valores."
 },
 "es": {
 "Chart": "Gráfico",
@@ -745,7 +755,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?",
 "to TP1": "hasta TP1",
 "TP1 done · riding to TP2": "TP1 hecho · rumbo a TP2",
-"Fees": "Comisiones"
+"Fees": "Comisiones",
+"⚙ Run settings": "⚙ Ajustes de la ejecución",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Hay una ejecución activa — los ajustes son de solo lectura. Reinicia para empezar una nueva con otros valores."
 },
 "ar": {
 "Chart": "الرسم",
@@ -884,7 +896,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟",
 "to TP1": "إلى TP1",
 "TP1 done · riding to TP2": "تم TP1 · نحو TP2",
-"Fees": "الرسوم"
+"Fees": "الرسوم",
+"⚙ Run settings": "⚙ إعدادات التشغيل",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "هناك تشغيل نشط — الإعدادات للقراءة فقط. أعد الضبط لبدء تشغيل جديد بقيم مختلفة."
 },
 "zh": {
 "Chart": "图表",
@@ -1021,7 +1035,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？",
 "to TP1": "至 TP1",
 "TP1 done · riding to TP2": "TP1 已达 · 冲向 TP2",
-"Fees": "手续费"
+"Fees": "手续费",
+"⚙ Run settings": "⚙ 运行设置",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "运行进行中——设置为只读。重置后可用不同数值开始新的运行。"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1155,7 +1171,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?",
 "to TP1": "TP1'e",
 "TP1 done · riding to TP2": "TP1 tamam · TP2'ye gidiyor",
-"Fees": "Komisyon"
+"Fees": "Komisyon",
+"⚙ Run settings": "⚙ Çalıştırma ayarları",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Bir çalıştırma aktif — ayarlar salt okunur. Farklı değerlerle yeni bir çalıştırma için sıfırlayın."
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1292,7 +1310,9 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?",
 "to TP1": "tới TP1",
 "TP1 done · riding to TP2": "Xong TP1 · tiến tới TP2",
-"Fees": "Phí"
+"Fees": "Phí",
+"⚙ Run settings": "⚙ Cài đặt phiên chạy",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Phiên chạy đang hoạt động — cài đặt chỉ đọc. Đặt lại để bắt đầu phiên mới với giá trị khác."
 },
 "fr": {
 "Chart": "Graphique",
@@ -1419,6 +1439,8 @@
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?",
 "to TP1": "vers TP1",
 "TP1 done · riding to TP2": "TP1 atteint · vers TP2",
-"Fees": "Frais"
+"Fees": "Frais",
+"⚙ Run settings": "⚙ Réglages de l'exécution",
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Une exécution est active — les réglages sont en lecture seule. Réinitialisez pour en démarrer une nouvelle avec d'autres valeurs."
 }
 }

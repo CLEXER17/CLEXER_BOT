@@ -201,6 +201,70 @@
   .tab svg{opacity:.7;}
   .tab.on{color:var(--gold);}
   .tab.on svg{opacity:1;}
+
+  /* ── design pass (2026-09-18): background glows, motion, tinting ── */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:radial-gradient(60% 40% at 15% 0%,rgba(255,176,32,.14),transparent 60%),radial-gradient(50% 35% at 100% 20%,rgba(0,209,143,.10),transparent 60%);}
+  body>*{position:relative;z-index:1;}
+  nav{z-index:25;}
+  /* C2: active tab glows, an underline slides between tabs */
+  nav{position:fixed;}
+  .navbar{position:absolute;top:-1px;height:2px;width:20%;left:0;background:var(--gold);border-radius:2px;transition:left .25s cubic-bezier(.4,0,.2,1);}
+  .tab svg{transition:transform .2s,opacity .2s,filter .2s;}
+  .tab.on svg{filter:drop-shadow(0 0 6px rgba(255,176,32,.8));transform:translateY(-2px);}
+  /* C3: gradient brand */
+  .brand{background:linear-gradient(90deg,var(--gold),#fff 80%);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .brand .dot{background:var(--gold);}
+  /* A3: tab slide, cards rise */
+  section.active{animation:secslide .26s ease-out;}
+  @keyframes secslide{from{opacity:0;transform:translateX(18px);}to{opacity:1;transform:none;}}
+  section.active .card,section.active .tcard,section.active .sumcard{animation:rise .32s ease-out both;}
+  @keyframes rise{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+  /* A2: flash on change */
+  @keyframes fup{0%{background:rgba(0,209,143,.35);}100%{background:transparent;}}
+  @keyframes fdown{0%{background:rgba(255,77,94,.35);}100%{background:transparent;}}
+  .flash-up{animation:fup .6s ease-out;}.flash-down{animation:fdown .6s ease-out;}
+  .tc-cell.flash-up{animation:fupc .6s ease-out;}.tc-cell.flash-down{animation:fdownc .6s ease-out;}
+  @keyframes fupc{0%{background:rgba(0,209,143,.35);}100%{background:var(--bg3);}}
+  @keyframes fdownc{0%{background:rgba(255,77,94,.35);}100%{background:var(--bg3);}}
+  /* A4: skeleton */
+  .sk{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--bg3) 25%,#232a36 50%,var(--bg3) 75%);background-size:200% 100%;animation:shimmer 1.3s infinite;margin:8px 0;}
+  @keyframes shimmer{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+  /* A5: breathing live dots */
+  .live .pulse{animation:breathe 1.4s ease-in-out infinite;}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:1;box-shadow:0 0 0 0 rgba(0,209,143,.5);}50%{transform:scale(1.4);opacity:.55;box-shadow:0 0 0 6px rgba(0,209,143,0);}}
+  .status.running::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--gold);margin-right:6px;vertical-align:middle;animation:breathe 1.4s ease-in-out infinite;}
+  .trk .dot{animation:dotpulse 1.6s infinite;}
+  @keyframes dotpulse{0%{box-shadow:0 0 0 1px var(--border),0 0 0 0 rgba(255,176,32,.5);}70%{box-shadow:0 0 0 1px var(--border),0 0 0 8px rgba(255,176,32,0);}100%{box-shadow:0 0 0 1px var(--border),0 0 0 0 rgba(255,176,32,0);}}
+  /* C4: the track fades red → grey → green */
+  .trk{background:linear-gradient(90deg,rgba(255,77,94,.55) 0%,#3a3f4a 38%,#3a3f4a 44%,rgba(0,209,143,.55) 100%);}
+  .trk .seg.loss,.trk .seg.gain{background:transparent;}
+  /* A6: press feedback */
+  .btn,.tvbtn,.chip,.copybtn,.seg button,.toggle button{transition:transform .08s,filter .15s;}
+  .btn:active,.tvbtn:active,.chip:active,.copybtn:active,.seg button:active,.toggle button:active{transform:scale(.96);filter:brightness(1.15);}
+  /* C1: tints */
+  .tc-tpsl-box.tp{border:1px solid rgba(0,209,143,.35);background:linear-gradient(180deg,rgba(0,209,143,.12),var(--bg3));}
+  .tc-tpsl-box.slb{border:1px solid rgba(255,77,94,.35);background:linear-gradient(180deg,rgba(255,77,94,.12),var(--bg3));}
+  .tc-cell.liq{box-shadow:inset 0 0 0 1px rgba(255,77,94,.25);}
+  .rbar{height:3px;border-radius:2px;background:var(--border);margin-top:6px;overflow:hidden;}
+  .rbar i{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--short));animation:grow .8s ease-out;transform-origin:left;}
+  @keyframes grow{from{transform:scaleX(0);}}
+  .sumcard.vt-cell.win{border-color:rgba(0,209,143,.35);background:linear-gradient(180deg,rgba(0,209,143,.10),var(--bg2));}
+  .sumcard.vt-cell.loss{border-color:rgba(255,77,94,.35);background:linear-gradient(180deg,rgba(255,77,94,.10),var(--bg2));}
+  .vt-row.win{background:linear-gradient(90deg,rgba(0,209,143,.14),rgba(0,209,143,.03));border-left:3px solid var(--long);border-radius:8px;padding-left:8px!important;}
+  .vt-row.loss{background:linear-gradient(90deg,rgba(255,77,94,.14),rgba(255,77,94,.03));border-left:3px solid var(--short);border-radius:8px;padding-left:8px!important;}
+  .closed .row.win{background:linear-gradient(90deg,rgba(0,209,143,.12),transparent);border-left:3px solid var(--long);padding-left:8px;border-radius:8px;}
+  .closed .row.loss{background:linear-gradient(90deg,rgba(255,77,94,.12),transparent);border-left:3px solid var(--short);padding-left:8px;border-radius:8px;}
+  .curve path.line{stroke-dasharray:900;stroke-dashoffset:900;animation:draw 1.4s ease-out forwards;}
+  @keyframes draw{to{stroke-dashoffset:0;}}
+  #arc{transition:stroke-dashoffset .9s ease-out;}
+  .bar i{transition:width .8s ease-out;}
+  /* run settings fold-out */
+  .fold{display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:12px;padding:8px 0 0;border-top:1px solid var(--border);margin-top:10px;}
+  .fold b{color:var(--gold);}
+  .foldbody{margin-top:8px;font-family:var(--mono);font-size:11px;line-height:1.8;color:var(--muted);}
+  .foldbody b{color:var(--text);font-weight:600;}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 </style>
 </head>
 <body>
@@ -322,13 +386,6 @@
         <div class="curvehead"><span class="ttl" style="margin:0">Equity Curve</span><span id="gainPct" class="up">+0.0%</span></div>
         <svg class="curve" id="curve" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
       </div>
-      <div class="card">
-        <div class="barshead"><span class="ttl" style="margin:0">Daily P/L</span><span id="dailyTot" class="up">+$0</span></div>
-        <div class="barsscroll"><svg id="dailyBars"></svg></div>
-        <div id="dailyBarDetail"></div>
-        <div id="dailyPager" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:8px;font-size:11px;color:var(--muted)"></div>
-        <div class="barslegend"><span><i class="sw" style="background:var(--long)"></i>Gain day</span><span><i class="sw" style="background:var(--short)"></i>Loss day</span><span><i class="sw" style="background:var(--gold)"></i>Today</span></div>
-      </div>
       <div class="ttl" style="margin:14px 2px 8px">Best / Worst Trade</div>
       <div class="two" style="margin-bottom:0">
         <div class="card" style="padding:10px 12px">
@@ -428,6 +485,8 @@
           <button class="tvbtn" style="margin-top:0;border-color:var(--short);color:var(--short)" onclick="vtReset()" data-i18n="vt.reset">↺ Reset</button>
         </div>
         <div id="vtPending" style="font-size:10px;color:var(--gold);margin-top:8px" hidden data-i18n="vt.applying">Applying… this takes up to 30 seconds.</div>
+        <div class="fold" onclick="const b=document.getElementById('vtFoldBody');b.hidden=!b.hidden;this.querySelector('b').textContent=b.hidden?'▾':'▴';haptic('sel')"><span data-i18n="vt.fold">⚙ Run settings</span><b>▾</b></div>
+        <div id="vtFoldBody" class="foldbody" hidden></div>
       </div>
 
       <!-- MONTH PAGES -->
@@ -445,7 +504,7 @@
     </div>
   </section>
 
-  <nav id="nav">
+  <nav id="nav"><div class="navbar" id="navbar"></div>
     <div class="tab on" data-tab="chart"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>Chart</div>
     <div class="tab" data-tab="trades"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg>Trades</div>
     <div class="tab" data-tab="copy"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</div>
@@ -551,6 +610,8 @@
     curTab = name;
     document.querySelectorAll("section").forEach(s=>s.classList.toggle("active",s.id===name+"-section"));
     document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on",t.dataset.tab===name));
+    const _tabs=[...document.querySelectorAll(".tab")], _i=_tabs.findIndex(t=>t.dataset.tab===name);
+    if(_i>=0) document.getElementById("navbar").style.left=(_i*100/_tabs.length)+"%";
     window.scrollTo(0,0); haptic("sel");
     if(name==="trades") loadTrades();
     if(name==="copy") loadCopy();
@@ -597,8 +658,33 @@
     if(curTab==="portfolio") updateUnreal();
   }
 
+  /* ---------- motion helpers (design pass) ----------
+     rollTo(el, value, fmt): the number counts to its new value instead of
+     jumping. flashDir(el, key, value): flashes the element green/red when the
+     value changed since the last render (keyed, so innerHTML re-renders are
+     fine). Both remember the previous value in _prev. */
+  const _prev = {};
+  function rollTo(el, value, fmt, ms){
+    if(!el) return;
+    const key = el.id || el.dataset.roll; if(!key){ el.textContent = fmt(value); return; }
+    const from = _prev[key]; _prev[key] = value;
+    if(from === undefined || !isFinite(from) || !isFinite(value) || from === value){ el.textContent = fmt(value); return; }
+    const t0 = performance.now(), dur = ms || 700;
+    (function step(t){ const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = fmt(from + (value - from) * e); if(k < 1) requestAnimationFrame(step); })(t0);
+  }
+  function flashDir(el, key, value){
+    if(!el) return;
+    const from = _prev[key]; _prev[key] = value;
+    if(from === undefined || from === value) return;
+    el.classList.remove("flash-up", "flash-down"); void el.offsetWidth;
+    el.classList.add(value > from ? "flash-up" : "flash-down");
+  }
+  const skeleton = n => Array.from({length: n || 3}, (_, i) => `<div class="sk" style="width:${[60, 100, 80][i % 3]}%"></div>`).join("");
+
   /* ---------- TRADES (from API) ---------- */
   async function loadTrades(){
+    const _tl=document.getElementById("tradeList"); if(_tl && !_tl.dataset.painted && !_tl.innerHTML.trim()) _tl.innerHTML=`<div class="tcard">${skeleton(4)}</div>`;
     try{
       const data = await api("/trades/active");
       TRADES = {};
@@ -696,7 +782,7 @@
           </div>
           <div class="tc-pnl">
             <div class="tc-pnl-label">Unrealized PnL (USDT)</div>
-            <div class="tc-pnl-val ${running?cls:''}"> ${running?(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%':'--'}</div>
+            <div class="tc-pnl-val ${running?cls:''}" data-pnl="${s}"> ${running?(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%':'--'}</div>
             ${running?`<div class="tc-pnl-pct ${cls}">(${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%)</div>`:''}
           </div>
         </div>
@@ -704,23 +790,32 @@
         <div class="tc-grid" style="margin-top:${running?'0':'8px'}">
           <div class="tc-cell"><div class="k">Position</div><div class="v">${pos}</div></div>
           <div class="tc-cell"><div class="k">Margin (USDT)</div><div class="v">${margin}</div></div>
-          <div class="tc-cell"><div class="k">Risk</div><div class="v ${parseFloat(riskPct)>50?'down':''}">${riskPct}</div></div>
+          <div class="tc-cell"><div class="k">Risk</div><div class="v ${parseFloat(riskPct)>50?'down':''}">${riskPct}</div>${riskPct!=='--'?`<div class="rbar"><i style="width:${Math.min(100,parseFloat(riskPct))}%"></i></div>`:''}</div>
           <div class="tc-cell"><div class="k">Avg Open</div><div class="v">${fmt(t.entry,d)}</div></div>
-          <div class="tc-cell"><div class="k">Mark Price</div><div class="v">${p?fmt(live,d):'--'}</div></div>
-          <div class="tc-cell"><div class="k">Est. Liq.</div><div class="v down">${liq}</div></div>
+          <div class="tc-cell" data-mark="${s}"><div class="k">Mark Price</div><div class="v">${p?fmt(live,d):'--'}</div></div>
+          <div class="tc-cell liq"><div class="k">Est. Liq.</div><div class="v down">${liq}</div></div>
         </div>
         <div class="tc-tpsl">
-          <div class="tc-tpsl-box"><span class="k">TP1 ${t.tp1_hit?'✅':''}</span><span class="v up">${t.tp?fmt(t.tp,d):'--'}</span></div>
-          <div class="tc-tpsl-box"><span class="k">TP2</span><span class="v up">${t.tp2?fmt(t.tp2,d):'--'}</span></div>
+          <div class="tc-tpsl-box tp"><span class="k">TP1 ${t.tp1_hit?'✅':''}</span><span class="v up">${t.tp?fmt(t.tp,d):'--'}</span></div>
+          <div class="tc-tpsl-box tp"><span class="k">TP2</span><span class="v up">${t.tp2?fmt(t.tp2,d):'--'}</span></div>
         </div>
-        <div class="tc-tpsl-box tc-tpsl-full"><span class="k">SL</span><span class="v down">${t.sl?fmt(t.sl,d):'--'}</span></div>
+        <div class="tc-tpsl-box tc-tpsl-full slb"><span class="k">SL</span><span class="v down">${t.sl?fmt(t.sl,d):'--'}</span></div>
         ${running?tradeTrack(t, live):''}
       </div>`;
     }
     if(!html) html=`<div class="notrade">No active trades</div>`;
-    document.getElementById("tradeList").innerHTML=html;
+    const _list=document.getElementById("tradeList");
+    // no rise animation on the periodic re-render, only on the first paint
+    const _first=!_list.dataset.painted; _list.innerHTML=html; _list.dataset.painted="1";
+    if(!_first) _list.querySelectorAll(".tcard").forEach(c=>c.style.animation="none");
+    for(const s in TRADES){
+      const t=TRADES[s], p=prices[s]; if(!p) continue;
+      flashDir(_list.querySelector(`[data-mark="${s}"]`), "mark:"+s, p.last);
+      const pe=_list.querySelector(`[data-pnl="${s}"]`);
+      if(pe && t.status==="RUNNING"){ const sign=t.side==="LONG"?1:-1; const v=((p.last-t.entry)/t.entry*100*sign)*t.lev; pe.dataset.roll="pnl:"+s; rollTo(pe, v, x=>(x>=0?"+":"")+x.toFixed(2)+"%", 500); }
+    }
     const tp=document.getElementById("totPnl");
-    tp.textContent=(tot>=0?"+":"")+"$"+fmt(Math.abs(tot),2);
+    rollTo(tp, tot, x=>(x>=0?"+":"-")+"$"+fmt(Math.abs(x),2), 600);
     tp.className="v "+(tot>=0?"up":"down");
     document.getElementById("posCount").textContent=n;
   }
@@ -918,7 +1013,7 @@
     document.getElementById("curve").innerHTML=
       '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00D18F" stop-opacity="0.25"/><stop offset="100%" stop-color="#00D18F" stop-opacity="0"/></linearGradient></defs>'+
       '<path d="'+area+'" fill="url(#g)"/>'+
-      '<path d="'+line+'" fill="none" stroke="#00D18F" stroke-width="2"/>'+
+      '<path class="line" d="'+line+'" fill="none" stroke="#00D18F" stroke-width="2"/>'+
       '<circle cx="'+end[0].toFixed(1)+'" cy="'+end[1].toFixed(1)+'" r="3.5" fill="#00D18F"/>'+
       '<circle cx="'+end[0].toFixed(1)+'" cy="'+end[1].toFixed(1)+'" r="6" fill="#00D18F" opacity="0.25"/>';
   }
@@ -934,7 +1029,7 @@
   function setDailyDays(days){ // days: [{date:"YYYY-MM-DD", value:number}, ...] oldest->newest
     DAILY_DAYS=days;
     dailyPageIdx=0; // always land on the most recent page first
-    renderDailyPage();
+    if(document.getElementById("dailyBars")) renderDailyPage();   // Daily P/L card removed (design pass) - kept for the calendar
   }
 
   function renderDailyPage(){
@@ -1112,7 +1207,7 @@
       const b = await api("/copy/balance");
       if(b.available){
         realBal=b.balance||0; realInTrade=b.in_trade||0;
-        document.getElementById("balance").textContent="$"+fmt(b.balance,2);
+        rollTo(document.getElementById("balance"), b.balance||0, x=>"$"+fmt(x,2), 800);
         document.getElementById("avail").textContent="$"+fmt(b.avail,2);
         document.getElementById("intrade").textContent="$"+fmt(b.in_trade,2);
         const u=b.unrealized||0;
@@ -1160,7 +1255,7 @@
       updateUnreal();
       document.getElementById("closedlist").innerHTML=h.slice(0,10).map(c=>{
         const win=c.result==="WIN"||c.pnl>0;
-        return `<div class="row"><div style="display:flex;align-items:center;gap:9px"><span class="tag ${(c.direction||"long").toLowerCase()}">${(c.direction||"LONG").toUpperCase()}</span><div><div style="font-family:var(--mono);font-size:13px;font-weight:600">${(c.symbol||"").replace("USDT","")}/USDT</div><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px">${c.closed_at||""}</div></div></div><div style="text-align:right"><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:14px;font-weight:700">${win?"+":"-"}$${fmt(Math.abs(c.pnl||0),2)}</div><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:10px;margin-top:1px">${c.result||""}</div></div></div>`;
+        return `<div class="row ${win?'win':'loss'}"><div style="display:flex;align-items:center;gap:9px"><span class="tag ${(c.direction||"long").toLowerCase()}">${(c.direction||"LONG").toUpperCase()}</span><div><div style="font-family:var(--mono);font-size:13px;font-weight:600">${(c.symbol||"").replace("USDT","")}/USDT</div><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px">${c.closed_at||""}</div></div></div><div style="text-align:right"><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:14px;font-weight:700">${win?"+":"-"}$${fmt(Math.abs(c.pnl||0),2)}</div><div class="${win?'up':'down'}" style="font-family:var(--mono);font-size:10px;margin-top:1px">${c.result||""}</div></div></div>`;
       }).join("") || '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:12px 0">No closed trades yet</div>';
 
       // build simple daily P/L from history
@@ -1407,21 +1502,32 @@
       s.textContent = label; s.className = "status " + (st.status === "running" ? "running" : "");
       document.getElementById("vtSince").textContent = st.started_at ? `${t("vt.since","since")} ${st.started_at} · run #${st.run}` : "";
       document.getElementById("vtCap").textContent = vtMoney(st.capital);
-      document.getElementById("vtBal").textContent = vtMoney(st.balance);
-      const pc = document.getElementById("vtPct"); pc.textContent = (st.pnl_pct>=0?"+":"") + st.pnl_pct + "%"; pc.className = st.pnl_pct >= 0 ? "up" : "down";
+      rollTo(document.getElementById("vtBal"), Number(st.balance)||0, vtMoney, 800);
+      const pc = document.getElementById("vtPct"); rollTo(pc, Number(st.pnl_pct)||0, x=>(x>=0?"+":"")+x.toFixed(2)+"%", 800); pc.className = st.pnl_pct >= 0 ? "up" : "down";
+      const _rb = pc.closest(".vt-cell"); if(_rb) _rb.className = "sumcard vt-cell " + (st.pnl_pct >= 0 ? "win" : "loss");
       const riskTxt = st.risk_mode === "usd" ? vtMoney(st.risk) : `${st.risk}% ${t("vt.of_margin","of margin")}`;
       const marginTxt = st.margin_mode === "usd" ? vtMoney(st.margin) : `${st.margin}% ${t("vt.of_balance","of balance")}`;
       document.getElementById("vtCfg").textContent = (st.lev_mode === "auto" ? `${t("vt.auto","Auto")} · ${t("vt.risk_s","risk")} ${riskTxt}` : `${t("vt.manual","Manual")} ${st.lev}x`) +
         ` · ${t("vt.margin_s","margin")} ${marginTxt} · ${st.closed} ${t("vt.closed","closed")} · ${st.skipped} ${t("vt.skipped","skipped")}`;
+      // ⚙ Run settings - the setup values of this run, folded away (read-only while it runs)
+      document.getElementById("vtFoldBody").innerHTML =
+        `<div style="color:var(--gold);font-family:var(--sans);line-height:1.5;margin-bottom:4px">${t("vt.fold_note","A run is active - settings are read-only. Reset to start a new run with different values.")}</div>` +
+        `${t("vt.capital","Total capital (USDT)")}: <b>${vtMoney(st.capital)}</b><br>` +
+        `${t("vt.leverage","Leverage")}: <b>${st.lev_mode === "auto" ? t("vt.auto","Auto") : t("vt.manual","Manual") + " " + st.lev + "x"}</b><br>` +
+        (st.lev_mode === "auto" ? `${t("vt.risk","Risk per trade at stop-loss")}: <b>${riskTxt}</b><br>` : "") +
+        `${t("vt.margin","Margin per trade")}: <b>${marginTxt}</b>`;
       document.getElementById("vtWiped").hidden = st.status !== "wiped";
       document.getElementById("vtStopBtn").hidden = st.status !== "running";
       document.getElementById("vtResumeBtn").hidden = st.status !== "stopped";
       const open = document.getElementById("vtOpen");
       open.innerHTML = (st.open || []).length ? `<div class="k" style="margin-bottom:4px">${t("vt.open_now","OPEN NOW")}</div>` + st.open.map(p => {
         const side = p.side === "BUY" ? "LONG" : "SHORT";
+        const _sym = (p.symbol||"").replace(/-?USDT$/,"");
+        const _live = (prices[_sym] && prices[_sym].last) || (prices[_sym+"-USDT"] && prices[_sym+"-USDT"].last) || 0;
+        const _trk = _live ? tradeTrack({sl:p.sl, entry:p.entry, tp:p.tp1, tp2:p.tp2||p.tp1, side:side, tp1_hit:p.tp1_hit}, _live) : "";
         return `<div class="vt-row" style="padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px">
-          <span><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>${(p.symbol||"").replace(/-?USDT$/,"")} ${p.lev}x${p.tp1_hit?" · TP1 ✅":""}</span>
-          <span style="color:var(--muted)">${vtPx(p.entry)} · SL ${vtPx(p.sl)} · TP1 ${vtPx(p.tp1)}</span></div>`;
+          <span><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>${_sym} ${p.lev}x${p.tp1_hit?" · TP1 ✅":""}</span>
+          <span style="color:var(--muted)">${vtPx(p.entry)} · SL ${vtPx(p.sl)} · TP1 ${vtPx(p.tp1)}</span></div>${_trk}`;
       }).join("") : `<div style="font-size:11px;color:var(--muted)">${t("vt.no_open","No open virtual trades right now.")}</div>`;
     }
     // month pages
@@ -1433,14 +1539,14 @@
       document.getElementById("vtPrev").disabled = !st.prev; document.getElementById("vtPrev").style.opacity = st.prev ? 1 : .3;
       document.getElementById("vtNext").disabled = !st.next; document.getElementById("vtNext").style.opacity = st.next ? 1 : .3;
       const s = st.stats || {};
-      const cell = (k, v, cls) => `<div class="sumcard vt-cell"><div class="k">${k}</div><div class="${cls||""}" style="font-size:13px;font-weight:700">${v}</div></div>`;
+      const cell = (k, v, cls) => `<div class="sumcard vt-cell ${cls==="up"?"win":cls==="down"?"loss":""}"><div class="k">${k}</div><div class="${cls||""}" style="font-size:13px;font-weight:700">${v}</div></div>`;
       document.getElementById("vtStats").innerHTML = s.trades ?
         cell(t("vt.trades","Trades"), s.trades) + cell(t("vt.winrate","Win rate"), s.wr + "%") + cell(t("vt.net","Net"), vtSigned(s.net), s.net >= 0 ? "up" : "down") +
         cell(t("vt.fees","Fees"), vtMoney(-(s.fees || 0)), "down") + cell(t("vt.worst","Worst"), vtMoney(s.worst), "down") + cell(t("vt.drawdown","Max DD"), vtMoney(s.dd), "down")
         : `<div style="grid-column:1/-1;color:var(--muted);font-size:11px;text-align:left">${t("vt.no_trades","No closed trades this month yet.")}</div>`;
       document.getElementById("vtList").innerHTML = (st.trades || []).map(tr => {
         const side = tr.side === "BUY" ? "LONG" : "SHORT", win = tr.pnl >= 0;
-        return `<div class="vt-row" style="align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+        return `<div class="vt-row ${win?"win":"loss"}" style="align-items:center;padding:7px 0;margin-bottom:4px">
           <div style="min-width:0"><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>
             <span style="font-family:var(--mono);font-size:12px">${(tr.sym||"").replace(/-?USDT$/,"")} ${tr.lev}x</span>
             <div style="font-size:10px;color:var(--muted);margin-top:2px">${tr.res} · ${vtPx(tr.entry)} → ${vtPx(tr.exit)} · ${(tr.t||"").slice(5,16)}${tr.note?" · "+tr.note:""}</div></div>

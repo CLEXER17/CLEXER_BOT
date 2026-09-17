@@ -40,6 +40,8 @@ EN = [
     "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?",
     "Entry", "to TP1", "TP1 done · riding to TP2",
     "Fees",
+    "⚙ Run settings",
+    "A run is active - settings are read-only. Reset to start a new run with different values.",
 ]
 
 T = {}
@@ -73,6 +75,8 @@ T["ru"] = [
     "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?",
     "Вход", "до TP1", "TP1 взят · идём к TP2",
     "Комиссии",
+    "⚙ Настройки запуска",
+    "Запуск активен — настройки только для чтения. Сбросьте, чтобы начать новый запуск с другими значениями.",
 ]
 
 T["tl"] = [
@@ -104,6 +108,8 @@ T["tl"] = [
     "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?",
     "Entry", "papunta sa TP1", "Tapos ang TP1 · patungo sa TP2",
     "Bayarin",
+    "⚙ Mga setting ng run",
+    "May aktibong run — read-only ang mga setting. I-reset para magsimula ng bagong run na may ibang halaga.",
 ]
 
 T["ur"] = [
@@ -135,6 +141,8 @@ T["ur"] = [
     "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟",
     "انٹری", "TP1 تک", "TP1 ہو گیا · TP2 کی طرف",
     "فیس",
+    "⚙ رن کی ترتیبات",
+    "رن فعال ہے — ترتیبات صرف پڑھنے کے لیے ہیں۔ مختلف اقدار کے ساتھ نیا رن شروع کرنے کے لیے ری سیٹ کریں۔",
 ]
 
 T["id"] = [
@@ -166,6 +174,8 @@ T["id"] = [
     "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?",
     "Entry", "ke TP1", "TP1 tercapai · menuju TP2",
     "Biaya",
+    "⚙ Pengaturan run",
+    "Run sedang aktif — pengaturan hanya-baca. Reset untuk memulai run baru dengan nilai berbeda.",
 ]
 
 T["pt"] = [
@@ -197,6 +207,8 @@ T["pt"] = [
     "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?",
     "Entrada", "até TP1", "TP1 feito · rumo ao TP2",
     "Taxas",
+    "⚙ Configurações da execução",
+    "Uma execução está ativa — as configurações são somente leitura. Redefina para iniciar uma nova execução com outros valores.",
 ]
 
 T["es"] = [
@@ -228,6 +240,8 @@ T["es"] = [
     "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?",
     "Entrada", "hasta TP1", "TP1 hecho · rumbo a TP2",
     "Comisiones",
+    "⚙ Ajustes de la ejecución",
+    "Hay una ejecución activa — los ajustes son de solo lectura. Reinicia para empezar una nueva con otros valores.",
 ]
 
 T["ar"] = [
@@ -259,6 +273,8 @@ T["ar"] = [
     "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟",
     "الدخول", "إلى TP1", "تم TP1 · نحو TP2",
     "الرسوم",
+    "⚙ إعدادات التشغيل",
+    "هناك تشغيل نشط — الإعدادات للقراءة فقط. أعد الضبط لبدء تشغيل جديد بقيم مختلفة.",
 ]
 
 T["zh"] = [
@@ -290,6 +306,8 @@ T["zh"] = [
     "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？",
     "入场", "至 TP1", "TP1 已达 · 冲向 TP2",
     "手续费",
+    "⚙ 运行设置",
+    "运行进行中——设置为只读。重置后可用不同数值开始新的运行。",
 ]
 
 T["tr"] = [
@@ -321,6 +339,8 @@ T["tr"] = [
     "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?",
     "Giriş", "TP1'e", "TP1 tamam · TP2'ye gidiyor",
     "Komisyon",
+    "⚙ Çalıştırma ayarları",
+    "Bir çalıştırma aktif — ayarlar salt okunur. Farklı değerlerle yeni bir çalıştırma için sıfırlayın.",
 ]
 
 T["vi"] = [
@@ -352,6 +372,8 @@ T["vi"] = [
     "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?",
     "Vào lệnh", "tới TP1", "Xong TP1 · tiến tới TP2",
     "Phí",
+    "⚙ Cài đặt phiên chạy",
+    "Phiên chạy đang hoạt động — cài đặt chỉ đọc. Đặt lại để bắt đầu phiên mới với giá trị khác.",
 ]
 
 T["fr"] = [
@@ -383,6 +405,8 @@ T["fr"] = [
     "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?",
     "Entrée", "vers TP1", "TP1 atteint · vers TP2",
     "Frais",
+    "⚙ Réglages de l'exécution",
+    "Une exécution est active — les réglages sont en lecture seule. Réinitialisez pour en démarrer une nouvelle avec d'autres valeurs.",
 ]
 
 
