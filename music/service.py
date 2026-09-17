@@ -1430,10 +1430,12 @@ async def user_facts(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
     body = await req.json()
     try:
-        u = await client.get_users(int(body["user_id"]))
+        key = body.get("username") or int(body["user_id"])      # @username resolves through the account (the Bot API cannot)
+        u = await client.get_users(str(key).lstrip("@") if isinstance(key, str) else key)
     except Exception as e:
         return {"error": str(e)[:120]}
-    return {"dc_id": getattr(u, "dc_id", None), "is_premium": bool(getattr(u, "is_premium", False)),
+    return {"id": u.id, "first_name": getattr(u, "first_name", None), "last_name": getattr(u, "last_name", None),
+            "dc_id": getattr(u, "dc_id", None), "is_premium": bool(getattr(u, "is_premium", False)),
             "is_verified": bool(getattr(u, "is_verified", False)), "is_scam": bool(getattr(u, "is_scam", False)),
             "is_fake": bool(getattr(u, "is_fake", False)), "is_bot": bool(getattr(u, "is_bot", False)),
             "username": getattr(u, "username", None)}

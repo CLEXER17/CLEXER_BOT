@@ -17762,7 +17762,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _games_mod.cmd_games(chat_id, (message or {}).get("chat", {}).get("type") or "private")
 
     elif cmd in ("/info", "/whois"):
-        _uinfo.cmd_info(chat_id, message)
+        _uinfo.cmd_info(chat_id, message, " ".join(parts[1:]))
 
     elif cmd == "/out":
         _games_mod.cmd_out(chat_id, _check_id, (message or {}).get("from", {}).get("first_name") or _uname)
@@ -21372,7 +21372,7 @@ _CMD_ONLY_CATS = {
         ("/prev",   "⏮", "Previous", "Play the previous song again"),
     ]),
     "tools": ("🪪 Tools", False, [
-        ("/info",    "🪪", "Info",     "Profile card of a member — reply to their message with /info (plain /info shows your own)"),
+        ("/info",    "🪪", "Info",     "Profile card of a member — reply to their message with /info, or /info @username (plain /info shows your own)"),
     ]),
     "games": ("🎮 Games", False, [
         ("/games",   "🎮", "Games",    "30 chat games — Ludo, Chess, Snake & Ladder, Uno, Trivia, Battleship and more. Robots in DM, friends in a group. Type /games"),

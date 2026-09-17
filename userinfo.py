@@ -60,14 +60,16 @@ def _telegram_facts(uid, chat_id, user):
     return f
 
 
-def _assistant_facts(uid):
-    """DC, premium, verified, scam / fake - through the music account."""
+def _assistant_facts(uid=None, username=None):
+    """DC, premium, verified, scam / fake - through the music account. Given a
+    username it also resolves who that is (the Bot API cannot)."""
     if not _MUSIC["url"] or not _MUSIC["secret"]:
         return {}
     try:
-        r = requests.post(f"{_MUSIC['url']}/user", json={"user_id": uid},
+        r = requests.post(f"{_MUSIC['url']}/user", json={"user_id": uid, "username": username},
                           headers={"X-Music-Secret": _MUSIC["secret"]}, timeout=8)
-        return r.json() if r.ok else {}
+        j = r.json() if r.ok else {}
+        return j if isinstance(j, dict) and not j.get("error") else {}
     except Exception:
         return {}
 
@@ -191,10 +193,25 @@ def caption(user, facts, extra, rank_label):
 
 
 # ── command ────────────────────────────────────────────────────────────────
-def cmd_info(chat_id, message):
-    """/info as a reply -> that person; plain /info -> the sender."""
+def cmd_info(chat_id, message, arg=""):
+    """/info as a reply -> that person; /info @username or /info 123456 -> that
+    person (resolved through the music account); plain /info -> the sender."""
     msg = message or {}
-    target = (msg.get("reply_to_message") or {}).get("from") or msg.get("from") or {}
+    arg = (arg or "").strip()
+    target = None
+    if arg:
+        if arg.lstrip("@").isdigit():
+            found = _assistant_facts(uid=int(arg.lstrip("@")))
+        else:
+            found = _assistant_facts(username=arg.lstrip("@"))
+        if not found.get("id"):
+            _api("sendMessage", {"chat_id": chat_id, "parse_mode": "HTML",
+                                 "text": f"Couldn't find <b>{_esc(arg)}</b>. Reply to one of their messages with /info instead."}, timeout=10)
+            return
+        target = {"id": found["id"], "first_name": found.get("first_name") or "", "last_name": found.get("last_name") or "",
+                  "username": found.get("username") or "", "is_premium": found.get("is_premium"), "is_bot": found.get("is_bot")}
+    if target is None:
+        target = (msg.get("reply_to_message") or {}).get("from") or msg.get("from") or {}
     if not target.get("id"):
         _api("sendMessage", {"chat_id": chat_id, "text": "Reply to someone's message with /info to see their card.", "parse_mode": "HTML"}, timeout=10)
         return
