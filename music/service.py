@@ -1194,8 +1194,10 @@ async def _on_chat_update(_, update: ChatUpdate):
         await asyncio.to_thread(_save_state)
 
 
-async def _ensure_member(chat_id, invite_link):
-    """The assistant must be in the group before it can join the call."""
+async def _ensure_member(chat_id, invite_link, username=None):
+    """The assistant must be in the group before it can join the call.
+    Public group: join by its @username, no rights needed. Private group:
+    the bot's invite link (needs the bot's invite-users right), else ask."""
     try:
         m = await client.get_chat_member(chat_id, "me")
         status = str(getattr(m, "status", "")).lower()
@@ -1205,6 +1207,12 @@ async def _ensure_member(chat_id, invite_link):
             return True, ""
     except RPCError:
         pass
+    if username and not invite_link:
+        try:
+            await client.join_chat(username)
+            return True, ""
+        except RPCError as e:
+            print(f"[MUSIC] join @{username}: {type(e).__name__}")
     if not invite_link:
         return False, f"Add @{_me['username']} to this group first (or give me the invite-users right)."
     try:
@@ -1318,7 +1326,7 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
         return reply("🔍 Couldn't find that - try another name or paste a YouTube link."
                      + ("" if body.get("video") else " For an episode, movie or any other video use /find."))
     track["by"] = by
-    ok, why = await _ensure_member(chat_id, body.get("invite_link"))
+    ok, why = await _ensure_member(chat_id, body.get("invite_link"), body.get("chat_username"))
     if not ok:
         # Remember the song: the moment the assistant is added, it plays.
         _st(chat_id)["pending"] = {"track": track, "ts": time.time(), "video": bool(body.get("video"))}
@@ -1329,8 +1337,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
                    f"(Group → Removed users) and add it back - then <b>{_esc(track['title'])}</b> starts by itself.")
         else:
             txt = (f"🎵 <b>{_esc(track['title'])}</b> is ready - but @{u} (the music account) is not in this group yet.\n\n"
-                   f"Tap the button, choose <b>Add to Group</b> and pick this group. "
-                   f"Anyone allowed to add members can do it. The song starts by itself once it is in.")
+                   f"Tap the button, choose <b>Add to Group</b> and pick this group - the song starts by itself once it is in.\n\n"
+                   f"Admins: make the bot an admin with <b>Invite users via link</b> and @{u} joins on its own next time.")
         _say(chat_id, txt, kb)
         return {"text": "", "sent": True}
     try:
