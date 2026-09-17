@@ -1,5 +1,16 @@
 #!/bin/sh
-# CLEXER Music entrypoint. If TS_AUTHKEY is set, bring up Tailscale in
+# CLEXER Music entrypoint.
+# PO-token provider (see Dockerfile): local HTTP service yt-dlp asks for a
+# token on every YouTube request. MUSIC_NO_POT=1 turns it off.
+if [ -z "$MUSIC_NO_POT" ] && [ -f /app/bgutil/server/build/main.js ]; then
+  (cd /app/bgutil/server && node build/main.js --port 4416 >/tmp/pot.log 2>&1 &)
+  sleep 2
+  if curl -s -m 3 http://127.0.0.1:4416/ping >/dev/null 2>&1; then
+    echo "[POT] provider up on :4416"; export MUSIC_POT_URL="http://127.0.0.1:4416"
+  else
+    echo "[POT] provider did not answer - continuing without it"; tail -3 /tmp/pot.log
+  fi
+fi If TS_AUTHKEY is set, bring up Tailscale in
 # userspace mode (no root network access needed in a container) with a
 # local HTTP proxy, route it through TS_EXIT_NODE (your phone / PC running
 # Tailscale as an exit node) and point the service's MUSIC_PROXY at it.

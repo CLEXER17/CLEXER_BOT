@@ -15,6 +15,8 @@ from the Dockerfile here). Variables:
 | `CLEXER_API_URL` / `PUSH_STATE_SECRET` | optional, same values as on the bot service: lets a redeploy resume the music where it was |
 | `MUSIC_COOKIES` | optional: contents of a cookies.txt exported from a logged-in YouTube session, for when YouTube refuses the server IP (search falls back to YouTube Music first) |
 | `MUSIC_ADMIN_ID` | optional: the CLEX admin's Telegram id for DM alerts (stop / card deleted / removed / voice chat ended); also learned from the bot on the first /play |
+| `MUSIC_NO_POT` | optional: set to 1 to disable the built-in PO-token provider (bgutil, Node) that gets yt-dlp through YouTube's "not a bot" wall on datacenter IPs |
+| `MUSIC_ALT_APIS` | optional: comma-separated Piped / Invidious instances tried when YouTube walls the IP (public ones are unreliable) |
 | `MUSIC_YT_CLIENTS` | optional: yt-dlp YouTube player clients, default `default,web_embedded` (the mix that works with a cookies file) |
 | `MUSIC_PROXY` | optional: `http://user:pass@host:port` - send YouTube traffic through a proxy if the server IP stays walled off (yt-dlp and ffmpeg both use it; every song is then fetched to disk first) |
 | `TS_AUTHKEY` / `TS_EXIT_NODE` | optional, free alternative to a proxy: a Tailscale auth key and the name/IP of your own device running Tailscale as an exit node (a spare phone or PC at home). YouTube then sees your home IP. Sets MUSIC_PROXY automatically |

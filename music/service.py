@@ -142,6 +142,10 @@ _YDL = {"format": _fmt(VIDEO_H),
 # MUSIC_YT_CLIENTS overrides (comma separated).
 _CLIENTS = [c.strip() for c in os.getenv("MUSIC_YT_CLIENTS", "default,web_embedded").split(",") if c.strip()]
 _YDL["extractor_args"] = {"youtube": {"player_client": _CLIENTS}}
+POT_URL = os.getenv("MUSIC_POT_URL", "").strip()
+if POT_URL:
+    # bgutil provider (HTTP mode) - PO tokens for the web clients
+    _YDL["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [POT_URL]}
 # MUSIC_PROXY = http://user:pass@host:port - routes YouTube traffic through a
 # proxy when the server's own IP is walled off.
 PROXY = os.getenv("MUSIC_PROXY", "").strip()
@@ -458,6 +462,72 @@ def _flat_search(url, q=None):
 
 
 _PIPED = ["https://pipedapi.kavin.rocks", "https://api.piped.yt", "https://pipedapi.adminforge.de"]
+# When YouTube walls this server's IP, public Piped / Invidious instances
+# can still hand out the media through their own proxies (no login, not
+# tied to our IP). Best effort: instances come and go - MUSIC_ALT_APIS
+# (comma separated base URLs) overrides the list.
+_ALT_APIS = [u.strip().rstrip("/") for u in (os.getenv("MUSIC_ALT_APIS") or
+             "https://pipedapi.kavin.rocks,https://pipedapi.adminforge.de,https://api.piped.yt,https://pipedapi.r4fo.com,"
+             "https://inv.nadeko.net,https://invidious.nerdvpn.de,https://yewtu.be,https://inv.tux.pizza").split(",") if u.strip()]
+
+
+def _walled(msg: str) -> bool:
+    m = (msg or "").lower()
+    return "sign in" in m or "not a bot" in m or "reloaded" in m or "unplayable" in m
+
+
+def _vid_of(u: str) -> str:
+    import re as _re
+    m = _re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", u or "")
+    return m.group(1) if m else (u if len(u or "") == 11 else "")
+
+
+def _alt_streams(vid: str, height=None):
+    """A track from a Piped or Invidious instance's proxied streams."""
+    if not vid:
+        return None
+    want_video = height != 0
+    h = height or VIDEO_H
+    for base in _ALT_APIS:
+        try:
+            if "piped" in base:
+                r = _rq.get(f"{base}/streams/{vid}", timeout=10)
+                j = r.json()
+                if not isinstance(j, dict) or not j.get("audioStreams"):
+                    continue
+                aud = sorted([a for a in j["audioStreams"] if a.get("url")], key=lambda a: -(a.get("bitrate") or 0))
+                vids = [v for v in (j.get("videoStreams") or []) if v.get("url") and not v.get("videoOnly")
+                        and str(v.get("quality", "")).rstrip("p").isdigit() and int(str(v["quality"]).rstrip("p")) <= h]
+                vids.sort(key=lambda v: -int(str(v["quality"]).rstrip("p")))
+                t = {"title": j.get("title") or vid, "duration": int(j.get("duration") or 0), "id": vid,
+                     "page": f"https://www.youtube.com/watch?v={vid}", "thumb": j.get("thumbnailUrl") or "",
+                     "uploader": j.get("uploader") or "", "url": aud[0]["url"] if aud else None,
+                     "video": (vids[0]["url"] if (vids and want_video) else None), "live": bool(j.get("livestream"))}
+            else:
+                r = _rq.get(f"{base}/api/v1/videos/{vid}?local=true", timeout=10)
+                j = r.json()
+                if not isinstance(j, dict) or not (j.get("adaptiveFormats") or j.get("formatStreams")):
+                    continue
+                aud = sorted([f for f in j.get("adaptiveFormats") or [] if f.get("url") and str(f.get("type", "")).startswith("audio")],
+                             key=lambda f: -int(f.get("bitrate") or 0))
+                comb = [f for f in j.get("formatStreams") or [] if f.get("url") and str(f.get("resolution", "")).rstrip("p").isdigit()
+                        and int(str(f["resolution"]).rstrip("p")) <= h]
+                comb.sort(key=lambda f: -int(str(f["resolution"]).rstrip("p")))
+                thumbs = j.get("videoThumbnails") or []
+                t = {"title": j.get("title") or vid, "duration": int(j.get("lengthSeconds") or 0), "id": vid,
+                     "page": f"https://www.youtube.com/watch?v={vid}", "thumb": (thumbs[0].get("url") if thumbs else ""),
+                     "uploader": j.get("author") or "", "url": aud[0]["url"] if aud else None,
+                     "video": (comb[0]["url"] if (comb and want_video) else None), "live": bool(j.get("liveNow"))}
+            if t["video"] and not t["url"]:
+                t["url"] = t["video"]
+            if not t["url"]:
+                continue
+            print(f"[MUSIC] alt source {base.split('//')[1]} gave {t['title'][:40]!r}")
+            return t
+        except Exception as e:
+            print(f"[MUSIC] alt {base.split('//')[1]}: {type(e).__name__}")
+            continue
+    return None
 
 
 def _piped_search(q):
@@ -525,6 +595,11 @@ def _lookup_inner(query: str, height=None) -> Optional[dict]:
             msg = str(ex)
             print(f"[MUSIC] extract {u}: {msg[:200]}")
             _last_error["text"] = msg
+            if _walled(msg):
+                t = _alt_streams(_vid_of(u), height)
+                if t:
+                    _last_error["text"] = ""
+                    return t
             continue
         if not e:
             continue
@@ -573,6 +648,11 @@ def _related_inner(track, played_ids, height=None):
             e = _extract(f"https://www.youtube.com/watch?v={cid}", height)
         except Exception as ex:
             print(f"[MUSIC] related extract {cid}: {str(ex)[:120]}")
+            if _walled(str(ex)):
+                t = _alt_streams(cid, height)
+                if t:
+                    t["by"] = "autoplay"
+                    return t
             continue
         t = _track_from(e or {}, "")
         if t:
@@ -1314,7 +1394,7 @@ async def health():
         return {"ok": False, "starting": True}
     return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "resume": bool(CENTRAL_URL and CENTRAL_SECRET), "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
-            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY")), "egress_ip": _egress_ip()}
+            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY")), "egress_ip": _egress_ip(), "pot": bool(POT_URL)}
 
 
 NO_VIDEO = "🎧 This group is audio only - video plays in CLEXER's own groups."
