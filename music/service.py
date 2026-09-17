@@ -1074,6 +1074,7 @@ async def _on_me_added(_, upd):
             s["last"] = {"what": "⛔ Removed @" + _me["username"], "by": who, "at": time.time()}
             _say(chat_id, f"⛔ @{_me['username']} was removed from this group by <b>{_esc(who)}</b>"
                           + (" - music stopped." if s["now"] else "."))
+        _alert_admin(chat_id, f"⛔ @{_me['username']} removed ({status}) by <b>{_esc(who or 'unknown')}</b>")
         return
     if status not in ("member", "administrator", "owner"):
         return
@@ -1101,21 +1102,49 @@ async def _on_me_added(_, upd):
             _say(chat_id, "⚠️ I'm in, but couldn't join the voice chat - is it running? Send /play again.")
 
 
-async def _who_deleted(chat_id, msg_id):
-    """Recent Actions (admin log) - readable only when the assistant is an
-    admin of the group; otherwise Telegram does not say who deleted."""
+_ADMIN = {"id": os.getenv("MUSIC_ADMIN_ID", "").strip()}     # learned from the bot's /play payload too
+_titles: dict = {}
+
+
+def _title(chat_id):
+    if chat_id not in _titles:
+        j = bot_api("getChat", {"chat_id": chat_id}, timeout=8)
+        _titles[chat_id] = (j.get("result") or {}).get("title") or str(chat_id)
+    return _titles[chat_id]
+
+
+def _alert_admin(chat_id, text):
+    """One line to the CLEX admin's DM: what happened to the music, where, by whom."""
+    if not _ADMIN["id"]:
+        return
+    try:
+        bot_api("sendMessage", {"chat_id": int(_ADMIN["id"]), "parse_mode": "HTML",
+                                "text": f"🎵 <b>Music · {_esc(_title(chat_id))}</b>\n{text}"}, timeout=8)
+    except Exception:
+        pass
+
+
+async def _log_actor(chat_id, keyword, msg_id=None):
+    """Who did it, from the group's Recent Actions (admin log) - readable
+    only when the assistant is an admin there; otherwise Telegram does not say."""
     try:
         async for ev in client.get_chat_event_log(chat_id, limit=8):
             act = getattr(ev, "action", None)
-            if act and "delete" in str(act).lower():
-                m = getattr(ev, "deleted_message", None)
-                if m is None or getattr(m, "id", None) == msg_id:
-                    u = getattr(ev, "user", None)
-                    if u:
-                        return (u.first_name or u.username or str(u.id))[:32]
+            if act and keyword in str(act).lower():
+                if msg_id is not None:
+                    m = getattr(ev, "deleted_message", None)
+                    if m is not None and getattr(m, "id", None) != msg_id:
+                        continue
+                u = getattr(ev, "user", None)
+                if u:
+                    return (u.first_name or u.username or str(u.id))[:32]
     except Exception:
         pass
     return ""
+
+
+async def _who_deleted(chat_id, msg_id):
+    return await _log_actor(chat_id, "delete", msg_id)
 
 
 async def _on_deleted(_, messages):
@@ -1136,6 +1165,7 @@ async def _on_deleted(_, messages):
         await asyncio.to_thread(_post_card, chat_id)
         _say(chat_id, f"🗑 The music card was deleted by <b>{_esc(who)}</b> - posted again." if who
              else "🗑 The music card was deleted - posted again.")
+        _alert_admin(chat_id, f"🗑 Music card deleted by <b>{_esc(who or 'an admin (unknown - @' + _me['username'] + ' is not admin there)')}</b> - posted again")
 
 
 async def _on_chat_update(_, update: ChatUpdate):
@@ -1151,7 +1181,11 @@ async def _on_chat_update(_, update: ChatUpdate):
         print(f"[MUSIC] {chat_id}: {why} - cleaning up")
         s["queue"].clear(); _drop_all(s); s["now"] = None; s["paused"] = False
         if update.status & ChatUpdate.Status.CLOSED_VOICE_CHAT:
-            s["last"] = {"what": "⏹ Voice chat closed", "by": "-", "at": time.time()}
+            who = await _log_actor(chat_id, "discard")
+            s["last"] = {"what": "⏹ Voice chat closed", "by": who or "-", "at": time.time()}
+            _alert_admin(chat_id, f"⏹ Voice chat ended by <b>{_esc(who or 'unknown')}</b> - music stopped")
+        elif not (update.status & ChatUpdate.Status.KICKED) and not (update.status & ChatUpdate.Status.LEFT_GROUP):
+            _alert_admin(chat_id, "⏏️ @" + _me["username"] + " was removed from the voice chat - music stopped")
         await asyncio.to_thread(_sweep, chat_id)
         try:
             await call.leave_call(chat_id)
@@ -1254,6 +1288,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     body = await req.json()
     chat_id, query = int(body["chat_id"]), str(body.get("query", "")).strip()
     _video_gate(chat_id, body)
+    if body.get("admin_id"):
+        _ADMIN["id"] = str(body["admin_id"])
     by = str(body.get("by", "someone"))
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)                     # the user's /play line and the bot's "Searching…"
@@ -1409,7 +1445,9 @@ async def _control(chat_id, act, body):
 
             if act == "stop":
                 s["queue"].clear(); _drop_all(s); s["now"] = None
-                await _next(chat_id); return {"text": "⏹ Stopped and left the voice chat."}
+                await _next(chat_id)
+                _alert_admin(chat_id, f"⏹ Stopped by <b>{_esc(str(body.get('by') or 'someone'))}</b>")
+                return {"text": "⏹ Stopped and left the voice chat."}
             if act in ("vup", "vdown", "volume"):
                 v = int(body.get("value") or (s["volume"] + (20 if act == "vup" else -20)))
                 v = max(10, min(200, v))
