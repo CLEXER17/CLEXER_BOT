@@ -10,7 +10,9 @@ if [ -z "$MUSIC_NO_POT" ] && [ -f /app/bgutil/server/build/main.js ]; then
   else
     echo "[POT] provider did not answer - continuing without it"; tail -3 /tmp/pot.log
   fi
-fi If TS_AUTHKEY is set, bring up Tailscale in
+fi
+
+# Tailscale (optional). If TS_AUTHKEY is set, bring up Tailscale in
 # userspace mode (no root network access needed in a container) with a
 # local HTTP proxy, route it through TS_EXIT_NODE (your phone / PC running
 # Tailscale as an exit node) and point the service's MUSIC_PROXY at it.
