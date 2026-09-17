@@ -1238,6 +1238,21 @@ def _auth(secret):
         raise HTTPException(403, "bad secret")
 
 
+_egress = {"ip": "", "t": 0.0}
+
+
+def _egress_ip():
+    """The public IP YouTube sees for this service (through the proxy when one is set)."""
+    if time.time() - _egress["t"] < 600:
+        return _egress["ip"]
+    _egress["t"] = time.time()
+    try:
+        _egress["ip"] = _rq.get("https://api.ipify.org", timeout=6, proxies={"https": PROXY, "http": PROXY} if PROXY else None).text.strip()
+    except Exception as e:
+        _egress["ip"] = f"? ({type(e).__name__})"
+    return _egress["ip"]
+
+
 def _ytdlp_version():
     try:
         import yt_dlp
@@ -1250,7 +1265,7 @@ def _ytdlp_version():
 async def health():
     return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "resume": bool(CENTRAL_URL and CENTRAL_SECRET), "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
-            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY"))}
+            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY")), "egress_ip": _egress_ip()}
 
 
 NO_VIDEO = "🎧 This group is audio only - video plays in CLEXER's own groups."

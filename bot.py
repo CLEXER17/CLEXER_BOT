@@ -17780,7 +17780,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _hr = requests.get(f"{MUSIC_URL}/health", timeout=10)
                 _hj = _hr.json() if _hr.ok else {}
                 _ml.append(f"Service: <b>{'✅ up' if _hj.get('ok') else '❌ HTTP ' + str(_hr.status_code)}</b>"
-                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p · yt-dlp {_hj.get('yt_dlp', '?')}" if _hj.get("ok") else ""))
+                           + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p · yt-dlp {_hj.get('yt_dlp', '?')} · IP <code>{_html.escape(str(_hj.get('egress_ip') or '?'))}</code>{' via proxy' if _hj.get('proxy') else ''}" if _hj.get("ok") else ""))
                 if _hj.get("ok") and not _hj.get("resume"):
                     _ml.append("Resume after redeploy: <b>❌ off</b> - set CLEXER_API_URL + PUSH_STATE_SECRET on the music service, or a redeploy mid-song leaves an orphan card")
                 _ck = _hj.get("cookies") or {}
