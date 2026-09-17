@@ -1383,12 +1383,21 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
                    f"Admins: make the bot an admin with <b>Invite users via link</b> and @{u} joins on its own next time.")
         _say(chat_id, txt, kb)
         return {"text": "", "sent": True}
-    try:
-        return await _play_locked(chat_id, track, reply)
-    except Exception as e:
-        print(f"[MUSIC] play {chat_id}: {e!r}")
-        _st(chat_id)["now"] = None
-        return reply("⚠️ Something went wrong while starting that - the queue is kept, send /play again in a moment.")
+    # Fetching + starting can take a while (a big file through the proxy):
+    # answer the bot now, do the rest in the background - every message the
+    # user sees (card, queue note, errors) is posted from here anyway.
+    async def _bg():
+        try:
+            await _play_locked(chat_id, track, reply)
+        except Exception as e:
+            print(f"[MUSIC] play {chat_id}: {e!r}")
+            _st(chat_id)["now"] = None
+            reply("⚠️ Something went wrong while starting that - the queue is kept, send /play again in a moment.")
+    if os.getenv("MUSIC_SYNC_PLAY"):          # test harness: run inline
+        await _bg()
+    else:
+        asyncio.create_task(_bg())
+    return {"text": "", "sent": True}
 
 
 async def _play_locked(chat_id, track, reply):
