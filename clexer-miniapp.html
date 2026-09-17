@@ -725,14 +725,17 @@
     const up = (tr.side==="LONG") ? live>=en : live<=en;
     const col = up ? "var(--long)" : "var(--short)";
     const lo=Math.min(e,v), hi=Math.max(e,v);
-    const slLbl = tr.tp1_hit ? "BE" : "SL";
+    // After TP1 the stop sits at entry (break-even): the two ticks would land
+    // on the same spot, so they merge into one label.
+    const near = e < 0.1;
+    const slLbl = tr.tp1_hit ? (near ? "BE · " + t("trk.entry","Entry") : "BE") : "SL";
     const pct = tp1 && !tr.tp1_hit ? Math.round(Math.max(0,Math.min(1,(v-e)/((p1-e)||1)))*100) : null;
     return `<div class="trk">
       <div class="seg loss" style="width:${(e*100).toFixed(1)}%"></div>
       <div class="seg gain" style="width:${((1-e)*100).toFixed(1)}%"></div>
       <div class="fill" style="left:${(lo*100).toFixed(1)}%;width:${((hi-lo)*100).toFixed(1)}%;background:${col}"></div>
       <div class="tick sl" style="left:0"><i>${slLbl}</i></div>
-      <div class="tick" style="left:${(e*100).toFixed(1)}%"><i>${t("trk.entry","Entry")}</i></div>
+      ${near?"":`<div class="tick" style="left:${(e*100).toFixed(1)}%"><i>${t("trk.entry","Entry")}</i></div>`}
       ${p1!==null?`<div class="tick${tr.tp1_hit?' hit':''}" style="left:${(p1*100).toFixed(1)}%"><i>TP1${tr.tp1_hit?' ✓':''}</i></div>`:''}
       <div class="tick tp2" style="left:100%"><i>TP2</i></div>
       <div class="dot" style="left:${(v*100).toFixed(1)}%;background:${col}"></div>
