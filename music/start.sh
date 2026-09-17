@@ -1,0 +1,15 @@
+#!/bin/sh
+# CLEXER Music entrypoint. If TS_AUTHKEY is set, bring up Tailscale in
+# userspace mode (no root network access needed in a container) with a
+# local HTTP proxy, route it through TS_EXIT_NODE (your phone / PC running
+# Tailscale as an exit node) and point the service's MUSIC_PROXY at it.
+if [ -n "$TS_AUTHKEY" ] && command -v tailscaled >/dev/null 2>&1; then
+  echo "[TS] starting tailscaled (userspace)"
+  tailscaled --tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1056 --state=/tmp/tailscaled.state >/tmp/tailscaled.log 2>&1 &
+  sleep 3
+  tailscale up --authkey="$TS_AUTHKEY" --hostname="clexer-music" --accept-routes ${TS_EXIT_NODE:+--exit-node="$TS_EXIT_NODE" --exit-node-allow-lan-access} || echo "[TS] up failed - check TS_AUTHKEY / TS_EXIT_NODE"
+  tailscale status 2>/dev/null | head -5
+  export MUSIC_PROXY="http://127.0.0.1:1056"
+  echo "[TS] YouTube traffic via exit node ${TS_EXIT_NODE:-<none>}"
+fi
+exec python service.py
