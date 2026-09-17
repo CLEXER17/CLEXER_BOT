@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unz
 # Google's own BotGuard script, run here in Node) is yt-dlp's standard way
 # through that wall. It runs as a tiny local HTTP service (start.sh).
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1 && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /app/bgutil \
-    && cd /app/bgutil/server && npm ci --omit=dev >/dev/null 2>&1 && npx tsc >/dev/null 2>&1 && ls build/main.js
+RUN git clone --depth 1 --single-branch --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /app/bgutil \
+    && cd /app/bgutil/server && npm ci && npx tsc && ls build/main.js
 # deno: yt-dlp's JavaScript runtime for YouTube's player challenge (without it some formats are missing)
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y >/dev/null 2>&1 || true
 WORKDIR /app
