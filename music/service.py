@@ -923,28 +923,50 @@ async def _set_quality(chat_id, h: int):
     for k in ("by", "after"):
         if k in t:
             fresh[k] = t[k]
+    # Fetch the new size first - the old file keeps playing meanwhile. (Dropping
+    # it early pulled the file from under the running stream, which ended the
+    # song and left the call.)
+    await _fetch(fresh)
+    if s["now"] is not t:
+        _drop_track(fresh); return False              # the song changed while fetching
     try:
         pos = await call.time(chat_id)
     except Exception:
         pos = 0
     start = s["offset"] + (pos or 0)
-    _drop_track(t); s["now"] = fresh
-    await _fetch(fresh)
     f = await asyncio.to_thread(_encode, fresh, start, s["volume"], s["video_on"])
-    old = s.get("file"); s["file"] = f; s["offset"] = start
+    old_file, old_track = s.get("file"), t
+    s["now"] = fresh; s["file"] = f; s["offset"] = start
     await call.play(chat_id, _stream(fresh, f, s["video_on"], h))
     if s["paused"]:
         try:
             await call.pause(chat_id)
         except Exception:
             pass
-    if old:
+    if old_file:
         try:
-            os.remove(old)
+            os.remove(old_file)
         except Exception:
             pass
+    if old_track not in s["queue"]:
+        _drop_track(old_track)
     asyncio.create_task(_prefetch(chat_id))
     return True
+
+
+async def _quality_bg(chat_id, h):
+    """The switch can take a while (a 720p fetch through the proxy): run it in
+    the background and tell the group when it is done."""
+    try:
+        ok = await _set_quality(chat_id, h)
+        await asyncio.to_thread(_save_state)
+        s = _st(chat_id)
+        if s["now"]:
+            await asyncio.to_thread(_refresh_card, chat_id)
+            _say(chat_id, f"📺 Now playing at {h}p." if ok else f"📺 {h}p applies from the next song - couldn't switch this one.")
+    except Exception as e:
+        print(f"[MUSIC] quality {chat_id}: {e!r}")
+        _say(chat_id, f"📺 {h}p is set for this group - the current song keeps its size, the next one uses it.")
 
 
 async def _set_video(chat_id, on: bool):
@@ -1448,11 +1470,13 @@ async def _control(chat_id, act, body):
                 return {"text": "Usage: /quality 360 · 480 · 720"}
             if h == s["quality"]:
                 return {"text": f"📺 Already {h}p."}
-            ok = await _set_quality(chat_id, h)
+            if s["now"] and s["now"].get("video"):
+                asyncio.create_task(_quality_bg(chat_id, h))
+                return {"text": f"📺 Video {h}p for this group - switching the current song, a moment…"}
+            s["quality"] = h
+            _drop_track(s.get("up_next")); s["up_next"] = None
             await asyncio.to_thread(_save_state)
-            if s["now"]:
-                await asyncio.to_thread(_refresh_card, chat_id)
-            return {"text": f"📺 Video {h}p for this group." + ("" if ok else " (couldn't switch the current song - applies from the next one)")}
+            return {"text": f"📺 Video {h}p for this group."}
         if not s["now"] and act not in ("queue",):
             return {"text": "⏹ Nothing is playing."}
         try:
