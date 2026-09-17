@@ -1283,8 +1283,14 @@ def _ytdlp_version():
         return "?"
 
 
+_ready = {"ok": False}
+STARTING = "⏳ Music is starting up (a redeploy) - try again in half a minute."
+
+
 @app.get("/health")
 async def health():
+    if not _ready["ok"]:
+        return {"ok": False, "starting": True}
     return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "resume": bool(CENTRAL_URL and CENTRAL_SECRET), "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
             "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY")), "egress_ip": _egress_ip()}
@@ -1337,6 +1343,8 @@ async def play(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
     body = await req.json()
     chat_id, query = int(body["chat_id"]), str(body.get("query", "")).strip()
+    if not _ready["ok"]:
+        return {"text": STARTING}
     _video_gate(chat_id, body)
     if body.get("admin_id"):
         _ADMIN["id"] = str(body["admin_id"])
@@ -1429,6 +1437,8 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
     body = await req.json()
     chat_id, act = int(body["chat_id"]), str(body.get("action", ""))
+    if not _ready["ok"]:
+        return {"text": STARTING}
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)
     s0 = _st(chat_id)
@@ -1559,6 +1569,15 @@ async def main():
     from pyrogram.handlers import ChatMemberUpdatedHandler, DeletedMessagesHandler
     client.add_handler(ChatMemberUpdatedHandler(_on_me_added))
     client.add_handler(DeletedMessagesHandler(_on_deleted))
+    # The HTTP server comes up first so Railway sees the new container as
+    # healthy and stops the old one; Telegram is joined only after a pause
+    # (CONNECT_DELAY) so the two containers never hold the session at the
+    # same time - that is what gets the key killed (AUTH_KEY_DUPLICATED).
+    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="none", lifespan="off"))
+    serve_task = asyncio.create_task(server.serve())
+    delay = int(os.getenv("CONNECT_DELAY", "25") or 25)
+    print(f"[MUSIC] http up - joining Telegram in {delay}s (letting the previous container go first)")
+    await asyncio.sleep(delay)
     # One session, one place. If Telegram reports the key as duplicated or
     # revoked the string has to be regenerated with music/login.py.
     try:
@@ -1572,6 +1591,7 @@ async def main():
     me = await client.get_me()
     _me.update(id=me.id, username=me.username or "")
     await call.start()
+    _ready["ok"] = True
     print(f"[MUSIC] assistant @{_me['username']} ready")
     try:
         await _resume_all()
@@ -1579,9 +1599,8 @@ async def main():
         print(f"[MUSIC] resume: {e!r}")
     asyncio.create_task(_track_positions())
     asyncio.create_task(_card_watch())
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")), loop="none", lifespan="off"))
     try:
-        await server.serve()
+        await serve_task
     finally:
         # going down (redeploy / restart): remember where every chat was so the
         # next process can carry on, and say so on the cards
