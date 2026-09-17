@@ -134,7 +134,8 @@
 "this month": "в этом месяце",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Сброс удалит виртуальный баланс и историю. Сначала вам в личку придёт PDF этого забега. Продолжить?",
 "to TP1": "до TP1",
-"TP1 done · riding to TP2": "TP1 взят · идём к TP2"
+"TP1 done · riding to TP2": "TP1 взят · идём к TP2",
+"Fees": "Комиссии"
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -232,7 +233,8 @@
 "this month": "ngayong buwan",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Buburahin ng reset ang virtual balance at history mo. Ipapadala muna sa DM mo ang PDF ng run na ito. Ituloy?",
 "to TP1": "papunta sa TP1",
-"TP1 done · riding to TP2": "Tapos ang TP1 · patungo sa TP2"
+"TP1 done · riding to TP2": "Tapos ang TP1 · patungo sa TP2",
+"Fees": "Bayarin"
 },
 "ur": {
 "Chart": "چارٹ",
@@ -370,7 +372,8 @@
 "this month": "اس مہینے",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "ری سیٹ آپ کا ورچوئل بیلنس اور ہسٹری مٹا دے گا۔ پہلے اس رن کی PDF آپ کے DM میں بھیجی جائے گی۔ جاری رکھیں؟",
 "to TP1": "TP1 تک",
-"TP1 done · riding to TP2": "TP1 ہو گیا · TP2 کی طرف"
+"TP1 done · riding to TP2": "TP1 ہو گیا · TP2 کی طرف",
+"Fees": "فیس"
 },
 "id": {
 "Chart": "Grafik",
@@ -486,7 +489,8 @@
 "this month": "bulan ini",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reset akan menghapus saldo virtual dan riwayat Anda. PDF run ini dikirim ke DM Anda lebih dulu. Lanjutkan?",
 "to TP1": "ke TP1",
-"TP1 done · riding to TP2": "TP1 tercapai · menuju TP2"
+"TP1 done · riding to TP2": "TP1 tercapai · menuju TP2",
+"Fees": "Biaya"
 },
 "pt": {
 "Chart": "Gráfico",
@@ -612,7 +616,8 @@
 "this month": "neste mês",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar apaga seu saldo virtual e o histórico. Um PDF desta rodada é enviado ao seu DM antes. Continuar?",
 "to TP1": "até TP1",
-"TP1 done · riding to TP2": "TP1 feito · rumo ao TP2"
+"TP1 done · riding to TP2": "TP1 feito · rumo ao TP2",
+"Fees": "Taxas"
 },
 "es": {
 "Chart": "Gráfico",
@@ -739,7 +744,8 @@
 "this month": "este mes",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Reiniciar borra tu saldo virtual y el historial. Antes se envía a tu DM un PDF de esta ronda. ¿Continuar?",
 "to TP1": "hasta TP1",
-"TP1 done · riding to TP2": "TP1 hecho · rumbo a TP2"
+"TP1 done · riding to TP2": "TP1 hecho · rumbo a TP2",
+"Fees": "Comisiones"
 },
 "ar": {
 "Chart": "الرسم",
@@ -877,7 +883,8 @@
 "this month": "هذا الشهر",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "إعادة الضبط تمسح رصيدك الافتراضي وسجلك. يُرسَل PDF لهذه الجولة إلى رسائلك أولًا. هل تريد المتابعة؟",
 "to TP1": "إلى TP1",
-"TP1 done · riding to TP2": "تم TP1 · نحو TP2"
+"TP1 done · riding to TP2": "تم TP1 · نحو TP2",
+"Fees": "الرسوم"
 },
 "zh": {
 "Chart": "图表",
@@ -1013,7 +1020,8 @@
 "this month": "本月",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "重置会清空你的模拟余额和记录。本轮 PDF 会先发送到你的私信。继续？",
 "to TP1": "至 TP1",
-"TP1 done · riding to TP2": "TP1 已达 · 冲向 TP2"
+"TP1 done · riding to TP2": "TP1 已达 · 冲向 TP2",
+"Fees": "手续费"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1146,7 +1154,8 @@
 "this month": "bu ay",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Sıfırlama sanal bakiyeni ve geçmişini siler. Önce bu turun PDF'i DM'ine gönderilir. Devam?",
 "to TP1": "TP1'e",
-"TP1 done · riding to TP2": "TP1 tamam · TP2'ye gidiyor"
+"TP1 done · riding to TP2": "TP1 tamam · TP2'ye gidiyor",
+"Fees": "Komisyon"
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1282,7 +1291,8 @@
 "this month": "tháng này",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "Đặt lại sẽ xóa số dư ảo và lịch sử. PDF của lượt này sẽ được gửi vào DM trước. Tiếp tục?",
 "to TP1": "tới TP1",
-"TP1 done · riding to TP2": "Xong TP1 · tiến tới TP2"
+"TP1 done · riding to TP2": "Xong TP1 · tiến tới TP2",
+"Fees": "Phí"
 },
 "fr": {
 "Chart": "Graphique",
@@ -1408,6 +1418,7 @@
 "this month": "ce mois-ci",
 "Reset wipes your virtual balance and history. A PDF of this run is sent to your DM first. Continue?": "La réinitialisation efface votre solde virtuel et l'historique. Un PDF de cette session est d'abord envoyé dans vos DM. Continuer ?",
 "to TP1": "vers TP1",
-"TP1 done · riding to TP2": "TP1 atteint · vers TP2"
+"TP1 done · riding to TP2": "TP1 atteint · vers TP2",
+"Fees": "Frais"
 }
 }

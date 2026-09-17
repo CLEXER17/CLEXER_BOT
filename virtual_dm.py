@@ -164,7 +164,7 @@ def _status_text(cid, month=None):
                 + (f" · part {st['part']}/{st['parts']}" if st.get("parts", 1) > 1 else "")]
     if stt["trades"]:
         out.append(f"Trades {stt['trades']} · wins {stt['wins']} · losses {stt['losses']} · win rate {stt['wr']}%")
-        out.append(f"Net {'+' if stt['net'] >= 0 else ''}{_money(stt['net'])} · best +{_money(stt['best'])} · worst {_money(stt['worst'])} · max drawdown {_money(stt['dd'])}")
+        out.append(f"Net {'+' if stt['net'] >= 0 else ''}{_money(stt['net'])} · best +{_money(stt['best'])} · worst {_money(stt['worst'])} · max drawdown {_money(stt['dd'])} · fees {_money(stt.get('fees', 0))}")
         for t in st["trades"][:8]:
             sym = t["sym"].replace("-USDT", "").replace("USDT", "")
             side = "LONG" if t["side"] == "BUY" else "SHORT"

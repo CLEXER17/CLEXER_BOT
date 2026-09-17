@@ -1436,7 +1436,7 @@
       const cell = (k, v, cls) => `<div class="sumcard vt-cell"><div class="k">${k}</div><div class="${cls||""}" style="font-size:13px;font-weight:700">${v}</div></div>`;
       document.getElementById("vtStats").innerHTML = s.trades ?
         cell(t("vt.trades","Trades"), s.trades) + cell(t("vt.winrate","Win rate"), s.wr + "%") + cell(t("vt.net","Net"), vtSigned(s.net), s.net >= 0 ? "up" : "down") +
-        cell(t("vt.best","Best"), vtSigned(s.best), "up") + cell(t("vt.worst","Worst"), vtMoney(s.worst), "down") + cell(t("vt.drawdown","Max DD"), vtMoney(s.dd), "down")
+        cell(t("vt.fees","Fees"), vtMoney(-(s.fees || 0)), "down") + cell(t("vt.worst","Worst"), vtMoney(s.worst), "down") + cell(t("vt.drawdown","Max DD"), vtMoney(s.dd), "down")
         : `<div style="grid-column:1/-1;color:var(--muted);font-size:11px;text-align:left">${t("vt.no_trades","No closed trades this month yet.")}</div>`;
       document.getElementById("vtList").innerHTML = (st.trades || []).map(tr => {
         const side = tr.side === "BUY" ? "LONG" : "SHORT", win = tr.pnl >= 0;

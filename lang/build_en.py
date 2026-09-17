@@ -26,6 +26,7 @@ DROP = ["Error: No Network", "{}🔴", "{}🟢", "{}🔵", "Language set to 🇧
         "September {}", "🏆 <b>Bhabani", "🏆 <b>Robo", "Wave {}: "]
 
 EXTRA = [
+    "fees {}",
     "👋 Welcome back, <b>{}</b>!", "✨ <b>Welcome To CLEXER</b> 👤 User",
     "⚠️ No market data for <b>{}</b>. Check the ticker — e.g. <code>/mtf SOL</code>.",
     "⚠️ No price found for <b>{}</b>. Check the ticker, e.g. <code>/price SOL</code>.",
