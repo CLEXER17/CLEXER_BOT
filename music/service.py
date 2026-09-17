@@ -1504,8 +1504,26 @@ async def _control(chat_id, act, body):
             if act == "resume":
                 await call.resume(chat_id); s["paused"] = False; await asyncio.to_thread(_refresh_card, chat_id); return {"text": "▶ Resumed."}
             if act == "skip":
-                had = await _next(chat_id)
-                return {"text": "⏭ Next song." if had else "⏭ Nothing similar found - queue is empty, left the voice chat."}
+                if s.get("_switching"):
+                    return {"text": "⏭ Already switching - a moment…"}
+                nxt = s["queue"][0] if s["queue"] else s.get("up_next")
+                ready = bool(nxt and (nxt.get("local") or nxt.get("live")))
+                # The next song may still need a lookup + fetch (slow through a
+                # proxy): don't hold the bot for it - switch in the background.
+                s["_switching"] = True
+                async def _skip_bg():
+                    try:
+                        async with _lock:
+                            had = await _next(chat_id)
+                        if not had:
+                            _say(chat_id, "⏭ Nothing similar found - queue is empty, left the voice chat.")
+                    except Exception as e:
+                        print(f"[MUSIC] skip {chat_id}: {e!r}")
+                        _say(chat_id, "⚠️ Couldn't switch to the next song - try again.")
+                    finally:
+                        s["_switching"] = False
+                asyncio.create_task(_skip_bg())
+                return {"text": "⏭ Next song." if ready else "⏭ Next song - fetching it, a moment…"}
             if act in ("von", "voff", "video"):
                 on = (act == "von") if act != "video" else str(body.get("value", "")).lower() in ("r", "on", "resume", "start", "1")
                 if on == s["video_on"]:
@@ -1516,11 +1534,23 @@ async def _control(chat_id, act, body):
             if act == "prev":
                 if not s["history"]:
                     return {"text": "⏮ No previous song."}
+                if s.get("_switching"):
+                    return {"text": "⏮ Already switching - a moment…"}
                 prev = s["history"].pop()
                 s["queue"].insert(0, s["now"])          # Next brings the current one back
-                _drop_file(s)
-                await _start(chat_id, prev)
-                return {"text": "⏮ Previous song."}
+                s["_switching"] = True
+                async def _prev_bg():
+                    try:
+                        async with _lock:
+                            _drop_file(s)
+                            await _start(chat_id, prev)
+                    except Exception as e:
+                        print(f"[MUSIC] prev {chat_id}: {e!r}")
+                        _say(chat_id, "⚠️ Couldn't go back to the previous song - try again.")
+                    finally:
+                        s["_switching"] = False
+                asyncio.create_task(_prev_bg())
+                return {"text": "⏮ Previous song." if prev.get("local") else "⏮ Previous song - fetching it, a moment…"}
 
             if act == "stop":
                 s["queue"].clear(); _drop_all(s); s["now"] = None
