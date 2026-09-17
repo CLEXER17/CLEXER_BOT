@@ -14,6 +14,7 @@ Env: MUSIC_API_ID, MUSIC_API_HASH, MUSIC_SESSION_STRING, TELEGRAM_BOT_TOKEN,
      MUSIC_SECRET (shared with bot.py), PORT.
 """
 import asyncio
+import contextvars
 import html as _html
 import json as _json
 import os
@@ -384,11 +385,15 @@ _BAD = ("non stop", "nonstop", "non-stop", "10 minutes", "1 hour", "loop", "slow
         "dj ", "bass boosted", "lofi", "lo-fi", "speed up", "sped up", "reaction", "tutorial", "lyrics video by", "live ",
         "re-create", "recreate", "recreated", "2.o", "2.0", "unplugged", "flute", "piano", "guitar", "sad version", "female version")
 _GOOD = ("official", "lyrical", "full song", "full video", "video song", "title track", "audio")
+# In a video group the real music video wins over lyric / audio-only uploads;
+# in an audio-only group those are fine (often the cleanest sound).
+_LYRIC = ("lyric", "lyrics", "lyrical", "audio only", "(audio)", "full audio", "jukebox", "visualizer", "visualiser")
+_REAL_VIDEO = ("official video", "full video", "video song", "official music video", "full song video", "title track")
+_PREFER_VIDEO = contextvars.ContextVar("clx_prefer_video", default=False)
 _LABELS = ("t-series", "sony music", "zee music", "yrf", "tips", "saregama", "eros", "times music", "speed records",
            "- topic", "melodies", "vevo", "records", "universal", "warner", "pen movies", "goldmines", "aditya music", "lahari")
 
 
-import contextvars
 _VIDEO_MODE = contextvars.ContextVar("clx_video_mode", default=False)
 
 
@@ -415,7 +420,13 @@ def _score(e, query=""):
         return sc
     sc -= 6 * sum(1 for w in _BAD if w in t)
     sc += 2 * sum(1 for w in _GOOD if w in t)
-    sc += 5 if any(w in ch for w in _LABELS) else 0
+    label = any(w in ch for w in _LABELS)
+    sc += 5 if label else 0
+    if _PREFER_VIDEO.get():
+        # video group: the label's real music video, not a lyric card
+        sc -= 7 if any(w in t for w in _LYRIC) else 0
+        sc += 5 if any(w in t for w in _REAL_VIDEO) else 0
+        sc += 3 if label else -2
     if dur:
         sc += 3 if 120 <= dur <= 480 else (-2 if dur < 60 else -4)
     return sc
@@ -474,10 +485,12 @@ def _piped_search(q):
 
 def _lookup(query: str, height=None, video=False) -> Optional[dict]:
     tok = _VIDEO_MODE.set(bool(video))
+    tok2 = _PREFER_VIDEO.set(height != 0)          # 0 = audio-only group
     try:
         return _lookup_inner(query, height)
     finally:
         _VIDEO_MODE.reset(tok)
+        _PREFER_VIDEO.reset(tok2)
 
 
 def _lookup_inner(query: str, height=None) -> Optional[dict]:
@@ -527,6 +540,14 @@ def _lookup_inner(query: str, height=None) -> Optional[dict]:
 
 
 def _related(track, played_ids, height=None):
+    tok = _PREFER_VIDEO.set(height != 0)
+    try:
+        return _related_inner(track, played_ids, height)
+    finally:
+        _PREFER_VIDEO.reset(tok)
+
+
+def _related_inner(track, played_ids, height=None):
     """The next song for autoplay: YouTube's own Mix for the last song,
     skipping anything already played in this chat."""
     vid = track.get("id")
