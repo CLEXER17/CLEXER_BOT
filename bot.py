@@ -9367,7 +9367,6 @@ def _music_command_run(cmd, parts, chat_id, message, sender_id, uname):
             pass
         _ids = [m for m in ((message or {}).get("message_id"), _wait) if m]
         r = _music_call("/play", {"chat_id": chat_id, "query": q, "by": who, "invite_link": _music_invite_link(chat_id), "msg_ids": _ids,
-                                  "chat_username": (message or {}).get("chat", {}).get("username") or "",
                                   "video": cmd == "/find", "admin_id": ADMIN_CHAT_ID}, timeout=90)
         if _wait:
             try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage", json={"chat_id": chat_id, "message_id": _wait}, timeout=5)
