@@ -10,10 +10,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # rebuilt on every deploy (the ARG changes with the git commit), never cached.
 ARG RAILWAY_GIT_COMMIT_SHA=dev
 RUN echo "build $RAILWAY_GIT_COMMIT_SHA" && pip install --no-cache-dir -U yt-dlp && python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
-# Tailscale (optional): with TS_AUTHKEY + TS_EXIT_NODE set, YouTube traffic
-# leaves through a device of yours (a phone / PC at home) instead of the
-# server's datacenter IP - see start.sh. Nothing runs when they are unset.
-RUN curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1 || true
-COPY service.py start.sh .
-RUN chmod +x start.sh
-CMD ["./start.sh"]
+COPY service.py .
+CMD ["python", "service.py"]

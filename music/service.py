@@ -143,13 +143,8 @@ _CLIENTS = [c.strip() for c in os.getenv("MUSIC_YT_CLIENTS", "default,web_embedd
 _YDL["extractor_args"] = {"youtube": {"player_client": _CLIENTS}}
 # MUSIC_PROXY = http://user:pass@host:port - routes YouTube traffic through a
 # proxy when the server's own IP is walled off.
-PROXY = os.getenv("MUSIC_PROXY", "").strip()
-if PROXY:
-    _YDL["proxy"] = PROXY
-# YouTube's media URLs are tied to the IP that asked for them, so when a
-# proxy is on, ffmpeg (the downloader) must go through the same proxy - it
-# reads the standard http_proxy / https_proxy variables.
-_FF_ENV = {**os.environ, **({"http_proxy": PROXY, "https_proxy": PROXY, "HTTP_PROXY": PROXY, "HTTPS_PROXY": PROXY} if PROXY else {})}
+if os.getenv("MUSIC_PROXY", "").strip():
+    _YDL["proxy"] = os.getenv("MUSIC_PROXY").strip()
 def _ydl(h=None, cookies=True):
     """yt-dlp options for a given video height (per-group /quality)."""
     if h == 0:
@@ -222,7 +217,7 @@ def _download(track):
     else:
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", a, "-vn", "-c", "copy", out]
     try:
-        subprocess.run(cmd, check=True, timeout=DL_MAX if not PROXY else max(DL_MAX, 240), env=_FF_ENV)
+        subprocess.run(cmd, check=True, timeout=DL_MAX)
         if os.path.getsize(out) > 10_000:
             return out
     except Exception as e:
@@ -239,7 +234,7 @@ _fetching: dict = {}          # id(track) -> running download, so two callers sh
 
 async def _fetch(track):
     """Make sure the track has a local file (unless it is live)."""
-    if track.get("live") or track.get("local") or ((track.get("duration") or 0) > DL_LONG and not PROXY):
+    if track.get("live") or track.get("local") or (track.get("duration") or 0) > DL_LONG:
         return
     key = id(track)
     if key in _fetching:
@@ -768,7 +763,7 @@ def _encode(track, start, volume, video=True):
         out = tempfile.NamedTemporaryFile(prefix="clx_", suffix=".ogg", delete=False).name
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.1f}", "-i", loc or track["url"], "-vn",
                "-af", vol, "-c:a", "libopus", "-b:a", "128k", "-ar", "48000", out]
-    subprocess.run(cmd, check=True, timeout=300, env=_FF_ENV)
+    subprocess.run(cmd, check=True, timeout=300)
     return out
 
 
@@ -1250,7 +1245,7 @@ def _ytdlp_version():
 async def health():
     return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "resume": bool(CENTRAL_URL and CENTRAL_SECRET), "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
-            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS, "proxy": bool(PROXY), "tailscale": bool(os.getenv("TS_AUTHKEY"))}
+            "yt_dlp": _ytdlp_version(), "clients": _CLIENTS}
 
 
 NO_VIDEO = "🎧 This group is audio only - video plays in CLEXER's own groups."
