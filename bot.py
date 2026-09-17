@@ -17780,8 +17780,6 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _hj = _hr.json() if _hr.ok else {}
                 _ml.append(f"Service: <b>{'✅ up' if _hj.get('ok') else '❌ HTTP ' + str(_hr.status_code)}</b>"
                            + (f" · assistant @{_html.escape(str(_hj.get('assistant') or '?'))} · playing in {_hj.get('chats', 0)} chat(s) · video {_hj.get('video_height', '?')}p · yt-dlp {_hj.get('yt_dlp', '?')}" if _hj.get("ok") else ""))
-                if _hj.get("ok") and not _hj.get("resume"):
-                    _ml.append("Resume after redeploy: <b>❌ off</b> - set CLEXER_API_URL + PUSH_STATE_SECRET on the music service, or a redeploy mid-song leaves an orphan card")
                 _ck = _hj.get("cookies") or {}
                 if _ck:
                     if _ck.get("loaded") and not _ck.get("problem"):
@@ -23533,7 +23531,7 @@ def command_listener():
                     if cb_data.startswith("mu:"):
                         try:
                             _, _mact, _mchat = cb_data.split(":", 2)
-                            _mpl = {"chat_id": int(_mchat), "action": _mact, "by": _cb_fname, "by_id": cb_cid, "card_msg_id": cb_msg_id}
+                            _mpl = {"chat_id": int(_mchat), "action": _mact, "by": _cb_fname, "by_id": cb_cid}
                             _mto = 60 if _mact in ("von", "voff", "vup", "vdown") else 20
                             _mh = _music_enqueue(lambda _p=_mpl, _t=_mto: _music_call("/control", _p, timeout=_t), int(_mchat))
                             if _mh["done"].wait(18):

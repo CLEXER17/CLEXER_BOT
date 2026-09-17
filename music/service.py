@@ -1235,7 +1235,7 @@ def _ytdlp_version():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "resume": bool(CENTRAL_URL and CENTRAL_SECRET), "chats": len([c for c, s in _state.items() if s["now"]]),
+    return {"ok": True, "assistant": _me["username"], "assistant_id": _me["id"], "chats": len([c for c, s in _state.items() if s["now"]]),
             "cookies": _cookie_info, "last_error": _last_error["text"][-300:], "video_height": VIDEO_H,
             "yt_dlp": _ytdlp_version(), "clients": _CLIENTS}
 
@@ -1372,14 +1372,6 @@ async def control(req: Request, x_music_secret: str = Header(default="")):
     chat_id, act = int(body["chat_id"]), str(body.get("action", ""))
     for mid in (body.get("msg_ids") or []):
         _remember(chat_id, mid)
-    s0 = _st(chat_id)
-    if not s0["now"] and act != "queue" and body.get("card_msg_id"):
-        # A button on a card this service no longer knows (it restarted, or
-        # the music ended while it was away): take the stale card down.
-        mid = int(body["card_msg_id"])
-        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": mid}, timeout=8)
-        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": mid}, timeout=8)
-        return {"text": "⏹ Nothing is playing - that card was old, removed it. Send /play to start again."}
     if not _video_gate(chat_id, body) and act in ("von", "voff", "video", "quality"):
         res = {"text": NO_VIDEO}
     else:
