@@ -9348,7 +9348,7 @@ _vdm.init(TELEGRAM_BOT_TOKEN)
 # Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
 # its auto-approve rule below; every other chat's request goes to this.
 import groupjoin as _gj
-import inlinebot as _page
+import inlinebot as _pagebot
 INLINE_BOT_TOKEN = os.getenv("INLINE_BOT_TOKEN", "").strip()
 
 _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
@@ -23770,9 +23770,9 @@ def command_listener():
     # (price / live trades / coin engine) are all defined by now; nothing runs
     # when INLINE_BOT_TOKEN is unset.
     if INLINE_BOT_TOKEN:
-        _page.init(INLINE_BOT_TOKEN, _get_bot_username(),
+        _pagebot.init(INLINE_BOT_TOKEN, _get_bot_username(),
                    {"price": _inline_price, "live": _live_trades_text, "analysis": _inline_analysis_text})
-        _page.start()
+        _pagebot.start()
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
