@@ -1498,6 +1498,23 @@ def _tp_buttons():
         row.append({"text": "👑 Get VIP", "url": f"https://t.me/{_uname}?start=vip", "style": "primary"})
     return {"inline_keyboard": [row]} if row else None
 
+# Telegram renders <blockquote expandable> collapsed with a chevron. Long
+# recaps and tables get that treatment so a channel stays readable; short
+# ones are left exactly as they were.
+_EXPANDABLE_MIN_LINES = 9
+
+
+def _expandable(text: str, min_lines: int = None) -> str:
+    """Wrap a block in an expandable quote when it is long enough to be worth
+    collapsing. Already-quoted or empty text is returned untouched."""
+    t = (text or "").strip()
+    if not t or t.startswith("<blockquote"):
+        return text
+    if len(t.split("\n")) < (min_lines or _EXPANDABLE_MIN_LINES):
+        return text
+    return f"<blockquote expandable>{t}</blockquote>"
+
+
 def _redact_levels(text: str) -> str:
     """The Free-channel copy of a locked trade's follow-up: every price
     (they all sit in <code>) becomes a lock, the outcome and P/L % stay."""
@@ -1981,7 +1998,9 @@ def _build_recap_text(trades: list, date_str: str, include_sl: bool = True) -> s
     parts = [f"📊 <b>Daily Recap — {date_str}</b>", ""]
     tbl = _recap_table(shown)
     if tbl:
-        parts.append(f"<pre>{tbl}</pre>")
+        # a long table is collapsed behind a chevron so the channel stays readable
+        block = f"<pre>{tbl}</pre>"
+        parts.append(f"<blockquote expandable>{block}</blockquote>" if len(tbl.split("\n")) >= _EXPANDABLE_MIN_LINES else block)
     parts.append(_recap_summary(shown, include_sl=include_sl, period="Daily"))
     return "\n".join(parts)
 
@@ -6655,6 +6674,12 @@ def _locked_tp_line(tp1_hit: bool) -> str:
     checkmark instead of a lock once it's genuinely hit (still no real
     price), SL/TP2 stay locked."""
     return f"SL:    🔒\nTP1:   {'✅ HIT' if tp1_hit else '🔒'}\nTP2:   🔒"
+
+
+def _spoiler(text: str) -> str:
+    """Hidden until tapped - used where a number exists but is not for this
+    tier to read yet."""
+    return f"<tg-spoiler>{text}</tg-spoiler>"
 
 def _reply_map_reached_tier(reply_map: dict) -> bool:
     """True if a trade's reply_map (send_entry_signal's return value) shows
