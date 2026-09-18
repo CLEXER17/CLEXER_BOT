@@ -92,7 +92,7 @@ def _coin_cards(sym: str) -> list:
             f"an_{s}_{mode}", f"{s} · {label} analysis", f"Full CLEX analysis — {blurb}",
             f"🧠 <b>{s}/USDT — {label.lower()} analysis</b>\n\n"
             f"<blockquote>⏳ Reading the market… the card fills in here in a few seconds.</blockquote>",
-            _open_kb(extra=[[{"text": "⏳ Running…", "callback_data": f"an:{s}:{mode}"}]])))
+            _open_kb(extra=[[{"text": "🔄 Run it", "callback_data": f"an:{s}:{mode}"}]])))
     return out
 
 
@@ -259,6 +259,21 @@ def _loop():
                                 txt = txt[:i] + txt[i + len(_me["username"]) + 1:]
                         res = _results(txt.strip())
                         _api("answerGuestQuery", {"guest_query_id": gq, "result": json.dumps(res[0])})
+                elif upd.get("chosen_inline_result"):
+                    # the user picked a card - if it was an analysis card it runs
+                    # right away, no second tap. Needs Inline Feedback on in
+                    # BotFather; the card keeps a "Run it" button for when it is off.
+                    cr = upd["chosen_inline_result"]
+                    rid, imid = cr.get("result_id", ""), cr.get("inline_message_id")
+                    uid = (cr.get("from") or {}).get("id")
+                    if rid.startswith("an_") and imid:
+                        bits = rid.split("_")
+                        sym, mode = (bits[1], bits[2]) if len(bits) > 2 else ("", "")
+                        if sym and mode and time.time() - _busy.get(str(uid), 0) > 5:
+                            _busy[str(uid)] = time.time()
+                            _edit_inline(imid, f"🧠 <b>{sym}/USDT — {mode} analysis</b>\n\n"
+                                               f"<blockquote>⏳ Reading live price, structure and volume…</blockquote>")
+                            threading.Thread(target=_run_analysis, args=(imid, sym, mode, uid), daemon=True).start()
                 elif upd.get("callback_query"):
                     _on_callback(upd["callback_query"])
                 elif upd.get("message"):
