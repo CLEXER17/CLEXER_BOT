@@ -50,10 +50,13 @@ def _api(method: str, payload: dict, timeout: int = 15) -> dict:
         return {}
 
 
-def _open_kb(label="📈 Open CLEXER", extra=None):
+def _open_kb(label="📈 Open CLEXER", extra=None, start=""):
+    """`start` is a /start payload: the button opens the main bot AND runs
+    that command there (trades, games, music, vip, coin_ETH, chat)."""
     rows = []
     if MAIN_USERNAME:
-        rows.append([{"text": label, "url": f"https://t.me/{MAIN_USERNAME}"}])
+        url = f"https://t.me/{MAIN_USERNAME}" + (f"?start={start}" if start else "")
+        rows.append([{"text": label, "url": url}])
     if extra:
         rows = extra + rows
     return {"inline_keyboard": rows} if rows else None
@@ -85,14 +88,15 @@ def _coin_cards(sym: str) -> list:
                         f"24h {'+' if chg >= 0 else ''}{chg:.2f}%\n\n"
                         f"<blockquote>🧠 Want a setup? Pick the entry style below and CLEX reads "
                         f"the market right here.</blockquote>",
-                        _open_kb(extra=choose)))
+                        _open_kb("🧠 Analyse in the bot", extra=choose, start=f"coin_{s}")))
     for mode, label, blurb in (("market", "Market entry", "an entry near the current price"),
                                ("pullback", "Pullback entry", "a zone to wait for")):
         out.append(_article(
             f"an_{s}_{mode}", f"{s} · {label} analysis", f"Full CLEX analysis — {blurb}",
             f"🧠 <b>{s}/USDT — {label.lower()} analysis</b>\n\n"
             f"<blockquote>⏳ Reading the market… the card fills in here in a few seconds.</blockquote>",
-            _open_kb(extra=[[{"text": "🔄 Run it", "callback_data": f"an:{s}:{mode}"}]])))
+            _open_kb("🧠 Analyse in the bot", extra=[[{"text": "🔄 Run it", "callback_data": f"an:{s}:{mode}"}]],
+                     start=f"coin_{s}")))
     return out
 
 
@@ -100,7 +104,7 @@ def _live_card():
     txt, n = _hooks["live"]()
     return _article("live", f"Live trades ({n})" if n else "Live trades — none right now",
                     f"{n} running · levels in the bot" if n else "Nothing running right now",
-                    txt, _open_kb("📡 See the levels"))
+                    txt, _open_kb("📡 See the levels", start="trades"))
 
 
 def _games_card():
@@ -111,7 +115,7 @@ def _games_card():
            "Send <code>/games</code> to start a table.")
     extra = [[{"text": "🎮 Play in a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=games"}]] if MAIN_USERNAME else None
     return _article("games", "CLEXER Games", "30 games — play in DM or in a group", txt,
-                    _open_kb("🎮 Play in DM", extra))
+                    _open_kb("🎮 Play in DM", extra, start="games"))
 
 
 def _music_card(query: str, video: bool = False):
@@ -125,7 +129,7 @@ def _music_card(query: str, video: bool = False):
            f"3. Send <code>{'/find' if video else '/play'} {what or 'song name'}</code></blockquote>")
     extra = [[{"text": "➕ Add to a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=music"}]] if MAIN_USERNAME else None
     return _article("music", ("Find a video" if video else "Play music") + (f" · {what}" if what else ""),
-                    "Plays in a group's voice chat", txt, _open_kb("🎵 Open CLEXER", extra))
+                    "Plays in a group's voice chat", txt, _open_kb("🎵 Open CLEXER", extra, start="music"))
 
 
 def _about_card():
@@ -137,7 +141,7 @@ def _about_card():
            "🎮 30 games · 🎵 music in voice chats</blockquote>\n\n"
            f"Everything lives in @{MAIN_USERNAME or 'the main bot'}.")
     return _article("about", "About CLEXER", "Signals, copy trading, paper trading, games, music",
-                    txt, _open_kb("🚀 Start CLEXER"))
+                    txt, _open_kb("🚀 Start CLEXER", start="menu"))
 
 
 def _vip_card():
@@ -145,7 +149,7 @@ def _vip_card():
            "<blockquote>Every signal the scanners produce, the moment it fires\n"
            "Entry, stop-loss, TP1 and TP2 on each trade\n"
            "Copy trading and the full Mini App</blockquote>")
-    return _article("vip", "CLEXER VIP", "What VIP includes", txt, _open_kb("⭐ See VIP"))
+    return _article("vip", "CLEXER VIP", "What VIP includes", txt, _open_kb("⭐ See VIP", start="vip"))
 
 
 def _results(q: str) -> list:
@@ -189,10 +193,10 @@ def _run_analysis(inline_message_id: str, sym: str, mode: str, uid):
         _edit_inline(inline_message_id,
                      f"🧠 <b>{sym}/USDT — {mode} analysis</b>\n\n"
                      f"<blockquote>⚠️ Couldn't read the market just now. Try again in a minute.</blockquote>",
-                     _open_kb())
+                     _open_kb("🧠 Try in the bot", start=f"coin_{sym}"))
         return
     body = text if len(text) <= 3600 else text[:3600] + "\n…"
-    _edit_inline(inline_message_id, body, _open_kb("📈 Open CLEXER"))
+    _edit_inline(inline_message_id, body, _open_kb("📈 Trade this in CLEXER", start=f"coin_{sym}"))
     _busy.pop(str(uid), None)
 
 
@@ -280,7 +284,7 @@ def _loop():
                     m = upd["message"]
                     if str(m.get("text", "")).startswith("/start"):
                         _api("sendMessage", {"chat_id": m["chat"]["id"], "text": _start_text(),
-                                             "parse_mode": "HTML", "reply_markup": _open_kb("🚀 Open CLEXER")})
+                                             "parse_mode": "HTML", "reply_markup": _open_kb("🚀 Open CLEXER", start="menu")})
         except Exception as e:
             print(f"[PAGE] loop: {e}")
             time.sleep(5)

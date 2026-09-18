@@ -16936,6 +16936,20 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if cmd == "/start" and len(parts) > 1 and parts[1] == "music":
             _music_dm_notice(chat_id)
             return
+        # Deep links from the front bot's cards (@pagelibot): the button opens
+        # this chat AND runs the thing the card was about, instead of dropping
+        # the person on a blank screen.
+        if cmd == "/start" and len(parts) > 1 and parts[1] in ("trades", "trade"):
+            handle_command("/trade", chat_id, message, sender_id=sender_id)
+            return
+        if cmd == "/start" and len(parts) > 1 and parts[1].startswith("coin_"):
+            _sym = parts[1][5:].upper()[:12]
+            if _sym.isalnum():
+                handle_command(f"/coin {_sym}", chat_id, message, sender_id=sender_id)
+                return
+        if cmd == "/start" and len(parts) > 1 and parts[1] == "chat":
+            handle_command("/chat", chat_id, message, sender_id=sender_id)
+            return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
         # Persistent reply keyboard, role-tailored — sent as its own small
         # message since a message can only carry one reply_markup, and the
