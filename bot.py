@@ -9411,6 +9411,20 @@ def _music_assistant_id():
     return _music_asst["id"]
 
 
+def _drop_start_line(chat_id, message):
+    """Adding a bot through a t.me link makes Telegram post "/start …" in
+    the group - noise that other bots in the room may answer too. We delete
+    it as soon as we have handled it; silently skipped when the bot has no
+    delete right (it has just joined, so usually it does not)."""
+    mid = (message or {}).get("message_id")
+    if not mid or not str(chat_id).startswith("-"):
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                      json={"chat_id": chat_id, "message_id": mid}, timeout=5)
+    except Exception:
+        pass
+
 def _music_invite_link(chat_id):
     """A link the assistant can use to enter the group, if the bot may make one."""
     try:
@@ -16952,6 +16966,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     _mquery = base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4)).decode("utf-8", "ignore")[:100]
                 except Exception:
                     _mquery = ""
+            _drop_start_line(chat_id, message)
             if str(chat_id).startswith("-"):
                 if _mquery:
                     send_reply(chat_id, f"🎵 <b>CLEXER is in.</b> Starting <b>{_html.escape(_mquery)}</b> — "
@@ -16966,6 +16981,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 _music_dm_notice(chat_id)
             return
         if cmd == "/start" and len(parts) > 1 and parts[1].startswith("game_"):
+            _drop_start_line(chat_id, message)
             _gk = parts[1][5:].lower()
             _gname = (message or {}).get("from", {}).get("first_name") or _hm_uname or "Player"
             _gtype = (message or {}).get("chat", {}).get("type") or ("private" if not str(chat_id).startswith("-") else "group")
@@ -16983,6 +16999,11 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 return
         if cmd == "/start" and len(parts) > 1 and parts[1] == "chat":
             handle_command("/chat", chat_id, message, sender_id=sender_id)
+            return
+        if str(chat_id).startswith("-"):
+            # a group is not the place for the welcome menu; this is usually the
+            # line Telegram posts when someone adds a bot
+            _drop_start_line(chat_id, message)
             return
         send_help_menu(chat_id, is_admin, uname=_hm_uname, cid=_hm_uid)
         # Persistent reply keyboard, role-tailored — sent as its own small
