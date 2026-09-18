@@ -11708,6 +11708,158 @@ def get_bingx_price(symbol: str) -> float:
 
 _SCAN_DIV    = "┈" * 26
 
+# ═════════════════════════════════════════════════════════════════════════
+# INLINE MODE (@CLEXbot btc ...) and GUEST MODE (Bot API 10.0: the bot may
+# answer in a chat it is not a member of, when someone mentions it there).
+# Both return the same InlineQueryResult cards, so one set of answers serves
+# every chat on Telegram - and every card carries a button back to the bot.
+# ═════════════════════════════════════════════════════════════════════════
+_INLINE_COINS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "LINK", "AVAX", "TON"]
+_inline_px: dict = {}          # SYM -> (price, change, ts) - 20 s cache, shared by both modes
+
+
+def _inline_price(sym: str):
+    sym = sym.upper().replace("$", "").replace("-USDT", "").replace("USDT", "").strip()
+    if not sym or not sym.isalnum() or len(sym) > 12:
+        return None
+    hit = _inline_px.get(sym)
+    if hit and time.time() - hit[2] < 20:
+        return (sym, hit[0], hit[1])
+    try:
+        r = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                         params={"symbol": f"{sym}-USDT"}, timeout=6).json()
+        d = r.get("data", {})
+        if isinstance(d, list):
+            d = d[0] if d else {}
+        px = float(d.get("lastPrice") or d.get("price") or 0)
+        chg = float(d.get("priceChangePercent") or 0)
+    except Exception:
+        return None
+    if px <= 0:
+        return None
+    _inline_px[sym] = (px, chg, time.time())
+    return (sym, px, chg)
+
+
+def _inline_fmt(px: float) -> str:
+    return f"{px:,.6g}" if px < 1 else f"{px:,.2f}"
+
+
+def _inline_open_kb(label="📈 Open CLEXER"):
+    u = _get_bot_username()
+    return {"inline_keyboard": [[{"text": label, "url": f"https://t.me/{u}"}]]} if u else None
+
+
+def _inline_results(q: str) -> list:
+    """The cards for a query - used by inline mode and guest mode alike."""
+    q = (q or "").strip()
+    out = []
+    stamp = (datetime.now(timezone.utc) + IST).strftime("%H:%M IST")
+
+    def price_card(sym, px, chg):
+        arrow = "🟢" if chg >= 0 else "🔴"
+        txt = (f"{arrow} <b>{sym}/USDT</b>  <code>{_inline_fmt(px)}</code>\n"
+               f"24h {'+' if chg >= 0 else ''}{chg:.2f}%  ·  {stamp}\n"
+               f"<i>Live price via CLEX™ BOT</i>")
+        return {"type": "article", "id": f"px_{sym}_{int(time.time())}",
+                "title": f"{sym}/USDT  {_inline_fmt(px)}",
+                "description": f"24h {'+' if chg >= 0 else ''}{chg:.2f}% · tap to send the live price",
+                "input_message_content": {"message_text": txt, "parse_mode": "HTML"},
+                "reply_markup": _inline_open_kb()}
+
+    def about_card():
+        u = _get_bot_username() or "CLEXbot"
+        txt = ("🤖 <b>CLEX™ BOT</b>\n\n"
+               "<blockquote>📡 Automated market scanning\n"
+               "📈 BTC and altcoin signals with entry, SL and two targets\n"
+               "🔄 Copy trading on BingX\n"
+               "🧪 Virtual (paper) trading with monthly reports\n"
+               "📊 Mini App: live charts, your trades, your portfolio</blockquote>\n\n"
+               f"Start here: @{u}")
+        return {"type": "article", "id": f"about_{int(time.time())}", "title": "About CLEXER",
+                "description": "What the bot does - signals, copy trading, paper trading",
+                "input_message_content": {"message_text": txt, "parse_mode": "HTML"},
+                "reply_markup": _inline_open_kb("🚀 Start CLEXER")}
+
+    def vip_card():
+        txt = ("⭐ <b>CLEXER VIP</b>\n\n"
+               "<blockquote>Every signal the scanners produce, the moment they fire\n"
+               "Entry, stop-loss, TP1 and TP2 on each trade\n"
+               "Copy trading and the full Mini App</blockquote>\n\n"
+               f"Price and details: @{_get_bot_username() or 'CLEXbot'}")
+        return {"type": "article", "id": f"vip_{int(time.time())}", "title": "CLEXER VIP",
+                "description": "What VIP includes",
+                "input_message_content": {"message_text": txt, "parse_mode": "HTML"},
+                "reply_markup": _inline_open_kb("⭐ See VIP")}
+
+    low = q.lower()
+    if not q:
+        for sym in _INLINE_COINS[:5]:
+            got = _inline_price(sym)
+            if got:
+                out.append(price_card(*got))
+        out.append(about_card()); out.append(vip_card())
+        return out[:10]
+    if low in ("vip", "price of vip", "subscribe"):
+        return [vip_card(), about_card()]
+    if low in ("about", "help", "info", "clexer", "bot", "what"):
+        return [about_card(), vip_card()]
+    # a mention can be a sentence ("@CLEXbot what is eth doing?") - take the
+    # first word that is actually a tradable symbol
+    got = None
+    for w in q.replace("?", " ").replace(",", " ").split()[:8]:
+        got = _inline_price(w)
+        if got:
+            break
+    if got:
+        out.append(price_card(*got))
+    for sym in _INLINE_COINS:
+        if sym.lower().startswith(low) and (not got or sym != got[0]):
+            g2 = _inline_price(sym)
+            if g2:
+                out.append(price_card(*g2))
+        if len(out) >= 6:
+            break
+    if not out:
+        out.append(about_card())
+    return out[:10]
+
+
+def _answer_inline(query_id: str, results: list, is_personal=True):
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerInlineQuery",
+                          json={"inline_query_id": query_id, "results": json.dumps(results),
+                                "cache_time": 20, "is_personal": is_personal,
+                                "button": {"text": "Open CLEXER", "start_parameter": "inline"}}, timeout=10).json()
+        if not r.get("ok"):
+            print(f"  [INLINE] {r.get('description')}")
+    except Exception as e:
+        print(f"  [INLINE] {e}")
+
+
+def _answer_guest(guest_query_id: str, result: dict):
+    """Bot API 10.0 - post one result into a chat the bot is not in."""
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerGuestQuery",
+                          json={"guest_query_id": guest_query_id, "result": json.dumps(result)}, timeout=10).json()
+        if not r.get("ok"):
+            print(f"  [GUEST] {r.get('description')}")
+    except Exception as e:
+        print(f"  [GUEST] {e}")
+
+
+def _guest_query_text(msg: dict) -> str:
+    """What was asked after the @mention."""
+    txt = msg.get("text") or msg.get("caption") or ""
+    u = (_get_bot_username() or "").lower()
+    if u:
+        low = txt.lower()
+        i = low.find("@" + u)
+        if i >= 0:
+            txt = (txt[:i] + txt[i + len(u) + 1:])
+    return txt.strip()
+
+
 def _gen_signal_id() -> str:
     """Unique per-trade ID shown on every lifecycle message (signal, TP1, TP2, SL,
     timeout) so the same trade can be found/grepped across the whole chat history."""
@@ -23532,7 +23684,7 @@ def command_listener():
         _lost_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","channel_post","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","channel_post","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message","inline_query","chosen_inline_result","guest_message"]}, timeout=25)
             data = r.json()
             if not data.get("ok"):
                 # This used to be completely silent — no print, no admin DM —
@@ -23566,6 +23718,34 @@ def command_listener():
                 time.sleep(5); continue
             for upd in data.get("result", []):
                 last_update_id = upd["update_id"]
+
+                # Inline mode: "@CLEXbot btc" typed in any chat. Guest mode
+                # (Bot API 10.0): the bot is mentioned in a chat it is not a
+                # member of and answers there once. Same cards for both.
+                if upd.get("inline_query"):
+                    try:
+                        _iq = upd["inline_query"]
+                        _answer_inline(_iq["id"], _inline_results(_iq.get("query", "")))
+                    except Exception as _ie:
+                        print(f"  [INLINE] {_ie}")
+                    continue
+                if upd.get("chosen_inline_result"):
+                    try:
+                        _cr = upd["chosen_inline_result"]
+                        print(f"  [INLINE] sent {_cr.get('result_id')} by {(_cr.get('from') or {}).get('id')}")
+                    except Exception:
+                        pass
+                    continue
+                if upd.get("guest_message"):
+                    try:
+                        _gm = upd["guest_message"]
+                        _gq = _gm.get("guest_query_id")
+                        if _gq:
+                            _res = _inline_results(_guest_query_text(_gm))
+                            _answer_guest(_gq, _res[0] if _res else _inline_results("about")[0])
+                    except Exception as _ge:
+                        print(f"  [GUEST] {_ge}")
+                    continue
 
                 # Telegram Business (secretary mode) - the owner's own private
                 # chats, not the bot's. Handled first and independently: these
