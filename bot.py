@@ -9348,6 +9348,9 @@ _vdm.init(TELEGRAM_BOT_TOKEN)
 # Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
 # its auto-approve rule below; every other chat's request goes to this.
 import groupjoin as _gj
+import inlinebot as _page
+INLINE_BOT_TOKEN = os.getenv("INLINE_BOT_TOKEN", "").strip()
+
 _gj.init(TELEGRAM_BOT_TOKEN, _get_bot_username, ADMIN_CHAT_ID,
          is_vip=lambda _uid: bool((ct._get(str(_uid)) or {}).get("tier") == "vip"))
 import userinfo as _uinfo
@@ -11892,6 +11895,53 @@ def _inline_results(q: str) -> list:
     if not out:
         out.append(about_card())
     return out[:10]
+
+
+def _live_trades_text():
+    """(text, count) for the 'what is running' card - symbols, side and the
+    move so far; entry / SL / targets stay behind the bot."""
+    rows, n = [], 0
+    for t in (list(scan1_trades) + list(scan2_trades)):
+        sym = str(t.get("symbol") or "").replace("-USDT", "")
+        if not sym:
+            continue
+        side = "LONG" if str(t.get("signal") or t.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
+        entry = float(t.get("entry") or 0)
+        got = _inline_price(sym)
+        px = got[1] if got else 0.0
+        chg = ((px - entry) / entry * 100 * (1 if side == "LONG" else -1)) if (entry and px) else None
+        move = f"  <b>{'+' if chg >= 0 else ''}{chg:.2f}%</b>" if chg is not None else ""
+        rows.append(f"{'🟢' if side == 'LONG' else '🔴'} <b>{sym}</b> {side}{move}"
+                    + (" · TP1 ✅" if t.get("tp1_hit") else ""))
+        n += 1
+        if n >= 8:
+            break
+    if active_trade.get("signal"):
+        rows.insert(0, f"₿ <b>BTC</b> {str(active_trade['signal']).upper()}")
+        n += 1
+    body = ("<blockquote>" + "\n".join(rows) + "\n\n🔒 Entry, stop-loss and targets are in the bot</blockquote>"
+            ) if rows else ("<blockquote>No trade is running at this moment.\n"
+                            "The scanners post the next one as soon as it fires.</blockquote>")
+    return (f"📡 <b>CLEXER — live trades</b>\n\n{body}\n\n<i>Prices move; this card does not update.</i>", n)
+
+
+def _inline_analysis_text(sym: str, mode: str) -> str:
+    """The coin engine, formatted for a card that has to fit in one message."""
+    a = _coin_analysis_data(f"{sym}-USDT" if "-" not in sym else sym, mode)
+    arrow = "🟢" if a["change"] >= 0 else "🔴"
+    bias = "🟢" if a["bias"] == "LONG" else ("🔴" if a["bias"] == "SHORT" else "🟡")
+    reasons = "\n".join(f"• {r}" for r in (a.get("reasoning") or [])[:4])
+    label = "Market entry" if a["is_market"] else "Entry zone"
+    return (f"🧠 <b>{sym}/USDT — {mode} analysis</b>\n"
+            f"{arrow} <code>{a['price']:,.6g}</code>  ({a['change']:+.2f}%)  ·  {ist_str()}\n\n"
+            f"<blockquote>📍 <b>Bias:</b> {bias} {a['bias']}\n"
+            f"🎯 <b>{label}:</b> {a['entry_val']}\n"
+            f"🛑 <b>Stop loss:</b> {a['sl']}\n"
+            f"🎯 <b>TP1:</b> {a['tp1']}\n"
+            f"🎯 <b>TP2:</b> {a['tp2']}\n"
+            f"📊 <b>Confidence:</b> {a['confidence']}</blockquote>\n"
+            + (f"<blockquote expandable>📖 <b>Reason</b>\n{reasons}</blockquote>\n" if reasons else "")
+            + "\n<i>Not financial advice · levels move with the market</i>")
 
 
 def _answer_inline(query_id: str, results: list, is_personal=True):
@@ -23715,6 +23765,14 @@ _last_getupdates_fail_alert = 0.0
 
 def command_listener():
     global last_update_id, _last_getupdates_fail_alert, GAMES_STORE_CHAT, _gamestore_wait_until
+    # The short-name front bot (@pagelibot): same answers, its own token, every
+    # card it posts links back here. Started with the listener so its hooks
+    # (price / live trades / coin engine) are all defined by now; nothing runs
+    # when INLINE_BOT_TOKEN is unset.
+    if INLINE_BOT_TOKEN:
+        _page.init(INLINE_BOT_TOKEN, _get_bot_username(),
+                   {"price": _inline_price, "live": _live_trades_text, "analysis": _inline_analysis_text})
+        _page.start()
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)
     except: pass
