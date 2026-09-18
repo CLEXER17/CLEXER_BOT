@@ -9411,6 +9411,24 @@ def _music_assistant_id():
     return _music_asst["id"]
 
 
+def _page_start_game(kind, chat_id, uid, name):
+    """Start a game in `chat_id` on behalf of the front bot's card. The
+    board is posted by this bot, so it has to be in that group; when it is
+    not, the card says so instead of failing silently."""
+    try:
+        j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember",
+                          json={"chat_id": chat_id, "user_id": int(TELEGRAM_BOT_TOKEN.split(":")[0])}, timeout=8).json()
+        if (j.get("result") or {}).get("status") not in ("creator", "administrator", "member", "restricted"):
+            return "nobot"
+    except Exception:
+        return "nobot"
+    try:
+        return _games_mod.start_direct(kind, str(chat_id), "group", str(uid), name)
+    except Exception as e:
+        print(f"  [PAGE] game {kind} in {chat_id}: {e}")
+        return "error"
+
+
 def _drop_start_line(chat_id, message):
     """Adding a bot through a t.me link makes Telegram post "/start …" in
     the group - noise that other bots in the room may answer too. We delete
@@ -11954,8 +11972,7 @@ def _inline_analysis_text(sym: str, mode: str) -> str:
             f"🎯 <b>TP1:</b> {a['tp1']}\n"
             f"🎯 <b>TP2:</b> {a['tp2']}\n"
             f"📊 <b>Confidence:</b> {a['confidence']}</blockquote>\n"
-            + (f"<blockquote expandable>📖 <b>Reason</b>\n{reasons}</blockquote>\n" if reasons else "")
-            + "\n<i>Not financial advice · levels move with the market</i>")
+            + (f"<blockquote expandable>📖 <b>Reason</b>\n{reasons}</blockquote>\n" if reasons else ""))
 
 
 def _answer_inline(query_id: str, results: list, is_personal=True):
@@ -23840,7 +23857,8 @@ def command_listener():
     # when INLINE_BOT_TOKEN is unset.
     if INLINE_BOT_TOKEN:
         _pagebot.init(INLINE_BOT_TOKEN, _get_bot_username(),
-                   {"price": _inline_price, "live": _live_trades_text, "analysis": _inline_analysis_text})
+                   {"price": _inline_price, "live": _live_trades_text, "analysis": _inline_analysis_text,
+                    "game": _page_start_game})
         _pagebot.start()
     print("[CMD] Listener started")
     try: requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook", timeout=10)

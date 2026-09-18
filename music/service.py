@@ -905,20 +905,99 @@ def _card_kb(chat_id):
         *([[_btn("🎧 Audio only" if s["video_on"] else "📺 Video on", f"mu:{'voff' if s['video_on'] else 'von'}:{chat_id}")]] if s["video_ok"] else [])]}
 
 
-def _remember(chat_id, mid):
+# Music works in groups the CLEX bot was never added to: @CLEXFM is the one
+# that has to be there, and it can speak for itself. Every message below goes
+# out through the bot when it can post, and through the assistant account
+# otherwise - "via" on each stored message says which, so edits and deletes
+# use the same road back.
+_bot_id = (BOT_TOKEN or ":").split(":")[0]
+_loop_ref = {"loop": None}      # the service's asyncio loop, set in main()
+_CMD_HINT = ("\U0001F39B <b>Controls</b> - send: /next  /prev  /pause  /resume  /stop  /queue"
+             "\n(the CLEX bot is not in this group, so @{0} runs the commands itself)")
+_can_post: dict = {}          # chat_id -> (bool, checked_at)
+
+
+def _bot_in(chat_id) -> bool:
+    hit = _can_post.get(chat_id)
+    if hit and time.time() - hit[1] < 600:
+        return hit[0]
+    ok = True
+    try:
+        j = bot_api("getChatMember", {"chat_id": chat_id, "user_id": int(_bot_id)}, timeout=8)
+        st = (j.get("result") or {}).get("status")
+        if st:
+            ok = st in ("creator", "administrator", "member", "restricted")
+        elif j.get("description"):
+            ok = False                      # "chat not found" / "not a member"
+    except Exception:
+        ok = True                           # cannot tell -> behave as before
+    _can_post[chat_id] = (ok, time.time())
+    return ok
+
+
+def _as_user(coro):
+    """Run one assistant-account call from the sync helpers."""
+    if client is None or not _loop_ref["loop"]:
+        return None
+    try:
+        fut = asyncio.run_coroutine_threadsafe(coro, _loop_ref["loop"])
+        return fut.result(timeout=20)
+    except Exception as e:
+        print(f"[MUSIC] assistant send: {e!r}")
+        return None
+
+
+def _send(chat_id, text, markup=None):
+    """(message_id, via) - 'bot' when the bot posted it, 'user' when @CLEXFM did."""
+    if _bot_in(chat_id):
+        pl = {"chat_id": chat_id, "text": _pe(text), "parse_mode": "HTML"}
+        if markup:
+            pl["reply_markup"] = markup
+        j = bot_api("sendMessage", pl, timeout=10)
+        if j.get("ok"):
+            return j["result"]["message_id"], "bot"
+    if client is None or not _loop_ref["loop"]:
+        return None, None
+    m = _as_user(client.send_message(chat_id, _strip_tg(text), disable_web_page_preview=True))
+    return (getattr(m, "id", None), "user") if m else (None, None)
+
+
+def _edit(chat_id, mid, via, text, markup=None):
+    if via == "user":
+        return bool(_as_user(client.edit_message_text(chat_id, mid, _strip_tg(text), disable_web_page_preview=True)))
+    pl = {"chat_id": chat_id, "message_id": mid, "text": _pe(text), "parse_mode": "HTML"}
+    if markup:
+        pl["reply_markup"] = markup
+    j = bot_api("editMessageText", pl)
+    return bool(j.get("ok")) or "not modified" in str(j.get("description", ""))
+
+
+def _delete(chat_id, mid, via):
+    if via == "user":
+        _as_user(client.delete_messages(chat_id, mid))
+        return
+    bot_api("deleteMessage", {"chat_id": chat_id, "message_id": mid}, timeout=8)
+
+
+def _strip_tg(text: str) -> str:
+    """A user account cannot send <tg-emoji> or buttons - keep the words."""
+    import re as _re
+    t = _re.sub(r"</?tg-emoji[^>]*>", "", text or "")
+    t = _re.sub(r"</?(b|i|u|s|code|pre|blockquote)[^>]*>", "", t)
+    return t.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+def _remember(chat_id, mid, via="bot"):
     if mid:
-        _st(chat_id)["msgs"] = (_st(chat_id)["msgs"] + [int(mid)])[-200:]
+        _st(chat_id)["msgs"] = (_st(chat_id)["msgs"] + [(int(mid), via)])[-200:]
 
 
 def _say(chat_id, text, markup=None):
     """A music reply in the group, tracked so it can be swept away later."""
-    pl = {"chat_id": chat_id, "text": _pe(text), "parse_mode": "HTML"}
-    if markup:
-        pl["reply_markup"] = markup
-    j = bot_api("sendMessage", pl, timeout=10)
-    if j.get("ok"):
-        _remember(chat_id, j["result"]["message_id"])
-    return bool(j.get("ok"))
+    mid, via = _send(chat_id, text, markup)
+    if mid:
+        _remember(chat_id, mid, via)
+    return bool(mid)
 
 
 def _sweep(chat_id, keep_card=False):
@@ -926,12 +1005,21 @@ def _sweep(chat_id, keep_card=False):
     /play lines and the card - once the music is over."""
     s = _st(chat_id)
     if s["card"] and not keep_card:
-        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
-        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
+        _unpin(chat_id, s["card"])
+        _delete(chat_id, s["card"][1], s["card"][3] if len(s["card"]) > 3 else "bot")
         s["card"] = None
-    for mid in s["msgs"]:
-        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": mid}, timeout=8)
+    for item in s["msgs"]:
+        mid, via = item if isinstance(item, (list, tuple)) else (item, "bot")
+        _delete(chat_id, mid, via)
     s["msgs"] = []
+
+
+def _unpin(chat_id, card):
+    via = card[3] if len(card) > 3 else "bot"
+    if via == "user":
+        _as_user(client.unpin_chat_message(chat_id, card[1]))
+    else:
+        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": card[1]}, timeout=8)
 
 
 def _post_card(chat_id):
@@ -939,24 +1027,35 @@ def _post_card(chat_id):
     sits at the bottom of the chat when a new song starts)."""
     s = _st(chat_id)
     if s["card"]:
-        bot_api("unpinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
-        bot_api("deleteMessage", {"chat_id": chat_id, "message_id": s["card"][1]}, timeout=8)
+        _unpin(chat_id, s["card"])
+        _delete(chat_id, s["card"][1], s["card"][3] if len(s["card"]) > 3 else "bot")
         s["card"] = None
     t = s["now"]
-    j = {}
-    if t and t.get("thumb"):
-        j = bot_api("sendPhoto", {"chat_id": chat_id, "photo": t["thumb"], "caption": _card_text(chat_id),
-                                  "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
-        if j.get("ok"):
-            s["card"] = (chat_id, j["result"]["message_id"], "photo")
+    if _bot_in(chat_id):
+        j = {}
+        if t and t.get("thumb"):
+            j = bot_api("sendPhoto", {"chat_id": chat_id, "photo": t["thumb"], "caption": _card_text(chat_id),
+                                      "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+            if j.get("ok"):
+                s["card"] = (chat_id, j["result"]["message_id"], "photo", "bot")
+        if not s["card"]:
+            j = bot_api("sendMessage", {"chat_id": chat_id, "text": _card_text(chat_id), "parse_mode": "HTML",
+                                        "reply_markup": _card_kb(chat_id)})
+            if j.get("ok"):
+                s["card"] = (chat_id, j["result"]["message_id"], "text", "bot")
     if not s["card"]:
-        j = bot_api("sendMessage", {"chat_id": chat_id, "text": _card_text(chat_id), "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
-        if j.get("ok"):
-            s["card"] = (chat_id, j["result"]["message_id"], "text")
+        # no bot in this group: the assistant posts the card itself. No buttons
+        # (a user account cannot send them), so the card lists the commands.
+        mid, via = _send(chat_id, _card_text(chat_id) + "\n\n" + _CMD_HINT.format(_me["username"]))
+        if mid:
+            s["card"] = (chat_id, mid, "text", via or "user")
     if s["card"]:
-        # pinned so the controls stay one tap away; needs the bot's "pin
-        # messages" right, silently skipped otherwise
-        bot_api("pinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1], "disable_notification": True}, timeout=8)
+        # pinned so the controls stay one tap away; needs the right to pin,
+        # silently skipped otherwise
+        if (s["card"][3] if len(s["card"]) > 3 else "bot") == "user":
+            _as_user(client.pin_chat_message(chat_id, s["card"][1], disable_notification=True))
+        else:
+            bot_api("pinChatMessage", {"chat_id": chat_id, "message_id": s["card"][1], "disable_notification": True}, timeout=8)
 
 
 def _refresh_card(chat_id):
@@ -967,14 +1066,19 @@ def _refresh_card(chat_id):
         if s["now"]:
             _post_card(chat_id)
         return
-    if s["card"][2] == "photo":
+    via = s["card"][3] if len(s["card"]) > 3 else "bot"
+    if via == "user":
+        ok = _edit(chat_id, s["card"][1], "user", _card_text(chat_id) + "\n\n" + _CMD_HINT.format(_me["username"]))
+    elif s["card"][2] == "photo":
         j = bot_api("editMessageCaption", {"chat_id": chat_id, "message_id": s["card"][1], "caption": _card_text(chat_id),
                                            "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
+        ok = bool(j.get("ok")) or "not modified" in str(j.get("description", ""))
     else:
         j = bot_api("editMessageText", {"chat_id": chat_id, "message_id": s["card"][1], "text": _card_text(chat_id),
                                         "parse_mode": "HTML", "reply_markup": _card_kb(chat_id)})
-    if not j.get("ok") and "not modified" not in str(j.get("description", "")):
-        print(f"[MUSIC] card edit {chat_id}: {j.get('description')}")
+        ok = bool(j.get("ok")) or "not modified" in str(j.get("description", ""))
+    if not ok:
+        print(f"[MUSIC] card edit {chat_id}: reposting")
         s["card"] = None
         if s["now"]:
             _post_card(chat_id)
@@ -1182,6 +1286,50 @@ def _actor(upd):
     if not u or u.id == _me["id"]:
         return ""
     return (u.first_name or u.username or str(u.id))[:32]
+
+
+_UB_CMDS = {"/play": "play", "/find": "play", "/skip": "skip", "/next": "skip", "/prev": "prev",
+            "/pause": "pause", "/resume": "resume", "/stop": "stop", "/queue": "queue", "/now": "now",
+            "/volume": "volume", "/video": "video", "/q": "quality", "/quality": "quality"}
+
+
+async def _on_group_cmd(_, msg):
+    """Music commands typed in a group the CLEX bot is not in: the assistant
+    account is already there, so it handles them itself. When the bot IS in
+    the chat this does nothing - the bot owns the flow there."""
+    try:
+        txt = (msg.text or msg.caption or "").strip()
+        if not txt.startswith("/"):
+            return
+        chat_id = msg.chat.id
+        if getattr(msg.chat, "type", None) and "group" not in str(msg.chat.type).lower():
+            return
+        cmd = txt.split()[0].split("@")[0].lower()
+        act = _UB_CMDS.get(cmd)
+        if not act:
+            return
+        if await asyncio.to_thread(_bot_in, chat_id):
+            return                      # the bot is here and already answers this
+        arg = txt.split(None, 1)[1].strip() if " " in txt else ""
+        by = (msg.from_user.first_name if msg.from_user else "") or "someone"
+        if cmd in ("/play", "/find"):
+            if not arg:
+                _say(chat_id, "Usage: /play song name")
+                return
+            body = {"chat_id": chat_id, "query": arg, "by": by, "video": cmd == "/find",
+                    "chat_username": getattr(msg.chat, "username", None), "no_bot": True}
+            await _play_body(body)
+            return
+        body = {"chat_id": chat_id, "action": act, "by": by}
+        if act == "volume":
+            body["value"] = arg
+        elif act in ("video", "quality"):
+            body["value"] = arg
+        res = await _control(chat_id, act, body)
+        if res.get("text"):
+            _say(chat_id, res["text"])
+    except Exception as e:
+        print(f"[MUSIC] group cmd: {e!r}")
 
 
 async def _on_me_added(_, upd):
@@ -1444,7 +1592,12 @@ async def user_facts(req: Request, x_music_secret: str = Header(default="")):
 @app.post("/play")
 async def play(req: Request, x_music_secret: str = Header(default="")):
     _auth(x_music_secret)
-    body = await req.json()
+    return await _play_body(await req.json())
+
+
+async def _play_body(body: dict):
+    """The whole /play flow, callable from the HTTP endpoint and from the
+    assistant's own command handler (groups without the CLEX bot)."""
     chat_id, query = int(body["chat_id"]), str(body.get("query", "")).strip()
     if not _ready["ok"]:
         return {"text": STARTING}
@@ -1699,9 +1852,11 @@ async def main():
     call = PyTgCalls(client)
     call.on_update(fl.stream_end())(_on_end)
     call.on_update(fl.chat_update(ChatUpdate.Status.LEFT_CALL))(_on_chat_update)
-    from pyrogram.handlers import ChatMemberUpdatedHandler, DeletedMessagesHandler
+    from pyrogram.handlers import ChatMemberUpdatedHandler, DeletedMessagesHandler, MessageHandler
+    from pyrogram import filters as _pf
     client.add_handler(ChatMemberUpdatedHandler(_on_me_added))
     client.add_handler(DeletedMessagesHandler(_on_deleted))
+    client.add_handler(MessageHandler(_on_group_cmd, _pf.group & ~_pf.me))
     # The HTTP server comes up first so Railway sees the new container as
     # healthy and stops the old one; Telegram is joined only after a pause
     # (CONNECT_DELAY) so the two containers never hold the session at the
@@ -1721,6 +1876,7 @@ async def main():
             print(f"[MUSIC] SESSION DEAD ({name}): the string was used from two places at once or was logged out. "
                   f"Run music/login.py again and replace MUSIC_SESSION_STRING.")
         raise
+    _loop_ref["loop"] = asyncio.get_running_loop()
     me = await client.get_me()
     _me.update(id=me.id, username=me.username or "")
     await call.start()

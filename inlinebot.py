@@ -128,6 +128,23 @@ def _game_card(kind, title, blurb):
     return _article(f"g_{kind}", title, blurb, txt, _open_kb("▶ Play now", extra, start=f"game_{kind}"))
 
 
+def _games_here_card(chat_id):
+    """Guest mode gives us the chat: the card lists the games and starts the
+    chosen one right there (the main bot posts the board, so it must be in
+    the group - the button says so when it is not)."""
+    rows, row = [], []
+    for kind, title, _ in GAMES_QUICK[:8]:
+        row.append({"text": title, "callback_data": f"g:{kind}:{chat_id}"})
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    txt = ("🎮 <b>CLEXER Games</b>\n\n"
+           "<blockquote>Pick a game below and the table opens in this chat.\n"
+           "Friends tap <b>Join</b> on the board; empty seats can be robots.</blockquote>")
+    return _article("games_here", "Games - play here", "Pick a game, the table opens in this chat",
+                    txt, {"inline_keyboard": rows})
+
 def _games_card():
     txt = ("🎮 <b>CLEXER Games</b>\n\n"
            "<blockquote>30 games inside Telegram — Ludo, Chess, Snake &amp; Ladder, Uno, Trivia,\n"
@@ -248,6 +265,29 @@ def _on_callback(cb: dict):
     data = cb.get("data") or ""
     uid = (cb.get("from") or {}).get("id")
     imid = cb.get("inline_message_id")
+    if data.startswith("g:"):
+        _, kind, chat = data.split(":", 2)
+        who = (cb.get("from") or {}).get("first_name") or "Player"
+        res = _hooks.get("game", lambda *a: "nohook")(kind, chat, uid, who)
+        if res == "ok":
+            _api("answerCallbackQuery", {"callback_query_id": cb["id"], "text": "🎮 Table is open below."}, timeout=6)
+            if imid:
+                _edit_inline(imid, "🎮 <b>CLEXER Games</b>\n\n"
+                                   "<blockquote>Table opened in this chat - scroll down and tap <b>Join</b>.</blockquote>",
+                             _open_kb("🎮 More games", start="games"))
+        elif res == "nobot":
+            _api("answerCallbackQuery", {"callback_query_id": cb["id"],
+                                         "text": "Add CLEXER to this group first - it posts the board.",
+                                         "show_alert": True}, timeout=6)
+            if imid:
+                _edit_inline(imid, "🎮 <b>CLEXER Games</b>\n\n"
+                                   "<blockquote>CLEXER has to be in this group to post the board.</blockquote>",
+                             _open_kb("🎮 Play in DM", [[{"text": "➕ Add to this group",
+                                                                 "url": f"https://t.me/{MAIN_USERNAME}?startgroup=game_" + kind}]],
+                                      start=f"game_{kind}"))
+        else:
+            _api("answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Could not start that one - try again."}, timeout=6)
+        return
     if not data.startswith("an:") or not imid:
         _api("answerCallbackQuery", {"callback_query_id": cb["id"]}, timeout=6)
         return
@@ -305,8 +345,14 @@ def _loop():
                             i = txt.lower().find("@" + _me["username"].lower())
                             if i >= 0:
                                 txt = txt[:i] + txt[i + len(_me["username"]) + 1:]
-                        res = _results(txt.strip())
-                        _api("answerGuestQuery", {"guest_query_id": gq, "result": json.dumps(res[0])})
+                        q = txt.strip()
+                        low = q.lower().lstrip("/")
+                        chat = (gm.get("chat") or {}).get("id")
+                        if chat and low.startswith(("game", "games")):
+                            card = _games_here_card(chat)          # playable list, right here
+                        else:
+                            card = _results(q)[0]
+                        _api("answerGuestQuery", {"guest_query_id": gq, "result": json.dumps(card)})
                 elif upd.get("chosen_inline_result"):
                     # the user picked a card - if it was an analysis card it runs
                     # right away, no second tap. Needs Inline Feedback on in
