@@ -198,8 +198,7 @@ def _results(q: str) -> list:
     q = (q or "").strip()
     low = q.lower().lstrip("/")
     if not q:
-        return [_live_card(), _about_card(), _games_card(), _music_card(""), _vip_card(),
-                _game_card(*GAMES_QUICK[0]), _game_card(*GAMES_QUICK[1])]
+        return [_live_card(), _about_card(), _games_card(), _music_card(""), _vip_card()]
     if low.startswith(("play", "music", "song")):
         return [_music_card(q.split(None, 1)[1] if " " in q else "")]
     if low.startswith(("find", "video", "episode", "movie")):
