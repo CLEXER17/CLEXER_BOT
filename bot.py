@@ -17021,9 +17021,15 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             handle_command("/trade", chat_id, message, sender_id=sender_id)
             return
         if cmd == "/start" and len(parts) > 1 and parts[1].startswith("coin_"):
+            # "Analyse in the bot" from a @pagelibot card - open to everyone,
+            # unlike /coin itself, which stays an admin tool
             _sym = parts[1][5:].upper()[:12]
             if _sym.isalnum():
-                handle_command(f"/coin {_sym}", chat_id, message, sender_id=sender_id)
+                _pair = _sym if "-" in _sym else f"{_sym}-USDT"
+                send_reply(chat_id, f"🪙 <b>{_sym}/USDT</b> — pick your entry style:",
+                           reply_markup={"inline_keyboard": [[
+                               {"text": "📈 Market Entry", "callback_data": f"coinlookup:MARKET:{_pair}"},
+                               {"text": "⏳ Pullback Entry", "callback_data": f"coinlookup:PULLBACK:{_pair}"}]]})
                 return
         if cmd == "/start" and len(parts) > 1 and parts[1] == "chat":
             handle_command("/chat", chat_id, message, sender_id=sender_id)
@@ -24779,7 +24785,7 @@ def command_listener():
                         ct.set_auto_sltp_global(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Coin lookup — Market vs Pullback entry choice ─────────
-                    elif cb_data.startswith("coinlookup:") and cb_is_scanadmin:
+                    elif cb_data.startswith("coinlookup:"):
                         _, _etype, _sym = cb_data.split(":", 2)
                         send_reply(cb_chat_id, f"🧠 Analyzing <b>{_sym.replace('-','/')}</b> ({_etype.title()} entry)...")
                         threading.Thread(target=_do_coin_analysis, args=(cb_chat_id, _sym, _etype), daemon=True).start()
