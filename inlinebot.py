@@ -75,10 +75,17 @@ def _coin_cards(sym: str) -> list:
         return out
     s, px, chg = got
     fmt = f"{px:,.6g}" if px < 1 else f"{px:,.2f}"
+    # the price card carries the two analysis choices, so whoever reads it in
+    # the chat can go straight to a setup without leaving for the bot
+    choose = [[{"text": "📈 Market entry", "callback_data": f"an:{s}:market"},
+               {"text": "⏳ Pullback entry", "callback_data": f"an:{s}:pullback"}]]
     out.append(_article(f"px_{s}", f"{s}/USDT  {fmt}",
-                        f"24h {'+' if chg >= 0 else ''}{chg:.2f}% · send the live price",
+                        f"24h {'+' if chg >= 0 else ''}{chg:.2f}% · price + analysis buttons",
                         f"{'🟢' if chg >= 0 else '🔴'} <b>{s}/USDT</b>  <code>{fmt}</code>\n"
-                        f"24h {'+' if chg >= 0 else ''}{chg:.2f}%\n<i>Live price via CLEX™ BOT</i>"))
+                        f"24h {'+' if chg >= 0 else ''}{chg:.2f}%\n\n"
+                        f"<blockquote>🧠 Want a setup? Pick the entry style below and CLEX reads "
+                        f"the market right here.</blockquote>",
+                        _open_kb(extra=choose)))
     for mode, label, blurb in (("market", "Market entry", "an entry near the current price"),
                                ("pullback", "Pullback entry", "a zone to wait for")):
         out.append(_article(
