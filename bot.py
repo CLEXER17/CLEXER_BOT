@@ -11807,6 +11807,46 @@ def _inline_results(q: str) -> list:
                 "input_message_content": {"message_text": txt, "parse_mode": "HTML"},
                 "reply_markup": _inline_open_kb("🚀 Start CLEXER")}
 
+    def live_card():
+        """What is running right now - no entry, no SL, no targets. Those are
+        the product; the card is the shop window."""
+        rows, n = [], 0
+        for t in (list(scan1_trades) + list(scan2_trades)):
+            sym = str(t.get("symbol") or "").replace("-USDT", "")
+            if not sym:
+                continue
+            side = "LONG" if str(t.get("signal") or t.get("direction") or "BUY").upper() in ("BUY", "LONG") else "SHORT"
+            entry = float(t.get("entry") or 0)
+            px = 0.0
+            got = _inline_price(sym)
+            if got:
+                px = got[1]
+            chg = ((px - entry) / entry * 100 * (1 if side == "LONG" else -1)) if (entry and px) else None
+            mark = "🟢" if side == "LONG" else "🔴"
+            move = f"  <b>{'+' if chg >= 0 else ''}{chg:.2f}%</b>" if chg is not None else ""
+            hit = " · TP1 ✅" if t.get("tp1_hit") else ""
+            rows.append(f"{mark} <b>{sym}</b> {side}{move}{hit}")
+            n += 1
+            if n >= 8:
+                break
+        if active_trade.get("signal"):
+            rows.insert(0, f"₿ <b>BTC</b> {str(active_trade['signal']).upper()}")
+            n += 1
+        if not rows:
+            body = ("<blockquote>No trade is running at this moment.\n"
+                    "The scanners post the next one as soon as it fires.</blockquote>")
+            desc = "Nothing running right now"
+        else:
+            body = ("<blockquote>" + "\n".join(rows) +
+                    "\n\n🔒 Entry, stop-loss and targets are in the bot</blockquote>")
+            desc = f"{n} trade(s) running · levels in the bot"
+        txt = f"📡 <b>CLEXER — live trades</b>\n\n{body}\n\n<i>Prices move; this card does not update.</i>"
+        return {"type": "article", "id": f"live_{int(time.time())}",
+                "title": f"Live trades ({n})" if n else "Live trades - none right now",
+                "description": desc,
+                "input_message_content": {"message_text": txt, "parse_mode": "HTML"},
+                "reply_markup": _inline_open_kb("📡 See the levels")}
+
     def vip_card():
         txt = ("⭐ <b>CLEXER VIP</b>\n\n"
                "<blockquote>Every signal the scanners produce, the moment they fire\n"
@@ -11824,10 +11864,13 @@ def _inline_results(q: str) -> list:
             got = _inline_price(sym)
             if got:
                 out.append(price_card(*got))
+        out.insert(0, live_card())
         out.append(about_card()); out.append(vip_card())
         return out[:10]
     if low in ("vip", "price of vip", "subscribe"):
         return [vip_card(), about_card()]
+    if low in ("trades", "trade", "running", "live", "signals", "signal", "open"):
+        return [live_card(), vip_card(), about_card()]
     if low in ("about", "help", "info", "clexer", "bot", "what"):
         return [about_card(), vip_card()]
     # a mention can be a sentence ("@CLEXbot what is eth doing?") - take the
