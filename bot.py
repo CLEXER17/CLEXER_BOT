@@ -2096,7 +2096,8 @@ def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) 
         for s, d in top:
             rows.append(_rcp_row([s, d["n"], f"{d['w']} / {d['l']}", f"{d['pnl']:+.2f}%"], W, A))
         rows.append(_rcp_rule(W, "└", "┴", "┘"))
-        parts.append("<pre>" + "\n".join(rows) + "</pre>")
+        _blk = "<pre>" + "\n".join(rows) + "</pre>"
+        parts.append(f"<blockquote expandable>{_blk}</blockquote>" if len(rows) >= _EXPANDABLE_MIN_LINES else _blk)
         if len(by_sym) > len(top):
             parts.append(f"<i>+{len(by_sym) - len(top)} more symbols</i>")
 
