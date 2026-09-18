@@ -842,6 +842,30 @@ def _robots_go(g_or_gid):
 
 # ── callbacks ──────────────────────────────────────────────────────────────
 
+def start_direct(kind: str, chat, chat_type, uid, name, players: int = 0) -> str:
+    """Start `kind` immediately - used by the deep links the front bot's cards
+    carry (t.me/bot?start=game_ludo), so a player lands in a running table
+    instead of a menu. In DM the empty seats are robots; in a group the table
+    opens for others to Join, exactly like the normal flow."""
+    kind = (kind or "").strip().lower()
+    if kind not in GAMES:
+        return "unknown"
+    spec = GAMES[kind]
+    n = players if players in SIZES and spec.min <= players <= spec.max else max(spec.min, 2)
+    with _lock:
+        g = _new_game(kind, chat, chat_type, uid, name)
+        g["want"] = n
+        _seat(g, uid, name)
+        if chat_type == "private":
+            for i in range(1, n):
+                _seat(g, f"bot{i}", f"Robo {i}", bot=True)
+            _start(g)
+        _games[g["gid"]] = g
+    _push(g)
+    _robots_go(g)
+    return "ok"
+
+
 def on_callback(data, uid, name, chat_id, msg_id, chat_type="private"):
     """Returns popup text for answerCallbackQuery (or None for a silent ack)."""
     parts = data.split(":")

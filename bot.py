@@ -16939,6 +16939,40 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         # Deep links from the front bot's cards (@pagelibot): the button opens
         # this chat AND runs the thing the card was about, instead of dropping
         # the person on a blank screen.
+        # Music deep links from the front bot's cards. In a group the bot was
+        # just added to, this runs the real /play (or /find) - that flow pulls
+        # the assistant account in by itself, so all the user has to do is open
+        # the voice chat.
+        if cmd == "/start" and len(parts) > 1 and parts[1].split("_")[0] in ("play", "find"):
+            _mkind = "/play" if parts[1].split("_")[0] == "play" else "/find"
+            _mquery = ""
+            if "_" in parts[1]:
+                try:
+                    _b = parts[1].split("_", 1)[1]
+                    _mquery = base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4)).decode("utf-8", "ignore")[:100]
+                except Exception:
+                    _mquery = ""
+            if str(chat_id).startswith("-"):
+                if _mquery:
+                    send_reply(chat_id, f"🎵 <b>CLEXER is in.</b> Starting <b>{_html.escape(_mquery)}</b> — "
+                                        f"open this group's voice chat if it is not running yet.")
+                    _music_command(_mkind, [_mkind, _mquery], chat_id, message, _hm_uid, _hm_uname)
+                else:
+                    send_reply(chat_id, "🎵 <b>CLEXER music is ready here.</b>\n\n"
+                                        "<blockquote>1. Start this group's voice chat\n"
+                                        "2. Send <code>/play song name</code> (or <code>/find</code> for a video)\n"
+                                        "3. The music account joins by itself and plays</blockquote>")
+            else:
+                _music_dm_notice(chat_id)
+            return
+        if cmd == "/start" and len(parts) > 1 and parts[1].startswith("game_"):
+            _gk = parts[1][5:].lower()
+            _gname = (message or {}).get("from", {}).get("first_name") or _hm_uname or "Player"
+            _gtype = (message or {}).get("chat", {}).get("type") or ("private" if not str(chat_id).startswith("-") else "group")
+            if _games_mod.start_direct(_gk, chat_id, "private" if _gtype == "private" else "group",
+                                       str(_hm_uid), _gname) != "ok":
+                _games_mod.cmd_games(chat_id, _gtype)
+            return
         if cmd == "/start" and len(parts) > 1 and parts[1] in ("trades", "trade"):
             handle_command("/trade", chat_id, message, sender_id=sender_id)
             return

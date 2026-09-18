@@ -18,6 +18,7 @@ The coin analysis is the only expensive answer: the card is posted first
 never left waiting on a spinner that blocks anything.
 """
 
+import base64
 import json
 import threading
 import time
@@ -107,6 +108,26 @@ def _live_card():
                     txt, _open_kb("📡 See the levels", start="trades"))
 
 
+# the games people actually ask for by name; the rest stay behind /games
+GAMES_QUICK = [("ludo", "🎲 Ludo", "4 players, robots fill the seats"),
+               ("chess", "♟ Chess", "classic, against a robot or a friend"),
+               ("snl", "🐍 Snake & Ladder", "roll and climb"),
+               ("uno", "🃏 Uno-style cards", "first to empty their hand"),
+               ("ttt", "❌ Tic-Tac-Toe", "three in a row"),
+               ("c4", "🔴 Connect 4", "four in a line"),
+               ("trivia", "🧠 Trivia quiz", "questions, fastest answer wins"),
+               ("mines", "💣 Minesweeper", "clear the field"),
+               ("ships", "🚢 Battleship", "sink the fleet"),
+               ("rps", "✋ Rock Paper Scissors", "best of three")]
+
+
+def _game_card(kind, title, blurb):
+    txt = (f"{title}\n\n<blockquote>{blurb}\n\n"
+           f"Tap below - the table opens right away, no menu.</blockquote>")
+    extra = [[{"text": "▶ Play here (group)", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=game_{kind}"}]] if MAIN_USERNAME else None
+    return _article(f"g_{kind}", title, blurb, txt, _open_kb("▶ Play now", extra, start=f"game_{kind}"))
+
+
 def _games_card():
     txt = ("🎮 <b>CLEXER Games</b>\n\n"
            "<blockquote>30 games inside Telegram — Ludo, Chess, Snake &amp; Ladder, Uno, Trivia,\n"
@@ -118,51 +139,75 @@ def _games_card():
                     _open_kb("🎮 Play in DM", extra, start="games"))
 
 
-def _music_card(query: str, video: bool = False):
-    what = query.strip()
-    head = "🎬 <b>CLEXER — find a video</b>" if video else "🎵 <b>CLEXER Music</b>"
-    line = (f"<b>{what}</b>\n\n" if what else "")
-    txt = (f"{head}\n\n{line}"
-           "<blockquote>Songs, videos and live streams play in a group's voice chat.\n\n"
-           "1. Add CLEXER to the group\n"
-           "2. Start the group's voice chat\n"
-           f"3. Send <code>{'/find' if video else '/play'} {what or 'song name'}</code></blockquote>")
-    extra = [[{"text": "➕ Add to a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=music"}]] if MAIN_USERNAME else None
-    return _article("music", ("Find a video" if video else "Play music") + (f" · {what}" if what else ""),
-                    "Plays in a group's voice chat", txt, _open_kb("🎵 Open CLEXER", extra, start="music"))
+def _play_payload(prefix: str, what: str) -> str:
+    """A /start payload carrying the song name (payloads allow only
+    A-Za-z0-9_- and 64 characters, so the text rides along base64-encoded)."""
+    if not what.strip():
+        return prefix
+    b = base64.urlsafe_b64encode(what.strip().encode()).decode().rstrip("=")
+    return f"{prefix}_{b}"[:64]
 
+
+def _music_card(query: str, video: bool = False):
+    """One tap away from music: the button adds CLEXER to the group the
+    user picks and starts this very song there (see bot.py, /start play_…)."""
+    what = (query or "").strip()
+    kind = "video" if video else "song"
+    cmd = "/find" if video else "/play"
+    head = "🎬 <b>CLEXER — play a video</b>" if video else "🎵 <b>CLEXER — play music</b>"
+    if what:
+        body = (f"{head}\n\n<b>{what}</b>\n\n"
+                f"<blockquote>Tap <b>Play in a group</b> and pick the group.\n"
+                f"CLEXER joins it and starts this {kind} - you only need the group's "
+                f"voice chat to be running.</blockquote>")
+        title = ("Play video · " if video else "Play · ") + what
+    else:
+        body = (f"{head}\n\n"
+                f"<blockquote>Songs, full videos and live streams, in a group's voice chat.\n\n"
+                f"Type <code>@{_me[chr(39) + chr(39)] if False else (_me['username'] or 'this bot')} {cmd} name</code> to pick one, or tap below to bring CLEXER into a group.</blockquote>")
+        title = "Play a video" if video else "Play music"
+    payload = _play_payload("find" if video else "play", what)
+    extra = ([[{"text": "▶ Play in a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup={payload}"}]]
+             if MAIN_USERNAME else None)
+    return _article("music", title, "Plays in a group's voice chat · one tap to set up", body,
+                    _open_kb("ℹ How it works", extra, start="music"))
 
 def _about_card():
-    txt = ("🤖 <b>CLEX™ BOT</b>\n\n"
-           "<blockquote>📡 Automated market scanning\n"
-           "📈 Signals with entry, stop-loss and two targets\n"
-           "🔄 Copy trading on BingX\n"
-           "🧪 Virtual (paper) trading with monthly reports\n"
-           "🎮 30 games · 🎵 music in voice chats</blockquote>\n\n"
-           f"Everything lives in @{MAIN_USERNAME or 'the main bot'}.")
+    txt = ("👋 <b>Welcome! Here is what I can do:</b>\n\n"
+           "<blockquote>🛰 <b>Automated market scanning</b> — signals with entry, "
+           "stop-loss and two targets\n"
+           "📈 <b>Copy trading</b> — automatically copy supported trades on BingX\n"
+           "📝 <b>Paper trading</b> — practice with virtual trades and monthly reports\n"
+           "🎮 <b>30+ games</b> — play right inside Telegram\n"
+           "🎵 <b>Music in voice chats</b> — listen together</blockquote>\n\n"
+           "One bot. Multiple features. 🚀")
     return _article("about", "About CLEXER", "Signals, copy trading, paper trading, games, music",
                     txt, _open_kb("🚀 Start CLEXER", start="menu"))
 
-
 def _vip_card():
-    txt = ("⭐ <b>CLEXER VIP</b>\n\n"
-           "<blockquote>Every signal the scanners produce, the moment it fires\n"
-           "Entry, stop-loss, TP1 and TP2 on each trade\n"
-           "Copy trading and the full Mini App</blockquote>")
-    return _article("vip", "CLEXER VIP", "What VIP includes", txt, _open_kb("⭐ See VIP", start="vip"))
-
+    txt = ("👑 <b>VIP MEMBERS GET FULL ACCESS</b>\n\n"
+           "<blockquote>⚡ Every signal generated by our scanners, delivered the moment it fires.\n"
+           "📊 Entry • Stop-Loss • TP1 • TP2 with every trade.\n"
+           "🔄 Copy Trading — automatically follow supported signals.\n"
+           "📱 Full Mini App — all VIP tools, signals and trading features in one place.\n"
+           "🎧 Exclusive Support — dedicated assistance for VIP members.</blockquote>")
+    return _article("vip", "CLEXER VIP", "Full access — every signal, copy trading, Mini App, support",
+                    txt, _open_kb("⭐ See VIP", start="vip"))
 
 def _results(q: str) -> list:
     q = (q or "").strip()
     low = q.lower().lstrip("/")
     if not q:
-        return [_live_card(), _about_card(), _games_card(), _music_card(""), _vip_card()]
+        return [_live_card(), _about_card(), _games_card(), _music_card(""), _vip_card(),
+                _game_card(*GAMES_QUICK[0]), _game_card(*GAMES_QUICK[1])]
     if low.startswith(("play", "music", "song")):
         return [_music_card(q.split(None, 1)[1] if " " in q else "")]
     if low.startswith(("find", "video", "episode", "movie")):
         return [_music_card(q.split(None, 1)[1] if " " in q else "", video=True)]
     if low.startswith(("game", "games", "play a game")):
-        return [_games_card(), _about_card()]
+        rest = q.split(None, 1)[1].strip().lower() if " " in q else ""
+        cards = [_game_card(k, t, b) for k, t, b in GAMES_QUICK if not rest or rest in k or rest in t.lower()]
+        return (cards or [_game_card(*GAMES_QUICK[0])])[:8] + [_games_card()]
     if low in ("trades", "trade", "running", "live", "signals", "signal", "open"):
         return [_live_card(), _vip_card(), _about_card()]
     if low in ("vip", "subscribe", "price of vip"):
