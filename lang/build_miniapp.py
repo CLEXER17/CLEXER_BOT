@@ -49,6 +49,15 @@ EN = [
     "Remove",
     "No devices yet.",
     "Copy trading is locked - unlock from the alert message in your DM.",
+    "Loading markets…",
+    "Taking longer than usual…",
+    "Can't reach CLEXER",
+    "Slow connection",
+    "Retrying in",
+    "Still trying… data may be a few seconds old",
+    "Retry",
+    "Back online",
+    "Data refreshed",
 ]
 
 T = {}
@@ -91,6 +100,15 @@ T["ru"] = [
     "Удалить",
     "Устройств пока нет.",
     "Копитрейдинг заблокирован — разблокируйте из сообщения-оповещения в личке.",
+    "Загрузка рынков…",
+    "Дольше обычного…",
+    "Нет связи с CLEXER",
+    "Медленное соединение",
+    "Повтор через",
+    "Пробуем… данные могут отставать на несколько секунд",
+    "Повторить",
+    "Связь восстановлена",
+    "Данные обновлены",
 ]
 
 T["tl"] = [
@@ -131,6 +149,15 @@ T["tl"] = [
     "Alisin",
     "Wala pang device.",
     "Naka-lock ang copy trading — i-unlock mula sa alert message sa iyong DM.",
+    "Naglo-load ng mga market…",
+    "Mas matagal kaysa dati…",
+    "Hindi maabot ang CLEXER",
+    "Mabagal na koneksyon",
+    "Susubok muli sa",
+    "Sinusubukan pa… maaaring ilang segundo ang tagal ng data",
+    "Subukan ulit",
+    "Online na ulit",
+    "Na-refresh ang data",
 ]
 
 T["ur"] = [
@@ -171,6 +198,15 @@ T["ur"] = [
     "ہٹائیں",
     "ابھی کوئی ڈیوائس نہیں۔",
     "کاپی ٹریڈنگ لاک ہے — اپنے DM میں الرٹ پیغام سے ان لاک کریں۔",
+    "مارکیٹس لوڈ ہو رہی ہیں…",
+    "معمول سے زیادہ وقت لگ رہا ہے…",
+    "CLEXER تک رسائی نہیں",
+    "سست کنکشن",
+    "دوبارہ کوشش",
+    "کوشش جاری… ڈیٹا چند سیکنڈ پرانا ہو سکتا ہے",
+    "دوبارہ کوشش کریں",
+    "دوبارہ آن لائن",
+    "ڈیٹا تازہ ہو گیا",
 ]
 
 T["id"] = [
@@ -211,6 +247,15 @@ T["id"] = [
     "Hapus",
     "Belum ada perangkat.",
     "Copy trading terkunci — buka kunci dari pesan peringatan di DM Anda.",
+    "Memuat pasar…",
+    "Lebih lama dari biasanya…",
+    "Tidak dapat menghubungi CLEXER",
+    "Koneksi lambat",
+    "Coba lagi dalam",
+    "Masih mencoba… data mungkin terlambat beberapa detik",
+    "Coba lagi",
+    "Kembali online",
+    "Data disegarkan",
 ]
 
 T["pt"] = [
@@ -251,6 +296,15 @@ T["pt"] = [
     "Remover",
     "Nenhum dispositivo ainda.",
     "O copy trading está bloqueado — desbloqueie pela mensagem de alerta na sua DM.",
+    "Carregando mercados…",
+    "Está demorando mais que o normal…",
+    "Não foi possível conectar ao CLEXER",
+    "Conexão lenta",
+    "Nova tentativa em",
+    "Ainda tentando… os dados podem estar alguns segundos atrasados",
+    "Tentar de novo",
+    "De volta online",
+    "Dados atualizados",
 ]
 
 T["es"] = [
@@ -291,6 +345,15 @@ T["es"] = [
     "Eliminar",
     "Aún no hay dispositivos.",
     "El copy trading está bloqueado — desbloquéalo desde el mensaje de alerta en tu DM.",
+    "Cargando mercados…",
+    "Está tardando más de lo normal…",
+    "No se puede conectar con CLEXER",
+    "Conexión lenta",
+    "Reintentando en",
+    "Seguimos intentando… los datos pueden ir unos segundos por detrás",
+    "Reintentar",
+    "De nuevo en línea",
+    "Datos actualizados",
 ]
 
 T["ar"] = [
@@ -331,6 +394,15 @@ T["ar"] = [
     "إزالة",
     "لا توجد أجهزة بعد.",
     "نسخ التداول مقفل — افتح القفل من رسالة التنبيه في خاصتك.",
+    "جارٍ تحميل الأسواق…",
+    "يستغرق وقتًا أطول من المعتاد…",
+    "تعذّر الوصول إلى CLEXER",
+    "اتصال بطيء",
+    "إعادة المحاولة خلال",
+    "ما زلنا نحاول… قد تتأخر البيانات بضع ثوانٍ",
+    "إعادة المحاولة",
+    "عاد الاتصال",
+    "تم تحديث البيانات",
 ]
 
 T["zh"] = [
@@ -371,6 +443,15 @@ T["zh"] = [
     "移除",
     "暂无设备。",
     "跟单已锁定——请在私信中的提醒消息里解锁。",
+    "正在加载行情…",
+    "比平时久一些…",
+    "无法连接 CLEXER",
+    "网络较慢",
+    "将在",
+    "仍在尝试…数据可能延迟几秒",
+    "重试",
+    "已恢复连接",
+    "数据已刷新",
 ]
 
 T["tr"] = [
@@ -411,6 +492,15 @@ T["tr"] = [
     "Kaldır",
     "Henüz cihaz yok.",
     "Kopya işlem kilitli — DM'nizdeki uyarı mesajından kilidi açın.",
+    "Piyasalar yükleniyor…",
+    "Her zamankinden uzun sürüyor…",
+    "CLEXER'a ulaşılamıyor",
+    "Yavaş bağlantı",
+    "Yeniden deneme",
+    "Hâlâ deneniyor… veriler birkaç saniye gecikmeli olabilir",
+    "Yeniden dene",
+    "Tekrar çevrimiçi",
+    "Veriler yenilendi",
 ]
 
 T["vi"] = [
@@ -451,6 +541,15 @@ T["vi"] = [
     "Xóa",
     "Chưa có thiết bị.",
     "Copy trading đang bị khóa — mở khóa từ tin nhắn cảnh báo trong DM.",
+    "Đang tải thị trường…",
+    "Lâu hơn bình thường…",
+    "Không kết nối được CLEXER",
+    "Kết nối chậm",
+    "Thử lại sau",
+    "Vẫn đang thử… dữ liệu có thể trễ vài giây",
+    "Thử lại",
+    "Đã trực tuyến lại",
+    "Dữ liệu đã làm mới",
 ]
 
 T["fr"] = [
@@ -491,6 +590,15 @@ T["fr"] = [
     "Retirer",
     "Aucun appareil pour l'instant.",
     "Le copy trading est verrouillé — déverrouillez-le depuis le message d'alerte dans vos DM.",
+    "Chargement des marchés…",
+    "Plus long que d'habitude…",
+    "Impossible de joindre CLEXER",
+    "Connexion lente",
+    "Nouvelle tentative dans",
+    "On réessaie… les données peuvent avoir quelques secondes de retard",
+    "Réessayer",
+    "De retour en ligne",
+    "Données actualisées",
 ]
 
 

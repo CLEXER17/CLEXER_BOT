@@ -144,7 +144,16 @@
 "last": "последний",
 "Remove": "Удалить",
 "No devices yet.": "Устройств пока нет.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Копитрейдинг заблокирован — разблокируйте из сообщения-оповещения в личке."
+"Copy trading is locked - unlock from the alert message in your DM.": "Копитрейдинг заблокирован — разблокируйте из сообщения-оповещения в личке.",
+"Loading markets…": "Загрузка рынков…",
+"Taking longer than usual…": "Дольше обычного…",
+"Can't reach CLEXER": "Нет связи с CLEXER",
+"Slow connection": "Медленное соединение",
+"Retrying in": "Повтор через",
+"Still trying… data may be a few seconds old": "Пробуем… данные могут отставать на несколько секунд",
+"Retry": "Повторить",
+"Back online": "Связь восстановлена",
+"Data refreshed": "Данные обновлены"
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -252,7 +261,16 @@
 "last": "huli",
 "Remove": "Alisin",
 "No devices yet.": "Wala pang device.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Naka-lock ang copy trading — i-unlock mula sa alert message sa iyong DM."
+"Copy trading is locked - unlock from the alert message in your DM.": "Naka-lock ang copy trading — i-unlock mula sa alert message sa iyong DM.",
+"Loading markets…": "Naglo-load ng mga market…",
+"Taking longer than usual…": "Mas matagal kaysa dati…",
+"Can't reach CLEXER": "Hindi maabot ang CLEXER",
+"Slow connection": "Mabagal na koneksyon",
+"Retrying in": "Susubok muli sa",
+"Still trying… data may be a few seconds old": "Sinusubukan pa… maaaring ilang segundo ang tagal ng data",
+"Retry": "Subukan ulit",
+"Back online": "Online na ulit",
+"Data refreshed": "Na-refresh ang data"
 },
 "ur": {
 "Chart": "چارٹ",
@@ -400,7 +418,16 @@
 "last": "آخری",
 "Remove": "ہٹائیں",
 "No devices yet.": "ابھی کوئی ڈیوائس نہیں۔",
-"Copy trading is locked - unlock from the alert message in your DM.": "کاپی ٹریڈنگ لاک ہے — اپنے DM میں الرٹ پیغام سے ان لاک کریں۔"
+"Copy trading is locked - unlock from the alert message in your DM.": "کاپی ٹریڈنگ لاک ہے — اپنے DM میں الرٹ پیغام سے ان لاک کریں۔",
+"Loading markets…": "مارکیٹس لوڈ ہو رہی ہیں…",
+"Taking longer than usual…": "معمول سے زیادہ وقت لگ رہا ہے…",
+"Can't reach CLEXER": "CLEXER تک رسائی نہیں",
+"Slow connection": "سست کنکشن",
+"Retrying in": "دوبارہ کوشش",
+"Still trying… data may be a few seconds old": "کوشش جاری… ڈیٹا چند سیکنڈ پرانا ہو سکتا ہے",
+"Retry": "دوبارہ کوشش کریں",
+"Back online": "دوبارہ آن لائن",
+"Data refreshed": "ڈیٹا تازہ ہو گیا"
 },
 "id": {
 "Chart": "Grafik",
@@ -526,7 +553,16 @@
 "last": "terakhir",
 "Remove": "Hapus",
 "No devices yet.": "Belum ada perangkat.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading terkunci — buka kunci dari pesan peringatan di DM Anda."
+"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading terkunci — buka kunci dari pesan peringatan di DM Anda.",
+"Loading markets…": "Memuat pasar…",
+"Taking longer than usual…": "Lebih lama dari biasanya…",
+"Can't reach CLEXER": "Tidak dapat menghubungi CLEXER",
+"Slow connection": "Koneksi lambat",
+"Retrying in": "Coba lagi dalam",
+"Still trying… data may be a few seconds old": "Masih mencoba… data mungkin terlambat beberapa detik",
+"Retry": "Coba lagi",
+"Back online": "Kembali online",
+"Data refreshed": "Data disegarkan"
 },
 "pt": {
 "Chart": "Gráfico",
@@ -662,7 +698,16 @@
 "last": "último",
 "Remove": "Remover",
 "No devices yet.": "Nenhum dispositivo ainda.",
-"Copy trading is locked - unlock from the alert message in your DM.": "O copy trading está bloqueado — desbloqueie pela mensagem de alerta na sua DM."
+"Copy trading is locked - unlock from the alert message in your DM.": "O copy trading está bloqueado — desbloqueie pela mensagem de alerta na sua DM.",
+"Loading markets…": "Carregando mercados…",
+"Taking longer than usual…": "Está demorando mais que o normal…",
+"Can't reach CLEXER": "Não foi possível conectar ao CLEXER",
+"Slow connection": "Conexão lenta",
+"Retrying in": "Nova tentativa em",
+"Still trying… data may be a few seconds old": "Ainda tentando… os dados podem estar alguns segundos atrasados",
+"Retry": "Tentar de novo",
+"Back online": "De volta online",
+"Data refreshed": "Dados atualizados"
 },
 "es": {
 "Chart": "Gráfico",
@@ -799,7 +844,16 @@
 "last": "último",
 "Remove": "Eliminar",
 "No devices yet.": "Aún no hay dispositivos.",
-"Copy trading is locked - unlock from the alert message in your DM.": "El copy trading está bloqueado — desbloquéalo desde el mensaje de alerta en tu DM."
+"Copy trading is locked - unlock from the alert message in your DM.": "El copy trading está bloqueado — desbloquéalo desde el mensaje de alerta en tu DM.",
+"Loading markets…": "Cargando mercados…",
+"Taking longer than usual…": "Está tardando más de lo normal…",
+"Can't reach CLEXER": "No se puede conectar con CLEXER",
+"Slow connection": "Conexión lenta",
+"Retrying in": "Reintentando en",
+"Still trying… data may be a few seconds old": "Seguimos intentando… los datos pueden ir unos segundos por detrás",
+"Retry": "Reintentar",
+"Back online": "De nuevo en línea",
+"Data refreshed": "Datos actualizados"
 },
 "ar": {
 "Chart": "الرسم",
@@ -947,7 +1001,16 @@
 "last": "آخر",
 "Remove": "إزالة",
 "No devices yet.": "لا توجد أجهزة بعد.",
-"Copy trading is locked - unlock from the alert message in your DM.": "نسخ التداول مقفل — افتح القفل من رسالة التنبيه في خاصتك."
+"Copy trading is locked - unlock from the alert message in your DM.": "نسخ التداول مقفل — افتح القفل من رسالة التنبيه في خاصتك.",
+"Loading markets…": "جارٍ تحميل الأسواق…",
+"Taking longer than usual…": "يستغرق وقتًا أطول من المعتاد…",
+"Can't reach CLEXER": "تعذّر الوصول إلى CLEXER",
+"Slow connection": "اتصال بطيء",
+"Retrying in": "إعادة المحاولة خلال",
+"Still trying… data may be a few seconds old": "ما زلنا نحاول… قد تتأخر البيانات بضع ثوانٍ",
+"Retry": "إعادة المحاولة",
+"Back online": "عاد الاتصال",
+"Data refreshed": "تم تحديث البيانات"
 },
 "zh": {
 "Chart": "图表",
@@ -1093,7 +1156,16 @@
 "last": "最近",
 "Remove": "移除",
 "No devices yet.": "暂无设备。",
-"Copy trading is locked - unlock from the alert message in your DM.": "跟单已锁定——请在私信中的提醒消息里解锁。"
+"Copy trading is locked - unlock from the alert message in your DM.": "跟单已锁定——请在私信中的提醒消息里解锁。",
+"Loading markets…": "正在加载行情…",
+"Taking longer than usual…": "比平时久一些…",
+"Can't reach CLEXER": "无法连接 CLEXER",
+"Slow connection": "网络较慢",
+"Retrying in": "将在",
+"Still trying… data may be a few seconds old": "仍在尝试…数据可能延迟几秒",
+"Retry": "重试",
+"Back online": "已恢复连接",
+"Data refreshed": "数据已刷新"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1236,7 +1308,16 @@
 "last": "son",
 "Remove": "Kaldır",
 "No devices yet.": "Henüz cihaz yok.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Kopya işlem kilitli — DM'nizdeki uyarı mesajından kilidi açın."
+"Copy trading is locked - unlock from the alert message in your DM.": "Kopya işlem kilitli — DM'nizdeki uyarı mesajından kilidi açın.",
+"Loading markets…": "Piyasalar yükleniyor…",
+"Taking longer than usual…": "Her zamankinden uzun sürüyor…",
+"Can't reach CLEXER": "CLEXER'a ulaşılamıyor",
+"Slow connection": "Yavaş bağlantı",
+"Retrying in": "Yeniden deneme",
+"Still trying… data may be a few seconds old": "Hâlâ deneniyor… veriler birkaç saniye gecikmeli olabilir",
+"Retry": "Yeniden dene",
+"Back online": "Tekrar çevrimiçi",
+"Data refreshed": "Veriler yenilendi"
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1382,7 +1463,16 @@
 "last": "gần nhất",
 "Remove": "Xóa",
 "No devices yet.": "Chưa có thiết bị.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading đang bị khóa — mở khóa từ tin nhắn cảnh báo trong DM."
+"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading đang bị khóa — mở khóa từ tin nhắn cảnh báo trong DM.",
+"Loading markets…": "Đang tải thị trường…",
+"Taking longer than usual…": "Lâu hơn bình thường…",
+"Can't reach CLEXER": "Không kết nối được CLEXER",
+"Slow connection": "Kết nối chậm",
+"Retrying in": "Thử lại sau",
+"Still trying… data may be a few seconds old": "Vẫn đang thử… dữ liệu có thể trễ vài giây",
+"Retry": "Thử lại",
+"Back online": "Đã trực tuyến lại",
+"Data refreshed": "Dữ liệu đã làm mới"
 },
 "fr": {
 "Chart": "Graphique",
@@ -1518,6 +1608,15 @@
 "last": "dernier",
 "Remove": "Retirer",
 "No devices yet.": "Aucun appareil pour l'instant.",
-"Copy trading is locked - unlock from the alert message in your DM.": "Le copy trading est verrouillé — déverrouillez-le depuis le message d'alerte dans vos DM."
+"Copy trading is locked - unlock from the alert message in your DM.": "Le copy trading est verrouillé — déverrouillez-le depuis le message d'alerte dans vos DM.",
+"Loading markets…": "Chargement des marchés…",
+"Taking longer than usual…": "Plus long que d'habitude…",
+"Can't reach CLEXER": "Impossible de joindre CLEXER",
+"Slow connection": "Connexion lente",
+"Retrying in": "Nouvelle tentative dans",
+"Still trying… data may be a few seconds old": "On réessaie… les données peuvent avoir quelques secondes de retard",
+"Retry": "Réessayer",
+"Back online": "De retour en ligne",
+"Data refreshed": "Données actualisées"
 }
 }

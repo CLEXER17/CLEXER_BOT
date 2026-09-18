@@ -265,9 +265,43 @@
   .foldbody{margin-top:8px;font-family:var(--mono);font-size:11px;line-height:1.8;color:var(--muted);}
   .foldbody b{color:var(--text);font-weight:600;}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+
+  /* ── splash, connection banner, fullscreen, icon buttons ── */
+  #splash{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .45s;}
+  #splash.gone{opacity:0;pointer-events:none;}
+  #splash .mark{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.2em;font-size:19px;
+    background:linear-gradient(90deg,var(--gold),#fff 80%);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  #splash .mark i{width:10px;height:10px;border-radius:50%;background:var(--gold);box-shadow:0 0 12px var(--gold);animation:breathe 1.4s ease-in-out infinite;}
+  #splash .word b{font-weight:400;opacity:.25;animation:splashLit 1.8s ease-in-out infinite;}
+  #splash .word b:nth-child(2){animation-delay:.12s}#splash .word b:nth-child(3){animation-delay:.24s}
+  #splash .word b:nth-child(4){animation-delay:.36s}#splash .word b:nth-child(5){animation-delay:.48s}#splash .word b:nth-child(6){animation-delay:.6s}
+  @keyframes splashLit{0%,100%{opacity:.25;color:var(--text);}30%{opacity:1;color:var(--gold);text-shadow:0 0 14px rgba(255,176,32,.7);}}
+  #splash .word{font-family:var(--mono);font-size:15px;letter-spacing:.34em;}
+  #splash .bar{width:150px;height:3px;border-radius:2px;background:var(--bg3);overflow:hidden;}
+  #splash .bar i{display:block;height:100%;width:40%;background:linear-gradient(90deg,transparent,var(--gold),transparent);animation:splashSlide 1.1s linear infinite;}
+  @keyframes splashSlide{from{transform:translateX(-100%)}to{transform:translateX(260%)}}
+  #splash .sub{font-family:var(--mono);font-size:10px;letter-spacing:.24em;color:var(--muted);text-transform:uppercase;}
+  #splash .sub.slow{color:var(--gold);}
+  #netbar{position:fixed;left:10px;right:10px;bottom:calc(64px + env(safe-area-inset-bottom));z-index:70;display:none;align-items:center;gap:10px;
+    background:#12161D;border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:12px;padding:10px 12px;
+    box-shadow:0 8px 24px rgba(0,0,0,.45);animation:netdrop .3s ease-out;}
+  #netbar.on{display:flex;}#netbar.off{border-left-color:var(--short);}#netbar.ok{border-left-color:var(--long);}
+  @keyframes netdrop{from{transform:translateY(14px);opacity:0}to{transform:none;opacity:1}}
+  #netbar b{display:block;font-size:12px;}#netbar span{display:block;font-size:10px;color:var(--muted);}
+  #netbar button{margin-left:auto;background:var(--gold);color:var(--bg);border:0;border-radius:8px;padding:7px 11px;font-weight:700;font-size:11px;}
+  #netbar .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;flex:none;}
+  .iconbtn{background:var(--bg3);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;line-height:1.4;}
+  .iconbtn:active{transform:scale(.94);}
+  body.fs .hd,body.fs .searchwrap{display:none;}
+  body.fs .chartzone{height:calc(100vh - 62px);}
+  body.fs nav{opacity:.35;}
 </style>
 </head>
 <body>
+  <div id="splash"><div class="mark"><i></i>CLEXER</div>
+    <div class="word"><b>C</b><b>L</b><b>E</b><b>X</b><b>E</b><b>R</b></div>
+    <div class="bar"><i></i></div><div class="sub" id="splashSub" data-i18n="ld.loading">Loading markets…</div></div>
+  <div id="netbar"></div>
   <div class="topline"></div>
 
   <!-- CHART -->
@@ -281,6 +315,8 @@
             <option value="id">🇮🇩 ID</option><option value="pt">🇧🇷 PT</option><option value="es">🇪🇸 ES</option><option value="ar">🇸🇦 AR</option>
             <option value="zh">🇨🇳 ZH</option><option value="tr">🇹🇷 TR</option><option value="vi">🇻🇳 VI</option><option value="fr">🇫🇷 FR</option>
           </select>
+          <button class="iconbtn" id="fsBtn" onclick="toggleFull()" title="Full screen">⛶</button>
+          <button class="iconbtn" id="hsBtn" onclick="addHome()" hidden title="Add to home screen">📲</button>
           <div class="live"><span class="pulse"></span>LIVE</div>
         </div>
       </div>
@@ -585,16 +621,97 @@
     }).observe(document.body, {childList: true, subtree: true});
   }
   if(TG){try{TG.ready();TG.expand();TG.setHeaderColor&&TG.setHeaderColor("#0A0D12");TG.disableVerticalSwipes&&TG.disableVerticalSwipes();}catch(e){}}
+
+  /* ---------- loading / connection state ----------
+     The splash covers the first paint until the first successful API call
+     (or 6 s, whichever comes first). After that every failed call shows a
+     banner instead of a blank screen: the last data stays on the page, an
+     auto-retry counts down, and Retry forces one immediately. */
+  const net = { ok:true, fails:0, retryAt:0, timer:null, booted:false };
+  function splashOff(){
+    const el = document.getElementById("splash"); if(!el || net.booted) return;
+    net.booted = true; el.classList.add("gone"); setTimeout(()=>el.remove(), 500);
+  }
+  setTimeout(()=>{ const s2=document.getElementById("splashSub"); if(s2 && !net.booted){ s2.textContent = t("ld.slow","Taking longer than usual…"); s2.className = "sub slow"; } }, 4000);
+  setTimeout(splashOff, 6000);
+  function netPaint(){
+    const b = document.getElementById("netbar"); if(!b) return;
+    if(net.ok){ b.className = "netbar"; b.classList.remove("on"); return; }
+    const secs = Math.max(0, Math.round((net.retryAt - Date.now())/1000));
+    const offline = !navigator.onLine || net.fails > 2;
+    b.className = "on " + (offline ? "off" : "");
+    b.innerHTML = (offline ? `<div style="font-size:16px">📡</div>` : `<div class="spin"></div>`) +
+      `<div><b>${offline ? t("ld.offline","Can't reach CLEXER") : t("ld.slow_net","Slow connection")}</b>` +
+      `<span>${offline ? t("ld.retry_in","Retrying in") + " " + secs + "s" : t("ld.still","Still trying… data may be a few seconds old")}</span></div>` +
+      `<button onclick="netRetry()">${t("ld.retry","Retry")}</button>`;
+  }
+  function netFail(){
+    net.fails++; net.ok = false; net.retryAt = Date.now() + Math.min(30, 5 * net.fails) * 1000;
+    netPaint(); clearInterval(net.timer);
+    net.timer = setInterval(()=>{ netPaint(); if(Date.now() >= net.retryAt) netRetry(); }, 1000);
+  }
+  function netGood(){
+    splashOff();
+    if(net.ok) return;
+    net.ok = true; net.fails = 0; clearInterval(net.timer);
+    const b = document.getElementById("netbar");
+    b.className = "on ok"; b.innerHTML = `<div style="font-size:16px">✅</div><div><b>${t("ld.back","Back online")}</b><span>${t("ld.refreshed","Data refreshed")}</span></div>`;
+    setTimeout(()=>{ b.classList.remove("on"); }, 2200);
+  }
+  function netRetry(){
+    clearInterval(net.timer); net.retryAt = Date.now() + 8000;
+    refresh(); switchTabReload();
+  }
+  function switchTabReload(){
+    if(curTab==="trades") loadTrades(); else if(curTab==="copy") loadCopy();
+    else if(curTab==="portfolio") loadPortfolio(curP); else if(curTab==="virtual") loadVirtual();
+  }
+  window.addEventListener("offline", netFail);
+  window.addEventListener("online", netRetry);
+
+  /* ---------- full screen (Bot API 8.0) and home-screen shortcut (8.0) ---------- */
+  let _fs = false;
+  function toggleFull(){
+    haptic("sel");
+    try{
+      if(TG && TG.requestFullscreen && TG.isVersionAtLeast && TG.isVersionAtLeast("8.0")){
+        _fs ? TG.exitFullscreen() : TG.requestFullscreen();
+      }
+      _fs = !_fs;
+      document.body.classList.toggle("fs", _fs);
+      document.getElementById("fsBtn").textContent = _fs ? "⛶✕" : "⛶";
+      if(typeof renderChart === "function") setTimeout(renderChart, 250);
+    }catch(e){}
+  }
+  function addHome(){
+    haptic();
+    try{ TG && TG.addToHomeScreen && TG.addToHomeScreen(); }catch(e){}
+  }
+  (function homeBtn(){
+    const b = document.getElementById("hsBtn"); if(!b || !TG || !TG.checkHomeScreenStatus) return;
+    try{
+      TG.checkHomeScreenStatus(st => { b.hidden = !(st === "missed" || st === "unknown"); });
+      TG.onEvent && TG.onEvent("homeScreenAdded", () => { b.hidden = true; });
+      TG.onEvent && TG.onEvent("fullscreenChanged", () => { _fs = !!TG.isFullscreen; document.body.classList.toggle("fs", _fs); });
+    }catch(e){}
+  })();
   const haptic = t=>{try{TG&&TG.HapticFeedback&&(t==="sel"?TG.HapticFeedback.selectionChanged():TG.HapticFeedback.impactOccurred("light"));}catch(e){}};
   const initData = TG ? TG.initData : "";
 
   // API helper — always sends initData header
   async function api(path, opts={}){
-    const res = await fetch(API + path, {
-      ...opts,
-      headers: { "X-Telegram-Init-Data": initData, "Content-Type": "application/json", ...(opts.headers||{}) }
-    });
-    if(!res.ok) throw new Error(await res.text());
+    let res;
+    try{
+      res = await fetch(API + path, {
+        ...opts,
+        headers: { "X-Telegram-Init-Data": initData, "Content-Type": "application/json", ...(opts.headers||{}) }
+      });
+    }catch(e){ netFail(); throw e; }                      // no network / server unreachable
+    if(!res.ok){
+      if(res.status >= 500) netFail(); else netGood();    // a 4xx is an answer, the link is fine
+      throw new Error(await res.text());
+    }
+    netGood();
     return res.json();
   }
 
