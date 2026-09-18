@@ -153,7 +153,12 @@
 "Still trying… data may be a few seconds old": "Пробуем… данные могут отставать на несколько секунд",
 "Retry": "Повторить",
 "Back online": "Связь восстановлена",
-"Data refreshed": "Данные обновлены"
+"Data refreshed": "Данные обновлены",
+"Share": "Поделиться",
+"Story": "История",
+"Couldn't make the card - try again.": "Не удалось создать карточку — попробуйте ещё раз.",
+"My CLEXER trade": "Моя сделка в CLEXER",
+"Update Telegram to share to your story.": "Обновите Telegram, чтобы делиться в истории."
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -270,7 +275,11 @@
 "Still trying… data may be a few seconds old": "Sinusubukan pa… maaaring ilang segundo ang tagal ng data",
 "Retry": "Subukan ulit",
 "Back online": "Online na ulit",
-"Data refreshed": "Na-refresh ang data"
+"Data refreshed": "Na-refresh ang data",
+"Share": "Ibahagi",
+"Couldn't make the card - try again.": "Hindi nagawa ang card — subukan ulit.",
+"My CLEXER trade": "Ang trade ko sa CLEXER",
+"Update Telegram to share to your story.": "I-update ang Telegram para makapag-share sa story."
 },
 "ur": {
 "Chart": "چارٹ",
@@ -427,7 +436,12 @@
 "Still trying… data may be a few seconds old": "کوشش جاری… ڈیٹا چند سیکنڈ پرانا ہو سکتا ہے",
 "Retry": "دوبارہ کوشش کریں",
 "Back online": "دوبارہ آن لائن",
-"Data refreshed": "ڈیٹا تازہ ہو گیا"
+"Data refreshed": "ڈیٹا تازہ ہو گیا",
+"Share": "شیئر کریں",
+"Story": "اسٹوری",
+"Couldn't make the card - try again.": "کارڈ نہیں بن سکا — دوبارہ کوشش کریں۔",
+"My CLEXER trade": "میری CLEXER ٹریڈ",
+"Update Telegram to share to your story.": "اسٹوری پر شیئر کرنے کے لیے ٹیلیگرام اپ ڈیٹ کریں۔"
 },
 "id": {
 "Chart": "Grafik",
@@ -562,7 +576,11 @@
 "Still trying… data may be a few seconds old": "Masih mencoba… data mungkin terlambat beberapa detik",
 "Retry": "Coba lagi",
 "Back online": "Kembali online",
-"Data refreshed": "Data disegarkan"
+"Data refreshed": "Data disegarkan",
+"Share": "Bagikan",
+"Couldn't make the card - try again.": "Kartu gagal dibuat — coba lagi.",
+"My CLEXER trade": "Trading CLEXER saya",
+"Update Telegram to share to your story.": "Perbarui Telegram untuk berbagi ke story."
 },
 "pt": {
 "Chart": "Gráfico",
@@ -707,7 +725,11 @@
 "Still trying… data may be a few seconds old": "Ainda tentando… os dados podem estar alguns segundos atrasados",
 "Retry": "Tentar de novo",
 "Back online": "De volta online",
-"Data refreshed": "Dados atualizados"
+"Data refreshed": "Dados atualizados",
+"Share": "Compartilhar",
+"Couldn't make the card - try again.": "Não foi possível criar o card — tente de novo.",
+"My CLEXER trade": "Minha operação na CLEXER",
+"Update Telegram to share to your story.": "Atualize o Telegram para compartilhar no story."
 },
 "es": {
 "Chart": "Gráfico",
@@ -853,7 +875,12 @@
 "Still trying… data may be a few seconds old": "Seguimos intentando… los datos pueden ir unos segundos por detrás",
 "Retry": "Reintentar",
 "Back online": "De nuevo en línea",
-"Data refreshed": "Datos actualizados"
+"Data refreshed": "Datos actualizados",
+"Share": "Compartir",
+"Story": "Historia",
+"Couldn't make the card - try again.": "No se pudo crear la tarjeta: inténtalo de nuevo.",
+"My CLEXER trade": "Mi operación en CLEXER",
+"Update Telegram to share to your story.": "Actualiza Telegram para compartir en tu historia."
 },
 "ar": {
 "Chart": "الرسم",
@@ -1010,7 +1037,12 @@
 "Still trying… data may be a few seconds old": "ما زلنا نحاول… قد تتأخر البيانات بضع ثوانٍ",
 "Retry": "إعادة المحاولة",
 "Back online": "عاد الاتصال",
-"Data refreshed": "تم تحديث البيانات"
+"Data refreshed": "تم تحديث البيانات",
+"Share": "مشاركة",
+"Story": "قصة",
+"Couldn't make the card - try again.": "تعذّر إنشاء البطاقة — حاول مجددًا.",
+"My CLEXER trade": "صفقتي على CLEXER",
+"Update Telegram to share to your story.": "حدّث تيليجرام للمشاركة في قصتك."
 },
 "zh": {
 "Chart": "图表",
@@ -1165,7 +1197,12 @@
 "Still trying… data may be a few seconds old": "仍在尝试…数据可能延迟几秒",
 "Retry": "重试",
 "Back online": "已恢复连接",
-"Data refreshed": "数据已刷新"
+"Data refreshed": "数据已刷新",
+"Share": "分享",
+"Story": "快拍",
+"Couldn't make the card - try again.": "卡片生成失败，请重试。",
+"My CLEXER trade": "我的 CLEXER 交易",
+"Update Telegram to share to your story.": "请更新 Telegram 以分享到快拍。"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1317,7 +1354,12 @@
 "Still trying… data may be a few seconds old": "Hâlâ deneniyor… veriler birkaç saniye gecikmeli olabilir",
 "Retry": "Yeniden dene",
 "Back online": "Tekrar çevrimiçi",
-"Data refreshed": "Veriler yenilendi"
+"Data refreshed": "Veriler yenilendi",
+"Share": "Paylaş",
+"Story": "Hikâye",
+"Couldn't make the card - try again.": "Kart oluşturulamadı — tekrar deneyin.",
+"My CLEXER trade": "CLEXER işlemim",
+"Update Telegram to share to your story.": "Hikâyede paylaşmak için Telegram'ı güncelleyin."
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1472,7 +1514,11 @@
 "Still trying… data may be a few seconds old": "Vẫn đang thử… dữ liệu có thể trễ vài giây",
 "Retry": "Thử lại",
 "Back online": "Đã trực tuyến lại",
-"Data refreshed": "Dữ liệu đã làm mới"
+"Data refreshed": "Dữ liệu đã làm mới",
+"Share": "Chia sẻ",
+"Couldn't make the card - try again.": "Không tạo được thẻ — thử lại.",
+"My CLEXER trade": "Giao dịch CLEXER của tôi",
+"Update Telegram to share to your story.": "Cập nhật Telegram để chia sẻ lên story."
 },
 "fr": {
 "Chart": "Graphique",
@@ -1617,6 +1663,10 @@
 "Still trying… data may be a few seconds old": "On réessaie… les données peuvent avoir quelques secondes de retard",
 "Retry": "Réessayer",
 "Back online": "De retour en ligne",
-"Data refreshed": "Données actualisées"
+"Data refreshed": "Données actualisées",
+"Share": "Partager",
+"Couldn't make the card - try again.": "Impossible de créer la carte — réessayez.",
+"My CLEXER trade": "Mon trade CLEXER",
+"Update Telegram to share to your story.": "Mettez Telegram à jour pour partager en story."
 }
 }

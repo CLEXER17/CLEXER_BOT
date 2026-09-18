@@ -19,7 +19,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 import psycopg2
@@ -659,6 +659,104 @@ def serve_miniapp_lang():
         return JSONResponse({})
     return FileResponse(_p, media_type="application/json",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
+
+
+# ── sharing: a trade card as a PNG, and a prepared inline message ──────────
+# The Mini App can share to a chat (Telegram shareMessage, Bot API 8.0 - needs
+# a prepared message id from savePreparedInlineMessage) and to Stories
+# (shareToStory, 7.8 - needs a public https image URL, which is what
+# /share/card is). Cards are rendered here and cached in memory for an hour.
+_share_cache: dict = {}
+
+
+def _share_key(uid: str, payload: dict, shape: str) -> str:
+    raw = json.dumps({"u": uid, "p": payload, "s": shape}, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode()).hexdigest()[:20]
+
+
+@app.get("/share/card")
+def share_card(id: str):
+    """Public (unguessable id) so Telegram's story editor can fetch it."""
+    hit = _share_cache.get(id)
+    if not hit or time.time() - hit["t"] > 3600:
+        _share_cache.pop(id, None)
+        raise HTTPException(404, "expired")
+    return Response(content=hit["png"], media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+class SharePayload(BaseModel):
+    sym: str = ""
+    side: str = "LONG"
+    lev: float = 0
+    entry: float = 0
+    sl: float = 0
+    tp1: float = 0
+    tp2: float = 0
+    pnl_pct: float = 0
+    pnl_usd: Optional[float] = None
+    status: str = ""
+    result: str = ""
+    virtual: bool = False
+    shape: str = "square"
+
+
+@app.post("/share/make")
+def share_make(body: SharePayload, request: Request, user: dict = Depends(get_current_user)):
+    """Renders the card and returns its public URL (+ a prepared message id
+    for shareMessage when Telegram accepts it)."""
+    import sharecard
+    uid = str(user.get("id", ""))
+    data = body.model_dump() if hasattr(body, "model_dump") else body.dict()
+    shape = "story" if data.pop("shape", "square") == "story" else "square"
+    data["cta"] = "@" + (_bot_username() or "CLEXbot")
+    try:
+        png = sharecard.render(data, shape)
+    except Exception as e:
+        raise _server_error("render", e)
+    key = _share_key(uid, data, shape)
+    _share_cache[key] = {"png": png, "t": time.time()}
+    for k in [k for k, v in list(_share_cache.items()) if time.time() - v["t"] > 3600]:
+        _share_cache.pop(k, None)
+    base = str(request.base_url).rstrip("/")
+    url = f"{base}/share/card?id={key}"
+    out = {"url": url, "msg_id": None}
+    if shape == "square":
+        # a prepared inline message the user can forward to any chat
+        sym = (data.get("sym") or "").replace("-USDT", "").replace("USDT", "")
+        cap = (f"{'🟢' if float(data.get('pnl_pct') or 0) >= 0 else '🔴'} <b>{sym}/USDT</b> "
+               f"{data.get('side','')} {data.get('lev','')}x · "
+               f"{'+' if float(data.get('pnl_pct') or 0) >= 0 else ''}{float(data.get('pnl_pct') or 0):.2f}%"
+               + ("\n<i>Paper trade · not financial advice</i>" if data.get("virtual") else ""))
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/savePreparedInlineMessage", json={
+                "user_id": int(uid),
+                "result": {"type": "photo", "id": key, "photo_url": url, "thumbnail_url": url,
+                           "caption": cap, "parse_mode": "HTML",
+                           "reply_markup": {"inline_keyboard": [[{"text": "📈 Open CLEXER", "url": f"https://t.me/{_bot_username()}"}]]}},
+                "allow_user_chats": True, "allow_group_chats": True, "allow_channel_chats": True}, timeout=10).json()
+            if r.get("ok"):
+                out["msg_id"] = (r.get("result") or {}).get("id")
+            else:
+                print(f"[SHARE] prepare: {r.get('description')}")
+        except Exception as e:
+            print(f"[SHARE] prepare error: {e}")
+    return out
+
+
+_botname = {"v": "", "t": 0.0}
+
+
+def _bot_username() -> str:
+    if _botname["v"] and time.time() - _botname["t"] < 3600:
+        return _botname["v"]
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=6).json()
+        _botname["v"] = ((r.get("result") or {}).get("username") or "")
+        _botname["t"] = time.time()
+    except Exception:
+        pass
+    return _botname["v"]
 
 
 # ── device / sign-in security (admin-only while under test) ────────────────

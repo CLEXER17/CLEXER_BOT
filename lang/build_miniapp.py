@@ -58,6 +58,11 @@ EN = [
     "Retry",
     "Back online",
     "Data refreshed",
+    "Share",
+    "Story",
+    "Couldn't make the card - try again.",
+    "My CLEXER trade",
+    "Update Telegram to share to your story.",
 ]
 
 T = {}
@@ -109,6 +114,11 @@ T["ru"] = [
     "Повторить",
     "Связь восстановлена",
     "Данные обновлены",
+    "Поделиться",
+    "История",
+    "Не удалось создать карточку — попробуйте ещё раз.",
+    "Моя сделка в CLEXER",
+    "Обновите Telegram, чтобы делиться в истории.",
 ]
 
 T["tl"] = [
@@ -158,6 +168,11 @@ T["tl"] = [
     "Subukan ulit",
     "Online na ulit",
     "Na-refresh ang data",
+    "Ibahagi",
+    "Story",
+    "Hindi nagawa ang card — subukan ulit.",
+    "Ang trade ko sa CLEXER",
+    "I-update ang Telegram para makapag-share sa story.",
 ]
 
 T["ur"] = [
@@ -207,6 +222,11 @@ T["ur"] = [
     "دوبارہ کوشش کریں",
     "دوبارہ آن لائن",
     "ڈیٹا تازہ ہو گیا",
+    "شیئر کریں",
+    "اسٹوری",
+    "کارڈ نہیں بن سکا — دوبارہ کوشش کریں۔",
+    "میری CLEXER ٹریڈ",
+    "اسٹوری پر شیئر کرنے کے لیے ٹیلیگرام اپ ڈیٹ کریں۔",
 ]
 
 T["id"] = [
@@ -256,6 +276,11 @@ T["id"] = [
     "Coba lagi",
     "Kembali online",
     "Data disegarkan",
+    "Bagikan",
+    "Story",
+    "Kartu gagal dibuat — coba lagi.",
+    "Trading CLEXER saya",
+    "Perbarui Telegram untuk berbagi ke story.",
 ]
 
 T["pt"] = [
@@ -305,6 +330,11 @@ T["pt"] = [
     "Tentar de novo",
     "De volta online",
     "Dados atualizados",
+    "Compartilhar",
+    "Story",
+    "Não foi possível criar o card — tente de novo.",
+    "Minha operação na CLEXER",
+    "Atualize o Telegram para compartilhar no story.",
 ]
 
 T["es"] = [
@@ -354,6 +384,11 @@ T["es"] = [
     "Reintentar",
     "De nuevo en línea",
     "Datos actualizados",
+    "Compartir",
+    "Historia",
+    "No se pudo crear la tarjeta: inténtalo de nuevo.",
+    "Mi operación en CLEXER",
+    "Actualiza Telegram para compartir en tu historia.",
 ]
 
 T["ar"] = [
@@ -403,6 +438,11 @@ T["ar"] = [
     "إعادة المحاولة",
     "عاد الاتصال",
     "تم تحديث البيانات",
+    "مشاركة",
+    "قصة",
+    "تعذّر إنشاء البطاقة — حاول مجددًا.",
+    "صفقتي على CLEXER",
+    "حدّث تيليجرام للمشاركة في قصتك.",
 ]
 
 T["zh"] = [
@@ -452,6 +492,11 @@ T["zh"] = [
     "重试",
     "已恢复连接",
     "数据已刷新",
+    "分享",
+    "快拍",
+    "卡片生成失败，请重试。",
+    "我的 CLEXER 交易",
+    "请更新 Telegram 以分享到快拍。",
 ]
 
 T["tr"] = [
@@ -501,6 +546,11 @@ T["tr"] = [
     "Yeniden dene",
     "Tekrar çevrimiçi",
     "Veriler yenilendi",
+    "Paylaş",
+    "Hikâye",
+    "Kart oluşturulamadı — tekrar deneyin.",
+    "CLEXER işlemim",
+    "Hikâyede paylaşmak için Telegram'ı güncelleyin.",
 ]
 
 T["vi"] = [
@@ -550,6 +600,11 @@ T["vi"] = [
     "Thử lại",
     "Đã trực tuyến lại",
     "Dữ liệu đã làm mới",
+    "Chia sẻ",
+    "Story",
+    "Không tạo được thẻ — thử lại.",
+    "Giao dịch CLEXER của tôi",
+    "Cập nhật Telegram để chia sẻ lên story.",
 ]
 
 T["fr"] = [
@@ -599,6 +654,11 @@ T["fr"] = [
     "Réessayer",
     "De retour en ligne",
     "Données actualisées",
+    "Partager",
+    "Story",
+    "Impossible de créer la carte — réessayez.",
+    "Mon trade CLEXER",
+    "Mettez Telegram à jour pour partager en story.",
 ]
 
 

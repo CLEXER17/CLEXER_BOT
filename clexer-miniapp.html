@@ -290,6 +290,10 @@
   #netbar b{display:block;font-size:12px;}#netbar span{display:block;font-size:10px;color:var(--muted);}
   #netbar button{margin-left:auto;background:var(--gold);color:var(--bg);border:0;border-radius:8px;padding:7px 11px;font-weight:700;font-size:11px;}
   #netbar .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;flex:none;}
+  .sharebar{display:flex;gap:8px;margin-top:10px;}
+  .sharebar button{flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px;font-size:11px;font-family:var(--mono);letter-spacing:.04em;cursor:pointer;}
+  .sharebar button:active{transform:scale(.97);}
+  .sharebar button b{color:var(--gold);}
   .iconbtn{background:var(--bg3);border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;line-height:1.4;}
   .iconbtn:active{transform:scale(.94);}
   body.fs .hd,body.fs .searchwrap{display:none;}
@@ -928,6 +932,10 @@
         </div>
         <div class="tc-tpsl-box tc-tpsl-full slb"><span class="k">SL</span><span class="v down">${t.sl?fmt(t.sl,d):'--'}</span></div>
         ${running?tradeTrack(t, live):''}
+        <div class="sharebar">
+          <button onclick='shareTrade(this.dataset.p,"chat")' data-p='${_shareData(s,t,pnlPct,pnl)}'><b>\u{1F4E4}</b> ${window.t("sh.chat","Share")}</button>
+          <button onclick='shareTrade(this.dataset.p,"story")' data-p='${_shareData(s,t,pnlPct,pnl)}'><b>\u2728</b> ${window.t("sh.story","Story")}</button>
+        </div>
       </div>`;
     }
     if(!html) html=`<div class="notrade">No active trades</div>`;
@@ -1008,6 +1016,65 @@
   document.getElementById("searchInput").addEventListener("keydown",e=>{if(e.key==="Enter")setSymbol(e.target.value);});
 
   /* ---------- COPY ---------- */
+  /* ---------- sharing a trade card ----------
+     /share/make renders the PNG server-side and returns its public URL plus a
+     prepared-message id. "chat" opens Telegram's share sheet (shareMessage,
+     Bot API 8.0); "story" opens the story editor (shareToStory, 7.8) with a
+     link back to the bot. Older clients fall back to a file download. */
+  function _shareData(sym, tr, pct, usd){
+    return JSON.stringify({sym: sym, side: tr.side, lev: tr.lev, entry: tr.entry, sl: tr.sl,
+                           tp1: tr.tp, tp2: tr.tp2, pnl_pct: +(pct||0).toFixed(2), pnl_usd: +(usd||0).toFixed(2),
+                           status: tr.status}).replace(/'/g, "&#39;");
+  }
+  async function shareTrade(payloadJson, mode){
+    haptic();
+    let p; try{ p = JSON.parse(payloadJson); }catch(e){ return; }
+    p.shape = mode === "story" ? "story" : "square";
+    let r;
+    try{ r = await api("/share/make", {method:"POST", body: JSON.stringify(p)}); }
+    catch(e){ TG && TG.showAlert && TG.showAlert(t("sh.failed","Couldn't make the card - try again.")); return; }
+    if(mode === "story"){
+      if(TG && TG.shareToStory){
+        TG.shareToStory(r.url, {text: t("sh.caption","My CLEXER trade"),
+                                widget_link: {url: "https://t.me/" + (BOT_USER || "CLEXbot"), name: "CLEXER"}});
+      }else if(TG && TG.showAlert){ TG.showAlert(t("sh.old","Update Telegram to share to your story.")); }
+      return;
+    }
+    if(r.msg_id && TG && TG.shareMessage){ TG.shareMessage(r.msg_id); return; }
+    if(TG && TG.downloadFile){ TG.downloadFile({url: r.url, file_name: "clexer-trade.png"}); return; }
+    window.open(r.url, "_blank");
+  }
+  let BOT_USER = "";
+
+  /* ---------- sign-in security (admin-only while under test) ----------
+     The app reports its device + network each time it opens; a new device or
+     a new IP gets a DM with a Lock button (see api.py /device/seen). */
+  async function deviceSeen(){
+    try{
+      const scr = (screen && screen.width) ? `${screen.width}x${screen.height}@${window.devicePixelRatio || 1}` : "";
+      const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "";
+      const r = await api("/device/seen", {method: "POST", body: JSON.stringify({
+        platform: (TG && TG.platform) || "web", version: (TG && TG.version) || "",
+        ua: navigator.userAgent || "", screen: scr, tz, lang: navigator.language || ""})});
+      if(r && r.bot) BOT_USER = r.bot;
+    }catch(e){}
+  }
+  async function loadDevices(){
+    let d; try{ d = await api("/device/list"); }catch(e){ return; }
+    const card = document.getElementById("devCard"); if(!card) return;
+    if(!d || !d.enabled){ card.hidden = true; return; }
+    card.hidden = false;
+    document.getElementById("devList").innerHTML =
+      (d.locked ? `<div class="down" style="font-size:11px;margin-bottom:8px">🔒 ${t("dev.locked","Copy trading is locked - unlock from the alert message in your DM.")}</div>` : "") +
+      ((d.devices || []).map(x => `<div class="rowline" style="border-top:1px solid var(--border)">
+        <div><div class="k">${x.name || "Device"}${x.current ? ` <span style="font-size:9px;color:var(--long)">● ${t("dev.this","this device")}</span>` : ""}</div>
+        <div class="sub">${x.where || "-"} · <span class="mono">${x.ip || "-"}</span> · ${t("dev.last","last")} ${x.last}</div></div>
+        ${x.current ? "" : `<button class="copybtn" onclick="forgetDevice('${x.fp}')">${t("dev.remove","Remove")}</button>`}</div>`).join("") ||
+      `<div style="font-size:11px;color:var(--muted)">${t("dev.none","No devices yet.")}</div>`);
+  }
+  async function forgetDevice(fp){ try{ await api("/device/forget", {method:"POST", body: JSON.stringify({fp})}); haptic(); loadDevices(); }catch(e){} }
+  deviceSeen();
+
   async function loadCopy(){
     loadDevices();
     // load BingX status
