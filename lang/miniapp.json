@@ -137,7 +137,14 @@
 "TP1 done · riding to TP2": "TP1 взят · идём к TP2",
 "Fees": "Комиссии",
 "⚙ Run settings": "⚙ Настройки запуска",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Запуск активен — настройки только для чтения. Сбросьте, чтобы начать новый запуск с другими значениями."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Запуск активен — настройки только для чтения. Сбросьте, чтобы начать новый запуск с другими значениями.",
+"Sign-ins & devices": "Входы и устройства",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Вы получите сообщение, когда приложение откроют с нового устройства или сети. Удалите устройство, чтобы получить оповещение при его следующем входе.",
+"this device": "это устройство",
+"last": "последний",
+"Remove": "Удалить",
+"No devices yet.": "Устройств пока нет.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Копитрейдинг заблокирован — разблокируйте из сообщения-оповещения в личке."
 },
 "tl": {
 "Trades": "Mga Trade",
@@ -238,7 +245,14 @@
 "TP1 done · riding to TP2": "Tapos ang TP1 · patungo sa TP2",
 "Fees": "Bayarin",
 "⚙ Run settings": "⚙ Mga setting ng run",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "May aktibong run — read-only ang mga setting. I-reset para magsimula ng bagong run na may ibang halaga."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "May aktibong run — read-only ang mga setting. I-reset para magsimula ng bagong run na may ibang halaga.",
+"Sign-ins & devices": "Mga sign-in at device",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Makakatanggap ka ng DM kapag binuksan ang app mula sa bagong device o network. Alisin ang device para ma-alert ulit sa susunod na sign-in nito.",
+"this device": "device na ito",
+"last": "huli",
+"Remove": "Alisin",
+"No devices yet.": "Wala pang device.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Naka-lock ang copy trading — i-unlock mula sa alert message sa iyong DM."
 },
 "ur": {
 "Chart": "چارٹ",
@@ -379,7 +393,14 @@
 "TP1 done · riding to TP2": "TP1 ہو گیا · TP2 کی طرف",
 "Fees": "فیس",
 "⚙ Run settings": "⚙ رن کی ترتیبات",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "رن فعال ہے — ترتیبات صرف پڑھنے کے لیے ہیں۔ مختلف اقدار کے ساتھ نیا رن شروع کرنے کے لیے ری سیٹ کریں۔"
+"A run is active - settings are read-only. Reset to start a new run with different values.": "رن فعال ہے — ترتیبات صرف پڑھنے کے لیے ہیں۔ مختلف اقدار کے ساتھ نیا رن شروع کرنے کے لیے ری سیٹ کریں۔",
+"Sign-ins & devices": "سائن اِن اور ڈیوائسز",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "جب بھی ایپ نئی ڈیوائس یا نیٹ ورک سے کھلے گی آپ کو DM ملے گا۔ ڈیوائس ہٹائیں تاکہ اگلی بار سائن اِن پر دوبارہ الرٹ ملے۔",
+"this device": "یہ ڈیوائس",
+"last": "آخری",
+"Remove": "ہٹائیں",
+"No devices yet.": "ابھی کوئی ڈیوائس نہیں۔",
+"Copy trading is locked - unlock from the alert message in your DM.": "کاپی ٹریڈنگ لاک ہے — اپنے DM میں الرٹ پیغام سے ان لاک کریں۔"
 },
 "id": {
 "Chart": "Grafik",
@@ -498,7 +519,14 @@
 "TP1 done · riding to TP2": "TP1 tercapai · menuju TP2",
 "Fees": "Biaya",
 "⚙ Run settings": "⚙ Pengaturan run",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Run sedang aktif — pengaturan hanya-baca. Reset untuk memulai run baru dengan nilai berbeda."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Run sedang aktif — pengaturan hanya-baca. Reset untuk memulai run baru dengan nilai berbeda.",
+"Sign-ins & devices": "Masuk & perangkat",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Anda mendapat DM setiap kali aplikasi dibuka dari perangkat atau jaringan baru. Hapus perangkat agar diberi tahu lagi saat masuk berikutnya.",
+"this device": "perangkat ini",
+"last": "terakhir",
+"Remove": "Hapus",
+"No devices yet.": "Belum ada perangkat.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading terkunci — buka kunci dari pesan peringatan di DM Anda."
 },
 "pt": {
 "Chart": "Gráfico",
@@ -627,7 +655,14 @@
 "TP1 done · riding to TP2": "TP1 feito · rumo ao TP2",
 "Fees": "Taxas",
 "⚙ Run settings": "⚙ Configurações da execução",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Uma execução está ativa — as configurações são somente leitura. Redefina para iniciar uma nova execução com outros valores."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Uma execução está ativa — as configurações são somente leitura. Redefina para iniciar uma nova execução com outros valores.",
+"Sign-ins & devices": "Acessos e dispositivos",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Você recebe uma DM sempre que o app abre em um dispositivo ou rede nova. Remova um dispositivo para ser avisado de novo no próximo acesso.",
+"this device": "este dispositivo",
+"last": "último",
+"Remove": "Remover",
+"No devices yet.": "Nenhum dispositivo ainda.",
+"Copy trading is locked - unlock from the alert message in your DM.": "O copy trading está bloqueado — desbloqueie pela mensagem de alerta na sua DM."
 },
 "es": {
 "Chart": "Gráfico",
@@ -757,7 +792,14 @@
 "TP1 done · riding to TP2": "TP1 hecho · rumbo a TP2",
 "Fees": "Comisiones",
 "⚙ Run settings": "⚙ Ajustes de la ejecución",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Hay una ejecución activa — los ajustes son de solo lectura. Reinicia para empezar una nueva con otros valores."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Hay una ejecución activa — los ajustes son de solo lectura. Reinicia para empezar una nueva con otros valores.",
+"Sign-ins & devices": "Accesos y dispositivos",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Recibes un DM cada vez que la app se abre desde un dispositivo o red nuevos. Elimina un dispositivo para volver a recibir aviso en su próximo acceso.",
+"this device": "este dispositivo",
+"last": "último",
+"Remove": "Eliminar",
+"No devices yet.": "Aún no hay dispositivos.",
+"Copy trading is locked - unlock from the alert message in your DM.": "El copy trading está bloqueado — desbloquéalo desde el mensaje de alerta en tu DM."
 },
 "ar": {
 "Chart": "الرسم",
@@ -898,7 +940,14 @@
 "TP1 done · riding to TP2": "تم TP1 · نحو TP2",
 "Fees": "الرسوم",
 "⚙ Run settings": "⚙ إعدادات التشغيل",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "هناك تشغيل نشط — الإعدادات للقراءة فقط. أعد الضبط لبدء تشغيل جديد بقيم مختلفة."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "هناك تشغيل نشط — الإعدادات للقراءة فقط. أعد الضبط لبدء تشغيل جديد بقيم مختلفة.",
+"Sign-ins & devices": "تسجيلات الدخول والأجهزة",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "تصلك رسالة خاصة كلما فُتح التطبيق من جهاز أو شبكة جديدة. احذف جهازًا ليصلك تنبيه مجددًا عند دخوله التالي.",
+"this device": "هذا الجهاز",
+"last": "آخر",
+"Remove": "إزالة",
+"No devices yet.": "لا توجد أجهزة بعد.",
+"Copy trading is locked - unlock from the alert message in your DM.": "نسخ التداول مقفل — افتح القفل من رسالة التنبيه في خاصتك."
 },
 "zh": {
 "Chart": "图表",
@@ -1037,7 +1086,14 @@
 "TP1 done · riding to TP2": "TP1 已达 · 冲向 TP2",
 "Fees": "手续费",
 "⚙ Run settings": "⚙ 运行设置",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "运行进行中——设置为只读。重置后可用不同数值开始新的运行。"
+"A run is active - settings are read-only. Reset to start a new run with different values.": "运行进行中——设置为只读。重置后可用不同数值开始新的运行。",
+"Sign-ins & devices": "登录与设备",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "每当应用从新设备或新网络打开，你都会收到私信。移除设备后，其下次登录会再次提醒你。",
+"this device": "当前设备",
+"last": "最近",
+"Remove": "移除",
+"No devices yet.": "暂无设备。",
+"Copy trading is locked - unlock from the alert message in your DM.": "跟单已锁定——请在私信中的提醒消息里解锁。"
 },
 "tr": {
 "Chart": "Grafik",
@@ -1173,7 +1229,14 @@
 "TP1 done · riding to TP2": "TP1 tamam · TP2'ye gidiyor",
 "Fees": "Komisyon",
 "⚙ Run settings": "⚙ Çalıştırma ayarları",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Bir çalıştırma aktif — ayarlar salt okunur. Farklı değerlerle yeni bir çalıştırma için sıfırlayın."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Bir çalıştırma aktif — ayarlar salt okunur. Farklı değerlerle yeni bir çalıştırma için sıfırlayın.",
+"Sign-ins & devices": "Girişler ve cihazlar",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Uygulama yeni bir cihaz veya ağdan açıldığında DM alırsınız. Bir cihazı kaldırın, bir sonraki girişinde yeniden uyarılırsınız.",
+"this device": "bu cihaz",
+"last": "son",
+"Remove": "Kaldır",
+"No devices yet.": "Henüz cihaz yok.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Kopya işlem kilitli — DM'nizdeki uyarı mesajından kilidi açın."
 },
 "vi": {
 "Chart": "Biểu đồ",
@@ -1312,7 +1375,14 @@
 "TP1 done · riding to TP2": "Xong TP1 · tiến tới TP2",
 "Fees": "Phí",
 "⚙ Run settings": "⚙ Cài đặt phiên chạy",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Phiên chạy đang hoạt động — cài đặt chỉ đọc. Đặt lại để bắt đầu phiên mới với giá trị khác."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Phiên chạy đang hoạt động — cài đặt chỉ đọc. Đặt lại để bắt đầu phiên mới với giá trị khác.",
+"Sign-ins & devices": "Đăng nhập & thiết bị",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Bạn nhận DM mỗi khi ứng dụng mở từ thiết bị hoặc mạng mới. Xóa thiết bị để được cảnh báo lại ở lần đăng nhập sau.",
+"this device": "thiết bị này",
+"last": "gần nhất",
+"Remove": "Xóa",
+"No devices yet.": "Chưa có thiết bị.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Copy trading đang bị khóa — mở khóa từ tin nhắn cảnh báo trong DM."
 },
 "fr": {
 "Chart": "Graphique",
@@ -1441,6 +1511,13 @@
 "TP1 done · riding to TP2": "TP1 atteint · vers TP2",
 "Fees": "Frais",
 "⚙ Run settings": "⚙ Réglages de l'exécution",
-"A run is active - settings are read-only. Reset to start a new run with different values.": "Une exécution est active — les réglages sont en lecture seule. Réinitialisez pour en démarrer une nouvelle avec d'autres valeurs."
+"A run is active - settings are read-only. Reset to start a new run with different values.": "Une exécution est active — les réglages sont en lecture seule. Réinitialisez pour en démarrer une nouvelle avec d'autres valeurs.",
+"Sign-ins & devices": "Connexions et appareils",
+"You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.": "Vous recevez un DM à chaque ouverture de l'app depuis un nouvel appareil ou réseau. Retirez un appareil pour être alerté à sa prochaine connexion.",
+"this device": "cet appareil",
+"last": "dernier",
+"Remove": "Retirer",
+"No devices yet.": "Aucun appareil pour l'instant.",
+"Copy trading is locked - unlock from the alert message in your DM.": "Le copy trading est verrouillé — déverrouillez-le depuis le message d'alerte dans vos DM."
 }
 }

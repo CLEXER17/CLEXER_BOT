@@ -661,6 +661,147 @@ def serve_miniapp_lang():
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
 
 
+# ── device / sign-in security (admin-only while under test) ────────────────
+# Telegram gives a Mini App no hardware id. What can be seen: platform,
+# Telegram version, browser (user agent), screen size, timezone, language -
+# hashed into a fingerprint - plus the request IP and its location. A new
+# fingerprint or a new IP for a known device = a DM alert with a Lock button.
+def _kv_put(key: str, obj):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO kv_store (key, data_json, updated_at) VALUES (%s, %s, NOW())
+                           ON CONFLICT (key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()""", (key, json.dumps(obj)))
+        conn.commit()
+
+
+def _client_ip(request: Request) -> str:
+    xf = request.headers.get("x-forwarded-for", "")
+    if xf:
+        return xf.split(",")[0].strip()
+    return (request.client.host if request.client else "") or ""
+
+
+def _geo(ip: str) -> dict:
+    """Country / city / ISP for an IP (ip-api.com, cached a day in kv)."""
+    if not ip or ip.startswith(("10.", "192.168.", "127.", "100.64.")):
+        return {}
+    cache = _kv_dict("geo_cache")
+    hit = cache.get(ip)
+    if hit and time.time() - hit.get("t", 0) < 86400:
+        return hit
+    out = {}
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp", timeout=5).json()
+        if r.get("status") == "success":
+            out = {"country": r.get("country", ""), "region": r.get("regionName", ""), "city": r.get("city", ""), "isp": r.get("isp", ""), "t": time.time()}
+    except Exception:
+        pass
+    if out:
+        cache[ip] = out
+        if len(cache) > 500:
+            cache = dict(sorted(cache.items(), key=lambda kv: kv[1].get("t", 0))[-300:])
+        try:
+            _kv_put("geo_cache", cache)
+        except Exception:
+            pass
+    return out
+
+
+def _ua_short(ua: str) -> str:
+    ua = ua or ""
+    os_ = ("iPhone" if "iPhone" in ua else "iPad" if "iPad" in ua else "Android" if "Android" in ua else
+           "Windows" if "Windows" in ua else "Mac" if "Mac OS" in ua else "Linux" if "Linux" in ua else "")
+    br = ("Telegram" if "Telegram" in ua else "Chrome" if "Chrome" in ua and "Edg" not in ua else "Safari" if "Safari" in ua else
+          "Firefox" if "Firefox" in ua else "Edge" if "Edg" in ua else "")
+    return " · ".join(x for x in (os_, br) if x) or "Unknown device"
+
+
+class DeviceSeen(BaseModel):
+    platform: str = ""
+    version: str = ""
+    ua: str = ""
+    screen: str = ""
+    tz: str = ""
+    lang: str = ""
+
+
+@app.post("/device/seen")
+def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_current_user)):
+    uid = str(user.get("id", ""))
+    if not (bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)):
+        return {"ok": True, "enabled": False}                  # admin-only while under test
+    fp = hashlib.sha1("|".join([body.platform, _ua_short(body.ua), body.screen, body.tz, body.lang]).encode()).hexdigest()[:12]
+    ip = _client_ip(request)
+    now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    stamp = now.strftime("%d %b %H:%M")
+    key = f"devices_{uid}"
+    reg = _kv_dict(key) or {}
+    devs = reg.setdefault("devices", {})
+    d = devs.get(fp)
+    new_device = d is None
+    new_ip = (not new_device) and ip and ip not in (d.get("ips") or [])
+    geo = _geo(ip)
+    if new_device:
+        d = {"first": stamp, "platform": body.platform, "ua": _ua_short(body.ua), "screen": body.screen, "tz": body.tz,
+             "lang": body.lang, "tg": body.version, "ips": [], "geo": geo}
+        devs[fp] = d
+    d["last"] = stamp
+    if ip:
+        d["ips"] = ([ip] + [x for x in (d.get("ips") or []) if x != ip])[:5]
+        d["geo"] = geo or d.get("geo") or {}
+    if len(devs) > 20:
+        for k in sorted(devs, key=lambda k: devs[k].get("last", ""))[:-20]:
+            devs.pop(k, None)
+    reg["current"] = fp
+    try:
+        _kv_put(key, reg)
+    except Exception as e:
+        print(f"[DEVICE] save {uid}: {e}")
+    if new_device or new_ip:
+        where = ", ".join(x for x in (geo.get("city"), geo.get("country")) if x) or "unknown location"
+        isp = f" ({geo['isp']})" if geo.get("isp") else ""
+        head = "🔐 <b>New sign-in to your CLEXER app</b>" if new_device else "🔐 <b>Your CLEXER app opened from a new network</b>"
+        text = (f"{head}\n\n<blockquote>📱 {d['ua']} · {body.platform or '-'}\n🌐 {where}{isp}\n🔢 IP <code>{ip or '-'}</code>\n"
+                f"🕐 {stamp} IST</blockquote>\n\nIf this was you, nothing to do. If not, lock copy trading now - it stops every copy until you unlock.")
+        try:
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                          json={"chat_id": int(uid), "text": text, "parse_mode": "HTML",
+                                "reply_markup": {"inline_keyboard": [[{"text": "🔒 Lock copy trading", "callback_data": f"sec:lock:{uid}", "style": "danger"},
+                                                                       {"text": "✅ It was me", "callback_data": f"sec:ok:{uid}"}]]}}, timeout=10)
+        except Exception as e:
+            print(f"[DEVICE] alert {uid}: {e}")
+    return {"ok": True, "enabled": True, "fp": fp, "new_device": new_device, "new_ip": new_ip}
+
+
+@app.get("/device/list")
+def device_list(user: dict = Depends(get_current_user)):
+    uid = str(user.get("id", ""))
+    if not (bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)):
+        return {"enabled": False, "devices": []}
+    reg = _kv_dict(f"devices_{uid}") or {}
+    cur = reg.get("current")
+    out = []
+    for fp, d in (reg.get("devices") or {}).items():
+        g = d.get("geo") or {}
+        out.append({"fp": fp, "name": d.get("ua", ""), "platform": d.get("platform", ""), "first": d.get("first", ""), "last": d.get("last", ""),
+                    "where": ", ".join(x for x in (g.get("city"), g.get("country")) if x), "ip": (d.get("ips") or [""])[0], "current": fp == cur})
+    out.sort(key=lambda x: (not x["current"], x["last"]), reverse=False)
+    locked = bool((_kv_dict("ct_users").get(uid) or {}).get("sec_locked"))
+    return {"enabled": True, "devices": out, "locked": locked}
+
+
+@app.post("/device/forget")
+def device_forget(body: dict, user: dict = Depends(get_current_user)):
+    uid = str(user.get("id", ""))
+    key = f"devices_{uid}"
+    reg = _kv_dict(key) or {}
+    fp = str(body.get("fp", ""))
+    if fp in (reg.get("devices") or {}):
+        reg["devices"].pop(fp, None)
+        _kv_put(key, reg)
+    return {"ok": True}
+
+
 @app.get("/me")
 def me(user: dict = Depends(get_current_user)):
     """The caller as Telegram signed it, plus the admin flag - the Mini App

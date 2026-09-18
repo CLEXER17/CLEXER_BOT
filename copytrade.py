@@ -451,11 +451,15 @@ def _set(cid: str, user: dict):
         except Exception as e:
             print(f"[CT] immediate central push error: {e}")
 
+def _runnable(u: dict) -> bool:
+    # sec_locked: the user locked their account from a "new sign-in" alert
+    return bool(u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin") and not u.get("sec_locked"))
+
 def active_count() -> int:
-    return sum(1 for u in _db.values() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin"))
+    return sum(1 for u in _db.values() if _runnable(u))
 
 def active_ids() -> list:
-    return [cid for cid, u in _db.items() if u.get("copy_on") and u.get("connected") and not u.get("paused_by_admin")]
+    return [cid for cid, u in _db.items() if _runnable(u)]
 
 def reset_history(cid: str):
     """Zero out a user's copy-trade P&L history. Their connection/settings stay untouched."""

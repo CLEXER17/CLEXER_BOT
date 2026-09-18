@@ -23559,6 +23559,36 @@ def command_listener():
                                       json={"callback_query_id": cb["id"], "text": _jn_pop, "show_alert": True}, timeout=5)
                         continue
 
+                    if cb_data.startswith("sec:"):
+                        # 🔐 new sign-in alert buttons: only the account owner may act
+                        try:
+                            _, _sact, _suid = cb_data.split(":", 2)
+                            if str(cb_cid) != str(_suid):
+                                _spop = "This alert is not for your account."
+                            else:
+                                _su = ct._get(str(_suid)) or ct._default_user()
+                                if _sact == "lock":
+                                    _su["sec_locked"] = True; _su["copy_on"] = False; ct._set(str(_suid), _su)
+                                    _spop = "🔒 Locked. Copy trading is stopped until you unlock."
+                                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                                                  json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                                        "reply_markup": {"inline_keyboard": [[{"text": "🔓 Unlock copy trading", "callback_data": f"sec:unlock:{_suid}"}]]}}, timeout=5)
+                                elif _sact == "unlock":
+                                    _su["sec_locked"] = False; ct._set(str(_suid), _su)
+                                    _spop = "🔓 Unlocked. Turn auto-copy back on in the app when you're ready."
+                                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                                                  json={"chat_id": cb_chat_id, "message_id": cb_msg_id, "reply_markup": {"inline_keyboard": []}}, timeout=5)
+                                else:
+                                    _spop = "✅ Noted - this device is trusted."
+                                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                                                  json={"chat_id": cb_chat_id, "message_id": cb_msg_id, "reply_markup": {"inline_keyboard": []}}, timeout=5)
+                        except Exception as _se:
+                            print(f"  [SEC] callback {cb_data}: {_se}")
+                            _spop = "Something went wrong - try again."
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"], "text": _spop, "show_alert": True}, timeout=5)
+                        continue
+
                     if cb_data.startswith("vt:"):
                         try:
                             _vt_pop = _vdm.on_callback(cb_data, cb_cid, cb_chat_id, cb_msg_id)

@@ -370,6 +370,11 @@
         <div id="copyList"></div>
       </div>
     </div>
+      <div class="card" id="devCard" hidden>
+        <div class="ttl">🔐 <span data-i18n="dev.title">Sign-ins &amp; devices</span></div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px" data-i18n="dev.hint">You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.</div>
+        <div id="devList"></div>
+      </div>
       <div class="card" id="bioSetting" hidden><div class="rowline"><div><div class="k">🔒 <span data-i18n="bio.title">Biometric lock</span></div><div class="sub" data-i18n="bio.sub">Ask for fingerprint / Face ID before opening Copy Trade</div></div><label class="switch"><input type="checkbox" id="bioToggle" onchange="bioSetEnabled(this.checked)"><span class="sl"></span></label></div></div>
     </div>
   </section>
@@ -905,6 +910,29 @@
   const bio = { ready:false, enabled:false, unlocked:false, admin:false };
   function bioStore(k, v, cb){ try{ TG && TG.CloudStorage ? TG.CloudStorage.setItem(k, v, cb||(()=>{})) : (localStorage.setItem(k, v), cb&&cb()); }catch(e){ cb&&cb(); } }
   function bioLoad(k, cb){ try{ TG && TG.CloudStorage ? TG.CloudStorage.getItem(k, (e, v)=>cb(v)) : cb(localStorage.getItem(k)); }catch(e){ cb(null); } }
+  /* ---------- sign-in security (admin-only while under test) ---------- */
+  async function deviceSeen(){
+    try{
+      const scr = (screen && screen.width) ? `${screen.width}x${screen.height}@${window.devicePixelRatio||1}` : "";
+      const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "";
+      await api("/device/seen", {method:"POST", body: JSON.stringify({platform: (TG&&TG.platform)||"web", version: (TG&&TG.version)||"", ua: navigator.userAgent||"",
+                                                                     screen: scr, tz, lang: navigator.language||""})});
+    }catch(e){}
+  }
+  async function loadDevices(){
+    let d; try{ d = await api("/device/list"); }catch(e){ return; }
+    const card = document.getElementById("devCard"); if(!d || !d.enabled){ card.hidden = true; return; }
+    card.hidden = false;
+    document.getElementById("devList").innerHTML = (d.locked ? `<div class="down" style="font-size:11px;margin-bottom:8px">🔒 ${t("dev.locked","Copy trading is locked - unlock from the alert message in your DM.")}</div>` : "") +
+      (d.devices || []).map(x => `<div class="rowline" style="border-top:1px solid var(--border)">
+        <div><div class="k">${x.name || "Device"}${x.current ? ` <span style="font-size:9px;color:var(--long)">● ${t("dev.this","this device")}</span>` : ""}</div>
+        <div class="sub">${x.where || "-"} · <span class="mono">${x.ip || "-"}</span> · ${t("dev.last","last")} ${x.last}</div></div>
+        ${x.current ? "" : `<button class="copybtn" onclick="forgetDevice('${x.fp}')">${t("dev.remove","Remove")}</button>`}</div>`).join("") ||
+      `<div style="font-size:11px;color:var(--muted)">${t("dev.none","No devices yet.")}</div>`;
+  }
+  async function forgetDevice(fp){ try{ await api("/device/forget", {method:"POST", body: JSON.stringify({fp})}); haptic(); loadDevices(); }catch(e){} }
+  deviceSeen();
+
   async function bioInit(){
     try{ const me = await api("/me"); bio.admin = !!me.is_admin; }catch(e){}
     const BM = TG && TG.BiometricManager;
@@ -943,6 +971,7 @@
     if(!bio.ready && !bio._initDone){ bio._initDone = true; await bioInit(); }
     bioApply();
     if(bio.ready && bio.enabled && !bio.unlocked) return;     // locked: nothing to load yet
+    loadDevices();
     // load BingX status
     try{
       const s = await api("/bingx/status");

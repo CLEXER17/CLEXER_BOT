@@ -42,6 +42,13 @@ EN = [
     "Fees",
     "⚙ Run settings",
     "A run is active - settings are read-only. Reset to start a new run with different values.",
+    "Sign-ins & devices",
+    "You get a DM whenever the app opens from a new device or network. Remove a device to be alerted again next time it signs in.",
+    "this device",
+    "last",
+    "Remove",
+    "No devices yet.",
+    "Copy trading is locked - unlock from the alert message in your DM.",
 ]
 
 T = {}
@@ -77,6 +84,13 @@ T["ru"] = [
     "Комиссии",
     "⚙ Настройки запуска",
     "Запуск активен — настройки только для чтения. Сбросьте, чтобы начать новый запуск с другими значениями.",
+    "Входы и устройства",
+    "Вы получите сообщение, когда приложение откроют с нового устройства или сети. Удалите устройство, чтобы получить оповещение при его следующем входе.",
+    "это устройство",
+    "последний",
+    "Удалить",
+    "Устройств пока нет.",
+    "Копитрейдинг заблокирован — разблокируйте из сообщения-оповещения в личке.",
 ]
 
 T["tl"] = [
@@ -110,6 +124,13 @@ T["tl"] = [
     "Bayarin",
     "⚙ Mga setting ng run",
     "May aktibong run — read-only ang mga setting. I-reset para magsimula ng bagong run na may ibang halaga.",
+    "Mga sign-in at device",
+    "Makakatanggap ka ng DM kapag binuksan ang app mula sa bagong device o network. Alisin ang device para ma-alert ulit sa susunod na sign-in nito.",
+    "device na ito",
+    "huli",
+    "Alisin",
+    "Wala pang device.",
+    "Naka-lock ang copy trading — i-unlock mula sa alert message sa iyong DM.",
 ]
 
 T["ur"] = [
@@ -143,6 +164,13 @@ T["ur"] = [
     "فیس",
     "⚙ رن کی ترتیبات",
     "رن فعال ہے — ترتیبات صرف پڑھنے کے لیے ہیں۔ مختلف اقدار کے ساتھ نیا رن شروع کرنے کے لیے ری سیٹ کریں۔",
+    "سائن اِن اور ڈیوائسز",
+    "جب بھی ایپ نئی ڈیوائس یا نیٹ ورک سے کھلے گی آپ کو DM ملے گا۔ ڈیوائس ہٹائیں تاکہ اگلی بار سائن اِن پر دوبارہ الرٹ ملے۔",
+    "یہ ڈیوائس",
+    "آخری",
+    "ہٹائیں",
+    "ابھی کوئی ڈیوائس نہیں۔",
+    "کاپی ٹریڈنگ لاک ہے — اپنے DM میں الرٹ پیغام سے ان لاک کریں۔",
 ]
 
 T["id"] = [
@@ -176,6 +204,13 @@ T["id"] = [
     "Biaya",
     "⚙ Pengaturan run",
     "Run sedang aktif — pengaturan hanya-baca. Reset untuk memulai run baru dengan nilai berbeda.",
+    "Masuk & perangkat",
+    "Anda mendapat DM setiap kali aplikasi dibuka dari perangkat atau jaringan baru. Hapus perangkat agar diberi tahu lagi saat masuk berikutnya.",
+    "perangkat ini",
+    "terakhir",
+    "Hapus",
+    "Belum ada perangkat.",
+    "Copy trading terkunci — buka kunci dari pesan peringatan di DM Anda.",
 ]
 
 T["pt"] = [
@@ -209,6 +244,13 @@ T["pt"] = [
     "Taxas",
     "⚙ Configurações da execução",
     "Uma execução está ativa — as configurações são somente leitura. Redefina para iniciar uma nova execução com outros valores.",
+    "Acessos e dispositivos",
+    "Você recebe uma DM sempre que o app abre em um dispositivo ou rede nova. Remova um dispositivo para ser avisado de novo no próximo acesso.",
+    "este dispositivo",
+    "último",
+    "Remover",
+    "Nenhum dispositivo ainda.",
+    "O copy trading está bloqueado — desbloqueie pela mensagem de alerta na sua DM.",
 ]
 
 T["es"] = [
@@ -242,6 +284,13 @@ T["es"] = [
     "Comisiones",
     "⚙ Ajustes de la ejecución",
     "Hay una ejecución activa — los ajustes son de solo lectura. Reinicia para empezar una nueva con otros valores.",
+    "Accesos y dispositivos",
+    "Recibes un DM cada vez que la app se abre desde un dispositivo o red nuevos. Elimina un dispositivo para volver a recibir aviso en su próximo acceso.",
+    "este dispositivo",
+    "último",
+    "Eliminar",
+    "Aún no hay dispositivos.",
+    "El copy trading está bloqueado — desbloquéalo desde el mensaje de alerta en tu DM.",
 ]
 
 T["ar"] = [
@@ -275,6 +324,13 @@ T["ar"] = [
     "الرسوم",
     "⚙ إعدادات التشغيل",
     "هناك تشغيل نشط — الإعدادات للقراءة فقط. أعد الضبط لبدء تشغيل جديد بقيم مختلفة.",
+    "تسجيلات الدخول والأجهزة",
+    "تصلك رسالة خاصة كلما فُتح التطبيق من جهاز أو شبكة جديدة. احذف جهازًا ليصلك تنبيه مجددًا عند دخوله التالي.",
+    "هذا الجهاز",
+    "آخر",
+    "إزالة",
+    "لا توجد أجهزة بعد.",
+    "نسخ التداول مقفل — افتح القفل من رسالة التنبيه في خاصتك.",
 ]
 
 T["zh"] = [
@@ -308,6 +364,13 @@ T["zh"] = [
     "手续费",
     "⚙ 运行设置",
     "运行进行中——设置为只读。重置后可用不同数值开始新的运行。",
+    "登录与设备",
+    "每当应用从新设备或新网络打开，你都会收到私信。移除设备后，其下次登录会再次提醒你。",
+    "当前设备",
+    "最近",
+    "移除",
+    "暂无设备。",
+    "跟单已锁定——请在私信中的提醒消息里解锁。",
 ]
 
 T["tr"] = [
@@ -341,6 +404,13 @@ T["tr"] = [
     "Komisyon",
     "⚙ Çalıştırma ayarları",
     "Bir çalıştırma aktif — ayarlar salt okunur. Farklı değerlerle yeni bir çalıştırma için sıfırlayın.",
+    "Girişler ve cihazlar",
+    "Uygulama yeni bir cihaz veya ağdan açıldığında DM alırsınız. Bir cihazı kaldırın, bir sonraki girişinde yeniden uyarılırsınız.",
+    "bu cihaz",
+    "son",
+    "Kaldır",
+    "Henüz cihaz yok.",
+    "Kopya işlem kilitli — DM'nizdeki uyarı mesajından kilidi açın.",
 ]
 
 T["vi"] = [
@@ -374,6 +444,13 @@ T["vi"] = [
     "Phí",
     "⚙ Cài đặt phiên chạy",
     "Phiên chạy đang hoạt động — cài đặt chỉ đọc. Đặt lại để bắt đầu phiên mới với giá trị khác.",
+    "Đăng nhập & thiết bị",
+    "Bạn nhận DM mỗi khi ứng dụng mở từ thiết bị hoặc mạng mới. Xóa thiết bị để được cảnh báo lại ở lần đăng nhập sau.",
+    "thiết bị này",
+    "gần nhất",
+    "Xóa",
+    "Chưa có thiết bị.",
+    "Copy trading đang bị khóa — mở khóa từ tin nhắn cảnh báo trong DM.",
 ]
 
 T["fr"] = [
@@ -407,6 +484,13 @@ T["fr"] = [
     "Frais",
     "⚙ Réglages de l'exécution",
     "Une exécution est active — les réglages sont en lecture seule. Réinitialisez pour en démarrer une nouvelle avec d'autres valeurs.",
+    "Connexions et appareils",
+    "Vous recevez un DM à chaque ouverture de l'app depuis un nouvel appareil ou réseau. Retirez un appareil pour être alerté à sa prochaine connexion.",
+    "cet appareil",
+    "dernier",
+    "Retirer",
+    "Aucun appareil pour l'instant.",
+    "Le copy trading est verrouillé — déverrouillez-le depuis le message d'alerte dans vos DM.",
 ]
 
 
