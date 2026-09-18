@@ -3796,7 +3796,72 @@ def _admin_chat_context(topics: list = None) -> str:
         f"LIVE STATUS (as of right now):\n{_admin_live_status()}"
     )
 
-def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
+class _ChatStream:
+    """Shows a /chat answer as it is written instead of after it is finished.
+
+    One message is sent ("💬 …"), then edited every ~1.1 s with whatever has
+    arrived so far (Telegram rate-limits edits; more often than that gets
+    429s and the reply ends up slower, not faster). The final edit carries
+    the real formatting; if any edit fails the text is still sent once at
+    the end, so a stream never loses an answer."""
+    MIN_GAP = 1.1
+
+    def __init__(self, cid):
+        self.cid = cid
+        self.msg_id = None
+        self.buf = ""
+        self.shown = ""
+        self.last = 0.0
+        self.dead = False
+
+    def _edit(self, text, final=False):
+        if self.dead or not text.strip():
+            return
+        body = _apply_premium_emojis(text, skip_smallcaps=True) if final else _esc_html(text) + " ▌"
+        try:
+            if self.msg_id is None:
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                  json={"chat_id": self.cid, "text": body[:4096], "parse_mode": "HTML",
+                                        "disable_web_page_preview": True}, timeout=10).json()
+                if r.get("ok"):
+                    self.msg_id = r["result"]["message_id"]
+                else:
+                    self.dead = True
+                return
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
+                              json={"chat_id": self.cid, "message_id": self.msg_id, "text": body[:4096],
+                                    "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10).json()
+            if not r.get("ok") and "not modified" not in str(r.get("description", "")):
+                # a rejected edit (bad HTML mid-sentence, rate limit) is not fatal
+                print(f"  [CHAT STREAM] edit: {r.get('description')}")
+        except Exception as e:
+            print(f"  [CHAT STREAM] {e}")
+
+    def feed(self, chunk: str):
+        if not chunk:
+            return
+        self.buf += chunk
+        now = time.time()
+        if now - self.last >= self.MIN_GAP and self.buf.strip() != self.shown.strip():
+            self.shown = self.buf
+            self.last = now
+            self._edit(self.buf)
+
+    def finish(self, text: str = None):
+        final = (text if text is not None else self.buf).strip()
+        if not final:
+            return False
+        if self.msg_id is None:
+            return False                      # nothing was streamed - caller sends normally
+        self._edit(final, final=True)
+        return True
+
+
+def _esc_html(x: str) -> str:
+    return _html.escape(str(x or ""), quote=False)
+
+
+def _chat_call_gemini_text(history: list, extra_system: str = "", stream=None) -> str:
     # Google Search grounding was tried here (2026-08-06) and reverted the same
     # day — this account's free-tier Gemini quota is only 5 RPM / 20 RPD (see
     # _CHAT_TEXT_MODEL comment), and confirmed via a real 429 in production,
@@ -3804,12 +3869,36 @@ def _chat_call_gemini_text(history: list, extra_system: str = "") -> str:
     # reply whenever grounding doesn't go through, burning the already-scarce
     # daily quota twice as fast. Not worth it on this account — back to one
     # plain call, no source links, same as before grounding was ever added.
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     _sys = _CHAT_SYSTEM_PROMPT + (f"\n\n{extra_system}" if extra_system else "")
     body = {
         "contents": history,
         "systemInstruction": {"parts": [{"text": _sys}]},
     }
+    if stream is not None:
+        # streamGenerateContent gives one JSON object per chunk (SSE framing)
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}"
+               f":streamGenerateContent?alt=sse&key={GEMINI_API_KEY}")
+        out = []
+        with requests.post(url, headers=_gemini_headers(), json=body, timeout=90, stream=True) as r:
+            if not r.ok:
+                raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
+            for line in r.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                piece = line[5:].strip()
+                if piece == "[DONE]":
+                    break
+                try:
+                    d = json.loads(piece)
+                except Exception:
+                    continue
+                for p in (d.get("candidates", [{}])[0].get("content", {}) or {}).get("parts", []) or []:
+                    txt = p.get("text", "")
+                    if txt:
+                        out.append(txt)
+                        stream.feed("".join(out))
+        return "".join(out).strip() or "…"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_CHAT_TEXT_MODEL}:generateContent?key={GEMINI_API_KEY}"
     r = requests.post(url, headers=_gemini_headers(), json=body, timeout=30)
     if not r.ok:
         raise Exception(f"{r.status_code} {r.reason} — {r.text[:500]}")
@@ -3824,6 +3913,7 @@ def _is_claude_model(model_id: str) -> bool:
 # engine fails - Gemini quota, Aerolink down, Direct error - the reply comes
 # from Claude Sonnet 5 on the direct key instead of an error message. Paid,
 # so each user gets at most 4 such rescues per rolling hour.
+_CHAT_STREAMING = os.getenv("CHAT_STREAMING", "1") != "0"   # /chat answers appear as they are written
 _CHAT_FALLBACK_MODEL = "claude-sonnet-5"
 _CHAT_FALLBACK_PER_HOUR = 4
 _chat_fallback_used: dict = {}      # cid -> [timestamps of rescues in the last hour]
@@ -3848,7 +3938,7 @@ def _chat_fallback_left(cid) -> int:
     return max(0, _CHAT_FALLBACK_PER_HOUR - len([t for t in _chat_fallback_used.get(str(cid), []) if now - t < 3600]))
 
 
-def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "", gateway_override: str = None) -> str:
+def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "", gateway_override: str = None, stream=None) -> str:
     """Same conversation history format as Gemini (role 'user'/'model', one
     text part each) — translated to Claude's 'user'/'assistant' shape so
     /model can swap engines without touching how history is stored.
@@ -3888,6 +3978,14 @@ def _chat_call_claude_text(history: list, model_id: str, extra_system: str = "",
     if _is_claude:
         _kwargs["thinking"] = {"type": "adaptive"}
         _kwargs["output_config"] = {"effort": "medium"}
+    if stream is not None and _is_claude:
+        out = []
+        with client.messages.stream(**_kwargs) as st:
+            for chunk in st.text_stream:
+                out.append(chunk)
+                stream.feed("".join(out))
+            final = st.get_final_message()
+        return (_claude_text(final) or "".join(out)).strip() or "…"
     resp = client.messages.create(**_kwargs)
     return _claude_text(resp) or "…"
 
@@ -5410,6 +5508,7 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                     reply_text = _chat_pechi_text_reply(sess["history"], _ai_text, extra_system=_extra_ctx,
                                                           precomputed_model=_c["best_model"])
                 else:
+                    _stream = _ChatStream(cid) if _CHAT_STREAMING else None
                     try:
                         _active_model = CHAT_MODEL
                         if CHAT_MODEL == "auto":
@@ -5422,7 +5521,7 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                                 # session — that single, explicit choice always wins, no
                                 # auto-fallback (they asked for exactly this one).
                                 reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                     gateway_override=_gw_override)
+                                                                     gateway_override=_gw_override, stream=_stream)
                             else:
                                 # No explicit override: always try Aerolink (free) first,
                                 # fall back to Direct only if that fails (admin request,
@@ -5432,13 +5531,13 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                                 # model runs on by default.
                                 try:
                                     reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                         gateway_override="aerolink")
+                                                                         gateway_override="aerolink", stream=_stream)
                                 except Exception as _gwe:
                                     print(f"  [CHAT] free (Aerolink) attempt with {_active_model} failed ({_gwe}) — falling back to Direct")
                                     reply_text = _chat_call_claude_text(sess["history"], _active_model, extra_system=_extra_ctx,
-                                                                         gateway_override="direct")
+                                                                         gateway_override="direct", stream=_stream)
                         else:
-                            reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx)
+                            reply_text = _chat_call_gemini_text(sess["history"], extra_system=_extra_ctx, stream=_stream)
                     except Exception as _primary_err:
                         # Every configured engine failed - rescue with Sonnet 5 (direct key),
                         # 4 per user per hour. If the primary already was that model, nothing
@@ -5449,10 +5548,12 @@ def _handle_chat_message(cid, text: str, sender_id=None, reply_context: str = ""
                         if not _chat_fallback_take(cid):
                             send_reply(cid, f"⚠️ Chat AI is having trouble right now, and your {_CHAT_FALLBACK_PER_HOUR} backup replies for this hour are used up. Try again a little later.")
                             return
-                        reply_text = _chat_call_claude_text(sess["history"], _CHAT_FALLBACK_MODEL, extra_system=_extra_ctx, gateway_override="direct")
+                        reply_text = _chat_call_claude_text(sess["history"], _CHAT_FALLBACK_MODEL, extra_system=_extra_ctx, gateway_override="direct", stream=_stream)
                         print(f"  [CHAT] {cid}: rescued by {_CHAT_FALLBACK_MODEL} ({_chat_fallback_left(cid)} left this hour)")
                 sess["history"].append({"role": "model", "parts": [{"text": reply_text}]})
-                send_reply(cid, reply_text, skip_smallcaps=True)
+                # the stream already put the answer on screen - only finalise it
+                if not (_stream and _stream.finish(reply_text)):
+                    send_reply(cid, reply_text, skip_smallcaps=True)
         # Trim history to bound token usage
         max_msgs = _CHAT_HISTORY_MAX_TURNS * 2
         if len(sess["history"]) > max_msgs:
