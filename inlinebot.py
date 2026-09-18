@@ -63,6 +63,18 @@ def _open_kb(label="📈 Open CLEXER", extra=None, start=""):
     return {"inline_keyboard": rows} if rows else None
 
 
+# Adding a bot through a link always makes Telegram post "/start …" in the
+# group - Telegram does that, not us, and other bots in the room may answer
+# it. Asking for delete_messages in the same dialog lets CLEXER remove that
+# line the instant it lands; pin_messages keeps the music card pinned and
+# invite_users lets it bring @CLEXFM in without anyone doing it by hand.
+ADD_RIGHTS = "delete_messages+pin_messages+invite_users"
+
+
+def _addlink(payload: str) -> str:
+    return f"https://t.me/{MAIN_USERNAME}?startgroup={payload}&admin={ADD_RIGHTS}"
+
+
 def _article(id_, title, desc, text, kb=None):
     return {"type": "article", "id": f"{id_}_{int(time.time())}", "title": title, "description": desc,
             "input_message_content": {"message_text": text, "parse_mode": "HTML",
@@ -124,7 +136,7 @@ GAMES_QUICK = [("ludo", "🎲 Ludo", "4 players, robots fill the seats"),
 def _game_card(kind, title, blurb):
     txt = (f"{title}\n\n<blockquote>{blurb}\n\n"
            f"Tap below - the table opens right away, no menu.</blockquote>")
-    extra = [[{"text": "▶ Play here (group)", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=game_{kind}"}]] if MAIN_USERNAME else None
+    extra = [[{"text": "▶ Play here (group)", "url": _addlink(f"game_{kind}")}]] if MAIN_USERNAME else None
     return _article(f"g_{kind}", title, blurb, txt, _open_kb("▶ Play now", extra, start=f"game_{kind}"))
 
 
@@ -151,7 +163,7 @@ def _games_card():
            "Battleship, Minesweeper, Mafia and more.\n\n"
            "Play against robots in DM, or with friends in any group.</blockquote>\n\n"
            "Send <code>/games</code> to start a table.")
-    extra = [[{"text": "🎮 Play in a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup=games"}]] if MAIN_USERNAME else None
+    extra = [[{"text": "🎮 Play in a group", "url": _addlink("games")}]] if MAIN_USERNAME else None
     return _article("games", "CLEXER Games", "30 games — play in DM or in a group", txt,
                     _open_kb("🎮 Play in DM", extra, start="games"))
 
@@ -184,8 +196,7 @@ def _music_card(query: str, video: bool = False):
                 f"Type <code>@{_me[chr(39) + chr(39)] if False else (_me['username'] or 'this bot')} {cmd} name</code> to pick one, or tap below to bring CLEXER into a group.</blockquote>")
         title = "Play a video" if video else "Play music"
     payload = _play_payload("find" if video else "play", what)
-    extra = ([[{"text": "▶ Play in a group", "url": f"https://t.me/{MAIN_USERNAME}?startgroup={payload}"}]]
-             if MAIN_USERNAME else None)
+    extra = [[{"text": "▶ Play in a group", "url": _addlink(payload)}]] if MAIN_USERNAME else None
     return _article("music", title, "Plays in a group's voice chat · one tap to set up", body,
                     _open_kb("ℹ How it works", extra, start="music"))
 
@@ -283,7 +294,7 @@ def _on_callback(cb: dict):
                 _edit_inline(imid, "🎮 <b>CLEXER Games</b>\n\n"
                                    "<blockquote>CLEXER has to be in this group to post the board.</blockquote>",
                              _open_kb("🎮 Play in DM", [[{"text": "➕ Add to this group",
-                                                                 "url": f"https://t.me/{MAIN_USERNAME}?startgroup=game_" + kind}]],
+                                                                 "url": _addlink("game_" + kind)}]],
                                       start=f"game_{kind}"))
         else:
             _api("answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Could not start that one - try again."}, timeout=6)

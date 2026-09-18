@@ -9431,17 +9431,27 @@ def _page_start_game(kind, chat_id, uid, name):
 
 def _drop_start_line(chat_id, message):
     """Adding a bot through a t.me link makes Telegram post "/start …" in
-    the group - noise that other bots in the room may answer too. We delete
-    it as soon as we have handled it; silently skipped when the bot has no
-    delete right (it has just joined, so usually it does not)."""
+    the group - Telegram's doing, and other bots in the room may answer it.
+    Our add links ask for the delete-messages right, so this usually wipes
+    the line at once; the retries cover the second or two it can take for
+    those rights to register after the join."""
     mid = (message or {}).get("message_id")
     if not mid or not str(chat_id).startswith("-"):
         return
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
-                      json={"chat_id": chat_id, "message_id": mid}, timeout=5)
-    except Exception:
-        pass
+
+    def _go():
+        for wait in (0, 1.5, 4):
+            if wait:
+                time.sleep(wait)
+            try:
+                r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                                  json={"chat_id": chat_id, "message_id": mid}, timeout=5).json()
+                if r.get("ok"):
+                    return
+            except Exception:
+                pass
+
+    threading.Thread(target=_go, daemon=True).start()
 
 def _music_invite_link(chat_id):
     """A link the assistant can use to enter the group, if the bot may make one."""
@@ -9455,7 +9465,8 @@ def _music_invite_link(chat_id):
 
 def _music_dm_notice(chat_id):
     _u = _get_bot_username()
-    _kb = {"inline_keyboard": [[{"text": "➕ Add me to a group", "url": f"https://t.me/{_u}?startgroup=true"}]]} if _u else None
+    _kb = {"inline_keyboard": [[{"text": "➕ Add me to a group",
+                                "url": f"https://t.me/{_u}?startgroup=music&admin=delete_messages+pin_messages+invite_users"}]]} if _u else None
     send_reply(chat_id, "🎵 Music plays in a group's voice chat. Add me to a group, start a voice chat there, and send /play song name.",
                reply_markup=_kb)
 
