@@ -323,6 +323,17 @@
       <div class="eyebrow">Copy Trade · BingX</div>
     </div>
     <div class="wrap">
+      <!-- biometric lock (Bot API 7.2 BiometricManager): the Copy tab - API
+           keys, size, leverage - opens only after fingerprint / Face ID.
+           Under test: shown to the admin only (see bioInit). -->
+      <div id="bioLock" class="card" hidden style="text-align:center;padding:26px 16px">
+        <div style="font-size:34px">🔒</div>
+        <div style="font-weight:700;margin-top:8px" data-i18n="bio.locked">Copy Trade is locked</div>
+        <div style="font-size:11px;color:var(--muted);margin:6px 0 14px" data-i18n="bio.hint">Your API keys and trade settings are protected. Unlock with your fingerprint or face.</div>
+        <button class="btn" onclick="bioUnlock()" data-i18n="bio.unlock">🔓 Unlock</button>
+        <div id="bioMsg" style="font-size:11px;color:var(--short);margin-top:10px"></div>
+      </div>
+      <div id="copyBody">
       <div class="card" id="acctCard"></div>
       <div class="card">
         <div class="ttl">Position Size</div>
@@ -358,6 +369,8 @@
         <div class="ttl">Signals — copy to your account</div>
         <div id="copyList"></div>
       </div>
+    </div>
+      <div class="card" id="bioSetting" hidden><div class="rowline"><div><div class="k">🔒 <span data-i18n="bio.title">Biometric lock</span></div><div class="sub" data-i18n="bio.sub">Ask for fingerprint / Face ID before opening Copy Trade</div></div><label class="switch"><input type="checkbox" id="bioToggle" onchange="bioSetEnabled(this.checked)"><span class="sl"></span></label></div></div>
     </div>
   </section>
 
@@ -884,7 +897,52 @@
   document.getElementById("searchInput").addEventListener("keydown",e=>{if(e.key==="Enter")setSymbol(e.target.value);});
 
   /* ---------- COPY ---------- */
+  /* ---------- biometric lock ----------
+     Uses Telegram's BiometricManager. The setting lives in Telegram's
+     CloudStorage (per user, per bot). Unlocking is per app session. Rolled
+     out to the admin first (/me.is_admin); everyone else sees the tab as
+     before until the gate is lifted. */
+  const bio = { ready:false, enabled:false, unlocked:false, admin:false };
+  function bioStore(k, v, cb){ try{ TG && TG.CloudStorage ? TG.CloudStorage.setItem(k, v, cb||(()=>{})) : (localStorage.setItem(k, v), cb&&cb()); }catch(e){ cb&&cb(); } }
+  function bioLoad(k, cb){ try{ TG && TG.CloudStorage ? TG.CloudStorage.getItem(k, (e, v)=>cb(v)) : cb(localStorage.getItem(k)); }catch(e){ cb(null); } }
+  async function bioInit(){
+    try{ const me = await api("/me"); bio.admin = !!me.is_admin; }catch(e){}
+    const BM = TG && TG.BiometricManager;
+    if(!bio.admin || !BM){ bioApply(); return; }
+    BM.init(() => {
+      bio.ready = BM.isInited && BM.isBiometricAvailable;
+      document.getElementById("bioSetting").hidden = !bio.ready;
+      bioLoad("bio_lock", v => { bio.enabled = v === "1"; document.getElementById("bioToggle").checked = bio.enabled; bioApply(); });
+    });
+  }
+  function bioApply(){
+    const locked = bio.ready && bio.enabled && !bio.unlocked;
+    document.getElementById("bioLock").hidden = !locked;
+    document.getElementById("copyBody").style.display = locked ? "none" : "";
+  }
+  function bioSetEnabled(on){
+    const BM = TG.BiometricManager;
+    if(on && !BM.isAccessGranted){
+      BM.requestAccess({reason: t("bio.reason","Protect your copy-trading keys and settings")}, granted => {
+        if(!granted){ document.getElementById("bioToggle").checked = false; return; }
+        bio.enabled = true; bioStore("bio_lock", "1"); bio.unlocked = true; bioApply(); haptic();
+      });
+      return;
+    }
+    bio.enabled = on; bioStore("bio_lock", on ? "1" : "0"); if(!on) bio.unlocked = false; bioApply(); haptic("sel");
+  }
+  function bioUnlock(){
+    const BM = TG.BiometricManager, msg = document.getElementById("bioMsg"); msg.textContent = "";
+    BM.authenticate({reason: t("bio.reason2","Unlock Copy Trade")}, ok => {
+      if(ok){ bio.unlocked = true; bioApply(); haptic(); loadCopy(); }
+      else { msg.textContent = t("bio.failed","Not recognised - try again."); }
+    });
+  }
+
   async function loadCopy(){
+    if(!bio.ready && !bio._initDone){ bio._initDone = true; await bioInit(); }
+    bioApply();
+    if(bio.ready && bio.enabled && !bio.unlocked) return;     // locked: nothing to load yet
     // load BingX status
     try{
       const s = await api("/bingx/status");

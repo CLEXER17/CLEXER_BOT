@@ -661,6 +661,15 @@ def serve_miniapp_lang():
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"})
 
 
+@app.get("/me")
+def me(user: dict = Depends(get_current_user)):
+    """The caller as Telegram signed it, plus the admin flag - the Mini App
+    gates features under test (e.g. the biometric lock) on this."""
+    uid = str(user.get("id", ""))
+    return {"id": user.get("id"), "first_name": user.get("first_name"), "username": user.get("username"),
+            "is_admin": bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)}
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "ts": int(time.time())}
