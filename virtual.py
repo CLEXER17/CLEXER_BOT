@@ -400,9 +400,19 @@ def on_signal(symbol, side, entry, sl, tp1, tp2, tier_routed=True, share_free=Tr
         v["open"][symbol] = {"side": side, "entry": entry, "sl": float(sl or 0), "tp1": float(tp1 or 0),
                              "tp2": float(tp2 or 0), "qty": notional / entry, "qty0": notional / entry,
                              "margin": plan["margin"], "lev": plan["lev"], "risk": plan["risk"],
-                             "fee": fee, "realized": 0.0, "tp1_hit": False, "opened_at": _stamp(), "note": note,
+                             "fee": fee, "fee0": fee, "realized": 0.0, "tp1_hit": False, "opened_at": _stamp(), "note": note,
                              "mk": month_key()}          # the month this trade belongs to, whenever it closes
         ct._set(cid, user)
+
+
+def _entry_fee(pos) -> float:
+    """The fee paid when this position opened. It left the balance there and
+    then, so a trade's P&L has to carry it - positions opened before this was
+    stored fall back to the same sum it was calculated from."""
+    f = pos.get("fee0")
+    if f is None:
+        f = float(pos.get("margin", 0)) * float(pos.get("lev", 0)) * FEE
+    return float(f)
 
 
 def _pnl(pos, price, qty):
@@ -461,7 +471,8 @@ def on_close(symbol, price, result):
             res = "TP1+BE" if res == "BE" else "TP1+SL"
         rec = {"o": pos.get("opened_at", ""), "t": _stamp(), "sym": symbol, "side": pos["side"],
                "lev": pos["lev"], "margin": round(pos["margin"], 4), "entry": pos["entry"], "exit": price,
-               "res": res, "pnl": round(total, 4), "fee": round(pos.get("fee", 0) + fee, 6),
+               "res": res, "pnl": round(total - _entry_fee(pos), 4),
+               "fee": round(pos.get("fee", 0) + fee, 6),
                "bal": round(float(v["balance"]), 4), "note": note, "run": v.get("run", 0)}
         b = book(cid)
         m = b["months"].setdefault(pos.get("mk") or month_key(), {"run": v.get("run", 0), "trades": [], "start_bal": None})
@@ -483,7 +494,7 @@ def on_close(symbol, price, result):
 
 # ── reading ────────────────────────────────────────────────────────────────
 
-def stats(trades: list) -> dict:
+def stats(trades: list, start_bal=None) -> dict:
     n = len(trades)
     if not n:
         return {"trades": 0, "wins": 0, "losses": 0, "wr": 0.0, "net": 0.0, "best": 0.0, "worst": 0.0,
@@ -500,7 +511,8 @@ def stats(trades: list) -> dict:
     for t in trades:
         by[t["res"]] = by.get(t["res"], 0) + 1
     return {"trades": n, "wins": len(wins), "losses": len(losses), "wr": round(100.0 * len(wins) / n, 1),
-            "net": round(sum(t["pnl"] for t in trades), 2), "best": round(max(t["pnl"] for t in trades), 2),
+            "net": round((trades[-1].get("bal", 0) - float(start_bal)) if start_bal is not None
+                         else sum(t["pnl"] for t in trades), 2), "best": round(max(t["pnl"] for t in trades), 2),
             "worst": round(min(t["pnl"] for t in trades), 2), "fees": round(sum(t.get("fee", 0) for t in trades), 2),
             "dd": round(dd, 2), "by_res": by}
 
@@ -547,7 +559,7 @@ def state_from(user: dict, b: dict, month: str = None) -> dict:
         "page": idx + 1 if idx >= 0 else 1, "pages": max(1, len(pages)),
         "prev": page_key(*pages[idx - 1][:2]) if idx > 0 else None,
         "next": page_key(*pages[idx + 1][:2]) if 0 <= idx < len(pages) - 1 else None,
-        "stats": stats(trades), "trades": page_trades,
+        "stats": stats(trades, m.get("start_bal")), "trades": page_trades,
         "exports_used": int(b["exports"].get(month_key(), 0)), "exports_limit": lim,
     }
 
@@ -607,7 +619,7 @@ def build_pdf(cid: str, user: dict, v: dict, b: dict, month: str = None) -> byte
         trades = [t for k in sorted(b["months"]) for t in b["months"][k].get("trades", [])]
         title = f"Virtual Trading Report - Run #{v.get('run', 0)}"
         start_bal = v.get("capital")
-    s = stats(trades)
+    s = stats(trades, start_bal)
     name = user.get("username") or str(cid)
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
