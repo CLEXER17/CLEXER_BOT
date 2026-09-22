@@ -19418,11 +19418,18 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd in ("/ban", "/unban", "/banlist") and is_scanadmin:
         if cmd == "/banlist" or len(parts) < 2:
             if _banned_coins:
-                _held = {c: _open_trades_on(c) for c in sorted(_banned_coins)}
-                _lines = [f"• <code>{c}</code>" + (f"  (open in {', '.join(w)} - finishing)" if w else "")
-                          for c, w in _held.items()]
-                send_reply(chat_id, "🚫 <b>Banned coins</b> - no scanner picks these:\n\n" + "\n".join(_lines) +
-                           "\n\n<code>/ban coin</code> adds one, <code>/unban coin</code> lifts it.", skip_smallcaps=True)
+                # one paragraph, not one line a coin - a long list would scroll
+                # for pages and run into the message limit around 300 coins
+                _all = sorted(_banned_coins)
+                _held = [(c, _open_trades_on(c)) for c in _all]
+                _held = [(c, w) for c, w in _held if w]
+                _txt = (f"🚫 <b>Banned coins ({len(_all)})</b> - no scanner picks these:\n\n"
+                        + "  ".join(f"<code>{c}</code>" for c in _all))
+                if _held:
+                    _txt += ("\n\nStill open, finishing as normal: "
+                             + ", ".join(f"<code>{c}</code> ({', '.join(w)})" for c, w in _held))
+                _txt += "\n\n<code>/ban coin</code> adds one, <code>/unban coin</code> lifts it."
+                send_reply(chat_id, _txt, skip_smallcaps=True)
             else:
                 send_reply(chat_id, "🚫 <b>No banned coins.</b>\n\n<code>/ban btc</code> stops every scanner from "
                                     "picking BTC for a trade. <code>/unban btc</code> lifts it.", skip_smallcaps=True)
