@@ -2135,6 +2135,52 @@ def _gather_period_trades(date_strs: list) -> list:
             trades += [t for t in b.get("trades", []) if t.get("tier_routed")]
     return trades
 
+def _recap_by_symbol(shown: list) -> list:
+    """[(symbol, {n, w, l, pnl}), ...] busiest first, then by name."""
+    by_sym = {}
+    for t in shown:
+        s = str(t.get("symbol", "?")).replace("-USDT", "").replace("USDT", "")
+        d = by_sym.setdefault(s, {"n": 0, "w": 0, "l": 0, "pnl": 0.0})
+        d["n"] += 1
+        if t.get("result") in ("TP1", "TP2"): d["w"] += 1
+        elif t.get("result") == "SL":         d["l"] += 1
+        p = _recap_pnl(t)
+        if p is not None:
+            d["pnl"] += p
+    return sorted(by_sym.items(), key=lambda kv: (-kv[1]["n"], kv[0]))
+
+
+def _recap_symbol_table(rows_in: list) -> str:
+    """The bordered SYMBOL / TRADES / W / L / P&L table for those rows."""
+    sym_w = max(6, min(12, max(_rcp_vw(s) for s, _ in rows_in)))
+    W = [sym_w, 6, 7, 8]
+    A = ["<", "^", "^", ">"]
+    rows = [_rcp_rule(W, "┌", "┬", "┐"),
+            _rcp_row(["SYMBOL", "TRADES", "W / L", "P&L"], W, ["<", "^", "^", "^"]),
+            _rcp_rule(W, "├", "┼", "┤")]
+    for s, d in rows_in:
+        rows.append(_rcp_row([s, d["n"], f"{d['w']} / {d['l']}", f"{d['pnl']:+.2f}%"], W, A))
+    rows.append(_rcp_rule(W, "└", "┴", "┘"))
+    return "\n".join(rows)
+
+
+def _recap_rest_pages(trades: list, skip: int = 12, per_page: int = 55) -> list:
+    """The symbols a period recap left out ("+92 more"), as ready-to-send
+    messages. A month can run past a hundred symbols and one bordered row is
+    about 45 characters, so the table is cut into pages that each stay well
+    inside Telegram's 4096-character message limit."""
+    rest = _recap_by_symbol(trades)[skip:]
+    if not rest:
+        return []
+    pages = [rest[i:i + per_page] for i in range(0, len(rest), per_page)]
+    out = []
+    for i, chunk in enumerate(pages, 1):
+        head = (f"📋 <b>The other {len(rest)} symbols</b>" + (f"  ({i}/{len(pages)})" if len(pages) > 1 else "")
+                + f"  ·  rows {skip + (i - 1) * per_page + 1}-{skip + (i - 1) * per_page + len(chunk)} by trade count")
+        out.append(head + "\n<pre>" + _recap_symbol_table(chunk) + "</pre>")
+    return out
+
+
 def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) -> str:
     """Weekly/monthly recap — the same summary block, plus a per-symbol table
     and a win rate.
@@ -2148,29 +2194,11 @@ def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) 
     decided = wins + losses
     parts = [f"📊 <b>{title}</b>", ""]
 
-    by_sym = {}
-    for t in shown:
-        s = str(t.get("symbol", "?")).replace("-USDT", "").replace("USDT", "")
-        d = by_sym.setdefault(s, {"n": 0, "w": 0, "l": 0, "pnl": 0.0})
-        d["n"] += 1
-        if t.get("result") in ("TP1", "TP2"): d["w"] += 1
-        elif t.get("result") == "SL":         d["l"] += 1
-        p = _recap_pnl(t)
-        if p is not None:
-            d["pnl"] += p
-    top = sorted(by_sym.items(), key=lambda kv: (-kv[1]["n"], kv[0]))[:12]
+    by_sym = _recap_by_symbol(shown)
+    top = by_sym[:12]
     if top:
-        sym_w = max(6, min(12, max(_rcp_vw(s) for s, _ in top)))
-        W = [sym_w, 6, 7, 8]
-        A = ["<", "^", "^", ">"]
-        rows = [_rcp_rule(W, "┌", "┬", "┐"),
-                _rcp_row(["SYMBOL", "TRADES", "W / L", "P&L"], W, ["<", "^", "^", "^"]),
-                _rcp_rule(W, "├", "┼", "┤")]
-        for s, d in top:
-            rows.append(_rcp_row([s, d["n"], f"{d['w']} / {d['l']}", f"{d['pnl']:+.2f}%"], W, A))
-        rows.append(_rcp_rule(W, "└", "┴", "┘"))
-        _blk = "<pre>" + "\n".join(rows) + "</pre>"
-        parts.append(f"<blockquote expandable>{_blk}</blockquote>" if len(rows) >= _EXPANDABLE_MIN_LINES else _blk)
+        _blk = "<pre>" + _recap_symbol_table(top) + "</pre>"
+        parts.append(f"<blockquote expandable>{_blk}</blockquote>" if len(top) + 4 >= _EXPANDABLE_MIN_LINES else _blk)
         if len(by_sym) > len(top):
             parts.append(f"<i>+{len(by_sym) - len(top)} more symbols</i>")
 
@@ -19410,6 +19438,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         if not _txt:
             _txt = f"📊 No closed trades for <b>{_what}</b> yet."
         send_reply(chat_id, _txt, skip_smallcaps=True)
+        if cmd != "/daily" and _rows:
+            # the channel post stops at 12 symbols; here the admin gets the rest
+            for _pg in _recap_rest_pages(_rows):
+                send_reply(chat_id, _pg, skip_smallcaps=True)
 
     elif cmd in ("/btcengine", "/btceng") and is_scanadmin:
         if len(parts) < 2 or parts[1].lower() not in ("classic", "intraday"):
