@@ -1703,6 +1703,79 @@ def _load_daily_buckets():
     except Exception as e:
         print(f"[DAILY BUCKETS] load error: {e}")
 
+# ── Banned coins ─────────────────────────────────────────────────────────
+# /ban btc: no scanner picks that coin for a trade again - the Scan1/Scan2
+# and TS1/TS2 candidate lists drop it before any analysis, the classic BTC
+# engine and the intraday slots refuse to open it. A trade already running
+# on the coin is left to finish. Persisted the same two ways the daily
+# buckets are, so a redeploy cannot quietly lift a ban.
+_banned_coins: set = set()
+
+
+def _ban_key(sym) -> str:
+    """BTC, btc, $BTC, BTC-USDT, BTCUSDT, BTC.P -> BTC."""
+    k = str(sym or "").strip().upper().lstrip("$")
+    for suf in (".P", "-USDT", "USDT", "-USD", "-USDC"):
+        if k.endswith(suf) and len(k) > len(suf):
+            k = k[:-len(suf)]
+    return k
+
+
+def _is_banned(sym) -> bool:
+    return bool(_banned_coins) and _ban_key(sym) in _banned_coins
+
+
+def _save_banned_coins():
+    _blob = {"coins": sorted(_banned_coins)}
+    try:
+        with open(os.path.join(DATA_DIR, "banned_coins.json"), "w") as f:
+            json.dump(_blob, f)
+    except Exception as e:
+        print(f"[BAN] local save error: {e}")
+    if CLEXER_API_URL and is_active_server():
+        try:
+            _kv_push("banned_coins", _blob)
+        except Exception as e:
+            print(f"[BAN] central push error: {e}")
+
+
+def _load_banned_coins():
+    global _banned_coins
+    try:
+        d = None
+        path = os.path.join(DATA_DIR, "banned_coins.json")
+        if CLEXER_API_URL:
+            r = _central_get("/kv/banned_coins")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(path, r.json(), "BAN")
+        if d is None and os.path.exists(path):
+            with open(path) as f:
+                d = json.load(f)
+        if d is not None:
+            _banned_coins = {_ban_key(c) for c in d.get("coins", []) if _ban_key(c)}
+            if _banned_coins:
+                print(f"[BAN] {len(_banned_coins)} banned coin(s): {' '.join(sorted(_banned_coins))}")
+    except Exception as e:
+        print(f"[BAN] load error: {e}")
+
+
+def _open_trades_on(coin: str) -> list:
+    """Where a coin is currently held, for the /ban reply - names only."""
+    out = []
+    if coin == "BTC" and active_trade.get("signal"):
+        out.append("BTC engine")
+    for _name, _lst in (("Scan1", scan1_trades), ("Scan2", scan2_trades),
+                        ("TS1", demo_scan1_trades), ("TS2", demo_scan2_trades)):
+        if any(_ban_key(t.get("symbol") or t.get("sym")) == coin for t in list(_lst)):
+            out.append(_name)
+    for t in list(_intraday_trades):
+        _spec = _intra_spec(t.get("kind")) or {}
+        if _ban_key(_spec.get("symbol")) == coin:
+            out.append("intraday")
+            break
+    return out
+
+
 def _ist_date_str(epoch_seconds=None) -> str:
     """IST calendar-day string for a given epoch timestamp, or today if none given."""
     if epoch_seconds is None:
@@ -6750,6 +6823,7 @@ if _untested_demoted:
     _save_slot_state()
 
 _load_daily_buckets()
+_load_banned_coins()
 _load_free_tracker()
 
 def _ai_sched_kind(kind: str = "btc", scan_ver: int = None):
@@ -13934,6 +14008,8 @@ def _intra_run(kind: str, cid: int = None, manual: bool = False) -> str:
 
     label = spec["label"]
     sym = spec["symbol"]
+    if _is_banned(sym):
+        return f"{label}: {_ban_key(sym)} is banned - /unban to lift it"
 
     with _intraday_lock:
         open_here = [t for t in _intraday_trades if t.get("kind") == kind]
@@ -18463,6 +18539,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
 
     elif cmd == "/signal":
         if bot_paused.is_set(): send_reply(chat_id, "Bot paused. /go first.")
+        elif _is_banned("BTC"): send_reply(chat_id, "⛔ BTC is banned - <code>/unban btc</code> first.", skip_smallcaps=True)
         else:
             now = time.time(); elapsed = now-last_force_scan_time
             if elapsed<300 and last_force_scan_time>0: send_reply(chat_id, f"Cooldown: {int((300-elapsed)//60)+1} min left")
@@ -19245,6 +19322,94 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id,
                     f"✅ <b>{INTRADAY_SPECS[_k]['label']}</b> → "
                     f"{'ON' if INTRADAY_ENABLED[_k] else 'OFF'}{_warn}", skip_smallcaps=True)
+
+    elif cmd in ("/ban", "/unban", "/banlist") and is_scanadmin:
+        if cmd == "/banlist" or len(parts) < 2:
+            if _banned_coins:
+                _held = {c: _open_trades_on(c) for c in sorted(_banned_coins)}
+                _lines = [f"• <code>{c}</code>" + (f"  (open in {', '.join(w)} - finishing)" if w else "")
+                          for c, w in _held.items()]
+                send_reply(chat_id, "🚫 <b>Banned coins</b> - no scanner picks these:\n\n" + "\n".join(_lines) +
+                           "\n\n<code>/ban coin</code> adds one, <code>/unban coin</code> lifts it.", skip_smallcaps=True)
+            else:
+                send_reply(chat_id, "🚫 <b>No banned coins.</b>\n\n<code>/ban btc</code> stops every scanner from "
+                                    "picking BTC for a trade. <code>/unban btc</code> lifts it.", skip_smallcaps=True)
+            return
+        _syms = []
+        for _p in parts[1:]:
+            _k = _ban_key(_p)
+            if _k and _k.isalnum() and len(_k) <= 12 and _k not in _syms:
+                _syms.append(_k)
+        if not _syms:
+            send_reply(chat_id, f"Usage: <code>{cmd} btc</code> (several: <code>{cmd} btc eth sol</code>)", skip_smallcaps=True)
+            return
+        if cmd == "/ban":
+            _fresh = [c for c in _syms if c not in _banned_coins]
+            _banned_coins.update(_syms)
+            _save_banned_coins()
+            _lines = []
+            for c in _syms:
+                _w = _open_trades_on(c)
+                _lines.append(f"• <code>{c}</code>" + ("  - already banned" if c not in _fresh else "") +
+                              (f"\n   open in {', '.join(_w)} - that trade finishes as normal, no new one opens" if _w else ""))
+            send_reply(chat_id, "🚫 <b>Banned</b> - the scanners will not pick:\n\n" + "\n".join(_lines) +
+                       f"\n\n{len(_banned_coins)} coin(s) banned in total. <code>/banlist</code> shows them.", skip_smallcaps=True)
+        else:
+            _gone = [c for c in _syms if c in _banned_coins]
+            _banned_coins.difference_update(_syms)
+            _save_banned_coins()
+            if _gone:
+                send_reply(chat_id, "✅ <b>Unbanned</b> - back in the scanners' pick: " +
+                           " ".join(f"<code>{c}</code>" for c in _gone) +
+                           (f"\n\nStill banned: {len(_banned_coins)}." if _banned_coins else "\n\nNo bans left."), skip_smallcaps=True)
+            else:
+                send_reply(chat_id, "Not banned: " + " ".join(f"<code>{c}</code>" for c in _syms) +
+                           ". <code>/banlist</code> shows the current list.", skip_smallcaps=True)
+
+    elif cmd in ("/daily", "/weekly", "/monthly") and is_scanadmin:
+        # The recap for the period still running - the same tables the
+        # midnight / Monday / 1st-of-month posts use, from the same buckets,
+        # answered here only. Closed trades only; the channels never see it.
+        _arg = parts[1].lower() if len(parts) > 1 else ""
+        _today = now_ist().date()
+        _sofar = " (so far)"
+        if cmd == "/daily":
+            _d = _today
+            if _arg == "yesterday":
+                _d = _today - timedelta(days=1)
+            elif _arg:
+                try:
+                    _d = datetime.strptime(_arg, "%Y-%m-%d").date()
+                except ValueError:
+                    send_reply(chat_id, "Usage: <code>/daily</code>, <code>/daily yesterday</code> or "
+                                        "<code>/daily 2026-09-18</code>", skip_smallcaps=True)
+                    return
+            _dates = [_d.strftime("%Y-%m-%d")]
+            _rows = _gather_period_trades(_dates)
+            _what = _dates[0] + (_sofar if _d == _today else "")
+            _txt = _build_recap_text(_rows, _what) if _rows else ""
+        elif cmd == "/weekly":
+            _start = _today - timedelta(days=_today.weekday())          # this Monday
+            if _arg == "last":
+                _start -= timedelta(days=7)
+            _end = min(_start + timedelta(days=6), _today)
+            _dates = [(_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((_end - _start).days + 1)]
+            _rows = _gather_period_trades(_dates)
+            _what = f"{_start.strftime('%b %d')} to {_end.strftime('%b %d')}" + ("" if _arg == "last" else _sofar)
+            _txt = _build_period_recap_text(_rows, f"Weekly Recap — {_what}") if _rows else ""
+        else:
+            _start = _today.replace(day=1)
+            _end = _today
+            if _arg == "last":
+                _end = _start - timedelta(days=1)
+                _start = _end.replace(day=1)
+            _dates = [(_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((_end - _start).days + 1)]
+            _rows = _gather_period_trades(_dates)
+            _what = _start.strftime("%B %Y") + ("" if _arg == "last" else _sofar)
+            _txt = _build_period_recap_text(_rows, f"Monthly Recap — {_what}") if _rows else ""
+        if not _txt:
+            _txt = f"📊 No closed trades for <b>{_what}</b> yet."
+        send_reply(chat_id, _txt, skip_smallcaps=True)
 
     elif cmd in ("/btcengine", "/btceng") and is_scanadmin:
         if len(parts) < 2 or parts[1].lower() not in ("classic", "intraday"):
@@ -20389,7 +20554,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     sym = t.get("symbol","")
                     if not sym.endswith("-USDT"): continue
                     base = sym.replace("-USDT","")
-                    if base in skip: continue
+                    if base in skip or _is_banned(base): continue
                     vol  = float(t.get("quoteVolume",0) or t.get("volume",0) or 0)
                     chg  = float(t.get("priceChangePercent",0) or 0)
                     px   = float(t.get("lastPrice",0) or 0)
@@ -21949,6 +22114,11 @@ _SCAN_SUBCATS = {
         ("/liqmap", "🗺", "Liquidation Heatmap", "Estimated long/short liquidation pressure zones for any coin, by leverage tier."),
         ("/cp",     "🧪", "Chart Preview (Demo)", "See a demo signal + CoinTrendzBot chart image in your own DM — not a real trade, nothing posted anywhere."),
     ]),
+    "bans": ("🚫 Coin Bans", [
+        ("/ban",     "🚫", "Ban a Coin",   "`/ban btc` — no scanner picks that coin for a trade again: Scan1/Scan2, TS1/TS2, the classic BTC engine and the intraday slots all skip it. A trade already open on it finishes as normal. Several at once: `/ban btc eth`."),
+        ("/unban",   "✅", "Lift a Ban",   "`/unban btc` — the scanners may pick it again."),
+        ("/banlist", "📋", "Banned Coins", "Every coin currently banned from being picked, and where one is still held."),
+    ]),
 }
 
 # ─── "Trade Control" is split into sub-sections (main gate → door) ────────────
@@ -22073,6 +22243,9 @@ _SETTINGS_SUBCATS = {
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
         ("/report",   "📊", "API Cost Report",   "Daily Claude API token usage and cost breakdown, across every feature."),
+        ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
+        ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
+        ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
     ]),
 }
 
@@ -26740,7 +26913,7 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             sym = t.get("symbol","")
             if not sym.endswith("-USDT"): continue
             base = sym.replace("-USDT","")
-            if base in skip: continue
+            if base in skip or _is_banned(base): continue
             vol  = float(t.get("quoteVolume",0) or t.get("volume",0) or 0)
             chg  = float(t.get("priceChangePercent",0) or 0)
             px   = float(t.get("lastPrice",0) or 0)
@@ -27763,6 +27936,14 @@ def main():
             if BTC_ENGINE != "classic" and not forced:
                 time.sleep(MAIN_TICK); continue
             if not forced and (not _btc_scan_due or not btc_analysis_enabled or bot_stopped.is_set()):
+                time.sleep(MAIN_TICK); continue
+            if _is_banned("BTC"):
+                # /ban btc - the classic engine opens nothing. A BTC trade that
+                # is already running is still watched by the tick checks above
+                # and closes at its own TP/SL; only the 4H analysis that could
+                # open (or flip into) the next one is skipped.
+                if forced:
+                    send_admin("⛔ BTC is banned - <code>/unban btc</code> to scan it again.")
                 time.sleep(MAIN_TICK); continue
 
             # Cooldown
