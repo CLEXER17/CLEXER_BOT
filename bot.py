@@ -2135,6 +2135,22 @@ def _gather_period_trades(date_strs: list) -> list:
             trades += [t for t in b.get("trades", []) if t.get("tier_routed")]
     return trades
 
+def _recap_outcome(t: dict) -> str:
+    """"win", "loss" or "" for one recap row. A target is a win and a stop a
+    loss; a timeout is judged by what it closed at - in profit it is a win,
+    in loss a loss (admin 2026-09-22: "UNI 0 / 3 +2.26%" read as nonsense).
+    A timeout with no % recorded, or flat, counts as neither."""
+    res = t.get("result")
+    if res in ("TP1", "TP2"):
+        return "win"
+    if res == "SL":
+        return "loss"
+    p = _recap_pnl(t)
+    if p is None or p == 0:
+        return ""
+    return "win" if p > 0 else "loss"
+
+
 def _recap_by_symbol(shown: list) -> list:
     """[(symbol, {n, w, l, pnl}), ...] busiest first, then by name."""
     by_sym = {}
@@ -2142,8 +2158,9 @@ def _recap_by_symbol(shown: list) -> list:
         s = str(t.get("symbol", "?")).replace("-USDT", "").replace("USDT", "")
         d = by_sym.setdefault(s, {"n": 0, "w": 0, "l": 0, "pnl": 0.0})
         d["n"] += 1
-        if t.get("result") in ("TP1", "TP2"): d["w"] += 1
-        elif t.get("result") == "SL":         d["l"] += 1
+        _o = _recap_outcome(t)
+        if _o == "win":    d["w"] += 1
+        elif _o == "loss": d["l"] += 1
         p = _recap_pnl(t)
         if p is not None:
             d["pnl"] += p
@@ -2164,43 +2181,90 @@ def _recap_symbol_table(rows_in: list) -> str:
     return "\n".join(rows)
 
 
-def _recap_rest_pages(trades: list, skip: int = 12, per_page: int = 55) -> list:
-    """The symbols a period recap left out ("+92 more"), as ready-to-send
-    messages. A month can run past a hundred symbols and one bordered row is
-    about 45 characters, so the table is cut into pages that each stay well
-    inside Telegram's 4096-character message limit."""
-    rest = _recap_by_symbol(trades)[skip:]
-    if not rest:
-        return []
-    pages = [rest[i:i + per_page] for i in range(0, len(rest), per_page)]
-    out = []
-    for i, chunk in enumerate(pages, 1):
-        head = (f"📋 <b>The other {len(rest)} symbols</b>" + (f"  ({i}/{len(pages)})" if len(pages) > 1 else "")
-                + f"  ·  rows {skip + (i - 1) * per_page + 1}-{skip + (i - 1) * per_page + len(chunk)} by trade count")
-        out.append(head + "\n<pre>" + _recap_symbol_table(chunk) + "</pre>")
-    return out
+_RECAP_PAGE_ROWS = 20          # symbols per page in the admin's paged recap
 
 
-def _build_period_recap_text(trades: list, title: str, include_sl: bool = True) -> str:
+def _recap_period(kind: str, arg: str = ""):
+    """The dates and label for /weekly or /monthly ("" = the running period,
+    "last" = the one before). Shared by the command and its page buttons."""
+    today = now_ist().date()
+    sofar = "" if arg == "last" else " (so far)"
+    if kind == "w":
+        start = today - timedelta(days=today.weekday())               # this Monday
+        if arg == "last":
+            start -= timedelta(days=7)
+        end = min(start + timedelta(days=6), today)
+        what = f"{start.strftime('%b %d')} to {end.strftime('%b %d')}" + sofar
+        title = f"Weekly Recap — {what}"
+    else:
+        start = today.replace(day=1)
+        end = today
+        if arg == "last":
+            end = start - timedelta(days=1)
+            start = end.replace(day=1)
+        what = start.strftime("%B %Y") + sofar
+        title = f"Monthly Recap — {what}"
+    dates = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((end - start).days + 1)]
+    return dates, what, title
+
+
+def _recap_page_kb(kind: str, arg: str, page: int, pages: int):
+    """◀ / page x of y / ▶ under a paged recap; None when it all fits."""
+    if pages <= 1:
+        return None
+    row = []
+    if page > 0:
+        row.append({"text": "◀", "callback_data": f"rcp:{kind}:{arg}:{page - 1}"})
+    row.append({"text": f"{page + 1} / {pages}", "callback_data": "rcp:noop"})
+    if page < pages - 1:
+        row.append({"text": "▶", "callback_data": f"rcp:{kind}:{arg}:{page + 1}"})
+    return {"inline_keyboard": [row]}
+
+
+def _recap_paged(kind: str, arg: str, page: int):
+    """One page of the admin's recap: (text, keyboard). Page numbers past the
+    end fold back to the last page."""
+    dates, what, title = _recap_period(kind, arg)
+    rows = _gather_period_trades(dates)
+    if not rows:
+        return f"📊 No closed trades for <b>{what}</b> yet.", None
+    n_sym = len(_recap_by_symbol(rows))
+    pages = max(1, -(-n_sym // _RECAP_PAGE_ROWS))
+    page = min(max(0, page), pages - 1)
+    return _build_period_recap_text(rows, title, page=page), _recap_page_kb(kind, arg, page, pages)
+
+
+def _build_period_recap_text(trades: list, title: str, include_sl: bool = True, page: int = None) -> str:
     """Weekly/monthly recap — the same summary block, plus a per-symbol table
     and a win rate.
 
     Deliberately not the full per-trade list: a month of trades row by row
     runs to thousands of characters and would split across several messages.
-    The busiest symbols carry the detail instead."""
+    The busiest symbols carry the detail instead. The channel post shows the
+    top twelve and says how many more there are; with `page` set (the admin's
+    /weekly and /monthly) it shows that page of the whole table instead, and
+    ◀ ▶ buttons walk through the rest."""
     shown = [t for t in trades if include_sl or t.get("result") != "SL"]
-    wins = len([t for t in shown if t.get("result") in ("TP1", "TP2")])
-    losses = len([t for t in shown if t.get("result") == "SL"])
+    wins = sum(1 for t in shown if _recap_outcome(t) == "win")
+    losses = sum(1 for t in shown if _recap_outcome(t) == "loss")
     decided = wins + losses
     parts = [f"📊 <b>{title}</b>", ""]
 
     by_sym = _recap_by_symbol(shown)
-    top = by_sym[:12]
+    if page is None:
+        top = by_sym[:12]
+    else:
+        top = by_sym[page * _RECAP_PAGE_ROWS:(page + 1) * _RECAP_PAGE_ROWS]
     if top:
         _blk = "<pre>" + _recap_symbol_table(top) + "</pre>"
         parts.append(f"<blockquote expandable>{_blk}</blockquote>" if len(top) + 4 >= _EXPANDABLE_MIN_LINES else _blk)
-        if len(by_sym) > len(top):
-            parts.append(f"<i>+{len(by_sym) - len(top)} more symbols</i>")
+        if page is None:
+            if len(by_sym) > len(top):
+                parts.append(f"+{len(by_sym) - len(top)} more symbols")
+        else:
+            _pages = max(1, -(-len(by_sym) // _RECAP_PAGE_ROWS))
+            _first = page * _RECAP_PAGE_ROWS + 1
+            parts.append(f"Symbols {_first}–{_first + len(top) - 1} of {len(by_sym)}  ·  page {page + 1} of {_pages}")
 
     parts.append(_recap_summary(shown, include_sl=include_sl,
                                 period=(title.split()[0] if title.split() else "Period")))
@@ -19416,32 +19480,13 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _rows = _gather_period_trades(_dates)
             _what = _dates[0] + (_sofar if _d == _today else "")
             _txt = _build_recap_text(_rows, _what) if _rows else ""
-        elif cmd == "/weekly":
-            _start = _today - timedelta(days=_today.weekday())          # this Monday
-            if _arg == "last":
-                _start -= timedelta(days=7)
-            _end = min(_start + timedelta(days=6), _today)
-            _dates = [(_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((_end - _start).days + 1)]
-            _rows = _gather_period_trades(_dates)
-            _what = f"{_start.strftime('%b %d')} to {_end.strftime('%b %d')}" + ("" if _arg == "last" else _sofar)
-            _txt = _build_period_recap_text(_rows, f"Weekly Recap — {_what}") if _rows else ""
+            if not _txt:
+                _txt = f"📊 No closed trades for <b>{_what}</b> yet."
+            send_reply(chat_id, _txt, skip_smallcaps=True)
         else:
-            _start = _today.replace(day=1)
-            _end = _today
-            if _arg == "last":
-                _end = _start - timedelta(days=1)
-                _start = _end.replace(day=1)
-            _dates = [(_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((_end - _start).days + 1)]
-            _rows = _gather_period_trades(_dates)
-            _what = _start.strftime("%B %Y") + ("" if _arg == "last" else _sofar)
-            _txt = _build_period_recap_text(_rows, f"Monthly Recap — {_what}") if _rows else ""
-        if not _txt:
-            _txt = f"📊 No closed trades for <b>{_what}</b> yet."
-        send_reply(chat_id, _txt, skip_smallcaps=True)
-        if cmd != "/daily" and _rows:
-            # the channel post stops at 12 symbols; here the admin gets the rest
-            for _pg in _recap_rest_pages(_rows):
-                send_reply(chat_id, _pg, skip_smallcaps=True)
+            # every symbol, twenty a page, ◀ ▶ to move - the message edits in place
+            _txt, _kb = _recap_paged("w" if cmd == "/weekly" else "m", "last" if _arg == "last" else "", 0)
+            send_reply(chat_id, _txt, reply_markup=_kb, skip_smallcaps=True)
 
     elif cmd in ("/btcengine", "/btceng") and is_scanadmin:
         if len(parts) < 2 or parts[1].lower() not in ("classic", "intraday"):
@@ -24990,6 +25035,13 @@ def command_listener():
                         ct.set_auto_sltp_global(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Coin lookup — Market vs Pullback entry choice ─────────
+                    elif cb_data.startswith("rcp:") and cb_is_scanadmin:
+                        # ◀ ▶ under /weekly and /monthly - same message, next page
+                        _rp = cb_data.split(":")
+                        if len(_rp) == 4 and _rp[3].isdigit():
+                            _txt, _kb = _recap_paged(_rp[1], _rp[2], int(_rp[3]))
+                            _help_edit_or_send(cb_chat_id, _txt, _kb, message_id=cb_msg_id, rotate=False)
+
                     elif cb_data.startswith("coinlookup:"):
                         _, _etype, _sym = cb_data.split(":", 2)
                         send_reply(cb_chat_id, f"🧠 Analyzing <b>{_sym.replace('-','/')}</b> ({_etype.title()} entry)...")
