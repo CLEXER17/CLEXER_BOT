@@ -1659,6 +1659,30 @@ _daily_summary_last_sent_date = ""
 _weekly_summary_last_sent = ""   # ISO date string of the Monday whose week was last recapped
 _monthly_summary_last_sent = ""  # "YYYY-MM" of the month last recapped
 
+# Periods whose automatic CHANNEL recap is muted - /norecap. Keyed the same
+# way the "already sent" markers are: a day by its date, a week by its
+# Monday, a month by "YYYY-MM". Muting only stops the channel post; the
+# trades stay in their bucket and /daily /weekly /monthly still show them.
+_recap_skip: dict = {"d": set(), "w": set(), "m": set()}
+
+
+def _recap_skip_key(kind: str, when=None) -> str:
+    """The key for the period `when` falls in - today's period by default.
+    These are the periods the NEXT automatic post will cover: tonight's daily
+    recap covers today, Monday's weekly covers the week starting this Monday,
+    and the 1st's monthly covers this month."""
+    d = when or now_ist().date()
+    if kind == "d":
+        return d.strftime("%Y-%m-%d")
+    if kind == "w":
+        return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+    return d.strftime("%Y-%m")
+
+
+def _recap_muted(kind: str, key: str) -> bool:
+    return key in _recap_skip.get(kind, set())
+
+
 def _save_daily_buckets():
     """Persists _daily_buckets both to local disk AND the central store — local
     disk alone was the original bug: on Railway, the app filesystem is NOT
@@ -1669,7 +1693,8 @@ def _save_daily_buckets():
     whether local disk does. Cheap to call on every _track_daily_result()
     update since the payload is tiny."""
     _blob = {"buckets": _daily_buckets, "last_sent": _daily_summary_last_sent_date,
-              "weekly_last_sent": _weekly_summary_last_sent, "monthly_last_sent": _monthly_summary_last_sent}
+              "weekly_last_sent": _weekly_summary_last_sent, "monthly_last_sent": _monthly_summary_last_sent,
+              "recap_skip": {k: sorted(v) for k, v in _recap_skip.items()}}
     try:
         with open(os.path.join(DATA_DIR, "daily_buckets.json"), "w") as f:
             json.dump(_blob, f)
@@ -1699,7 +1724,12 @@ def _load_daily_buckets():
             _daily_summary_last_sent_date = d.get("last_sent", "")
             _weekly_summary_last_sent = d.get("weekly_last_sent", "")
             _monthly_summary_last_sent = d.get("monthly_last_sent", "")
-            print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s)")
+            _sk = d.get("recap_skip") or {}
+            for _k in ("d", "w", "m"):
+                _recap_skip[_k] = set(_sk.get(_k) or [])
+            _n_sk = sum(len(v) for v in _recap_skip.values())
+            print(f"[DAILY BUCKETS] Restored {len(_daily_buckets)} day(s)"
+                  + (f", {_n_sk} muted recap(s)" if _n_sk else ""))
     except Exception as e:
         print(f"[DAILY BUCKETS] load error: {e}")
 
@@ -2184,6 +2214,27 @@ def _recap_symbol_table(rows_in: list) -> str:
 _RECAP_PAGE_ROWS = 20          # symbols per page in the admin's paged recap
 
 
+def _norecap_panel():
+    """The /norecap screen: what the next automatic post will be for each
+    period, and a button to mute or unmute it. (text, keyboard)."""
+    _d = now_ist().date()
+    _rows = [("d", "Daily", _d.strftime("%b %d"), "tonight after midnight"),
+             ("w", "Weekly", (_d - timedelta(days=_d.weekday())).strftime("%b %d") + " week", "next Monday"),
+             ("m", "Monthly", _d.strftime("%B"), "the 1st")]
+    _lines, _btns = [], []
+    for _k, _label, _covers, _when in _rows:
+        _key = _recap_skip_key(_k)
+        _off = _recap_muted(_k, _key)
+        _lines.append(f"{'🔕' if _off else '🔔'} <b>{_label}</b> — {_covers}"
+                      + (f"\n     muted, nothing posts {_when}" if _off else f"\n     posts {_when}"))
+        _btns.append([{"text": f"{'🔔 Post' if _off else '🔕 Mute'} {_label.lower()}", "callback_data": f"nrcp:{_k}"}])
+    _txt = ("🔕 <b>Recap posting</b>\n\n" + "\n".join(_lines) +
+            "\n\n<blockquote>Muting stops the CHANNEL post only. The trades stay recorded, and "
+            "<code>/daily</code> <code>/weekly</code> <code>/monthly</code> still show them here.\n"
+            "A mute covers one period and clears itself once that period passes.</blockquote>")
+    return _txt, {"inline_keyboard": _btns}
+
+
 def _recap_period(kind: str, arg: str = ""):
     """The dates and label for /weekly or /monthly ("" = the running period,
     "last" = the one before). Shared by the command and its page buttons."""
@@ -2404,9 +2455,16 @@ def _daily_summary_loop():
                 if _daily_summary_last_sent_date != yesterday_str:
                     bucket = _daily_buckets.get(yesterday_str)
                     if bucket and bucket.get("trades"):
-                        _send_daily_summary(bucket)
-                        _daily_summary_last_sent_date = yesterday_str  # only lock once actually sent
-                        _save_daily_buckets()
+                        if _recap_muted("d", yesterday_str):
+                            # /norecap - marked sent so the window does not retry it
+                            print(f"  [DAILY SUMMARY] {yesterday_str} muted by /norecap")
+                            _daily_summary_last_sent_date = yesterday_str
+                            _recap_skip["d"].discard(yesterday_str)   # one day only
+                            _save_daily_buckets()
+                        else:
+                            _send_daily_summary(bucket)
+                            _daily_summary_last_sent_date = yesterday_str  # only lock once actually sent
+                            _save_daily_buckets()
                 if now.weekday() == 0:  # Monday
                     _week_end = now.date() - timedelta(days=1)      # yesterday = Sunday
                     _week_start = _week_end - timedelta(days=6)     # the Monday before
@@ -2415,10 +2473,16 @@ def _daily_summary_loop():
                         _week_dates = [(_week_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
                         _trades = _gather_period_trades(_week_dates)
                         if _trades:
-                            _title = f"Weekly Recap — {_week_start.strftime('%b %d')} to {_week_end.strftime('%b %d')}"
-                            _send_period_summary(_trades, _title, "weekly-summary")
-                            _weekly_summary_last_sent = _week_start_str  # only lock once actually sent
-                            _save_daily_buckets()
+                            if _recap_muted("w", _week_start_str):
+                                print(f"  [WEEKLY SUMMARY] week of {_week_start_str} muted by /norecap")
+                                _weekly_summary_last_sent = _week_start_str
+                                _recap_skip["w"].discard(_week_start_str)
+                                _save_daily_buckets()
+                            else:
+                                _title = f"Weekly Recap — {_week_start.strftime('%b %d')} to {_week_end.strftime('%b %d')}"
+                                _send_period_summary(_trades, _title, "weekly-summary")
+                                _weekly_summary_last_sent = _week_start_str  # only lock once actually sent
+                                _save_daily_buckets()
                 if now.day == 1:
                     _month_end = now.date() - timedelta(days=1)     # yesterday = last day of the month that just ended
                     _month_key = _month_end.strftime("%Y-%m")
@@ -2428,10 +2492,16 @@ def _daily_summary_loop():
                         _month_dates = [(_month_start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_n_days)]
                         _trades = _gather_period_trades(_month_dates)
                         if _trades:
-                            _title = f"Monthly Recap — {_month_end.strftime('%B %Y')}"
-                            _send_period_summary(_trades, _title, "monthly-summary")
-                            _monthly_summary_last_sent = _month_key  # only lock once actually sent
-                            _save_daily_buckets()
+                            if _recap_muted("m", _month_key):
+                                print(f"  [MONTHLY SUMMARY] {_month_key} muted by /norecap")
+                                _monthly_summary_last_sent = _month_key
+                                _recap_skip["m"].discard(_month_key)
+                                _save_daily_buckets()
+                            else:
+                                _title = f"Monthly Recap — {_month_end.strftime('%B %Y')}"
+                                _send_period_summary(_trades, _title, "monthly-summary")
+                                _monthly_summary_last_sent = _month_key  # only lock once actually sent
+                                _save_daily_buckets()
         except Exception as e:
             print(f"  [DAILY SUMMARY LOOP] {e}")
         time.sleep(60)
@@ -19465,6 +19535,40 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "Not banned: " + " ".join(f"<code>{c}</code>" for c in _syms) +
                            ". <code>/banlist</code> shows the current list.", skip_smallcaps=True)
 
+    elif cmd in ("/norecap", "/skiprecap") and is_scanadmin:
+        # Mute the next automatic channel recap for a period. No argument
+        # opens the panel; an argument toggles one straight away.
+        _a = parts[1].lower() if len(parts) > 1 else ""
+        _kind = {"daily": "d", "day": "d", "today": "d", "weekly": "w", "week": "w",
+                 "monthly": "m", "month": "m"}.get(_a)
+        if _a and not _kind:
+            try:
+                _dt = datetime.strptime(_a, "%Y-%m-%d").date()
+            except ValueError:
+                send_reply(chat_id, "Usage: <code>/norecap</code> for the panel, or "
+                                    "<code>/norecap daily|weekly|monthly</code>, or "
+                                    "<code>/norecap 2026-09-18</code> for one day.", skip_smallcaps=True)
+                return
+            _key = _recap_skip_key("d", _dt)
+            if _key in _recap_skip["d"]:
+                _recap_skip["d"].discard(_key)
+                send_reply(chat_id, f"🔔 <b>{_key}</b> will post as normal again.", skip_smallcaps=True)
+            else:
+                _recap_skip["d"].add(_key)
+                send_reply(chat_id, f"🔕 <b>{_key}</b> muted — its daily recap will not be posted.",
+                           skip_smallcaps=True)
+            _save_daily_buckets()
+            return
+        if _kind:
+            _key = _recap_skip_key(_kind)
+            if _key in _recap_skip[_kind]:
+                _recap_skip[_kind].discard(_key)
+            else:
+                _recap_skip[_kind].add(_key)
+            _save_daily_buckets()
+        _txt, _kb = _norecap_panel()
+        send_reply(chat_id, _txt, reply_markup=_kb, skip_smallcaps=True)
+
     elif cmd in ("/daily", "/weekly", "/monthly") and is_scanadmin:
         # The recap for the period still running - the same tables the
         # midnight / Monday / 1st-of-month posts use, from the same buckets,
@@ -22330,6 +22434,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
+        ("/norecap",  "🔕", "Mute a Recap Post", "Stop the next automatic recap from being posted to the channels. `/norecap` opens a panel with a mute button for daily, weekly and monthly; `/norecap daily` mutes tonight's straight away; `/norecap 2026-09-18` mutes one specific day. Muting never deletes anything — the trades stay recorded and /daily /weekly /monthly still show them. Each mute covers one period and clears itself once that period passes. (/skiprecap is the same command.)"),
     ]),
 }
 
@@ -25042,6 +25147,18 @@ def command_listener():
                         ct.set_auto_sltp_global(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
 
                     # ── Coin lookup — Market vs Pullback entry choice ─────────
+                    elif cb_data.startswith("nrcp:") and cb_is_scanadmin:
+                        _nk = cb_data.split(":", 1)[1]
+                        if _nk in ("d", "w", "m"):
+                            _nkey = _recap_skip_key(_nk)
+                            if _nkey in _recap_skip[_nk]:
+                                _recap_skip[_nk].discard(_nkey)
+                            else:
+                                _recap_skip[_nk].add(_nkey)
+                            _save_daily_buckets()
+                            _ntxt, _nkb = _norecap_panel()
+                            _help_edit_or_send(cb_chat_id, _ntxt, _nkb, message_id=cb_msg_id, rotate=False)
+
                     elif cb_data.startswith("rcp:") and cb_is_scanadmin:
                         # ◀ ▶ under /weekly and /monthly - same message, next page
                         _rp = cb_data.split(":")
