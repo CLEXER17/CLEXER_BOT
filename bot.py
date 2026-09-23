@@ -5623,6 +5623,47 @@ _BOKI_READ_TOOLS = {
 # read rather than from what it remembers.
 _BOKI_MAX_STEPS = 8
 
+# Boki is free-gateway-only, and the classifier's own model (Opus 5) is a
+# paid plan there - it answers 403, which is what made the whole tool loop
+# fall over (/bokitest, 2026-09-23). These are tried in order until one
+# runs, best tool-caller first; the winner is remembered so only the first
+# message of a process pays for the search.
+_BOKI_TOOL_MODELS = ["claude-sonnet-5", "glm-5.2", "kimi-k3", "gpt-5.6",
+                     "claude-opus-4-8", "claude-fable-5", "claude-opus-5"]
+_boki_tool_model = {"id": "", "why": {}}
+
+
+def _boki_model_unavailable(e) -> bool:
+    """A model this plan cannot use, as opposed to a real fault. Only the
+    first kind is worth trying the next model for."""
+    _t = str(e).lower()
+    return any(w in _t for w in ("403", "404", "paid plan", "upgrade your plan", "not available",
+                                 "does not exist", "unknown model", "not found", "permission"))
+
+
+def _boki_tools_create(client, msgs, tools, system):
+    """One tools call, walking the model list until one answers. Returns
+    (response, model_id)."""
+    _order = ([_boki_tool_model["id"]] if _boki_tool_model["id"] else []) + \
+             [m for m in _BOKI_TOOL_MODELS if m != _boki_tool_model["id"]]
+    _last = None
+    for _m in _order:
+        try:
+            _r = client.messages.create(model=_m, max_tokens=2000, system=system,
+                                         tools=tools, messages=msgs)
+            if _boki_tool_model["id"] != _m:
+                print(f"  [BOKI AGENT] tools model: {_m}")
+                _boki_tool_model["id"] = _m
+            return _r, _m
+        except Exception as e:
+            _boki_tool_model["why"][_m] = str(e)[:160]
+            if _m == _boki_tool_model["id"]:
+                _boki_tool_model["id"] = ""      # it worked before, it does not now
+            _last = e
+            if not _boki_model_unavailable(e):
+                raise                            # a real fault - do not burn the whole list on it
+    raise _last if _last else RuntimeError("no model available")
+
 
 def _boki_tool_specs() -> list:
     """The whole catalog as Anthropic tool definitions."""
@@ -5766,8 +5807,7 @@ def _boki_agent(cid, sender_id, message: str, reply_context: str = "", tag: str 
     try:
         _client = _claude_client("chat", force_aerolink=True)
         for _step in range(_BOKI_MAX_STEPS):
-            _resp = _client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=2000,
-                                             system=_BOKI_SYSTEM, tools=_tools, messages=_msgs)
+            _resp, _ = _boki_tools_create(_client, _msgs, _tools, _BOKI_SYSTEM)
             _calls = [b for b in _resp.content if getattr(b, "type", "") == "tool_use"]
             if not _calls:
                 _txt = _claude_text(_resp) or ""
@@ -20052,20 +20092,26 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
     elif cmd == "/bokitest" and is_scanadmin:
         # Says which path Boki is actually taking, so "it answered from
         # memory" can be diagnosed instead of guessed at.
-        _t0 = time.time()
         _line = []
-        try:
-            _cl = _claude_client("chat", force_aerolink=True)
-            _r = _cl.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=64,
-                                      tools=[{"name": "ping", "description": "say ping",
-                                              "input_schema": {"type": "object", "properties": {}}}],
-                                      messages=[{"role": "user", "content": "call the ping tool"}])
-            _line.append(f"\u2705 <b>Native tools work</b> \u2014 {_CHAT_ROUTER_MODEL} on the free gateway "
-                         f"({time.time() - _t0:.1f}s)")
-            _line.append(f"   stop_reason: <code>{getattr(_r, 'stop_reason', '?')}</code>")
-        except Exception as _e:
-            _line.append(f"\u274c <b>Native tools failed</b>: <code>{_html.escape(str(_e))[:300]}</code>")
-            _line.append("   Boki falls back to the JSON loop, which needs no tool support.")
+        _cl = _claude_client("chat", force_aerolink=True)
+        _ping = [{"name": "ping", "description": "say ping",
+                  "input_schema": {"type": "object", "properties": {}}}]
+        _winner = ""
+        for _m in _BOKI_TOOL_MODELS:
+            _t0 = time.time()
+            try:
+                _r = _cl.messages.create(model=_m, max_tokens=64, tools=_ping,
+                                          messages=[{"role": "user", "content": "call the ping tool"}])
+                _tu = any(getattr(b, "type", "") == "tool_use" for b in _r.content)
+                _line.append(f"\u2705 <code>{_m}</code> \u2014 {time.time() - _t0:.1f}s"
+                             + ("  (called the tool)" if _tu else "  (answered, no tool call)"))
+                if not _winner and _tu:
+                    _winner = _m
+            except Exception as _e:
+                _why = _html.escape(str(_e))
+                _line.append(f"\u274c <code>{_m}</code> \u2014 {_why[:110]}")
+        _line.insert(0, (f"\U0001F3AF Boki will use <b>{_winner}</b>" if _winner
+                          else "\u26a0 No model took a tool call \u2014 Boki uses the JSON loop instead") + "\n")
         _line.append("")
         _line.append(f"\U0001F4E6 {len(_ADMIN_ACTIONS)} action tool(s), {len(_BOKI_READ_TOOLS)} lookup tool(s)")
         try:
