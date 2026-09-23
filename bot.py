@@ -3675,6 +3675,68 @@ def _notify_load():
         print(f'[NOTIFY] load: {e}')
 
 
+def _urlquote(t: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(t)
+
+
+def _maps_link(geo: dict) -> str:
+    """A map link for an IP's location. Coordinates when the lookup gave
+    them, otherwise a search for the place name. IP geolocation reaches a
+    city and an ISP area, never an address - so this is roughly where the
+    connection is, not where a person is sitting."""
+    if not geo:
+        return ""
+    if geo.get("lat") is not None and geo.get("lon") is not None:
+        return f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
+    _q = ", ".join(x for x in (geo.get("city"), geo.get("region"), geo.get("country")) if x)
+    return f"https://www.google.com/maps/search/?api=1&query={_urlquote(_q)}" if _q else ""
+
+
+_user_where_cache: dict = {}          # cid -> (line, fetched_at)
+
+
+def _user_where_line(cid) -> str:
+    """Where this user last opened the Mini App - for the admin's own ping.
+
+    Telegram never tells a bot a user's IP, so the only place one is ever
+    known is the Mini App's own /device/seen record. Nothing new is
+    collected here; this reads back what the app already stored. Returns an
+    empty string when they have never opened the app, so the ping then
+    looks exactly the way it always did. Admin-facing only - the user's own
+    sign-in alert deliberately carries no IP.
+
+    Cached half an hour per user: the ping has its own cooldown already,
+    and a central-store round trip should not sit in front of it."""
+    _hit = _user_where_cache.get(str(cid))
+    if _hit and time.time() - _hit[1] < 1800:
+        return _hit[0]
+    _line = ""
+    try:
+        _r = _central_get(f"/kv/devices_{cid}", timeout=6, retries=1)
+        _body = _r.json() if (_r is not None and _r.ok) else {}
+        _reg = (_body.get("data") if isinstance(_body, dict) and "found" in _body else _body) or {}
+        _devs = _reg.get("devices") or {}
+        _d = _devs.get(_reg.get("current")) or (
+            sorted(_devs.values(), key=lambda x: x.get("last", ""))[-1] if _devs else None)
+        if _d:
+            _g = _d.get("geo") or {}
+            _where = ", ".join(x for x in (_g.get("city"), _g.get("country")) if x)
+            _isp = f" ({_g['isp']})" if _g.get("isp") else ""
+            _ip = (_d.get("ips") or [""])[0]
+            _map = _maps_link(_g)
+            _place = f'<a href="{_map}">{_where or "map"}</a>' if _map else (_where or "unknown")
+            _line = (f"🌐 {_place}{_isp}\n"
+                     f"🔢 <code>{_ip or '-'}</code>  ·  {_d.get('ua', '?')}  ·  app {_d.get('last', '?')}\n")
+    except Exception as e:
+        print(f"  [USER PING] where {cid}: {e}")
+    _user_where_cache[str(cid)] = (_line, time.time())
+    if len(_user_where_cache) > 400:
+        for _k in sorted(_user_where_cache, key=lambda k: _user_where_cache[k][1])[:200]:
+            _user_where_cache.pop(_k, None)
+    return _line
+
+
 def _ping_admin_user_activity(user_id, username=None, chat_id=None):
     """Ping the admin that a user is using the bot, at most once per
     USER_PING_COOLDOWN for that user.
@@ -3714,6 +3776,7 @@ def _ping_admin_user_activity(user_id, username=None, chat_id=None):
     _tier = '⭐ VIP' if _u.get('tier') == 'vip' else '🆓 Free'
     _txt = (f'👤 <b>{_who}</b> is using the bot\n\n'
             f'{_tier}  |  <code>{cid}</code>\n'
+            f'{_user_where_line(cid)}'
             f'Next ping for this user in {USER_PING_COOLDOWN // 60} min.')
     send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
 

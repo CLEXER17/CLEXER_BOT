@@ -789,9 +789,10 @@ def _geo(ip: str) -> dict:
         return hit
     out = {}
     try:
-        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp", timeout=5).json()
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,lat,lon", timeout=5).json()
         if r.get("status") == "success":
-            out = {"country": r.get("country", ""), "region": r.get("regionName", ""), "city": r.get("city", ""), "isp": r.get("isp", ""), "t": time.time()}
+            out = {"country": r.get("country", ""), "region": r.get("regionName", ""), "city": r.get("city", ""),
+                   "isp": r.get("isp", ""), "lat": r.get("lat"), "lon": r.get("lon"), "t": time.time()}
     except Exception:
         pass
     if out:
@@ -805,6 +806,19 @@ def _geo(ip: str) -> dict:
     return out
 
 
+def _maps_link(geo: dict) -> str:
+    """A map link for an IP's location. Coordinates when ip-api gave them,
+    otherwise a search for the place name. IP geolocation reaches a city and
+    an ISP area, never an address - so this is roughly where the connection
+    is, not where a person is sitting."""
+    if not geo:
+        return ""
+    if geo.get("lat") is not None and geo.get("lon") is not None:
+        return f"https://www.google.com/maps/search/?api=1&query={geo['lat']},{geo['lon']}"
+    _q = ", ".join(x for x in (geo.get("city"), geo.get("region"), geo.get("country")) if x)
+    return f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(_q)}" if _q else ""
+
+
 def _ua_short(ua: str) -> str:
     ua = ua or ""
     os_ = ("iPhone" if "iPhone" in ua else "iPad" if "iPad" in ua else "Android" if "Android" in ua else
@@ -812,6 +826,34 @@ def _ua_short(ua: str) -> str:
     br = ("Telegram" if "Telegram" in ua else "Chrome" if "Chrome" in ua and "Edg" not in ua else "Safari" if "Safari" in ua else
           "Firefox" if "Firefox" in ua else "Edge" if "Edg" in ua else "")
     return " · ".join(x for x in (os_, br) if x) or "Unknown device"
+
+
+try:
+    import i18n as _i18n                       # same catalogs the bot sends with
+    _i18n.load()
+except Exception as _e:                        # the API can run without them
+    _i18n = None
+    print(f"[DEVICE] i18n unavailable ({_e}) - sign-in alerts will be English")
+
+
+def _user_lang(uid: str) -> str:
+    try:
+        return (_kv_dict("ct_users").get(str(uid)) or {}).get("lang", "en") or "en"
+    except Exception:
+        return "en"
+
+
+def _net_id(geo: dict, ip: str) -> str:
+    """What counts as "the same network". A phone on mobile data gets a fresh
+    IP constantly, so the IP itself is useless here - the ISP and the city
+    are what actually change when someone else signs in from somewhere
+    else. Falls back to the first three octets when there is no geo."""
+    if geo.get("isp") or geo.get("city"):
+        return f"{geo.get('isp','')}|{geo.get('city','')}|{geo.get('country','')}".lower()
+    return ".".join((ip or "").split(".")[:3])
+
+
+_ALERTS_PER_DAY = 4                            # per user, so a flapping network cannot spam
 
 
 class DeviceSeen(BaseModel):
@@ -826,8 +868,8 @@ class DeviceSeen(BaseModel):
 @app.post("/device/seen")
 def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_current_user)):
     uid = str(user.get("id", ""))
-    if not (bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)):
-        return {"ok": True, "enabled": False}                  # admin-only while under test
+    if not uid:
+        return {"ok": True, "enabled": False}
     fp = hashlib.sha1("|".join([body.platform, _ua_short(body.ua), body.screen, body.tz, body.lang]).encode()).hexdigest()[:12]
     ip = _client_ip(request)
     now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
@@ -837,52 +879,86 @@ def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_cur
     devs = reg.setdefault("devices", {})
     d = devs.get(fp)
     new_device = d is None
-    new_ip = (not new_device) and ip and ip not in (d.get("ips") or [])
     geo = _geo(ip)
+    net = _net_id(geo, ip)
+    # A new IP on the same ISP in the same city is the same person on the same
+    # connection - only a genuinely different network is worth a message.
+    new_net = (not new_device) and bool(net) and net not in (d.get("nets") or [])
     if new_device:
         d = {"first": stamp, "platform": body.platform, "ua": _ua_short(body.ua), "screen": body.screen, "tz": body.tz,
-             "lang": body.lang, "tg": body.version, "ips": [], "geo": geo}
+             "lang": body.lang, "tg": body.version, "ips": [], "nets": [], "geo": geo}
         devs[fp] = d
     d["last"] = stamp
     if ip:
         d["ips"] = ([ip] + [x for x in (d.get("ips") or []) if x != ip])[:5]
         d["geo"] = geo or d.get("geo") or {}
+    if net:
+        d["nets"] = ([net] + [x for x in (d.get("nets") or []) if x != net])[:6]
     if len(devs) > 20:
         for k in sorted(devs, key=lambda k: devs[k].get("last", ""))[:-20]:
             devs.pop(k, None)
     reg["current"] = fp
+    # A first-ever visit is not a "new sign-in" - there is nothing to compare
+    # it against, and telling someone their own first open was suspicious is
+    # just noise. Record it, say nothing.
+    _first_ever = new_device and len(devs) == 1
+    _today = now.strftime("%Y-%m-%d")
+    _quota = reg.get("alerts") or {}
+    if _quota.get("day") != _today:
+        _quota = {"day": _today, "n": 0}
+    _alert = (new_device or new_net) and not _first_ever and _quota["n"] < _ALERTS_PER_DAY
+    if _alert:
+        _quota["n"] += 1
+    reg["alerts"] = _quota
     try:
         _kv_put(key, reg)
     except Exception as e:
         print(f"[DEVICE] save {uid}: {e}")
-    if new_device or new_ip:
+    if _alert:
         where = ", ".join(x for x in (geo.get("city"), geo.get("country")) if x) or "unknown location"
         isp = f" ({geo['isp']})" if geo.get("isp") else ""
+        _map = _maps_link(geo)
+        if _map:
+            where = '<a href="' + _map + '">' + where + '</a>'
         head = "🔐 <b>New sign-in to your CLEXER app</b>" if new_device else "🔐 <b>Your CLEXER app opened from a new network</b>"
-        text = (f"{head}\n\n<blockquote>📱 {d['ua']} · {body.platform or '-'}\n🌐 {where}{isp}\n🔢 IP <code>{ip or '-'}</code>\n"
+        # The raw IP is the admin's own diagnostic line. A user is told the
+        # device, the place and the time - enough to recognise a sign-in or
+        # not - without being handed an address they cannot act on anyway.
+        _ip_line = f"🔢 IP <code>{ip or '-'}</code>\n" if (ADMIN_CHAT_ID and uid == str(ADMIN_CHAT_ID)) else ""
+        text = (f"{head}\n\n<blockquote>📱 {d['ua']} · {body.platform or '-'}\n🌐 {where}{isp}\n{_ip_line}"
                 f"🕐 {stamp} IST</blockquote>\n\nIf this was you, nothing to do. If not, lock copy trading now - it stops every copy until you unlock.")
+        _kb = {"inline_keyboard": [[{"text": "🔒 Lock copy trading", "callback_data": f"sec:lock:{uid}", "style": "danger"},
+                                    {"text": "✅ It was me", "callback_data": f"sec:ok:{uid}"}]]}
+        if _i18n:
+            try:
+                _lg = _user_lang(uid)
+                text, _kb = _i18n.tr_text(_lg, text), _i18n.tr_markup(_lg, _kb)
+            except Exception as e:
+                print(f"[DEVICE] translate {uid}: {e}")
         try:
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                           json={"chat_id": int(uid), "text": text, "parse_mode": "HTML",
-                                "reply_markup": {"inline_keyboard": [[{"text": "🔒 Lock copy trading", "callback_data": f"sec:lock:{uid}", "style": "danger"},
-                                                                       {"text": "✅ It was me", "callback_data": f"sec:ok:{uid}"}]]}}, timeout=10)
+                                "link_preview_options": {"is_disabled": True},
+                                "reply_markup": _kb}, timeout=10)
         except Exception as e:
             print(f"[DEVICE] alert {uid}: {e}")
-    return {"ok": True, "enabled": True, "fp": fp, "new_device": new_device, "new_ip": new_ip}
+    return {"ok": True, "enabled": True, "fp": fp, "new_device": new_device, "new_net": new_net, "alerted": _alert}
 
 
 @app.get("/device/list")
 def device_list(user: dict = Depends(get_current_user)):
     uid = str(user.get("id", ""))
-    if not (bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)):
+    if not uid:
         return {"enabled": False, "devices": []}
+    _is_adm = bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)
     reg = _kv_dict(f"devices_{uid}") or {}
     cur = reg.get("current")
     out = []
     for fp, d in (reg.get("devices") or {}).items():
         g = d.get("geo") or {}
         out.append({"fp": fp, "name": d.get("ua", ""), "platform": d.get("platform", ""), "first": d.get("first", ""), "last": d.get("last", ""),
-                    "where": ", ".join(x for x in (g.get("city"), g.get("country")) if x), "ip": (d.get("ips") or [""])[0], "current": fp == cur})
+                    "where": ", ".join(x for x in (g.get("city"), g.get("country")) if x),
+                    "ip": (d.get("ips") or [""])[0] if _is_adm else "", "current": fp == cur})
     out.sort(key=lambda x: (not x["current"], x["last"]), reverse=False)
     locked = bool((_kv_dict("ct_users").get(uid) or {}).get("sec_locked"))
     return {"enabled": True, "devices": out, "locked": locked}

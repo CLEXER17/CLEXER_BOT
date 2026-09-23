@@ -1068,7 +1068,7 @@
       (d.locked ? `<div class="down" style="font-size:11px;margin-bottom:8px">🔒 ${t("dev.locked","Copy trading is locked - unlock from the alert message in your DM.")}</div>` : "") +
       ((d.devices || []).map(x => `<div class="rowline" style="border-top:1px solid var(--border)">
         <div><div class="k">${x.name || "Device"}${x.current ? ` <span style="font-size:9px;color:var(--long)">● ${t("dev.this","this device")}</span>` : ""}</div>
-        <div class="sub">${x.where || "-"} · <span class="mono">${x.ip || "-"}</span> · ${t("dev.last","last")} ${x.last}</div></div>
+        <div class="sub">${x.where || "-"}${x.ip ? ` · <span class="mono">${x.ip}</span>` : ""} · ${t("dev.last","last")} ${x.last}</div></div>
         ${x.current ? "" : `<button class="copybtn" onclick="forgetDevice('${x.fp}')">${t("dev.remove","Remove")}</button>`}</div>`).join("") ||
       `<div style="font-size:11px;color:var(--muted)">${t("dev.none","No devices yet.")}</div>`);
   }
