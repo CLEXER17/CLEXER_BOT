@@ -16349,10 +16349,12 @@ def _ist_status_text() -> str:
 #            AND a winning streak, not manually locked). A time that is not
 #            live today is skipped, exactly as the main bot skips it for
 #            VIP/Free and copy trade.
-#   which  : only ELITE_COINS. Inside that list the owning scan picks the way
-#            it always does - its own volume floor and move cap, its own score,
-#            the top ten, clean 4H structure first - and fires the first coin
-#            the engine gives a valid setup on.
+#   which  : only ELITE_COINS, filtered by the owning scan's own volume floor
+#            and move cap. ALL of the coins that pass are tried - no top-ten
+#            cut - most-moved in 24h first (admin 2026-09-23: the cut was
+#            skipping UNI, INJ and AIN, three of the best earners, for having
+#            finished the day near where they started). The first coin the
+#            engine gives a valid setup on fires.
 #   rules  : that scan's stop band, TP multiples and timeout, copied from the
 #            live code paths (S1/S2: TP 1.5x/3.0x, stop 1.5-4.0% inside a
 #            1.0-5.0% gate, 12h; TS1/TS2: TP 2.0x/3.75x, stop 1.5-3.0%, 1h).
@@ -16410,43 +16412,9 @@ def _elite_post(text: str, reply_to=None):
         return None
 
 
-def _elite_4h_struct(df) -> str:
-    """The main scan's own 4H read (check_4h_structure), so candidates are
-    ordered the same way: clean structure first."""
-    if df is None or len(df) < 8:
-        return "NEUTRAL"
-    h = df["high"].values[-15:]
-    l = df["low"].values[-15:]
-    c = df["close"].values[-15:]
-    sh, sl = [], []
-    for i in range(1, len(h) - 1):
-        if h[i] > h[i - 1] and h[i] > h[i + 1]:
-            sh.append(h[i])
-        if l[i] < l[i - 1] and l[i] < l[i + 1]:
-            sl.append(l[i])
-    swing = "NEUTRAL"
-    if len(sh) >= 2 and len(sl) >= 2:
-        if sh[-1] > sh[-2] and sl[-1] > sl[-2]:
-            swing = "BULLISH"
-        if sh[-1] < sh[-2] and sl[-1] < sl[-2]:
-            swing = "BEARISH"
-    mid = c[len(c) // 2]
-    close = "NEUTRAL"
-    if mid > 0:
-        tr = (c[-1] - mid) / mid * 100
-        close = "BEARISH" if tr < -5 else ("BULLISH" if tr > 5 else "NEUTRAL")
-    if swing == close:
-        return swing
-    if swing == "BULLISH" and close == "BEARISH":
-        return "BEARISH"
-    if swing == "BEARISH" and close == "BULLISH":
-        return "BULLISH"
-    return swing if swing != "NEUTRAL" else close
-
-
 def _elite_candidates(kind: str, tickers: list) -> list:
-    """ELITE_COINS that pass the owning scan's gates, scored and ordered the
-    way that scan orders them."""
+    """Every ELITE_COIN that passes the owning scan's gates, most-moved in
+    24h first. No top-ten cut: the list is already hand-picked."""
     import math as _m
     spec = ELITE_KINDS[kind]
     allow = {c.upper() for c in ELITE_COINS}
@@ -16473,8 +16441,8 @@ def _elite_candidates(kind: str, tickers: list) -> list:
             score = (abs(chg) ** 1.5) * _m.sqrt(vol / 1e6)
         out.append({"sym": sym, "base": base, "price": px, "chg": chg,
                     "vol_m": round(vol / 1e6, 1), "score": score})
-    out.sort(key=lambda x: -x["score"])
-    return out[:10]
+    out.sort(key=lambda x: -abs(x["chg"]))
+    return out
 
 
 def _elite_entry_card(t: dict) -> str:
@@ -16504,12 +16472,7 @@ def _elite_run(kind: str, hm=None) -> str:
     if not top:
         return (f"{lbl}: none of the {len(ELITE_COINS)} Elite coins passed {lbl}'s gates "
                 f"(volume ≥ ${spec['vol'] // 1_000_000}M, move ≤ {spec['chg']}%)")
-    for m in top:
-        try:
-            m["struct"] = _elite_4h_struct(bingx_klines(m["sym"], "4h", 60))
-        except Exception:
-            m["struct"] = "NEUTRAL"
-    order = [m for m in top if m["struct"] != "NEUTRAL"] + [m for m in top if m["struct"] == "NEUTRAL"]
+    order = top
     tried = []
     for m in order:
         sym, base = m["sym"], m["base"]
