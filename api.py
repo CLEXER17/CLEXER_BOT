@@ -785,7 +785,10 @@ def _geo(ip: str) -> dict:
         return {}
     cache = _kv_dict("geo_cache")
     hit = cache.get(ip)
-    if hit and time.time() - hit.get("t", 0) < 86400:
+    # An entry cached before coordinates were asked for has no lat/lon, so it
+    # can only ever produce a search-by-name link. Treat it as stale and look
+    # it up again rather than waiting a day for it to expire.
+    if hit and time.time() - hit.get("t", 0) < 86400 and hit.get("lat") is not None:
         return hit
     out = {}
     try:
