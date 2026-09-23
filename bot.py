@@ -16358,6 +16358,11 @@ def _ist_status_text() -> str:
 #   rules  : that scan's stop band, TP multiples and timeout, copied from the
 #            live code paths (S1/S2: TP 1.5x/3.0x, stop 1.5-4.0% inside a
 #            1.0-5.0% gate, 12h; TS1/TS2: TP 2.0x/3.75x, stop 1.5-3.0%, 1h).
+#   decides: follows /switch, like the main scans (admin 2026-09-23). ENGINE
+#            -> the local engine. AI -> Clex, asked with a COPY of the owning
+#            scan's own data summary, pre-checks and prompt, on the model and
+#            gateway /aiconfig sets for that scan's verified tier. It is a
+#            copy: an edit to the main scan prompts does not reach Elite.
 #   money  : copy trade as ver 7 with its own switch and its own slots, so
 #            nothing it does can reach another system's positions.
 #
@@ -16439,7 +16444,7 @@ def _elite_candidates(kind: str, tickers: list) -> list:
             score = _m.sqrt(vol / 1e6) * (abs(chg) ** 0.8) * fr
         else:
             score = (abs(chg) ** 1.5) * _m.sqrt(vol / 1e6)
-        out.append({"sym": sym, "base": base, "price": px, "chg": chg,
+        out.append({"sym": sym, "base": base, "price": px, "chg": chg, "vol": vol,
                     "vol_m": round(vol / 1e6, 1), "score": score})
     out.sort(key=lambda x: -abs(x["chg"]))
     return out
@@ -16458,6 +16463,315 @@ def _elite_entry_card(t: dict) -> str:
     ]], tag=t.get("sig_id", ""))
 
 
+def _elite_4h_struct(df) -> str:
+    """The main scans' 4H structure read - swing highs/lows plus the close
+    trend across the last 15 candles. Scan1/Scan2 and TS1/TS2 each keep an
+    identical copy nested inside their scan function."""
+    if df is None or len(df) < 8:
+        return "NEUTRAL"
+    h = df["high"].values[-15:]; l = df["low"].values[-15:]; cls = df["close"].values[-15:]
+    sh = []; sl = []
+    for i in range(1, len(h) - 1):
+        if h[i] > h[i-1] and h[i] > h[i+1]: sh.append(h[i])
+        if l[i] < l[i-1] and l[i] < l[i+1]: sl.append(l[i])
+    swing = "NEUTRAL"
+    if len(sh) >= 2 and len(sl) >= 2:
+        if sh[-1] > sh[-2] and sl[-1] > sl[-2]: swing = "BULLISH"
+        if sh[-1] < sh[-2] and sl[-1] < sl[-2]: swing = "BEARISH"
+    mid = cls[len(cls) // 2]
+    trend = "NEUTRAL"
+    if mid > 0:
+        tp = (cls[-1] - mid) / mid * 100
+        if tp < -5: trend = "BEARISH"
+        elif tp > 5: trend = "BULLISH"
+    if swing == trend: return swing
+    if swing == "BULLISH" and trend == "BEARISH": return "BEARISH"
+    if swing == "BEARISH" and trend == "BULLISH": return "BULLISH"
+    return swing if swing != "NEUTRAL" else trend
+
+
+def _elite_momentum(df) -> bool:
+    """Scan1/Scan2's momentum flag: either of the last two 4H candles moved >5%."""
+    if df is None or len(df) < 2:
+        return False
+    for i in (-1, -2):
+        r = df.iloc[i]
+        if r["open"] > 0 and abs(r["close"] - r["open"]) / r["open"] * 100 > 5:
+            return True
+    return False
+
+
+def _elite_s12_prompt(sym: str, smc: str, price: float, btc_px: float) -> str:
+    """Scan1/Scan2's analysis prompt, V7 or the current one by /btcmode -
+    word for word the text _build_analysis_prompt builds inside the live scan."""
+    if BTC_PROMPT_MODE == "V7":
+        return f"""{smc}
+BTC: ${btc_px:,.0f} | Session: {get_session()} | Current price: {price:,.6g}
+
+You are CLEXER. Analyze {sym} for MARKET entry at current price {price:,.6g}.
+Entry is ALWAYS market price — no pullback, no limit orders.
+Apply every rule below internally, in your head — never write out your reasoning,
+never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
+Go directly from reading this prompt to the OUTPUT block at the end, no preamble.
+Do NOT write "Position 0", "Position 1", etc. — do not list, number, or walk
+through individual candles at all, for ANY timeframe or ANY check below. Do NOT
+use markdown headers or bold section titles ("**4H Structure:**" etc.) — that
+formatting is what starts the narration. If you notice yourself starting to
+explain, compare, or list candles, stop immediately and skip straight to the
+OUTPUT block — a wrong-looking but complete answer is far better than a
+correct answer that gets cut off before it's written.
+
+RULES (apply internally, do not output):
+- 4H: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
+- 1H must agree with 4H or be neutral. Opposite=WAIT.
+- 5M last 10 candles: higher lows forming=BUY, lower highs forming=SELL, choppy=WAIT
+- SL = lowest 5M low (BUY) or highest 5M high (SELL) from last 5 candles. Min 1.5% max 4% of entry. +0.3% buffer.
+- TP1 = entry ± sl_dist×1.5. TP2 = entry ± sl_dist×3
+- If any condition unclear → Signal: WAIT
+
+OUTPUT (copy exactly, replace bracketed values):
+Signal: BUY / SELL / WAIT
+Entry: {price:,.6g}
+Entry_Type: MARKET
+SL: [number only]
+TP1: [number only]
+TP2: [number only]
+R:R: [number only]
+Confidence: HIGH / MED / LOW
+Reasoning: [one line]"""
+    return f"""{smc}
+BTC: ${btc_px:,.0f} | Session: {get_session()} | Current price: {price:,.6g}
+
+You are CLEXER. Analyze {sym}. Decide: is this coin ready for MARKET entry RIGHT NOW?
+If not → WAIT. Do not force. Another coin will be tried. Go directly to output.
+Apply every rule below internally, in your head — never write out your reasoning,
+never narrate candle-by-candle, never label your work "Step 1/Step 2" or similar.
+Do NOT write "Position 0", "Position 1", etc. — do not list, number, or walk
+through individual candles at all, for ANY timeframe or ANY check below. Do NOT
+use markdown headers or bold section titles ("**4H Structure:**" etc.) — that
+formatting is what starts the narration. If you notice yourself starting to
+explain, compare, or list candles, stop immediately and skip straight to the
+OUTPUT block — a wrong-looking but complete answer is far better than a
+correct answer that gets cut off before it's written.
+
+RULES:
+1. 4H trend: HH+HL=BULLISH, LH+LL=BEARISH, unclear=WAIT
+2. 1H: must agree with 4H or be neutral. Opposite=WAIT
+3. 5M NOW: higher lows forming=BUY ready, lower highs forming=SELL ready, choppy/mixed=WAIT
+4. Entry = {price:,.6g} (MARKET, fills now)
+5. SL = lowest low of last 3-5 x 5M candles (BUY) or highest high (SELL). Min 1.5%, Max 4%. +0.3% buffer.
+6. TP1 = entry ± sl_dist×1.5. TP2 = entry ± sl_dist×3
+7. Confidence: HIGH=all 3 TFs agree clearly. MED=4H+1H agree, 5M forming. LOW=only 4H clear.
+8. HARD BLOCK→WAIT: last 4H candle <-6%, price fell >10% in 2 candles, 4H/1H opposite, 5M choppy.
+
+OUTPUT ONLY (no steps, no working, replace bracketed values):
+Signal: BUY / SELL / WAIT
+Entry: {price:,.6g}
+Entry_Type: MARKET
+SL: [number only]
+TP1: [number only]
+TP2: [number only]
+R:R: [number only]
+Confidence: HIGH / MED / LOW
+Reasoning: [one line]"""
+
+
+def _elite_s12_prep(m: dict, cp: float):
+    """Scan1/Scan2's steps 2-4b for one coin: 4H structure + momentum, candles,
+    the 8% integrity check, the data summary and the post-pump pre-filter.
+    Returns (prompt_builder, None) or (None, why it was skipped)."""
+    sym = m["sym"]
+    df_4h = bingx_klines(sym, "4h", 30)
+    struct, mom = _elite_4h_struct(df_4h), _elite_momentum(df_4h)
+    df_1h = bingx_klines(sym, "1h", 40)
+    df_5m = bingx_klines(sym, "5m", 30)
+    for tf, df in (("4H", df_4h), ("1H", df_1h), ("5M", df_5m)):
+        if df is None or len(df) == 0:
+            continue
+        if abs(float(df["close"].iloc[-1]) - cp) / cp * 100 > 8.0:
+            return None, f"{tf} candles do not match live price"
+    smc = (f"=== {sym} DATA SUMMARY ===\n"
+           f"Price: {cp:,.6g}\n"
+           f"24h Change: {m['chg']:+.2f}%\n"
+           f"Volume (24h): ${m['vol_m']}M\n"
+           f"4H Structure: {struct}\n"
+           f"Momentum move (>5% candle): {'YES' if mom else 'NO'}\n"
+           f"Candle source: BingX\n")
+    if df_4h is not None and len(df_4h) >= 10:
+        h4 = df_4h
+        highs4 = h4["high"].values; lows4 = h4["low"].values; cls4 = h4["close"].values; ops4 = h4["open"].values
+        tr4 = [max(h4["high"].iloc[i] - h4["low"].iloc[i], abs(h4["high"].iloc[i] - cls4[i-1]),
+                   abs(h4["low"].iloc[i] - cls4[i-1])) for i in range(1, min(20, len(h4)))]
+        atr4 = sum(tr4) / len(tr4) if tr4 else 0
+        sh = []; sl_p = []
+        for i in range(1, len(highs4) - 1):
+            if highs4[i] > highs4[i-1] and highs4[i] > highs4[i+1]: sh.append(highs4[i])
+            if lows4[i] < lows4[i-1] and lows4[i] < lows4[i+1]: sl_p.append(lows4[i])
+        vols4 = h4["volume"].values[-10:]; bidx = int(vols4.argmax())
+        bdir = "GREEN" if cls4[-10 + bidx] > ops4[-10 + bidx] else "RED"
+        last2 = [f"{i}: open={ops4[i]:,.4g} close={cls4[i]:,.4g} high={highs4[i]:,.4g} low={lows4[i]:,.4g} "
+                 f"move={abs(cls4[i] - ops4[i]) / ops4[i] * 100:.2f}%" for i in (-2, -1)]
+        smc += (f"\n--- 4H CANDLES ---\nLast 2:\n  {last2[0]}\n  {last2[1]}\n"
+                f"4H ATR: {atr4:,.4g}\nSwing highs: {[_sig_round(x) for x in sh[-4:]]}\n"
+                f"Swing lows: {[_sig_round(x) for x in sl_p[-4:]]}\n"
+                f"Last 5 closes: {[_sig_round(x) for x in cls4[-5:].tolist()]}\n"
+                f"Big vol candle: {bdir} ({10 - bidx} bars ago)\n")
+    if df_1h is not None and len(df_1h) >= 5:
+        h1 = df_1h; c1 = h1["close"].values; h1_h = h1["high"].values; h1_l = h1["low"].values
+        atr1 = [max(h1["high"].iloc[i] - h1["low"].iloc[i], abs(h1["high"].iloc[i] - c1[i-1]),
+                    abs(h1["low"].iloc[i] - c1[i-1])) for i in range(1, min(15, len(h1)))]
+        atr1v = sum(atr1) / len(atr1) if atr1 else 0
+        sh1 = []; sl1 = []
+        for i in range(1, len(h1_h) - 1):
+            if h1_h[i] > h1_h[i-1] and h1_h[i] > h1_h[i+1]: sh1.append(h1_h[i])
+            if h1_l[i] < h1_l[i-1] and h1_l[i] < h1_l[i+1]: sl1.append(h1_l[i])
+        smc += (f"\n--- 1H CANDLES ---\nATR_1H: {atr1v:,.4g}\n"
+                f"1H swing highs: {[_sig_round(x) for x in sh1[-4:]]}\n"
+                f"1H swing lows: {[_sig_round(x) for x in sl1[-4:]]}\n"
+                f"Last 5 closes: {[_sig_round(x) for x in c1[-5:].tolist()]}\n")
+    if df_5m is not None and len(df_5m) >= 5:
+        c5 = df_5m["close"].values; h5 = df_5m["high"].values; l5 = df_5m["low"].values
+        last10 = [f"  [{i}] H:{h5[i]:,.4g} L:{l5[i]:,.4g} C:{c5[i]:,.4g}" for i in range(max(-10, -len(c5)), 0)]
+        smc += "\n--- 5M (last 10 candles, newest last) ---\n" + "\n".join(last10) + "\n"
+    if BTC_PROMPT_MODE != "V7" and df_4h is not None and len(df_4h) >= 10:
+        c4 = df_4h["close"].values; o4 = df_4h["open"].values
+        last_move = (c4[-1] - o4[-1]) / o4[-1] * 100
+        gain10 = (c4[-1] - c4[-10]) / c4[-10] * 100
+        if last_move < -8 and gain10 > 30:
+            return None, f"post-pump rejection {last_move:.1f}% after +{gain10:.0f}% rally"
+        if last_move < -10:
+            return None, f"large rejection candle {last_move:.1f}%"
+        if gain10 > 40 and last_move < 0:
+            return None, f"parabolic +{gain10:.0f}% with red close"
+    btc_px = get_bingx_price("BTC-USDT") or 0
+    return (lambda px: _elite_s12_prompt(sym, smc, px, btc_px)), None
+
+
+def _elite_ts_prep(m: dict, cp: float):
+    """TS1/TS2's gates and data summary for one coin: 4H structure must lean
+    one way, the 1H move no older than 5 candles, the 4H move no older than 8.
+    Returns (prompt_builder, None) or (None, why it was skipped)."""
+    sym = m["sym"]
+    df_4h = bingx_klines(sym, "4h", 30)
+    df_1h = bingx_klines(sym, "1h", 40)
+    df_15m = bingx_klines(sym, "15m", 30)
+    df_5m = bingx_klines(sym, "5m", 30)
+    if df_4h is None or df_1h is None or df_5m is None:
+        return None, "candle data fetch failed"
+    struct = _elite_4h_struct(df_4h)
+    if struct == "NEUTRAL":
+        return None, "4H structure NEUTRAL"
+    direction = "long" if struct == "BULLISH" else "short"
+    age = _move_age_1h([{"high": float(r["high"]), "low": float(r["low"])} for _, r in df_1h.iterrows()], direction)
+    if age > 5:
+        return None, f"1H move {age} candles old (>5)"
+    age_4h = _move_age_1h([{"high": float(r["high"]), "low": float(r["low"])} for _, r in df_4h.iterrows()], direction)
+    if age_4h > 8:
+        return None, f"4H move {age_4h} candles old (>8)"
+    smc = (f"=== {sym} DATA SUMMARY ===\n"
+           f"Price: {cp:,.6g}\n"
+           f"24h Change: {m['chg']:+.2f}%\n"
+           f"Volume (24h): ${m['vol_m']}M\n"
+           f"4H Structure: {struct}\n"
+           f"move_age_1h: {age} candles (gate: ≤5)\n"
+           f"move_age_4h: {age_4h} candles (gate: ≤8)\n")
+    if len(df_4h) >= 10:
+        highs4 = df_4h["high"].values; lows4 = df_4h["low"].values
+        sh = []; sl_p = []
+        for i in range(1, len(highs4) - 1):
+            if highs4[i] > highs4[i-1] and highs4[i] > highs4[i+1]: sh.append(highs4[i])
+            if lows4[i] < lows4[i-1] and lows4[i] < lows4[i+1]: sl_p.append(lows4[i])
+        smc += (f"4H Swing highs: {[_sig_round(x) for x in sh[-4:]]}\n"
+                f"4H Swing lows: {[_sig_round(x) for x in sl_p[-4:]]}\n")
+    if len(df_1h) >= 5:
+        cls1 = df_1h["close"].values; ops1 = df_1h["open"].values
+        l2 = [f"open={ops1[i]:,.4g} close={cls1[i]:,.4g}" for i in (-2, -1)]
+        smc += f"1H last 2: {l2[0]} | {l2[1]}\n"
+    if df_15m is not None and len(df_15m) >= 5:
+        smc += (f"15M last 10 lows:  {[_sig_round(x) for x in df_15m['low'].values[-10:]]}\n"
+                f"15M last 10 highs: {[_sig_round(x) for x in df_15m['high'].values[-10:]]}\n")
+    if len(df_5m) >= 5:
+        smc += (f"5M last 10 lows:  {[_sig_round(x) for x in df_5m['low'].values[-10:]]}\n"
+                f"5M last 10 highs: {[_sig_round(x) for x in df_5m['high'].values[-10:]]}\n"
+                f"5M last close: {df_5m['close'].values[-1]:,.6g}\n")
+    vol = m.get("vol") or m["vol_m"] * 1e6
+    return (lambda px: _build_scalp_v1_prompt(sym, px, smc, vol, m["chg"],
+                                              struct=struct, age=age, age_4h=age_4h)), None
+
+
+def _elite_ai_decide(kind: str, m: dict, cp: float, bad_keys: set):
+    """Ask Clex about one coin the way the owning scan asks it.
+
+    Returns (side, stop, why). side is "BUY"/"SELL" on a trade, None on a
+    WAIT or a skip, "DEAD" once every gateway key has failed this run (no
+    point asking about the next coin)."""
+    ts = kind in ("demo1", "demo2")
+    try:
+        build, why = (_elite_ts_prep if ts else _elite_s12_prep)(m, cp)
+    except Exception as e:
+        return None, 0.0, f"data error ({type(e).__name__})"
+    if not build:
+        return None, 0.0, why
+    ai_kind, ai_ver = ("test", 1 if kind == "demo1" else 2) if ts else (kind, None)
+    model = _ai_model(ai_kind, ai_ver)
+    aero = _ai_aerolink(ai_kind, ai_ver)
+    budget = _claude_retry_budget(aero)
+    prompt = build(cp)
+    text, err = "", ""
+    for att in range(budget):
+        used = ""
+        try:
+            if att > 0:
+                px = get_bingx_price(m["sym"])
+                if px:
+                    prompt = build(px)
+            cli, used = _claude_client_skip(ai_kind, att, bad_keys, scan_ver=ai_ver)
+            if ts:
+                r = cli.messages.create(model=model, max_tokens=4000,
+                                        messages=[{"role": "user", "content": prompt}], **_thinking_kwarg(model))
+            else:
+                r = _claude_create(cli, model=model, max_tokens=50000 if aero else 5000,
+                                   messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+                                   **_thinking_kwarg(model))
+            _log_api_usage(f"elite_{ELITE_KINDS[kind]['label']}_{m['sym']}", model,
+                           r.usage.input_tokens, r.usage.output_tokens,
+                           gateway="Aerolink" if aero else "Direct")
+            text = _claude_text(r)
+            em = re.search(r"Entry[:\s]+([0-9.]+)", text.replace(",", ""), re.IGNORECASE)
+            if not text or not re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", text, re.IGNORECASE) \
+                    or not em or float(em.group(1)) <= 0:
+                raise ValueError(f"incomplete answer ({len(text)} chars)")
+            break
+        except Exception as e:
+            err, text = str(e), ""
+            if aero and used:
+                bad_keys.add(used)
+            if att < budget - 1:
+                time.sleep(10)
+    if not text:
+        if _all_aero_keys_dead(aero, bad_keys):
+            return "DEAD", 0.0, "every gateway key failed"
+        return None, 0.0, f"Clex unreachable ({err[:60]})"
+    clean = text.replace(",", "")
+    slm = re.search(r"SL[:\s]+([0-9.]+)", clean, re.IGNORECASE)
+    sl = float(slm.group(1)) if slm else 0.0
+    reason = re.search(r"[Rr]easoning[:\s]+(.+)", text)
+    reason = reason.group(1).strip()[:60] if reason else ""
+    if ts:
+        sigs = [x.upper() for x in re.findall(r"Signal[:\s]+(BUY|SELL|WAIT)", text, re.IGNORECASE)]
+        side = "WAIT" if not sigs or "WAIT" in sigs else sigs[-1]
+        if side != "WAIT":
+            sw = re.search(r"SwingLevel[:\s]+([0-9.]+)", clean, re.IGNORECASE)
+            if not sw or sl <= 0:
+                return None, 0.0, "no swing level"
+    else:
+        sm = re.search(r"Signal[:\s]+(BUY|SELL|WAIT)", text, re.IGNORECASE)
+        side = sm.group(1).upper() if sm else "WAIT"
+    if side == "WAIT":
+        return None, 0.0, "WAIT" + (f" ({reason})" if reason else "")
+    return side, sl, ""
+
+
 def _elite_run(kind: str, hm=None) -> str:
     """One run of one scan's rules over the Elite coins. Fires at most one
     trade - the owning scan fires one per cycle too."""
@@ -16474,29 +16788,45 @@ def _elite_run(kind: str, hm=None) -> str:
                 f"(volume ≥ ${spec['vol'] // 1_000_000}M, move ≤ {spec['chg']}%)")
     order = top
     tried = []
+    use_ai = SIGNAL_ENGINE_MODE != "engine"
+    bad_keys = set()
+    # Clex's model and gateway come from /aiconfig by (scan, tier) and read
+    # the tier off this thread's scan context. Every Elite time is one /st
+    # week clears, so it asks as that scan's special time would.
+    _scan_ctx.special, _scan_ctx.trigger_hm = True, (tuple(hm) if hm else None)
     for m in order:
         sym, base = m["sym"], m["base"]
         with _elite_lock:
             if any(x["symbol"] == sym for x in _elite_trades):
                 tried.append(f"{base} already open")
                 continue
-        try:
-            df5 = bingx_klines(sym, "5m", 30)
-            H = [float(x) for x in df5["high"].values[-10:]]
-            L = [float(x) for x in df5["low"].values[-10:]]
-            C = [float(x) for x in df5["close"].values[-10:]]
-        except Exception:
-            tried.append(f"{base} no 5M data")
-            continue
         cp = get_bingx_price(sym) or m["price"]
-        e = _engine_signal(H, L, C, float(cp), spec["tp1"], spec["tp2"], spec["sl_lo"], spec["sl_hi"])
-        if not e or e.get("signal") == "WAIT":
-            tried.append(f"{base} WAIT")
-            continue
-        side = e["signal"]
+        if use_ai:
+            side, raw_sl, why = _elite_ai_decide(kind, m, float(cp), bad_keys)
+            if side == "DEAD":
+                tried.append(f"{base} {why} - stopped")
+                break
+            if not side:
+                tried.append(f"{base} {why}")
+                continue
+            cp = get_bingx_price(sym) or cp      # the answer took a while - enter at the price now
+        else:
+            try:
+                df5 = bingx_klines(sym, "5m", 30)
+                H = [float(x) for x in df5["high"].values[-10:]]
+                L = [float(x) for x in df5["low"].values[-10:]]
+                C = [float(x) for x in df5["close"].values[-10:]]
+            except Exception:
+                tried.append(f"{base} no 5M data")
+                continue
+            e = _engine_signal(H, L, C, float(cp), spec["tp1"], spec["tp2"], spec["sl_lo"], spec["sl_hi"])
+            if not e or e.get("signal") == "WAIT":
+                tried.append(f"{base} WAIT")
+                continue
+            side, raw_sl = e["signal"], e["sl"]
         dp = _test_dp(sym)
         q = lambda v, _dp=dp: round(float(v), _dp)
-        entry, sl = q(cp), q(e["sl"])
+        entry, sl = q(cp), q(raw_sl)
         _slg = _sl_guard(side, entry, sl)
         if _slg:
             tried.append(f"{base} {_slg}")
@@ -16516,7 +16846,7 @@ def _elite_run(kind: str, hm=None) -> str:
              "kind": kind, "label": lbl,
              "slot": f"{hm[0]}:{hm[1]:02d}" if hm else "manual",
              "timeout_h": spec["timeout_h"], "sig_id": _gen_signal_id(),
-             "ct_pending": True}
+             "by": "Clex" if use_ai else "Engine", "ct_pending": True}
         with _elite_lock:
             if any(x["symbol"] == sym for x in _elite_trades):
                 tried.append(f"{base} opened by a parallel run")
@@ -16525,8 +16855,8 @@ def _elite_run(kind: str, hm=None) -> str:
         t["entry_mid"] = _elite_post(_elite_entry_card(t))
         _sys_copy_open(t, 7, "ELITE")
         _elite_save()
-        return f"{lbl}: {side} {base} @ {entry} · SL {sl_pct:.2f}%"
-    return f"{lbl}: no setup — " + ", ".join(tried[:8])
+        return f"{lbl}: {side} {base} @ {entry} · SL {sl_pct:.2f}% · {t['by']}"
+    return f"{lbl}: no setup ({'Clex' if use_ai else 'Engine'}) — " + ", ".join(tried[:8])
 
 
 def _elite_close(t: dict, result: str, price: float, pnl=None):
@@ -16779,6 +17109,7 @@ def _elite_status_text() -> str:
     net = sum(h["pnl"] for h in rows if h.get("pnl") is not None)
     out = [f"⭐ <b>ELITE</b>  —  {'🟢 ON' if ELITE_ENABLED else '🔴 OFF'}",
            f"💰 Copy trade: {'🟢 ON (every copy user)' if ct.ELITE_CT_ENABLED else '🔴 OFF'}",
+           f"🧠 Decides by: <b>{'Clex' if SIGNAL_ENGINE_MODE != 'engine' else 'Engine'}</b> (follows /switch)",
            f"📂 Open: <b>{len(_elite_trades)}</b>   ·   today {len(rows)} closed, <b>{net:+.2f}%</b>",
            "",
            f"🪙 <b>Coins ({len(ELITE_COINS)})</b>: " + " ".join(f"<code>{c}</code>" for c in ELITE_COINS),
