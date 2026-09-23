@@ -2214,6 +2214,132 @@ def _recap_symbol_table(rows_in: list) -> str:
 _RECAP_PAGE_ROWS = 20          # symbols per page in the admin's paged recap
 
 
+_SCAN_LABEL = {"scan1": "S1", "scan2": "S2", "demo1": "TS1", "demo2": "TS2",
+               "btc": "BTC", "intra_btcint": "INTRA", "intra_xaut": "INTRA"}
+
+
+def _scanstats_csv_index():
+    """Every closed row in the trade log, keyed by (COIN, close minute).
+
+    The recap knows what a trade EARNED but not which scan fired it; the CSV
+    knows the scan but not which trades were tier-routed, and its own result
+    labels disagree with the recap's (a row the recap calls TP1 is written
+    BE here, because TP1 hit and the rest trailed out). So the recap stays
+    the source of truth for wins and P&L and the CSV is consulted for one
+    thing only: the scan."""
+    import csv as _csv
+    out = {}
+    if not os.path.exists(TRADE_LOG_CSV):
+        return out
+    try:
+        with open(TRADE_LOG_CSV, "r", newline="", encoding="utf-8") as f:
+            for r in _csv.DictReader(f):
+                _t = ""
+                for _k in ("timeout_time", "sl_hit_time", "tp2_hit_time", "tp1_hit_time"):
+                    if r.get(_k):
+                        _t = r[_k]
+                        break
+                if not _t or len(_t) < 16:
+                    continue
+                _sym = str(r.get("coin", "")).replace("-USDT", "").replace("USDT", "")
+                _lab = _SCAN_LABEL.get(str(r.get("type", "")))
+                if _sym and _lab:
+                    out.setdefault((_sym, _t[:16]), _lab)
+    except Exception as e:
+        print(f"  [SCANSTATS] csv: {e}")
+    return out
+
+
+def _scanstats_match(idx, sym: str, date_str: str, tm: str):
+    """The scan that produced one recap row, or ''. A trade is filed under
+    the day it was OPENED, so its close can be on that day or the next -
+    and the two clocks can be a minute apart, so a small window is allowed."""
+    try:
+        _h = int(tm[:2]) % 12 + (12 if "PM" in tm.upper() else 0)
+        _m = int(tm[3:5])
+        _d0 = datetime.strptime(date_str, "%Y-%m-%d")
+    except Exception:
+        return ""
+    for _day in (_d0, _d0 + timedelta(days=1)):
+        for _off in (0, 1, -1, 2, -2):
+            _try = _day.replace(hour=_h, minute=_m) + timedelta(minutes=_off)
+            _hit = idx.get((sym, _try.strftime("%Y-%m-%d %H:%M")))
+            if _hit:
+                return _hit
+    return ""
+
+
+def _scanstats(dates: list):
+    """(per-scan totals, per-coin-and-scan totals, matched, total) for the
+    tier-routed trades of those days - the exact rows the recap is built
+    from, split by which scan fired them."""
+    _idx = _scanstats_csv_index()
+    _by_scan = {}
+    _by_coin = {}
+    _n = _matched = 0
+    for _d in dates:
+        for _t in (_daily_buckets.get(_d, {}).get("trades") or []):
+            if not _t.get("tier_routed"):
+                continue
+            _n += 1
+            _sym = str(_t.get("symbol", "")).replace("-USDT", "").replace("USDT", "")
+            _lab = _scanstats_match(_idx, _sym, _d, str(_t.get("time", ""))) or "?"
+            if _lab != "?":
+                _matched += 1
+            _o = _recap_outcome(_t)
+            _p = _recap_pnl(_t)
+            for _tgt, _key in ((_by_scan, _lab), (_by_coin, (_sym, _lab))):
+                _e = _tgt.setdefault(_key, {"w": 0, "l": 0, "f": 0, "pnl": 0.0, "nopct": 0})
+                _e["w" if _o == "win" else "l" if _o == "loss" else "f"] += 1
+                if _p is None:
+                    _e["nopct"] += 1
+                else:
+                    _e["pnl"] = round(_e["pnl"] + _p, 2)
+    return _by_scan, _by_coin, _matched, _n
+
+
+def _scanstats_text(dates: list, label: str, top: int = 12) -> str:
+    _by_scan, _by_coin, _matched, _n = _scanstats(dates)
+    if not _n:
+        return f"📊 No tier-routed trades for <b>{label}</b>."
+    _order = [k for k in ("S1", "S2", "TS1", "TS2", "BTC", "INTRA", "?") if k in _by_scan]
+    _rows = [_rcp_rule([6, 6, 7, 9], "┌", "┬", "┐"),
+             _rcp_row(["SCAN", "TRADES", "W / L", "P&L"], [6, 6, 7, 9], ["<", "^", "^", "^"]),
+             _rcp_rule([6, 6, 7, 9], "├", "┼", "┤")]
+    for _k in _order:
+        _e = _by_scan[_k]
+        _rows.append(_rcp_row([_k, _e["w"] + _e["l"] + _e["f"], f"{_e['w']} / {_e['l']}",
+                               f"{_e['pnl']:+.2f}%"], [6, 6, 7, 9], ["<", "^", "^", ">"]))
+    _rows.append(_rcp_rule([6, 6, 7, 9], "└", "┴", "┘"))
+    _net = sum(_e["pnl"] for _e in _by_scan.values())
+    _out = [f"📊 <b>By scan — {label}</b>", "", "<pre>" + "\n".join(_rows) + "</pre>"]
+    for _k in _order:
+        _e = _by_scan[_k]
+        _dec = _e["w"] + _e["l"]
+        _out.append(f"<b>{_k}</b> — win rate {100.0 * _e['w'] / _dec:.0f}% ({_e['w']}/{_dec})"
+                    if _dec else f"<b>{_k}</b> — nothing decided")
+    _out.append("")
+    _out.append(f"📈 <b>NET {_net:+.2f}%</b>  ·  {_n} trade(s)")
+    if _matched < _n:
+        _out.append(f"<blockquote>{_n - _matched} row(s) could not be paired with the trade log, "
+                    f"shown as <code>?</code>. They still count in the net - only their scan is "
+                    f"unknown. The log is what carries the scan, and it does not reach every "
+                    f"day the recap does.</blockquote>")
+    # the coins doing the work, per scan
+    _best = sorted(_by_coin.items(), key=lambda kv: -abs(kv[1]["pnl"]))[:top]
+    if _best:
+        _w = max(6, min(10, max(len(k[0]) for k, _ in _best)))
+        _cr = [_rcp_rule([_w, 5, 7, 9], "┌", "┬", "┐"),
+               _rcp_row(["COIN", "SCAN", "W / L", "P&L"], [_w, 5, 7, 9], ["<", "^", "^", "^"]),
+               _rcp_rule([_w, 5, 7, 9], "├", "┼", "┤")]
+        for (_sym, _lab), _e in _best:
+            _cr.append(_rcp_row([_sym, _lab, f"{_e['w']} / {_e['l']}", f"{_e['pnl']:+.2f}%"],
+                                [_w, 5, 7, 9], ["<", "^", "^", ">"]))
+        _cr.append(_rcp_rule([_w, 5, 7, 9], "└", "┴", "┘"))
+        _out += ["", f"<b>Biggest movers</b>  (coin × scan)", "<pre>" + "\n".join(_cr) + "</pre>"]
+    return "\n".join(_out)
+
+
 def _norecap_panel():
     """The /norecap screen: what the next automatic post will be for each
     period, and a button to mute or unmute it. (text, keyboard)."""
@@ -2233,6 +2359,32 @@ def _norecap_panel():
             "<code>/daily</code> <code>/weekly</code> <code>/monthly</code> still show them here.\n"
             "A mute covers one period and clears itself once that period passes.</blockquote>")
     return _txt, {"inline_keyboard": _btns}
+
+
+def _recap_have_window():
+    """(oldest, newest) date string we still have buckets for, or (None, None).
+    _get_daily_bucket keeps 35 days; everything before that is deleted."""
+    _k = sorted(_daily_buckets.keys())
+    return (_k[0], _k[-1]) if _k else (None, None)
+
+
+def _recap_coverage(dates: list):
+    """How much of `dates` survives in the buckets: (days_held, days_asked).
+    A month asked for near the edge of the 35-day window is mostly gone, and
+    a recap that does not say so reads like a full month (admin 2026-09-23:
+    August showed 278 trades, which is 12 of its 31 days)."""
+    _held = sum(1 for d in dates if d in _daily_buckets)
+    return _held, len(dates)
+
+
+def _recap_partial_note(dates: list) -> str:
+    """One line for a recap built from a period we only partly still hold."""
+    _held, _asked = _recap_coverage(dates)
+    if _held >= _asked or not _held:
+        return ""
+    _kept = [d for d in dates if d in _daily_buckets]
+    return (f"Covers {_kept[0]} to {_kept[-1]} only - {_held} of {_asked} days. "
+            f"The rest is past the 35-day history the bot keeps.")
 
 
 def _recap_period(kind: str, arg: str = ""):
@@ -2278,11 +2430,19 @@ def _recap_paged(kind: str, arg: str, page: int):
     dates, what, title = _recap_period(kind, arg)
     rows = _gather_period_trades(dates)
     if not rows:
-        return f"📊 No closed trades for <b>{what}</b> yet.", None
+        _from, _to = _recap_have_window()
+        return (f"📊 No closed trades for <b>{what}</b>."
+                + (f"\n\n<blockquote>The bot keeps 35 days of recap history: "
+                   f"<b>{_from}</b> to <b>{_to}</b>. Anything before that is gone."
+                   "</blockquote>" if _from else ""), None)
     n_sym = len(_recap_by_symbol(rows))
     pages = max(1, -(-n_sym // _RECAP_PAGE_ROWS))
     page = min(max(0, page), pages - 1)
-    return _build_period_recap_text(rows, title, page=page), _recap_page_kb(kind, arg, page, pages)
+    _txt = _build_period_recap_text(rows, title, page=page)
+    _partial = _recap_partial_note(dates)
+    if _partial:
+        _txt += f"\n<blockquote>⚠ {_partial}</blockquote>"
+    return _txt, _recap_page_kb(kind, arg, page, pages)
 
 
 def _build_period_recap_text(trades: list, title: str, include_sl: bool = True, page: int = None) -> str:
@@ -3769,8 +3929,14 @@ def _user_where_line(cid) -> str:
 
     Cached half an hour per user: the ping has its own cooldown already,
     and a central-store round trip should not sit in front of it."""
+    # Two different lifetimes on purpose. A device record we FOUND barely
+    # changes, so it is held half an hour. A miss means "this person has
+    # never opened the Mini App" - and the moment they do, the next ping
+    # should say so, not repeat the empty answer for another half hour
+    # (admin 2026-09-23: a user who only used the bot, then opened the app,
+    # still had no IP on the ping).
     _hit = _user_where_cache.get(str(cid))
-    if _hit and time.time() - _hit[1] < 1800:
+    if _hit and time.time() - _hit[1] < (1800 if _hit[0] else 120):
         return _hit[0]
     _line = ""
     try:
@@ -5492,9 +5658,15 @@ _KNOWLEDGE_BASE = {
 # own live state and return plain data, so Boki can answer a question from
 # the real numbers instead of describing what it would do.
 
-def _boki_read_recap(period: str = "month", which: str = "current", limit: int = 40) -> dict:
+def _boki_read_recap(period: str = "month", which: str = "current", limit: int = 60,
+                     only: str = "all", sort: str = "pnl") -> dict:
     """Per-symbol recap rows plus the period's totals. period: day/week/month,
-    which: current/last."""
+    which: current/last, only: all/positive/negative, sort: pnl/winrate/trades.
+
+    The filter and the sort are here so a question like "which coins are
+    positive this month" is ONE call that returns exactly those rows -
+    without them the agent pages through every symbol and runs out of steps
+    (admin 2026-09-23, 66 symbols in August)."""
     _today = now_ist().date()
     if period == "day":
         _d = _today - timedelta(days=1) if which == "last" else _today
@@ -5503,15 +5675,37 @@ def _boki_read_recap(period: str = "month", which: str = "current", limit: int =
         _dates, _label, _ = _recap_period("w" if period == "week" else "m",
                                            "last" if which == "last" else "")
     _rows = _gather_period_trades(_dates)
+    _from, _to = _recap_have_window()
     if not _rows:
-        return {"period": _label, "trades": 0, "note": "nothing has closed in this period yet"}
+        # Say WHY, and say it is final. Told only "nothing here", the agent
+        # would try the same period again with different arguments until it
+        # ran out of steps (admin 2026-09-23, asking for August).
+        return {"period": _label, "trades": 0, "symbols": [], "final": True,
+                "note": ("No trades are recorded for this period. The bot keeps 35 days of "
+                         "recap history and this period falls outside it. Do not retry with "
+                         "other arguments - tell the admin the window that is available."),
+                "history_from": _from, "history_to": _to}
     _syms = _recap_by_symbol(_rows)
-    _out = []
-    for _sym, _d2 in _syms[:max(1, min(int(limit or 40), 120))]:
+    _all = []
+    for _sym, _d2 in _syms:
         _dec = _d2["w"] + _d2["l"]
-        _out.append({"symbol": _sym, "trades": _d2["n"], "wins": _d2["w"], "losses": _d2["l"],
+        _all.append({"symbol": _sym, "trades": _d2["n"], "wins": _d2["w"], "losses": _d2["l"],
                      "win_rate_pct": round(100.0 * _d2["w"] / _dec, 1) if _dec else None,
                      "pnl_pct": round(_d2["pnl"], 2)})
+    _only = str(only or "all").lower()
+    if _only.startswith("pos"):
+        _all = [x for x in _all if x["pnl_pct"] > 0]
+    elif _only.startswith("neg"):
+        _all = [x for x in _all if x["pnl_pct"] < 0]
+    _sort = str(sort or "pnl").lower()
+    if _sort.startswith("win"):
+        _all.sort(key=lambda x: (-(x["win_rate_pct"] if x["win_rate_pct"] is not None else -1), -x["trades"]))
+    elif _sort.startswith("trade"):
+        _all.sort(key=lambda x: -x["trades"])
+    else:
+        _all.sort(key=lambda x: -x["pnl_pct"])
+    _matched = len(_all)
+    _out = _all[:max(1, min(int(limit or 60), 150))]
     _by_res = {}
     for _t in _rows:
         _r = _t.get("result")
@@ -5524,7 +5718,14 @@ def _boki_read_recap(period: str = "month", which: str = "current", limit: int =
             _e["pnl"] = round(_e["pnl"] + _p, 2)
     _w = sum(1 for _t in _rows if _recap_outcome(_t) == "win")
     _l = sum(1 for _t in _rows if _recap_outcome(_t) == "loss")
+    _held, _asked = _recap_coverage(_dates)
     return {"period": _label, "trades": len(_rows), "symbols_total": len(_syms),
+            "symbols_returned": len(_out), "symbols_matching_filter": _matched,
+            "complete": len(_out) >= _matched, "filter": _only, "sorted_by": _sort,
+            "history_from": _from, "history_to": _to,
+            "partial": (_held < _asked),
+            "covers": (f"{_held} of {_asked} days - the rest is past the 35-day history"
+                       if _held < _asked else f"all {_asked} days"),
             "symbols": _out, "by_result": _by_res,
             "net_pnl_pct": round(sum(v["pnl"] for v in _by_res.values()), 2),
             "win_rate_pct": round(100.0 * _w / (_w + _l), 1) if (_w + _l) else None,
@@ -5615,12 +5816,18 @@ _BOKI_READ_TOOLS = {
     "read_recap": {
         "desc": ("Per-symbol results and the totals for a recap period - how many trades each coin had, "
                  "its wins, losses, win rate and summed percentage. Use this for any question about which "
-                 "coins performed well or badly, win rates, or what a daily/weekly/monthly recap says."),
+                 "coins performed well or badly, win rates, or what a daily/weekly/monthly recap says. "
+                 "Filter and sort in the call itself; one call should answer the question. The reply also "
+                 "says whether the period is only partly covered by the 35 days of history kept."),
         "schema": {"period": {"type": "string", "enum": ["day", "week", "month"],
                               "description": "day = today, week = this week from Monday, month = this month from the 1st"},
                    "which": {"type": "string", "enum": ["current", "last"],
                              "description": "current (the period running now) or last (the one before it)"},
-                   "limit": {"type": "integer", "description": "how many symbols to return, busiest first (default 40, max 120)"}},
+                   "only": {"type": "string", "enum": ["all", "positive", "negative"],
+                            "description": "filter by P&L sign - use this rather than asking for everything and filtering yourself"},
+                   "sort": {"type": "string", "enum": ["pnl", "winrate", "trades"],
+                            "description": "what to order by, best first"},
+                   "limit": {"type": "integer", "description": "how many rows (default 60, max 150). The reply says symbols_matching_filter and complete=true when you have them all - do not call again when complete is true"}},
         "required": ["period"], "fn": _boki_read_recap},
     "read_active_trades": {
         "desc": "Every position the bot is holding right now - BTC, Scan1, Scan2, TS1, TS2 and the intraday slots.",
@@ -5645,7 +5852,7 @@ _BOKI_READ_TOOLS = {
 # tool, so one message can read the recap, compare the numbers and then
 # change two settings, and Boki writes the answer from what it actually
 # read rather than from what it remembers.
-_BOKI_MAX_STEPS = 8
+_BOKI_MAX_STEPS = 10
 
 # Boki is free-gateway-only, and the classifier's own model (Opus 5) is a
 # paid plan there - it answers 403, which is what made the whole tool loop
@@ -10693,6 +10900,7 @@ PREMIUM_EMOJI_MAP = {
     "🟢": "5215685881989442149", "🔴": "4926956800005112527",
     "🟩": "5262747715552438702", "🟥": "5809816842713174497",  # BUY/SELL-only direction icon on signal cards (distinct from the generic 🟢/🔴 used for toggles/checks elsewhere)
     "🛑": "5366040905927113475", "🎯": "5461009483314517035",
+    "🔢": "5226513232549664618", "💻": "5350554349074391003",  # IP line and device specs on the sign-in alert / user ping
     "🏆": "5188344996356448758", "✅": "6120713655366455614",
     "❌": "6120660741369369103", "🚫": "5240241223632954241",
     "🚨": "5395695537687123235", "🚀": "6221996895535896347",
@@ -20167,6 +20375,41 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "Not banned: " + " ".join(f"<code>{c}</code>" for c in _syms) +
                            ". <code>/banlist</code> shows the current list.", skip_smallcaps=True)
 
+    elif cmd in ("/scanstats", "/ss") and is_scanadmin:
+        # Which scan actually earned the recap's numbers. The recap rows are
+        # the truth for wins and P&L; the trade log is read only to learn
+        # which scan fired each one.
+        _a = [x for x in parts[1:] if x]
+        _today = now_ist().date()
+        try:
+            if len(_a) >= 2:
+                _s0 = datetime.strptime(_a[0], "%Y-%m-%d").date()
+                _s1 = datetime.strptime(_a[1], "%Y-%m-%d").date()
+            elif len(_a) == 1 and _a[0].isdigit():
+                _s1, _s0 = _today, _today - timedelta(days=int(_a[0]) - 1)
+            elif len(_a) == 1 and _a[0].lower() in ("month", "m"):
+                _s0, _s1 = _today.replace(day=1), _today
+            elif len(_a) == 1 and _a[0].lower() in ("week", "w"):
+                _s0, _s1 = _today - timedelta(days=_today.weekday()), _today
+            elif len(_a) == 1:
+                _s0 = _s1 = datetime.strptime(_a[0], "%Y-%m-%d").date()
+            else:
+                _s0, _s1 = _today - timedelta(days=13), _today
+        except ValueError:
+            send_reply(chat_id, "Usage: <code>/scanstats</code> (last 14 days), "
+                                "<code>/scanstats 30</code>, <code>/scanstats month</code>, "
+                                "<code>/scanstats 2026-09-06 2026-09-23</code>", skip_smallcaps=True)
+            return
+        if _s1 < _s0:
+            _s0, _s1 = _s1, _s0
+        _dts = [(_s0 + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((_s1 - _s0).days + 1)]
+        _lbl = _dts[0] if len(_dts) == 1 else f"{_s0.strftime('%b %d')} to {_s1.strftime('%b %d')}"
+        _txt = _scanstats_text(_dts, _lbl)
+        _pn = _recap_partial_note(_dts)
+        if _pn:
+            _txt += f"\n<blockquote>⚠ {_pn}</blockquote>"
+        send_reply(chat_id, _txt, skip_smallcaps=True)
+
     elif cmd in ("/taskmodel", "/tm") and is_scanadmin:
         # Which model does which helper job. The trading calls have their own
         # screen (/aiconfig); this is everything else.
@@ -23210,6 +23453,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
+        ("/scanstats", "📊", "Which Scan Earned It", "Splits the recap's own numbers by which scan produced them - S1, S2, TS1, TS2 - with a win rate and P&L for each, and the coins moving the most inside each scan. The recap stays the truth for wins and P&L; the trade log is read only to learn which scan fired each trade, so a row the log cannot confirm is shown as `?` and still counts in the net. `/scanstats` is the last 14 days, `/scanstats 30`, `/scanstats month`, `/scanstats week`, `/scanstats 2026-09-06 2026-09-23`. (/ss is the same command.)"),
         ("/taskmodel", "🧠", "Model Per Job", "Which model each helper job uses - message routing, intent classification, and Boki/Pechi's tool loop. A job that picks a short label does not need the most expensive model. Trading calls are not here; they have /aiconfig. `/taskmodel classify haiku`, `/taskmodel agent sonnet`, `/taskmodel route default`. (/tm is the same command.)"),
         ("/pechitest", "🧪", "Pechi Agent Check", "The same probe as /bokitest plus the paid Direct API. Pechi calls the paid API FIRST for tool work and falls back to the free gateway; Boki never touches it. Says which model each ends up on and what is being billed."),
         ("/bokitest", "🧪", "Boki Agent Check", "Says which path Boki is taking \u2014 whether the free gateway accepts tool calls or it is using the JSON fallback, how many tools it has, and whether the recap and trade lookups return data. Run it when Boki answers a data question from memory instead of looking it up."),
