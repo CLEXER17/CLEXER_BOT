@@ -20617,23 +20617,64 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
         _today = now_ist().date()
         _sofar = " (so far)"
         if cmd == "/daily":
+            # Two dates = one recap per day across that range, sent in order.
+            # The admin wanted the days themselves to compare against the
+            # trade log, and one /daily per day was eighteen commands.
+            _a2 = [x for x in parts[1:] if x]
             _d = _today
+            _d_end = None
             if _arg == "yesterday":
                 _d = _today - timedelta(days=1)
+            elif len(_a2) >= 2:
+                try:
+                    _d = datetime.strptime(_a2[0], "%Y-%m-%d").date()
+                    _d_end = datetime.strptime(_a2[1], "%Y-%m-%d").date()
+                except ValueError:
+                    send_reply(chat_id, "Usage: <code>/daily 2026-09-06 2026-09-23</code> for a range.",
+                               skip_smallcaps=True)
+                    return
+                if _d_end < _d:
+                    _d, _d_end = _d_end, _d
             elif _arg:
                 try:
                     _d = datetime.strptime(_arg, "%Y-%m-%d").date()
                 except ValueError:
-                    send_reply(chat_id, "Usage: <code>/daily</code>, <code>/daily yesterday</code> or "
-                                        "<code>/daily 2026-09-18</code>", skip_smallcaps=True)
+                    send_reply(chat_id, "Usage: <code>/daily</code>, <code>/daily yesterday</code>, "
+                                        "<code>/daily 2026-09-18</code> or "
+                                        "<code>/daily 2026-09-06 2026-09-23</code>", skip_smallcaps=True)
                     return
-            _dates = [_d.strftime("%Y-%m-%d")]
-            _rows = _gather_period_trades(_dates)
-            _what = _dates[0] + (_sofar if _d == _today else "")
-            _txt = _build_recap_text(_rows, _what) if _rows else ""
-            if not _txt:
-                _txt = f"📊 No closed trades for <b>{_what}</b> yet."
-            send_reply(chat_id, _txt, skip_smallcaps=True)
+            if _d_end is None:
+                _dates = [_d.strftime("%Y-%m-%d")]
+                _rows = _gather_period_trades(_dates)
+                _what = _dates[0] + (_sofar if _d == _today else "")
+                _txt = _build_recap_text(_rows, _what) if _rows else ""
+                if not _txt:
+                    _txt = f"📊 No closed trades for <b>{_what}</b> yet."
+                send_reply(chat_id, _txt, skip_smallcaps=True)
+                return
+            # a range: one message per day, oldest first, paced so Telegram
+            # does not rate-limit an eighteen-message burst
+            _span = (_d_end - _d).days + 1
+            if _span > 40:
+                send_reply(chat_id, f"That is {_span} days. Ask for 40 or fewer.", skip_smallcaps=True)
+                return
+            _sent = 0
+            for _i in range(_span):
+                _day = _d + timedelta(days=_i)
+                _ds = _day.strftime("%Y-%m-%d")
+                _rows = _gather_period_trades([_ds])
+                if not _rows:
+                    continue
+                send_reply(chat_id, _build_recap_text(_rows, _ds + (_sofar if _day == _today else "")),
+                           skip_smallcaps=True)
+                _sent += 1
+                time.sleep(0.4)
+            _pn = _recap_partial_note([(_d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_span)])
+            send_reply(chat_id,
+                       f"📊 <b>{_sent} day(s)</b> sent for {_d.strftime('%b %d')} to {_d_end.strftime('%b %d')}"
+                       + (f"\n\n<blockquote>⚠ {_pn}</blockquote>" if _pn
+                          else (f"\n\n{_span - _sent} day(s) had no closed trades." if _sent < _span else "")),
+                       skip_smallcaps=True)
         else:
             # every symbol, twenty a page, ◀ ▶ to move - the message edits in place
             _txt, _kb = _recap_paged("w" if cmd == "/weekly" else "m", "last" if _arg == "last" else "", 0)
@@ -23491,7 +23532,7 @@ _SETTINGS_SUBCATS = {
     "data": ("📊 Data & Reports", [
         ("/tradelog", "📥", "Trade History CSV", "Download the full trade log (BTC + Scan1 + Scan2) as a CSV file."),
         ("/report",   "📊", "API Cost Report",   "Daily Claude API token usage and cost breakdown, across every feature."),
-        ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
+        ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day, and `/daily 2026-09-06 2026-09-23` for every day in a range, one message each (40 days max)."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
         ("/scanstats", "📊", "Which Scan Earned It", "Splits the recap's own numbers by which scan produced them - S1, S2, TS1, TS2 - with a win rate and P&L for each, and the coins moving the most inside each scan. The recap stays the truth for wins and P&L; the trade log is read only to learn which scan fired each trade, so a row the log cannot confirm is shown as `?` and still counts in the net. `/scanstats` is the last 14 days, `/scanstats 30`, `/scanstats month`, `/scanstats week`, `/scanstats 2026-09-06 2026-09-23`. (/ss is the same command.)"),
