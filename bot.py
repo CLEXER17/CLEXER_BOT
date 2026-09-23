@@ -5690,6 +5690,70 @@ def _boki_run_tool(cid, sender_id, name: str, args: dict) -> str:
     return "done - the bot has already sent the admin its own confirmation message"
 
 
+def _boki_tool_menu() -> str:
+    """The same catalog, written out for a model that has no tool API."""
+    _lines = []
+    for _aid, _info in _ADMIN_ACTIONS.items():
+        _lines.append(f'- do_{_aid}  (args: {{"value": "..."}})  CHANGES SOMETHING LIVE. {_info["desc"]}'
+                      + ("  Asks the admin for a Yes/Cancel confirmation first."
+                         if _aid in _ADMIN_RISKY_ACTIONS else ""))
+    for _tid, _info in _BOKI_READ_TOOLS.items():
+        _args = ", ".join(f'"{k}": <{v.get("type", "string")}>' for k, v in _info["schema"].items()) or ""
+        _lines.append(f'- {_tid}  (args: {{{_args}}})  READ ONLY. {_info["desc"]}')
+    return "\n".join(_lines)
+
+
+_BOKI_JSON_RULES = (
+    "\n\nYou have no tool API here, so you call a tool by replying with JSON and nothing else.\n"
+    "To use a tool:   {\"tool\": \"<name>\", \"args\": {...}}\n"
+    "To answer:       {\"answer\": \"<your reply to the admin, Telegram HTML>\"}\n"
+    "Reply with ONE of those two objects, raw, with no code fence and no text around it. "
+    "After each tool call you will be given its result and you decide again.\n\n"
+    "TOOLS:\n")
+
+
+def _boki_agent_json(cid, sender_id, message: str, tag: str = "BOKI") -> bool:
+    """The same loop for a gateway that cannot take a tools= argument.
+
+    Aerolink proxies several model families and not all of them accept
+    Anthropic's tool schema; rather than fall back to the old one-action
+    classifier and lose every lookup, the tools are described in the prompt
+    and the model calls them by replying with JSON."""
+    _sid = sender_id if sender_id is not None else cid
+    _system = _BOKI_SYSTEM + _BOKI_JSON_RULES + _boki_tool_menu()
+    _turns = [message]
+    _used = []
+    for _step in range(_BOKI_MAX_STEPS):
+        _hist = [{"role": "user", "parts": [{"text": t}]} for t in _turns]
+        _raw = (_chat_boki_text_reply(_hist, _turns[-1], extra_system=_system) or "").strip()
+        _m = re.search(r"\{.*\}", _raw, re.DOTALL)
+        if not _m:
+            if _used:
+                send_reply(cid, _raw or "Done.", skip_smallcaps=True)
+                return True
+            return False
+        try:
+            _d = json.loads(_m.group())
+        except Exception:
+            if _used:
+                send_reply(cid, _raw, skip_smallcaps=True)
+                return True
+            return False
+        if _d.get("answer"):
+            send_reply(cid, str(_d["answer"]), skip_smallcaps=True)
+            print(f"  [{tag} AGENT/json] {_step} step(s), tools: {', '.join(_used) or 'none'}")
+            return True
+        _name = str(_d.get("tool") or "")
+        if not _name:
+            return bool(_used)
+        _used.append(_name)
+        _res = _boki_run_tool(cid, _sid, _name, _d.get("args") or {})
+        _turns.append(f'Result of {_name}: {_res}\n\nNow reply with the next JSON object.')
+    send_reply(cid, "I ran out of steps on that one. Tell me the single thing you want first and "
+                    "I will do it.", skip_smallcaps=True)
+    return True
+
+
 def _boki_agent(cid, sender_id, message: str, reply_context: str = "", tag: str = "BOKI") -> bool:
     """Read, decide, act, answer - repeatedly, until there is an answer to
     send. Returns False if the loop could not run at all, so the caller can
@@ -5725,8 +5789,18 @@ def _boki_agent(cid, sender_id, message: str, reply_context: str = "", tag: str 
                         "I will do it.", skip_smallcaps=True)
         return True
     except Exception as e:
-        print(f"  [{tag} AGENT] {e} - falling back to the single-action path")
-        return bool(_used)     # something already ran; don't let the fallback run it again
+        print(f"  [{tag} AGENT] {e}")
+        if _used:
+            return True        # something already ran; the old path must not repeat it
+        # No tool ran, so nothing is half-done: try the same loop again with
+        # the tools described in the prompt instead of passed as a schema.
+        try:
+            if _boki_agent_json(cid, _sid, _msg, tag=tag):
+                return True
+        except Exception as e2:
+            print(f"  [{tag} AGENT/json] {e2}")
+        print(f"  [{tag} AGENT] falling back to the single-action path")
+        return False
 
 
 def _chat_classify_admin_action(own_message: str, reply_context: str):
@@ -19975,6 +20049,37 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "Not banned: " + " ".join(f"<code>{c}</code>" for c in _syms) +
                            ". <code>/banlist</code> shows the current list.", skip_smallcaps=True)
 
+    elif cmd == "/bokitest" and is_scanadmin:
+        # Says which path Boki is actually taking, so "it answered from
+        # memory" can be diagnosed instead of guessed at.
+        _t0 = time.time()
+        _line = []
+        try:
+            _cl = _claude_client("chat", force_aerolink=True)
+            _r = _cl.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=64,
+                                      tools=[{"name": "ping", "description": "say ping",
+                                              "input_schema": {"type": "object", "properties": {}}}],
+                                      messages=[{"role": "user", "content": "call the ping tool"}])
+            _line.append(f"\u2705 <b>Native tools work</b> \u2014 {_CHAT_ROUTER_MODEL} on the free gateway "
+                         f"({time.time() - _t0:.1f}s)")
+            _line.append(f"   stop_reason: <code>{getattr(_r, 'stop_reason', '?')}</code>")
+        except Exception as _e:
+            _line.append(f"\u274c <b>Native tools failed</b>: <code>{_html.escape(str(_e))[:300]}</code>")
+            _line.append("   Boki falls back to the JSON loop, which needs no tool support.")
+        _line.append("")
+        _line.append(f"\U0001F4E6 {len(_ADMIN_ACTIONS)} action tool(s), {len(_BOKI_READ_TOOLS)} lookup tool(s)")
+        try:
+            _rc = _boki_read_recap("month", "current", 3)
+            _line.append(f"\U0001F4CA read_recap: {_rc.get('trades', 0)} trade(s) this month, "
+                         f"{_rc.get('symbols_total', 0)} symbol(s)")
+        except Exception as _e:
+            _line.append(f"\U0001F4CA read_recap failed: <code>{_html.escape(str(_e))[:200]}</code>")
+        try:
+            _line.append(f"\U0001F4E1 read_active_trades: {_boki_read_active_trades().get('total_open', 0)} open")
+        except Exception as _e:
+            _line.append(f"\U0001F4E1 read_active_trades failed: <code>{_html.escape(str(_e))[:200]}</code>")
+        send_reply(chat_id, "\U0001F9EA <b>Boki agent check</b>\n\n" + "\n".join(_line), skip_smallcaps=True)
+
     elif cmd in ("/norecap", "/skiprecap") and is_scanadmin:
         # Mute the next automatic channel recap for a period. No argument
         # opens the panel; an argument toggles one straight away.
@@ -22874,6 +22979,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
+        ("/bokitest", "🧪", "Boki Agent Check", "Says which path Boki is taking \u2014 whether the free gateway accepts tool calls or it is using the JSON fallback, how many tools it has, and whether the recap and trade lookups return data. Run it when Boki answers a data question from memory instead of looking it up."),
         ("/norecap",  "🔕", "Mute a Recap Post", "Stop the next automatic recap from being posted to the channels. `/norecap` opens a panel with a mute button for daily, weekly and monthly; `/norecap daily` mutes tonight's straight away; `/norecap 2026-09-18` mutes one specific day. Muting never deletes anything — the trades stay recorded and /daily /weekly /monthly still show them. Each mute covers one period and clears itself once that period passes. (/skiprecap is the same command.)"),
     ]),
 }
