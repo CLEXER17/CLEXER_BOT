@@ -137,6 +137,12 @@ DEMO1_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade
 DEMO2_CT_ENABLED = False  # toggle from Copy Trade By Type screen — copy trade for Demo Scan2 signals
 BTCINT_CT_ENABLED = False  # BTC-INTRADAY pullback slot (ver 5) — off until explicitly enabled
 XAUT_CT_ENABLED = False    # XAUT-INTRADAY pullback slot (ver 6) — off until explicitly enabled
+# ver 7 - ELITE: trades only the admin's winner coins, at the times /st week
+# marks live today. ver 8 - the TEST system (/test). Both open to every copy
+# user by default (admin 2026-09-23: "a gate open for everyone but I can turn
+# it off"), each with its own switch so either can be stopped alone.
+ELITE_CT_ENABLED = True
+TESTSYS_CT_ENABLED = True
 ORPHAN_ADOPT_ENABLED = False  # toggle from Copy Trade By Type screen — when OFF (default), monitor_sl_tp
                                # never adopts/adjusts SL+TP on a user's BingX position that didn't come
                                # from a real bot signal (i.e. one they opened themselves)
@@ -1692,6 +1698,14 @@ def set_demo1_ct(enabled: bool):
     global DEMO1_CT_ENABLED
     DEMO1_CT_ENABLED = enabled
 
+def set_elite_ct(enabled: bool):
+    global ELITE_CT_ENABLED
+    ELITE_CT_ENABLED = enabled
+
+def set_testsys_ct(enabled: bool):
+    global TESTSYS_CT_ENABLED
+    TESTSYS_CT_ENABLED = enabled
+
 def set_demo2_ct(enabled: bool):
     global DEMO2_CT_ENABLED
     DEMO2_CT_ENABLED = enabled
@@ -1714,10 +1728,10 @@ def set_auto_sltp_global(enabled: bool):
     global AUTO_SLTP_GLOBAL_ENABLED
     AUTO_SLTP_GLOBAL_ENABLED = enabled
 
-def is_scan_tp1_hit(symbol: str) -> bool:
+def is_scan_tp1_hit(symbol: str, ver: int = 0) -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
     for cid, user, _, _ in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if p and user.get(f"{p}tp1_hit"):
             return True
     return False
@@ -1784,6 +1798,10 @@ def on_scan_signal(signal_dict: dict, symbol: str, price: float, share_free: boo
         return ["[CT] BTC-INTRADAY copy trade is OFF"]
     if ver == 6 and not XAUT_CT_ENABLED:
         return ["[CT] XAUT-INTRADAY copy trade is OFF"]
+    if ver == 7 and not ELITE_CT_ENABLED:
+        return ["[CT] ELITE copy trade is OFF"]
+    if ver == 8 and not TESTSYS_CT_ENABLED:
+        return ["[CT] TEST system copy trade is OFF"]
 
     with _scan_signal_lock:
         return _on_scan_signal_inner(signal_dict, symbol, price, share_free)
@@ -1819,6 +1837,16 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
                 continue
             if _pfx_for_symbol(user, symbol):
                 results.append(f"⏭ @{user.get('username','?')} already in {symbol} — skipping duplicate")
+                continue
+            # The main BTC engine does not use slots - it keeps its position in
+            # in_position/pos_side - so the slot check above cannot see it. The
+            # TEST system trades BTC too, and a second BTC order on the same
+            # account does not open a separate position: BingX merges it into
+            # the existing one, and whichever system's stop fired first would
+            # then close both. So a user already in the main engine's BTC trade
+            # is skipped here.
+            if symbol.replace("-", "").upper() == "BTCUSDT" and user.get("in_position"):
+                results.append(f"⏭ @{user.get('username','?')} already in BTC via the main engine — skipping")
                 continue
             risk = user.get("risk_usdt")
             if risk:
@@ -2014,7 +2042,7 @@ def _ccxt_scan_tp1(cid, user, p: str, symbol: str):
         remaining_qty = round(actual_qty, 4)
     else:
         print(f"[CT-CCXT] scan_tp1 {cid} {symbol}: position already fully closed, skipping BE SL")
-        _clear_scan_state(cid, user, symbol); return
+        _clear_scan_state(cid, user, symbol, pfx=p); return
     be_sl_price = round(entry_price * 1.001 if side == "SELL" else entry_price * 0.999, 6)
     ccxt_place_order(exchange, api_key, api_secret, symbol, close_side, "STOP_MARKET", remaining_qty,
                       stop_price=be_sl_price, password=password)
@@ -2038,12 +2066,12 @@ def _ccxt_close_scan_slot(cid, user, p: str, symbol: str):
     r = ccxt_close_position(exchange, api_key, api_secret, symbol, side, qty, password)
     print(f"[CT-CCXT] close_scan_slot {cid} {symbol}: ok={r['ok']} msg={r['msg']}")
 
-def on_scan_tp1(symbol: str):
+def on_scan_tp1(symbol: str, ver: int = 0):
     """Scan TP1 hit — cancel remaining orders, move SL to BE, re-place TP2.
     BingX's own TP1 TAKE_PROFIT_MARKET order handles the 50% close automatically.
     We only close 50% manually if BingX's order didn't fire (e.g. TP1 order failed at entry)."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if not p: continue
         if user.get("exchange", "bingx") != "bingx":
             _ccxt_scan_tp1(cid, user, p, symbol)
@@ -2139,10 +2167,10 @@ def on_scan_tp1(symbol: str):
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
 
-def on_scan_tp2(symbol: str):
+def on_scan_tp2(symbol: str, ver: int = 0):
     """Scan TP2 hit — cancel remaining orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if not p: continue
         try:
             if user.get("exchange", "bingx") != "bingx":
@@ -2175,15 +2203,15 @@ def on_scan_tp2(symbol: str):
                 user["history"]["total"] += 1; user["history"]["profit"] += 1
         except Exception as e:
             print(f"[CT] on_scan_tp2 {cid} {symbol} pnl record: {e}")
-        _clear_scan_state(cid, user, symbol)
+        _clear_scan_state(cid, user, symbol, ver, pfx=p)
 
 
-def update_scan_sl(symbol: str, new_sl: float) -> list[str]:
+def update_scan_sl(symbol: str, new_sl: float, ver: int = 0) -> list[str]:
     """Admin custom SL edit on a specific open scan-coin trade — cancels the old
     stop order and places a new one at new_sl for every copy user holding it."""
     results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if not p: continue
         try:
             uname = user.get("username", "?")
@@ -2211,13 +2239,13 @@ def update_scan_sl(symbol: str, new_sl: float) -> list[str]:
 def scan_sl_to_be(symbol: str, entry: float) -> list[str]:
     return update_scan_sl(symbol, entry)
 
-def update_scan_tp(symbol: str, which: str, new_price: float) -> list[str]:
+def update_scan_tp(symbol: str, which: str, new_price: float, ver: int = 0) -> list[str]:
     """Admin custom TP1/TP2 edit on a specific open scan-coin trade — cancels the
     existing take-profit order(s) and re-places at the (possibly just-edited)
     TP1/TP2 prices for every copy user holding it."""
     results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if not p: continue
         try:
             uname = user.get("username", "?")
@@ -2285,7 +2313,7 @@ def update_tp(which: str, new_price: float, full_remaining: bool = False) -> lis
             print(f"[CT] update_tp {cid}: {e}")
     return results or ["No users in position."]
 
-def on_scan_sl(symbol: str, reason: str = "SL"):
+def on_scan_sl(symbol: str, reason: str = "SL", ver: int = 0):
     """Scan SL hit (or TIMEOUT close, same mechanics — market-close the
     position) — cancel all orders, force-close position, clear scan state.
 
@@ -2296,7 +2324,7 @@ def on_scan_sl(symbol: str, reason: str = "SL"):
     exit either way. Added 2026-08-04 after a TIMEOUT close was recorded
     to the Mini App as a plain "SL" with no way to tell the two apart."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol)
+        p = _pfx_for_symbol(user, symbol, ver)
         if not p: continue
         _close_started_ms = int(time.time() * 1000)
         try:
@@ -2344,7 +2372,7 @@ def on_scan_sl(symbol: str, reason: str = "SL"):
                 # SAME trade's second half, don't double-count "total" here too.
         except Exception as e:
             print(f"[CT] on_scan_sl {cid} {symbol} pnl record: {e}")
-        _clear_scan_state(cid, user, symbol)
+        _clear_scan_state(cid, user, symbol, ver, pfx=p)
 
 
 def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: float, tp2: float):
@@ -2397,10 +2425,10 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
             print(f"[CT] on_scan_limit_filled {cid} {symbol}: {e}")
 
 
-def on_scan_entry_missed(symbol: str):
+def on_scan_entry_missed(symbol: str, ver: int = 0):
     """Scan PULLBACK entry missed — cancel ALL open orders for this symbol, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        _p = _pfx_for_symbol(user, symbol)
+        _p = _pfx_for_symbol(user, symbol, ver)
         if not _p and user.get("scan_symbol") != symbol:
             # Also try users where no slot matches but a limit order exists for this symbol
             if not user.get("scan_limit_oid") and not user.get(f"{_p}limit_oid" if _p else "scan_limit_oid"):
@@ -2425,7 +2453,7 @@ def on_scan_entry_missed(symbol: str):
             print(f"[CT] on_scan_entry_missed {cid} {symbol}: cancelled {cancelled}")
         except Exception as e:
             print(f"[CT] on_scan_entry_missed {cid} {symbol}: {e}")
-        _clear_scan_state(cid, user)
+        _clear_scan_state(cid, user, symbol, ver, pfx=_p or "scan_")
 
 
 _SCAN_SLOTS = {
@@ -2435,15 +2463,18 @@ _SCAN_SLOTS = {
     4: ["d2_", "d2b_", "d2c_", "d2d_", "d2e_", "d2f_"],     # demo2 — 6 slots
     5: ["bi_", "bib_"],                                     # BTC-INTRADAY — 2 slots
     6: ["xa_", "xab_"],                                     # XAUT-INTRADAY — 2 slots
+    # ELITE and the TEST system - one slot per coin they can trade. A user can
+    # never hold the same coin twice, so this is the practical ceiling, i.e.
+    # unlimited within each system's own coin list.
+    7: [f"el{i}_" for i in range(20)],                      # ELITE — 20 slots
+    8: [f"tx{i}_" for i in range(6)],                       # TEST system — 6 slots
 }
 _ALL_SLOT_PREFIXES = [p for _ver, _prefixes in _SCAN_SLOTS.items() for p in _prefixes]
 
 def _pfx(ver: int) -> str:
-    """Legacy — returns slot A prefix for scan version."""
-    if ver == 3: return "d1_"
-    if ver == 4: return "d2_"
-    if ver == 5: return "bi_"
-    if ver == 6: return "xa_"
+    """Slot A prefix for a scan version."""
+    if ver in _SCAN_SLOTS and ver not in (1, 2):
+        return _SCAN_SLOTS[ver][0]
     return "s1_" if ver == 1 else "scan_"
 
 def _free_slot(user: dict, ver: int) -> str:
@@ -2453,9 +2484,17 @@ def _free_slot(user: dict, ver: int) -> str:
             return p
     return ""
 
-def _pfx_for_symbol(user: dict, symbol: str) -> str:
-    """Return slot prefix that owns this symbol, or '' if not found."""
-    for p in _ALL_SLOT_PREFIXES:
+def _pfx_for_symbol(user: dict, symbol: str, ver: int = 0) -> str:
+    """Return slot prefix that owns this symbol, or '' if not found.
+
+    ver scopes the search to ONE source. Without it this found the user's
+    position in that coin from ANY source, so when two systems traded the
+    same coin, one system's stop closed a position the other had opened -
+    S1 opens UAI for user X, TS1 opens UAI for user Y, TS1's stop then
+    walks every user, finds X's UAI under S1's prefix and closes it too.
+    Every TP/SL handler now passes the ver of the trade that fired it; ver=0
+    keeps the old any-source search for callers that genuinely mean it."""
+    for p in (_SCAN_SLOTS.get(ver, []) if ver else _ALL_SLOT_PREFIXES):
         if user.get(f"{p}symbol") == symbol:
             return p
     return ""
@@ -2467,8 +2506,10 @@ def _ver_for_symbol(user: dict, symbol: str) -> int:
             if user.get(f"{p}symbol") == symbol: return ver
     return 0
 
-def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0):
-    p = _pfx_for_symbol(user, symbol) if symbol else (_pfx(ver) if ver else "")
+def _clear_scan_state(cid: str, user: dict, symbol: str = "", ver: int = 0, pfx: str = ""):
+    # pfx = the exact slot the caller just operated on; clearing by symbol
+    # alone could empty another source's slot holding the same coin
+    p = pfx or (_pfx_for_symbol(user, symbol, ver) if symbol else (_pfx(ver) if ver else ""))
     if not p:
         p = "scan_"  # fallback
     sym = symbol or user.get(f"{p}symbol", "")

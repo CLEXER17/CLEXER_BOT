@@ -466,7 +466,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         new_sl = (orig_sl + entry) / 2
         t["sl"] = new_sl
         t["trail_sl_moved"] = True
-        ct.update_scan_sl(t["symbol"], new_sl)
+        ct.update_scan_sl(t["symbol"], new_sl, ver=ver)
         save_state()
         _msg = (
             f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
@@ -498,7 +498,7 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
             return
         t["sl"] = midpoint2
         t["trail_sl2_moved"] = True
-        ct.update_scan_sl(t["symbol"], midpoint2)
+        ct.update_scan_sl(t["symbol"], midpoint2, ver=ver)
         save_state()
         _msg = (
             f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
@@ -5397,6 +5397,54 @@ def _boki_exec_mute_recap(cid, sender_id, value):
     return "Which recap - daily, weekly or monthly? (Or a date like 2026-09-18 for one day.)"
 
 
+def _boki_onoff_val(value):
+    v = (value or "").strip().lower()
+    return "on" if v in ("on", "start", "enable", "1", "yes") else ("off" if v in ("off", "stop", "disable", "0", "no") else "")
+
+
+def _boki_exec_elite_system(cid, sender_id, value, _confirmed=False):
+    v = _boki_onoff_val(value)
+    if not v:
+        return "Turn Elite on or off?"
+    # OFF is always safe - it only stops new trades. ON can place real money.
+    if v == "on" and not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "elite_system", "on",
+                          "Turn ELITE ON — it starts trading the Elite coins at /st week's live times"
+                          + (", with REAL copy orders on every copy user" if ct.ELITE_CT_ENABLED else ""))
+        return None
+    _boki_run(cid, sender_id, f"/el {v}"); return None
+
+
+def _boki_exec_elite_copy(cid, sender_id, value, _confirmed=False):
+    v = _boki_onoff_val(value)
+    if not v:
+        return "Elite copy trade on or off?"
+    if v == "on" and not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "elite_copy", "on",
+                          "Turn ELITE copy trade ON — real orders on every copy user's account")
+        return None
+    _boki_run(cid, sender_id, f"/el ct {v}"); return None
+
+
+def _boki_exec_testsys_copy(cid, sender_id, value, _confirmed=False):
+    v = _boki_onoff_val(value)
+    if not v:
+        return "Test system copy trade on or off?"
+    if v == "on" and not _confirmed:
+        _boki_ask_confirm(cid, sender_id, "testsys_copy", "on",
+                          "Turn TEST SYSTEM copy trade ON — real orders on BTC, XAUT, ETH, SOL, HYPE "
+                          "for every copy user")
+        return None
+    _boki_run(cid, sender_id, f"/test ct {v}"); return None
+
+
+def _boki_exec_elite_coins(cid, sender_id, value):
+    w = (value or "").split()
+    if len(w) < 2 or w[0].lower() not in ("add", "rm", "remove"):
+        return "Add or remove which coin? e.g. \"add SOL\" or \"remove ZEC\"."
+    _boki_run(cid, sender_id, f"/el coins {w[0].lower()} " + " ".join(w[1:])); return None
+
+
 def _boki_exec_adminlinks(cid, sender_id, value):
     global CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED
     parts = (value or "").split()
@@ -5420,6 +5468,7 @@ def _boki_exec_adminlinks(cid, sender_id, value):
 # the wrapper block above. Every executor listed here accepts a
 # _confirmed kwarg; every other action in _ADMIN_ACTIONS does not.
 _ADMIN_RISKY_ACTIONS = {
+    "elite_system", "elite_copy", "testsys_copy",
     "close_btc_trade", "btc_sl_to_be", "btc_set_sl", "btc_set_tp",
     "close_coin", "close_scan_trades", "broadcast", "vip_grant", "free_downgrade",
 }
@@ -5502,6 +5551,10 @@ _ADMIN_ACTIONS = {
     "ct_toggle": {"desc": ("Turn a copytrade type's mirroring on or off — whether FUTURE signals of that type get copied into users' exchange accounts (separate from whether the scan itself runs, doesn't touch open positions). "
                             "value normalized to \"<type> <on|off>\" where type is btc/scan1/scan2/test1/test2 (ts1/ts2/demo1/demo2 all mean test1/test2), \"orphan\" (adopt a user's self-opened position into monitoring), "
                             "or \"sltp\" (global auto SL/TP management master switch)."), "exec": _boki_exec_ct_toggle},
+    "elite_system": {"desc": "Turn the ELITE system on or off (/el). ELITE trades only the admin's winner coins at the S1/S2/TS1/TS2 times /st week has live today. value: \"on\" or \"off\".", "exec": _boki_exec_elite_system},
+    "elite_copy": {"desc": "Turn ELITE's copy trading with real money on or off (/el ct). value: \"on\" or \"off\".", "exec": _boki_exec_elite_copy},
+    "testsys_copy": {"desc": "Turn the TEST system's copy trading with real money on or off (/test ct). value: \"on\" or \"off\".", "exec": _boki_exec_testsys_copy},
+    "elite_coins": {"desc": "Add or remove coins from the ELITE coin list (/el coins). value: \"add SOL\" or \"remove ZEC\" - the word add/remove then the symbols.", "exec": _boki_exec_elite_coins},
     "signal_source": {"desc": "Switch how Scan1/Scan2/TS1/TS2 produce a signal - the AI call or the local Python engine (/switch). This is ONE global switch covering all four; it cannot be set per time slot or per verified/unverified category. value: \"ai\" or \"engine\".", "exec": _boki_exec_signal_source},
     "btc_engine": {"desc": "Pick which engine trades BTC (/btcengine). value: \"classic\" (the 4H scan) or \"intraday\" (the pullback slot).", "exec": _boki_exec_btc_engine},
     "ban_coin": {"desc": "Stop every scanner from ever picking one or more coins for a trade (/ban). An open trade on the coin still finishes. value: the coin symbols, space separated, e.g. \"ARB\" or \"ARB AKE BR\".", "exec": _boki_exec_ban_coin},
@@ -5794,7 +5847,17 @@ def _boki_read_active_trades() -> dict:
         _out["intraday"].append({"slot": _t.get("kind"), "symbol": _sp.get("symbol"),
                                  "side": _t.get("signal"), "entry": _t.get("entry"),
                                  "entry_hit": bool(_t.get("entry_hit"))})
-    _out["total_open"] = (1 if _out["btc"] else 0) + sum(len(_out[k]) for k in ("scan1", "scan2", "ts1", "ts2", "intraday"))
+    _out["elite"] = [{"symbol": t.get("symbol"), "side": t.get("signal"), "entry": t.get("entry"),
+                      "sl": t.get("sl"), "tp1": t.get("tp1"), "tp2": t.get("tp2"), "scan": t.get("label"),
+                      "slot": t.get("slot"), "tp1_hit": bool(t.get("tp1_hit")),
+                      "copied": bool(t.get("ct_opened"))} for t in list(_elite_trades)]
+    _out["test_system"] = [{"symbol": t.get("symbol"), "side": t.get("signal"), "entry": t.get("entry"),
+                            "sl": t.get("sl"), "tp1": t.get("tp1"), "tp2": t.get("tp2"),
+                            "tp1_hit": bool(t.get("tp1_hit")), "copied": bool(t.get("ct_opened"))}
+                           for t in list(_test_trades)]
+    _out["total_open"] = (1 if _out["btc"] else 0) + sum(len(_out[k]) for k in
+                                                         ("scan1", "scan2", "ts1", "ts2", "intraday",
+                                                          "elite", "test_system"))
     return _out
 
 
@@ -6881,11 +6944,11 @@ def _apply_trade_price_edit(action, kind, symbol, idx, price):
     if not ok:
         return False, reason
     if action == "setsl":
-        lst[idx]["sl"] = price; ct.update_scan_sl(symbol, price)
+        lst[idx]["sl"] = price; ct.update_scan_sl(symbol, price, ver=(1 if kind == "scan1" else 2))
     elif action == "settp1":
-        lst[idx]["tp1"] = price; ct.update_scan_tp(symbol, "tp1", price)
+        lst[idx]["tp1"] = price; ct.update_scan_tp(symbol, "tp1", price, ver=(1 if kind == "scan1" else 2))
     elif action == "settp2":
-        lst[idx]["tp2"] = price; ct.update_scan_tp(symbol, "tp2", price)
+        lst[idx]["tp2"] = price; ct.update_scan_tp(symbol, "tp2", price, ver=(1 if kind == "scan1" else 2))
     save_state()
     return True, ""
 
@@ -10811,6 +10874,8 @@ def load_settings():
             ct.SCAN2_CT_ENABLED = d.get("scan2_ct_enabled", True)
             ct.DEMO1_CT_ENABLED = d.get("demo1_ct_enabled", False)
             ct.DEMO2_CT_ENABLED = d.get("demo2_ct_enabled", False)
+            ct.ELITE_CT_ENABLED = d.get("elite_ct_enabled", True)
+            ct.TESTSYS_CT_ENABLED = d.get("testsys_ct_enabled", True)
             ct.ORPHAN_ADOPT_ENABLED = d.get("orphan_adopt_enabled", False)
             ct.AUTO_SLTP_GLOBAL_ENABLED = d.get("auto_sltp_global_enabled", True)
             _group_seen_users.update(d.get("group_seen_users", {}))
@@ -10892,6 +10957,8 @@ def save_settings():
             "scan2_ct_enabled": ct.SCAN2_CT_ENABLED,
             "demo1_ct_enabled": ct.DEMO1_CT_ENABLED,
             "demo2_ct_enabled": ct.DEMO2_CT_ENABLED,
+            "elite_ct_enabled": ct.ELITE_CT_ENABLED,
+            "testsys_ct_enabled": ct.TESTSYS_CT_ENABLED,
             "orphan_adopt_enabled": ct.ORPHAN_ADOPT_ENABLED,
             "auto_sltp_global_enabled": ct.AUTO_SLTP_GLOBAL_ENABLED,
             "group_seen_users": _group_seen_users,
@@ -12812,7 +12879,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
         _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
-        if t.get("ct_opened"): ct.on_scan_tp2(sym)
+        if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=ver)
         ct.virtual_on_close(sym, price, "TP2")
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -12836,7 +12903,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
             react_category="tp1")
-        if t.get("ct_opened"): ct.on_scan_tp1(sym)
+        if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=ver)
         ct.virtual_on_tp1(sym, tp1)
         log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -12862,7 +12929,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     # getting told about wins on a trade it was already following.
     _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
-    if t.get("ct_opened"): ct.on_scan_sl(sym)
+    if t.get("ct_opened"): ct.on_scan_sl(sym, ver=ver)
     ct.virtual_on_close(sym, price, close_result)
     log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
         "sl_hit_time": _ist_str_now(), "result": close_result,
@@ -13682,7 +13749,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _track_sl_ids(_to_sid, "sl_mid", _to_ids)
             _to_res = "TIMEOUT_LOSS" if pnl < 0 else "TIMEOUT_WIN"
             _finalize_free_sl(_to_sid, _to_res); _finalize_vip_sl(_to_sid, _to_res)
-            if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
+            if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT", ver=ver)
             ct.virtual_on_close(sym, price, f"TIMEOUT({pnl:+.2f}%)")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "timeout_time": _ist_str_now(), "result": f"TIMEOUT({pnl:+.2f}%)",
@@ -13749,7 +13816,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _tp2_ids = send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
-            if t.get("ct_opened"): ct.on_scan_tp2(sym)
+            if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=ver)
             ct.virtual_on_close(sym, price, "TP2")
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "tp2_hit_time": _ist_str_now(), "result": "TP2",
@@ -13777,7 +13844,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
-                if t.get("ct_opened"): ct.on_scan_tp1(sym)
+                if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=ver)
                 ct.virtual_on_tp1(sym, tp1)
                 log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                     "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
@@ -13821,7 +13888,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             # had nothing to find (admin report 2026-08-12).
             _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
-            if t.get("ct_opened"): ct.on_scan_sl(sym)
+            if t.get("ct_opened"): ct.on_scan_sl(sym, ver=ver)
             ct.virtual_on_close(sym, price, result)
             log_trade_event({"type": f"scan{ver}", "coin": sym, "direction": sig,
                 "sl_hit_time": _ist_str_now(), "result": result,
@@ -15225,9 +15292,9 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
 
     if t.get("ct_opened"):
         try:
-            if result == "TP1":   ct.on_scan_tp1(sym)
-            elif result == "TP2": ct.on_scan_tp2(sym)
-            else:                 ct.on_scan_sl(sym, reason=result)
+            if result == "TP1":   ct.on_scan_tp1(sym, ver=_INTRA_CT_VER.get(t.get("kind"), 0))
+            elif result == "TP2": ct.on_scan_tp2(sym, ver=_INTRA_CT_VER.get(t.get("kind"), 0))
+            else:                 ct.on_scan_sl(sym, reason=result, ver=_INTRA_CT_VER.get(t.get("kind"), 0))
         except Exception as e:
             print(f"  [INTRA] ct close {sym}: {e}")
     try:
@@ -15498,6 +15565,10 @@ def _test_scan_one(symbol: str) -> str:
          "sl_pct": sl_pct, "created_at": time.time(),
          "sig_id": _gen_signal_id(), "reply_map": {}, "logic": TEST_LOGIC,
          "score": f"{r.get('score_buy',0)}b/{r.get('score_sell',0)}s"}
+    # ct_pending holds the monitor off this trade until the copy orders are
+    # placed: a stop hit in those few seconds would otherwise be announced
+    # while the copies still stood, and nothing would close them.
+    t["ct_pending"] = True
     with _test_lock:
         if any(x["symbol"] == symbol for x in _test_trades):
             return (symbol, False, "another pass opened it first")
@@ -15507,6 +15578,7 @@ def _test_scan_one(symbol: str) -> str:
     # an "SL" card two hours later sits next to an unrelated pair's entry and
     # you cannot tell at a glance which trade it belongs to (admin 2026-09-02).
     t["entry_mid"] = _test_post(_test_entry_card(t))
+    _sys_copy_open(t, 8, "TEST")
     _test_save()
     return (symbol, True, f"{side} @ {entry} · SL {sl_pct:.2f}%")
 
@@ -15574,6 +15646,48 @@ def _test_entry_card(t: dict) -> str:
     ]], tag=t.get("sig_id", ""))
 
 
+def _sys_copy_open(t: dict, ver: int, tag: str):
+    """Place one system's trade on every eligible copy account.
+
+    Its own switch is checked inside copytrade (ELITE_CT_ENABLED /
+    TESTSYS_CT_ENABLED), so this is safe to call whether the gate is open or
+    not. ct_opened is set whenever the call ran - the close handlers are
+    no-ops for any user who did not get the position, so over-managing costs
+    nothing and under-managing leaves real positions unwatched."""
+    try:
+        _res = ct.on_scan_signal({"ver": ver, "signal": t["signal"], "entry": t["entry"],
+                                  "sl": t["sl"], "tp1": t["tp1"], "tp2": t["tp2"],
+                                  "entry_type": "MARKET"},
+                                 t["symbol"], t["entry"], True)
+        t["ct_opened"] = not (_res and "copy trade is OFF" in _res[0])
+        _ok = [r for r in _res if r.startswith("\u2705")]
+        if t["ct_opened"] and _res:
+            send_admin(f"📋 <b>{tag} copy trade — {t['symbol']}</b>\n"
+                       f"{len(_ok)} placed\n" + "\n".join(_res[:5]))
+    except Exception as e:
+        t["ct_opened"] = False
+        print(f"  [{tag}] copytrade open {t.get('symbol')}: {e}")
+    finally:
+        t["ct_pending"] = False
+
+
+def _sys_copy_close(t: dict, ver: int, result: str, tag: str):
+    """Act on the copies of one system's trade - and ONLY that system's,
+    which is what the ver does (see copytrade._pfx_for_symbol)."""
+    if not t.get("ct_opened"):
+        return
+    _sym = t["symbol"]
+    try:
+        if result == "TP1":
+            ct.on_scan_tp1(_sym, ver=ver)
+        elif result == "TP2":
+            ct.on_scan_tp2(_sym, ver=ver)
+        else:
+            ct.on_scan_sl(_sym, reason=result, ver=ver)
+    except Exception as e:
+        print(f"  [{tag}] copytrade {result} {_sym}: {e}")
+
+
 def _test_close(t: dict, result: str, price: float):
     """Announce a close and record it for this system's own recaps only."""
     coin = t["symbol"].replace("-USDT", "")
@@ -15593,6 +15707,7 @@ def _test_close(t: dict, result: str, price: float):
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
         tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+    _sys_copy_close(t, 8, result, "TEST")
     _test_history.append({"time": ist_str(), "symbol": coin, "signal": t["signal"],
                           "entry": t["entry"], "result": result,
                           "close_price": price, "pnl": pnl,
@@ -15607,11 +15722,15 @@ def _test_monitor_loop():
     """Own 30s thread. Only ever reads _test_trades."""
     while True:
         try:
-            if TEST_ENABLED:
+            # "stop" means stop OPENING. Trades already open - and now real
+            # money on copy accounts - are still watched to their close.
+            if TEST_ENABLED or _test_trades:
                 with _test_lock:
                     snap = list(_test_trades)
                 drop = []
                 for t in snap:
+                    if t.get("ct_pending"):
+                        continue
                     try:
                         cp = get_bingx_price(t["symbol"])
                         if not cp or cp <= 0:
@@ -16221,6 +16340,505 @@ def _ist_status_text() -> str:
     return "\n\n".join(lines)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ELITE - trades only the admin's winner coins, at the times /st week marks
+# live today, on the rules of whichever scan owns that time.
+#
+#   when   : every special time of S1 / S2 / TS1 / TS2 that /st week clears
+#            for TODAY'S weekday (_slot_day_verified - win rate above target
+#            AND a winning streak, not manually locked). A time that is not
+#            live today is skipped, exactly as the main bot skips it for
+#            VIP/Free and copy trade.
+#   which  : only ELITE_COINS. Inside that list the owning scan picks the way
+#            it always does - its own volume floor and move cap, its own score,
+#            the top ten, clean 4H structure first - and fires the first coin
+#            the engine gives a valid setup on.
+#   rules  : that scan's stop band, TP multiples and timeout, copied from the
+#            live code paths (S1/S2: TP 1.5x/3.0x, stop 1.5-4.0% inside a
+#            1.0-5.0% gate, 12h; TS1/TS2: TP 2.0x/3.75x, stop 1.5-3.0%, 1h).
+#   money  : copy trade as ver 7 with its own switch and its own slots, so
+#            nothing it does can reach another system's positions.
+#
+# Its own channel, trades, history, recaps and state file. It reads the main
+# bot's schedule and weekday table but never writes to them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+ELITE_CHANNEL_ID = -1004356625199
+ELITE_ENABLED = False                 # /el on | /el off - nothing opens until turned on
+# Every coin that finished above +7% across the August and September recaps
+# (admin 2026-09-23). /el coins add|rm edits it.
+ELITE_COINS = ["UAI", "USELESS", "UNI", "BITLIGHT", "INJ", "AIN", "NIL", "BTR", "ZEC",
+               "LONGXIA", "ENA", "RIVER", "IOST", "JUP"]
+ELITE_KINDS = {
+    "scan1": {"label": "S1",  "vol": 2_000_000, "chg": 200, "fresh": False,
+              "tp1": 1.5, "tp2": 3.0,  "sl_lo": 1.5, "sl_hi": 4.0, "gate_hi": 5.0, "timeout_h": 12},
+    "scan2": {"label": "S2",  "vol": 2_000_000, "chg": 15,  "fresh": True,
+              "tp1": 1.5, "tp2": 3.0,  "sl_lo": 1.5, "sl_hi": 4.0, "gate_hi": 5.0, "timeout_h": 12},
+    "demo1": {"label": "TS1", "vol": 5_000_000, "chg": 40,  "fresh": False,
+              "tp1": 2.0, "tp2": 3.75, "sl_lo": 1.5, "sl_hi": 3.0, "gate_hi": 3.0, "timeout_h": 1},
+    "demo2": {"label": "TS2", "vol": 5_000_000, "chg": 15,  "fresh": True,
+              "tp1": 2.0, "tp2": 3.75, "sl_lo": 1.5, "sl_hi": 3.0, "gate_hi": 3.0, "timeout_h": 1},
+}
+_elite_trades: list = []
+_elite_history: list = []
+_elite_lock = threading.Lock()
+_elite_fired: dict = {}               # "YYYY-MM-DD kind H:MM" -> what that run did
+_ELITE_STATE_FILE = os.path.join(DATA_DIR, "elite_system.json")
+_elite_last_post_error = ""
+
+
+def _elite_post(text: str, reply_to=None):
+    """To the Elite channel only - never through the tier helpers, which would
+    fan it out to VIP/Free."""
+    global _elite_last_post_error
+    try:
+        payload = {"chat_id": ELITE_CHANNEL_ID, "text": _apply_premium_emojis(text),
+                   "parse_mode": "HTML", "disable_web_page_preview": True}
+        if reply_to:
+            payload["reply_to_message_id"] = reply_to
+        j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json=payload, timeout=10).json()
+        if not j.get("ok"):
+            _elite_last_post_error = str(j.get("description"))[:200]
+            print(f"  [ELITE] post rejected: {j.get('description')}")
+            return None
+        _elite_last_post_error = ""
+        return j.get("result", {}).get("message_id")
+    except Exception as e:
+        _elite_last_post_error = f"{type(e).__name__}: {e}"[:200]
+        print(f"  [ELITE] post: {e}")
+        return None
+
+
+def _elite_4h_struct(df) -> str:
+    """The main scan's own 4H read (check_4h_structure), so candidates are
+    ordered the same way: clean structure first."""
+    if df is None or len(df) < 8:
+        return "NEUTRAL"
+    h = df["high"].values[-15:]
+    l = df["low"].values[-15:]
+    c = df["close"].values[-15:]
+    sh, sl = [], []
+    for i in range(1, len(h) - 1):
+        if h[i] > h[i - 1] and h[i] > h[i + 1]:
+            sh.append(h[i])
+        if l[i] < l[i - 1] and l[i] < l[i + 1]:
+            sl.append(l[i])
+    swing = "NEUTRAL"
+    if len(sh) >= 2 and len(sl) >= 2:
+        if sh[-1] > sh[-2] and sl[-1] > sl[-2]:
+            swing = "BULLISH"
+        if sh[-1] < sh[-2] and sl[-1] < sl[-2]:
+            swing = "BEARISH"
+    mid = c[len(c) // 2]
+    close = "NEUTRAL"
+    if mid > 0:
+        tr = (c[-1] - mid) / mid * 100
+        close = "BEARISH" if tr < -5 else ("BULLISH" if tr > 5 else "NEUTRAL")
+    if swing == close:
+        return swing
+    if swing == "BULLISH" and close == "BEARISH":
+        return "BEARISH"
+    if swing == "BEARISH" and close == "BULLISH":
+        return "BULLISH"
+    return swing if swing != "NEUTRAL" else close
+
+
+def _elite_candidates(kind: str, tickers: list) -> list:
+    """ELITE_COINS that pass the owning scan's gates, scored and ordered the
+    way that scan orders them."""
+    import math as _m
+    spec = ELITE_KINDS[kind]
+    allow = {c.upper() for c in ELITE_COINS}
+    out = []
+    for t in tickers or []:
+        sym = str(t.get("symbol", ""))
+        if not sym.endswith("-USDT"):
+            continue
+        base = sym[:-5]
+        if base not in allow or _is_banned(base):
+            continue
+        try:
+            vol = float(t.get("quoteVolume", 0) or t.get("volume", 0) or 0)
+            chg = float(t.get("priceChangePercent", 0) or 0)
+            px = float(t.get("lastPrice", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if vol < spec["vol"] or px <= 0 or abs(chg) > spec["chg"]:
+            continue
+        if spec["fresh"]:
+            fr = 1.0 if 2 <= abs(chg) <= 10 else 0.6
+            score = _m.sqrt(vol / 1e6) * (abs(chg) ** 0.8) * fr
+        else:
+            score = (abs(chg) ** 1.5) * _m.sqrt(vol / 1e6)
+        out.append({"sym": sym, "base": base, "price": px, "chg": chg,
+                    "vol_m": round(vol / 1e6, 1), "score": score})
+    out.sort(key=lambda x: -x["score"])
+    return out[:10]
+
+
+def _elite_entry_card(t: dict) -> str:
+    coin = t["symbol"].replace("-USDT", "")
+    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
+    return _scan_box(f"${coin} ELITE", f"{arrow} {t['symbol']}  |  {t['label']} {t['slot']}", [[
+        f"{arrow} {_smallcaps_title(t['signal'])} — {_smallcaps_title('market entry')}",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
+        f"🛑 SL: <code>{t['sl']}</code>  ({t['sl_pct']:.2f}%)",
+        f"💰 TP1: <code>{t['tp1']}</code>",
+        f"🏆 TP2: <code>{t['tp2']}</code>",
+        f"⏱ {_smallcaps_title('Timeout')}: {t['timeout_h']}h",
+    ]], tag=t.get("sig_id", ""))
+
+
+def _elite_run(kind: str, hm=None) -> str:
+    """One run of one scan's rules over the Elite coins. Fires at most one
+    trade - the owning scan fires one per cycle too."""
+    spec = ELITE_KINDS[kind]
+    lbl = spec["label"]
+    try:
+        tk = requests.get("https://open-api.bingx.com/openApi/swap/v2/quote/ticker",
+                          timeout=15).json().get("data") or []
+    except Exception as e:
+        return f"{lbl}: could not read BingX tickers ({e})"
+    top = _elite_candidates(kind, tk)
+    if not top:
+        return (f"{lbl}: none of the {len(ELITE_COINS)} Elite coins passed {lbl}'s gates "
+                f"(volume ≥ ${spec['vol'] // 1_000_000}M, move ≤ {spec['chg']}%)")
+    for m in top:
+        try:
+            m["struct"] = _elite_4h_struct(bingx_klines(m["sym"], "4h", 60))
+        except Exception:
+            m["struct"] = "NEUTRAL"
+    order = [m for m in top if m["struct"] != "NEUTRAL"] + [m for m in top if m["struct"] == "NEUTRAL"]
+    tried = []
+    for m in order:
+        sym, base = m["sym"], m["base"]
+        with _elite_lock:
+            if any(x["symbol"] == sym for x in _elite_trades):
+                tried.append(f"{base} already open")
+                continue
+        try:
+            df5 = bingx_klines(sym, "5m", 30)
+            H = [float(x) for x in df5["high"].values[-10:]]
+            L = [float(x) for x in df5["low"].values[-10:]]
+            C = [float(x) for x in df5["close"].values[-10:]]
+        except Exception:
+            tried.append(f"{base} no 5M data")
+            continue
+        cp = get_bingx_price(sym) or m["price"]
+        e = _engine_signal(H, L, C, float(cp), spec["tp1"], spec["tp2"], spec["sl_lo"], spec["sl_hi"])
+        if not e or e.get("signal") == "WAIT":
+            tried.append(f"{base} WAIT")
+            continue
+        side = e["signal"]
+        dp = _test_dp(sym)
+        q = lambda v, _dp=dp: round(float(v), _dp)
+        entry, sl = q(cp), q(e["sl"])
+        _slg = _sl_guard(side, entry, sl)
+        if _slg:
+            tried.append(f"{base} {_slg}")
+            continue
+        d = abs(entry - sl)
+        if d <= 0:
+            tried.append(f"{base} stop on entry")
+            continue
+        sl_pct = d / entry * 100
+        if sl_pct < 1.0 or sl_pct > spec["gate_hi"]:
+            tried.append(f"{base} SL {sl_pct:.2f}% outside 1.0-{spec['gate_hi']}%")
+            continue
+        sgn = 1 if side == "BUY" else -1
+        t = {"symbol": sym, "signal": side, "entry": entry, "sl": sl,
+             "tp1": q(entry + d * spec["tp1"] * sgn), "tp2": q(entry + d * spec["tp2"] * sgn),
+             "tp1_hit": False, "sl_pct": sl_pct, "created_at": time.time(),
+             "kind": kind, "label": lbl,
+             "slot": f"{hm[0]}:{hm[1]:02d}" if hm else "manual",
+             "timeout_h": spec["timeout_h"], "sig_id": _gen_signal_id(),
+             "ct_pending": True}
+        with _elite_lock:
+            if any(x["symbol"] == sym for x in _elite_trades):
+                tried.append(f"{base} opened by a parallel run")
+                continue
+            _elite_trades.append(t)
+        t["entry_mid"] = _elite_post(_elite_entry_card(t))
+        _sys_copy_open(t, 7, "ELITE")
+        _elite_save()
+        return f"{lbl}: {side} {base} @ {entry} · SL {sl_pct:.2f}%"
+    return f"{lbl}: no setup — " + ", ".join(tried[:8])
+
+
+def _elite_close(t: dict, result: str, price: float, pnl=None):
+    """Announce, act on the copies, and record it for the recaps - the same
+    rows the main recap keeps: a TP1 counts as the win, a TP2 replaces it, a
+    break-even after TP1 adds nothing, a timeout carries its own figure."""
+    coin = t["symbol"].replace("-USDT", "")
+    if pnl is None:
+        try:
+            lvl = {"TP1": t["tp1"], "TP2": t["tp2"], "SL": t["sl"], "BE": t["entry"]}.get(result)
+            pnl = (float(lvl) - t["entry"]) / t["entry"] * 100 * (1 if t["signal"] == "BUY" else -1) if lvl else None
+        except Exception:
+            pnl = None
+    icon = {"TP2": "🏆", "TP1": "✅", "SL": "🛑", "BE": "🛡️", "TIMEOUT": "⏰"}.get(result, "•")
+    _elite_post(_scan_box(f"${coin} {result}", f"{icon} {t['symbol']}  |  {t['label']}", [[
+        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
+        f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
+        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
+    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
+        tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+    _sys_copy_close(t, 7, result, "ELITE")
+    if result == "BE":
+        return                                   # already counted as its TP1
+    row = {"date": _ist_date_str(t.get("created_at")), "time": now_ist().strftime("%I:%M %p IST"),
+           "symbol": t["symbol"], "result": result, "pnl": pnl, "kind": t.get("kind"),
+           "label": t.get("label"), "sig_id": t.get("sig_id"), "tier_routed": True}
+    with _elite_lock:
+        if result == "TP2":
+            _elite_history[:] = [h for h in _elite_history
+                                 if not (h.get("sig_id") == t.get("sig_id") and h.get("result") == "TP1")]
+        _elite_history.append(row)
+        if len(_elite_history) > 3000:
+            del _elite_history[:-3000]
+
+
+def _elite_monitor_loop():
+    """30s. Watches every open Elite trade to its close - after /el off too,
+    since those may be real positions on copy accounts."""
+    while True:
+        try:
+            if ELITE_ENABLED or _elite_trades:
+                with _elite_lock:
+                    snap = list(_elite_trades)
+                drop = []
+                for t in snap:
+                    if t.get("ct_pending"):
+                        continue
+                    try:
+                        cp = get_bingx_price(t["symbol"])
+                        if not cp or cp <= 0:
+                            continue
+                        buy = t["signal"] == "BUY"
+                        if (time.time() - t["created_at"]) / 3600 >= t.get("timeout_h", 12):
+                            pnl = (cp - t["entry"]) / t["entry"] * 100 * (1 if buy else -1)
+                            drop.append(t)
+                            _elite_close(t, "TIMEOUT", cp, pnl)
+                            continue
+                        sl_now = t["entry"] if t.get("tp1_hit") else t["sl"]
+                        if (cp >= t["tp2"]) if buy else (cp <= t["tp2"]):
+                            drop.append(t)
+                            _elite_close(t, "TP2", cp)
+                        elif (cp <= sl_now) if buy else (cp >= sl_now):
+                            drop.append(t)
+                            _elite_close(t, "BE" if t.get("tp1_hit") else "SL", cp)
+                        elif not t.get("tp1_hit") and ((cp >= t["tp1"]) if buy else (cp <= t["tp1"])):
+                            t["tp1_hit"] = True
+                            _elite_close(t, "TP1", cp)      # announced; the rest runs on at break-even
+                            _elite_save()
+                    except Exception as e:
+                        print(f"  [ELITE MONITOR] {t.get('symbol')}: {e}")
+                if drop:
+                    with _elite_lock:
+                        _elite_trades[:] = [x for x in _elite_trades if not any(x is d for d in drop)]
+                    _elite_save()
+        except Exception as e:
+            print(f"[ELITE MONITOR] {e}")
+        time.sleep(30)
+
+
+def _elite_live_today() -> list:
+    """[(kind, (h, m))] - every special time /st week clears for today."""
+    out = []
+    for kind in ELITE_KINDS:
+        for hm in sorted(_SCAN_SPECIAL.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set())):
+            try:
+                if _slot_day_verified(kind, hm):
+                    out.append((kind, hm))
+            except Exception:
+                pass
+    return out
+
+
+def _elite_scan_loop():
+    """20s. Fires a kind's rules at each of its special times that /st week
+    has live today. Each (day, kind, time) runs once."""
+    while True:
+        try:
+            if ELITE_ENABLED:
+                now = now_ist()
+                hm = (now.hour, now.minute)
+                day = now.strftime("%Y-%m-%d")
+                for kind in ELITE_KINDS:
+                    if hm not in _SCAN_SPECIAL.get(_SLOT_SCHEDULE_KIND.get(kind, kind), set()):
+                        continue
+                    key = f"{day} {kind} {hm[0]}:{hm[1]:02d}"
+                    if key in _elite_fired:
+                        continue
+                    if not _slot_day_verified(kind, hm):
+                        _elite_fired[key] = "skipped - not live today on /st week"
+                        continue
+                    _elite_fired[key] = "running"
+
+                    def _go(k=kind, h=hm, ky=key):
+                        try:
+                            _elite_fired[ky] = _elite_run(k, h)
+                        except Exception as ex:
+                            _elite_fired[ky] = f"error: {ex}"
+                        print(f"  [ELITE] {ky}: {_elite_fired[ky]}")
+                    threading.Thread(target=_go, daemon=True).start()
+                if len(_elite_fired) > 400:
+                    for k in sorted(_elite_fired)[:-200]:
+                        _elite_fired.pop(k, None)
+        except Exception as e:
+            print(f"[ELITE SCAN] {e}")
+        time.sleep(20)
+
+
+def _elite_recap(period: str, dates: list) -> str:
+    rows = [h for h in _elite_history if h.get("date") in dates]
+    if not rows:
+        return ""
+    return (_build_recap_text(rows, dates[0]) if period == "Daily"
+            else _build_period_recap_text(rows, f"{period} Recap — ELITE"))
+
+
+def _elite_recap_loop():
+    """The channel's own daily / weekly / monthly recap, just after midnight."""
+    sent = {"d": "", "w": "", "m": ""}
+    while True:
+        try:
+            now = now_ist()
+            if now.hour == 0 and now.minute < 5 and _elite_history:
+                y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+                if sent["d"] != y:
+                    txt = _elite_recap("Daily", [y])
+                    if txt:
+                        _elite_post(txt)
+                    sent["d"] = y
+                if now.weekday() == 0:
+                    wk = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
+                    if sent["w"] != wk[-1]:
+                        txt = _elite_recap("Weekly", wk)
+                        if txt:
+                            _elite_post(txt)
+                        sent["w"] = wk[-1]
+                if now.day == 1:
+                    last = now.date() - timedelta(days=1)
+                    mk = last.strftime("%Y-%m")
+                    if sent["m"] != mk:
+                        ds = [(last.replace(day=1) + timedelta(days=i)).strftime("%Y-%m-%d")
+                              for i in range(last.day)]
+                        txt = _elite_recap("Monthly", ds)
+                        if txt:
+                            _elite_post(txt)
+                        sent["m"] = mk
+        except Exception as e:
+            print(f"[ELITE RECAP] {e}")
+        time.sleep(60)
+
+
+def _elite_save():
+    blob = {"enabled": ELITE_ENABLED, "coins": list(ELITE_COINS),
+            "trades": _elite_trades, "history": _elite_history[-3000:]}
+    try:
+        with open(_ELITE_STATE_FILE, "w") as f:
+            json.dump(blob, f)
+    except Exception as e:
+        print(f"[ELITE] save: {e}")
+    try:
+        _kv_push_async("elite_system", blob)
+    except Exception as e:
+        print(f"[ELITE] central push: {e}")
+
+
+def _elite_load():
+    global ELITE_ENABLED, ELITE_COINS
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/elite_system")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_ELITE_STATE_FILE, r.json(), "ELITE")
+        if d is None and os.path.exists(_ELITE_STATE_FILE):
+            with open(_ELITE_STATE_FILE) as f:
+                d = json.load(f)
+        if not d:
+            return
+        ELITE_ENABLED = bool(d.get("enabled", False))
+        if d.get("coins"):
+            ELITE_COINS = [str(c).upper() for c in d["coins"]]
+        _elite_trades[:] = d.get("trades", []) or []
+        for t in _elite_trades:
+            t["ct_pending"] = False              # a restart mid-placement must not strand a trade
+        _elite_history[:] = d.get("history", []) or []
+        print(f"[ELITE] loaded {len(_elite_trades)} open, {len(_elite_history)} closed, "
+              f"enabled={ELITE_ENABLED}, {len(ELITE_COINS)} coins")
+    except Exception as e:
+        print(f"[ELITE] load: {e}")
+
+
+def _elite_trades_text() -> str:
+    with _elite_lock:
+        snap = list(_elite_trades)
+    if not snap:
+        return "📭 <b>Elite</b> — no open trades."
+    lines = [f"📡 <b>Elite — {len(snap)} open</b>", ""]
+    for t in snap:
+        cp = get_bingx_price(t["symbol"]) or 0
+        mv = ((cp - t["entry"]) / t["entry"] * 100 * (1 if t["signal"] == "BUY" else -1)) if cp else None
+        age = (time.time() - t["created_at"]) / 3600
+        lines.append(f"{'🟢' if t['signal'] == 'BUY' else '🔴'} <b>{t['symbol'].replace('-USDT', '')}</b> "
+                     f"{t['signal']}  <code>{t['label']} {t['slot']}</code>"
+                     + (f"  <b>{mv:+.2f}%</b>" if mv is not None else "")
+                     + ("  ✅TP1" if t.get("tp1_hit") else ""))
+        lines.append(f"   entry <code>{t['entry']}</code>  SL <code>{t['sl']}</code>  "
+                     f"TP1 <code>{t['tp1']}</code>  TP2 <code>{t['tp2']}</code>  "
+                     f"· {age:.1f}h of {t['timeout_h']}h"
+                     + ("  · 💰 copied" if t.get("ct_opened") else ""))
+    return "\n".join(lines)
+
+
+def _elite_kb():
+    return {"inline_keyboard": [
+        [{"text": "🟢 Elite ON", "callback_data": "elbtn:on"},
+         {"text": "🔴 Elite OFF", "callback_data": "elbtn:off"}],
+        [{"text": "💰 Copy ON", "callback_data": "elbtn:cton"},
+         {"text": "💰 Copy OFF", "callback_data": "elbtn:ctoff"}],
+        [{"text": "📡 Open trades", "callback_data": "elbtn:trades"},
+         {"text": "🔄 Refresh", "callback_data": "elbtn:refresh"}]]}
+
+
+def _elite_status_text() -> str:
+    today = now_ist().strftime("%Y-%m-%d")
+    live = _elite_live_today()
+    by = {}
+    for k, hm in live:
+        by.setdefault(ELITE_KINDS[k]["label"], []).append(f"{hm[0]}:{hm[1]:02d}")
+    ran = {k.split(" ", 1)[1]: v for k, v in _elite_fired.items() if k.startswith(today)}
+    rows = [h for h in _elite_history if h.get("date") == today]
+    net = sum(h["pnl"] for h in rows if h.get("pnl") is not None)
+    out = [f"⭐ <b>ELITE</b>  —  {'🟢 ON' if ELITE_ENABLED else '🔴 OFF'}",
+           f"💰 Copy trade: {'🟢 ON (every copy user)' if ct.ELITE_CT_ENABLED else '🔴 OFF'}",
+           f"📂 Open: <b>{len(_elite_trades)}</b>   ·   today {len(rows)} closed, <b>{net:+.2f}%</b>",
+           "",
+           f"🪙 <b>Coins ({len(ELITE_COINS)})</b>: " + " ".join(f"<code>{c}</code>" for c in ELITE_COINS),
+           "",
+           "⏰ <b>Live today on /st week</b>"]
+    if by:
+        for lbl in ("S1", "S2", "TS1", "TS2"):
+            if lbl in by:
+                out.append(f"   {lbl}: " + ", ".join(by[lbl]))
+    else:
+        out.append("   none - no slot is cleared for today's weekday")
+    if ran:
+        out += ["", "🕐 <b>Runs today</b>"]
+        for k, v in sorted(ran.items())[-10:]:
+            out.append(f"   <code>{k}</code> — {_html.escape(str(v))[:120]}")
+    if _elite_last_post_error:
+        out += ["", f"⚠️ Last channel post failed: <code>{_html.escape(_elite_last_post_error)}</code>"]
+    out += ["", "<blockquote><code>/el on</code>  <code>/el off</code>  <code>/el t</code> trades  "
+                "<code>/el coins</code>  <code>/el ct on|off</code>  <code>/el run s1</code>  "
+                "<code>/el recap</code></blockquote>"]
+    return "\n".join(out)
+
+
 def _test_save():
     """Local file AND the central store.
 
@@ -16513,7 +17131,7 @@ def _intra_cancel_pending(t: dict, reason: str):
                          tier_routed=True, share_free=True)
     if t.get("ct_opened"):
         try:
-            ct.on_scan_entry_missed(t["symbol"])
+            ct.on_scan_entry_missed(t["symbol"], ver=_INTRA_CT_VER.get(t.get("kind"), 0))
         except Exception as e:
             print(f"  [INTRA] cancel ct {t['symbol']}: {e}")
     _close_sig_snapshot(t.get("sig_id", ""), "CANCEL")
@@ -16533,7 +17151,7 @@ def _intra_close_partial(t: dict, price: float):
                          tier_routed=True, share_free=True, react_category="tp1")
     if t.get("ct_opened"):
         try:
-            ct.on_scan_tp1(t["symbol"])
+            ct.on_scan_tp1(t["symbol"], ver=_INTRA_CT_VER.get(t.get("kind"), 0))
         except Exception as e:
             print(f"  [INTRA] tp1 ct {t['symbol']}: {e}")
     try:
@@ -19058,7 +19676,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                                                   actually_shared=_reply_map_reached_tier(sc.get('reply_map')))
                 if not _reveal:
                     if _locked:
-                        _locked_tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc.get('symbol',''))
+                        _locked_tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(ver=_ver, symbol=sc.get('symbol',''))
                         parts_out.append(f"<b>Scan{_ver} Trade</b>\n\n{sc.get('symbol','?')}\n{_locked_tp_line(_locked_tp1_hit)}\n\n🔒 VIP-exclusive signal — upgrade to view")
                     continue
                 try:
@@ -19066,7 +19684,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     spl = f"Current: <b>{sp:,.4g}</b>\n" if sp else ""
                 except: spl = ""
                 # Check tp1_hit from bot state OR from any copy user's state
-                _tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc["symbol"])
+                _tp1_hit = sc.get('tp1_hit') or ct.is_scan_tp1_hit(sc["symbol"], ver=_ver)
                 _sl_label = f"<b>{sc['sl']:,.4g}</b>" + (" ← BE" if _tp1_hit else "")
                 _cat_tag = f"{_CAT_TAG.get(_cat,'➖')} " if _trade_full_view else ""
                 parts_out.append(
@@ -20151,6 +20769,79 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 "<code>/secretary on</code>  <code>/secretary off</code>",
                 "<code>/secretary ai on</code>  <code>/secretary msg &lt;text&gt;</code>"]),
                 skip_smallcaps=True)
+
+    elif cmd in ("/el", "/elite") and is_scanadmin:
+        # ELITE - the winner-coins system. Short on purpose: /el on, /el t.
+        global ELITE_ENABLED, ELITE_COINS
+        _ea = parts[1].lower() if len(parts) > 1 else ""
+        _eb = [x.upper().lstrip("$") for x in parts[2:]]
+        if _ea in ("on", "start", "run") and len(parts) == 2:
+            ELITE_ENABLED = True; _elite_save()
+            send_reply(chat_id, "⭐ <b>Elite ON</b> — trades the Elite coins at every time /st week "
+                                "has live today, on that scan's own rules.\n\n"
+                                + ("💰 Copy trade is <b>ON</b>: real orders on every copy user's account."
+                                   if ct.ELITE_CT_ENABLED else "💰 Copy trade is OFF — channel only."),
+                       skip_smallcaps=True)
+        elif _ea in ("off", "stop"):
+            ELITE_ENABLED = False; _elite_save()
+            send_reply(chat_id, f"⭐ <b>Elite OFF</b> — no new trades. The {len(_elite_trades)} open "
+                                f"trade(s) are still watched to their close.", skip_smallcaps=True)
+        elif _ea in ("t", "trades", "trade", "open"):
+            send_reply(chat_id, _elite_trades_text(), skip_smallcaps=True)
+        elif _ea == "ct":
+            _on = (parts[2].lower() in ("on", "1", "yes")) if len(parts) > 2 else not ct.ELITE_CT_ENABLED
+            ct.set_elite_ct(_on); save_settings()
+            send_reply(chat_id, f"💰 Elite copy trade <b>{'ON — every copy user' if _on else 'OFF'}</b>",
+                       skip_smallcaps=True)
+        elif _ea in ("coins", "coin", "c"):
+            _op = _eb[0].lower() if _eb else ""
+            _syms = [x for x in _eb[1:] if x.isalnum() and len(x) <= 12]
+            if _op == "add" and _syms:
+                ELITE_COINS = ELITE_COINS + [x for x in _syms if x not in ELITE_COINS]
+            elif _op in ("rm", "remove", "del") and _syms:
+                ELITE_COINS = [x for x in ELITE_COINS if x not in _syms]
+            if _op in ("add", "rm", "remove", "del"):
+                _elite_save()
+            send_reply(chat_id, f"🪙 <b>Elite coins ({len(ELITE_COINS)})</b>\n\n"
+                                + "  ".join(f"<code>{x}</code>" for x in ELITE_COINS)
+                                + "\n\n<code>/el coins add SOL</code>   <code>/el coins rm ZEC</code>",
+                       skip_smallcaps=True)
+        elif _ea == "run":
+            _k = {"s1": "scan1", "s2": "scan2", "ts1": "demo1", "ts2": "demo2"}.get(parts[2].lower() if len(parts) > 2 else "")
+            if not _k:
+                send_reply(chat_id, "Usage: <code>/el run s1</code> | s2 | ts1 | ts2", skip_smallcaps=True)
+            else:
+                send_reply(chat_id, f"⭐ Running {ELITE_KINDS[_k]['label']} rules on the Elite coins now…",
+                           skip_smallcaps=True)
+                threading.Thread(target=lambda k=_k: send_reply(chat_id, "⭐ " + _html.escape(_elite_run(k)),
+                                                                skip_smallcaps=True), daemon=True).start()
+        elif _ea == "recap":
+            _per = (parts[2].lower() if len(parts) > 2 else "daily")
+            _td = now_ist().date()
+            if _per.startswith("w"):
+                _dts = [(_td - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_td.weekday() + 1)]
+                _txt = _elite_recap("Weekly", sorted(_dts))
+            elif _per.startswith("m"):
+                _dts = [(_td.replace(day=1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_td.day)]
+                _txt = _elite_recap("Monthly", _dts)
+            else:
+                _txt = _elite_recap("Daily", [_td.strftime("%Y-%m-%d")])
+            send_reply(chat_id, _txt or "📊 Nothing closed in that period yet.", skip_smallcaps=True)
+        elif _ea == "ping":
+            _mid = _elite_post("⭐ <b>Elite channel check</b> — if you can read this, the bot can post here.")
+            send_reply(chat_id, f"✅ Posted to <code>{ELITE_CHANNEL_ID}</code>" if _mid else
+                       f"❌ Could not post to <code>{ELITE_CHANNEL_ID}</code>: "
+                       f"<code>{_html.escape(_elite_last_post_error)}</code>\n\nMake the bot an admin of that channel.",
+                       skip_smallcaps=True)
+        else:
+            send_reply(chat_id, _elite_status_text(), reply_markup=_elite_kb(), skip_smallcaps=True)
+
+    elif cmd == "/test" and is_admin and len(parts) > 1 and parts[1].lower() == "ct":
+        _on = (parts[2].lower() in ("on", "1", "yes")) if len(parts) > 2 else not ct.TESTSYS_CT_ENABLED
+        ct.set_testsys_ct(_on); save_settings()
+        send_reply(chat_id, f"💰 Test system copy trade <b>{'ON — every copy user' if _on else 'OFF'}</b>"
+                            + ("\n\nReal orders on BTC, XAUT, ETH, SOL, HYPE for every copy user whenever "
+                               "the test system fires." if _on else ""), skip_smallcaps=True)
 
     elif cmd == "/test" and is_admin:
         global TEST_LOGIC
@@ -23368,8 +24059,9 @@ _SCAN_SUBCATS = {
         ("/intrastatus", "📋", "Intraday Trades", "Open and pending intraday trades with entry, SL band %, targets and age. (/intrast is the same command.)"),
         ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
     ]),
-    "testsys": ("🧪 Test System", [
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no copy trade, no API calls. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
+    "testsys": ("🧪 Test System & Elite", [
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el recap` (daily / weekly / monthly), `/el ping` to check the channel. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
@@ -24482,6 +25174,8 @@ def send_ctpause_screen(chat_id, message_id=None):
     _demo2_flag = "✅ ON" if ct.DEMO2_CT_ENABLED else "❌ OFF"
     _btcint_ct = "✅ ON" if ct.BTCINT_CT_ENABLED else "❌ OFF"
     _xaut_ct   = "✅ ON" if ct.XAUT_CT_ENABLED   else "❌ OFF"
+    _elite_ct  = "✅ ON" if ct.ELITE_CT_ENABLED  else "❌ OFF"
+    _tsys_ct   = "✅ ON" if ct.TESTSYS_CT_ENABLED else "❌ OFF"
     _orphan_flag = "✅ ON" if ct.ORPHAN_ADOPT_ENABLED else "❌ OFF"
     _sltp_flag = "✅ ON" if ct.AUTO_SLTP_GLOBAL_ENABLED else "❌ OFF"
     rows = [
@@ -24506,6 +25200,12 @@ def send_ctpause_screen(chat_id, message_id=None):
         [{"text": f"🪙 XAUT Copy Trade  {_xaut_ct}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctxaut_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctxaut_off"}],
+        [{"text": f"⭐ Elite Copy Trade  {_elite_ct}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "ctelite_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "ctelite_off"}],
+        [{"text": f"🧪 Test System Copy Trade  {_tsys_ct}", "callback_data": "noop"}],
+        [{"text": "🟢 Turn ON",  "callback_data": "cttestsys_on"},
+         {"text": "🔴 Turn OFF", "callback_data": "cttestsys_off"}],
         [{"text": f"🛡️ Orphan Position Adjust  {_orphan_flag}", "callback_data": "noop"}],
         [{"text": "🟢 Turn ON",  "callback_data": "ctorphan_on"},
          {"text": "🔴 Turn OFF", "callback_data": "ctorphan_off"}],
@@ -26227,6 +26927,22 @@ def command_listener():
                         ct.set_demo2_ct(True); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
                     elif cb_data == "ctdemo2_off" and cb_is_scanadmin:
                         ct.set_demo2_ct(False); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data in ("ctelite_on", "ctelite_off") and cb_is_scanadmin:
+                        ct.set_elite_ct(cb_data.endswith("_on")); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data in ("cttestsys_on", "cttestsys_off") and cb_is_scanadmin:
+                        ct.set_testsys_ct(cb_data.endswith("_on")); save_settings(); send_ctpause_screen(cb_chat_id, message_id=cb_msg_id)
+                    elif cb_data.startswith("elbtn:") and cb_is_scanadmin:
+                        # the buttons under /el - same actions as the typed commands
+                        global ELITE_ENABLED
+                        _ea = cb_data.split(":", 1)[1]
+                        if _ea in ("on", "off"):
+                            ELITE_ENABLED = (_ea == "on"); _elite_save()
+                        elif _ea in ("cton", "ctoff"):
+                            ct.set_elite_ct(_ea == "cton"); save_settings()
+                        if _ea == "trades":
+                            send_reply(cb_chat_id, _elite_trades_text(), skip_smallcaps=True)
+                        else:
+                            _help_edit_or_send(cb_chat_id, _elite_status_text(), _elite_kb(), message_id=cb_msg_id, rotate=False)
                     elif cb_data.startswith("cmdpage:"):
                         # Page taps are open to whoever ran /cmd - the list they were shown
                         # was already filtered to their own access level when it was built.
@@ -27894,7 +28610,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp2")
-        if t.get("ct_opened"): ct.on_scan_tp2(sym)
+        if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=dver + 2)
         ct.virtual_on_close(sym, cp, "TP2")
         _track_daily_result(sym, "TP2", pnl=_trade_outcome_pct(t, "TP2"), tier_routed=tier_routed, free_shown=share_free, entry_date=_ist_date_str(created), sig_id=sig_id)
         _notify_free_late(sym, t, "TP2")
@@ -27923,7 +28639,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
             tag=sig_id)
         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp1")
-        if t.get("ct_opened"): ct.on_scan_tp1(sym)
+        if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=dver + 2)
         ct.virtual_on_tp1(sym, tp1)
         _track_daily_result(sym, "TP1", pnl=_trade_outcome_pct(t, "TP1"), tier_routed=tier_routed, free_shown=share_free,
             tp1_detail={"tag": f"TS{dver}", "side": sig, "tp1": tp1, "sl_be": be_sl_price, "tp2": tp2, "sig_id": sig_id},
@@ -27948,7 +28664,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
           f"{'🛡️' if close_result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(close_result)}"]],
         tag=sig_id)
     _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
-    if t.get("ct_opened"): ct.on_scan_sl(sym)
+    if t.get("ct_opened"): ct.on_scan_sl(sym, ver=dver + 2)
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
         _track_daily_result(sym, "SL", pnl=_trade_outcome_pct(t, "SL"), tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created))
@@ -28040,7 +28756,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp2")
-                        if t.get("ct_opened"): ct.on_scan_tp2(sym)
+                        if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, "TP2")
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp2"] += 1
@@ -28074,7 +28790,7 @@ def _demo_monitor_loop():
                             f"🪪 {sig_id}"
                         )
                         _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
-                        if t.get("ct_opened"): ct.on_scan_sl(sym)
+                        if t.get("ct_opened"): ct.on_scan_sl(sym, ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, lbl)
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_sl"] += 1
@@ -28116,7 +28832,7 @@ def _demo_monitor_loop():
                             tag=sig_id)
                         send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp1")
-                        if t.get("ct_opened"): ct.on_scan_tp1(sym)
+                        if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=2 + _dver)
                         ct.virtual_on_tp1(sym, tp1)
                         if tier_routed:
                             vip_trade_stats[f"demo{_dver}_tp1"] += 1
@@ -28145,7 +28861,7 @@ def _demo_monitor_loop():
                         _track_sl_ids(sig_id, "sl_mid", _to_ids)
                         _to_res = "TIMEOUT_LOSS" if pnl < 0 else "TIMEOUT_WIN"
                         _finalize_free_sl(sig_id, _to_res); _finalize_vip_sl(sig_id, _to_res)
-                        if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT")
+                        if t.get("ct_opened"): ct.on_scan_sl(sym, reason="TIMEOUT", ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, f"TIMEOUT({pnl:+.2f}%)")
                         _track_daily_result(sym, "TIMEOUT", tier_routed=tier_routed, free_shown=tier_routed and share_free, entry_date=_ist_date_str(created), pnl=pnl)
                         _slot_hm = _slot_hm_for_trade(t, created)
@@ -28990,6 +29706,10 @@ def main():
     threading.Thread(target=_test_scan_loop, daemon=True).start()
     threading.Thread(target=_test_monitor_loop, daemon=True).start()
     threading.Thread(target=_test_recap_loop, daemon=True).start()
+    _elite_load()
+    threading.Thread(target=_elite_scan_loop, daemon=True).start()
+    threading.Thread(target=_elite_monitor_loop, daemon=True).start()
+    threading.Thread(target=_elite_recap_loop, daemon=True).start()
     threading.Thread(target=_ist_loop, daemon=True).start()
     threading.Thread(target=_intraday_monitor_loop, daemon=True).start()
     threading.Thread(target=_intraday_scan_loop, daemon=True).start()
