@@ -5630,11 +5630,13 @@ _BOKI_MAX_STEPS = 8
 # message of a process pays for the search.
 _BOKI_TOOL_MODELS = ["claude-sonnet-5", "glm-5.2", "kimi-k3", "gpt-5.6",
                      "claude-opus-4-8", "claude-fable-5", "claude-opus-5"]
-# PECHI is allowed the paid Direct API where BOKI never is, so when nothing
-# free will run tools it falls through to these rather than to a weaker loop.
-# Sonnet first: reading a recap and setting a toggle does not need Opus, and
-# it is 2.5x cheaper per token.
-_PECHI_PAID_MODELS = ["claude-sonnet-5", "claude-opus-5"]
+# PECHI is the one that may spend money, and for the agent loop it does so
+# FIRST rather than as a last resort (admin 2026-09-23: "pechi use real api
+# of claude"). Its whole point is being right; a free model that merely
+# tolerates tool calls is what Boki is for. Opus first here - if the admin
+# is paying for the answer, they are paying for the best one - with Sonnet
+# behind it so a single model being unavailable is not a dead end.
+_PECHI_PAID_MODELS = ["claude-opus-5", "claude-sonnet-5"]
 _boki_tool_model = {"id": "", "why": {}}          # free gateway
 _pechi_tool_model = {"id": "", "why": {}}         # paid direct
 
@@ -5671,17 +5673,23 @@ def _boki_try_models(client, models, pin, msgs, tools, system, tag):
 
 
 def _boki_tools_create(client, msgs, tools, system, allow_paid=False, tag="BOKI"):
-    """One tools call. The free gateway first, always; then - for PECHI only
-    - the paid Direct API, since nothing free taking tools is the one case
-    where the loop would otherwise be lost."""
-    try:
-        return _boki_try_models(client, _BOKI_TOOL_MODELS, _boki_tool_model, msgs, tools, system, tag)
-    except Exception as e:
-        if not (allow_paid and ANTHROPIC_API_KEY and _boki_model_unavailable(e)):
-            raise
-    print(f"  [{tag} AGENT] nothing free takes tools - using the paid API")
-    return _boki_try_models(_claude_client("chat", use_aerolink=False), _PECHI_PAID_MODELS,
-                            _pechi_tool_model, msgs, tools, system, tag)
+    """One tools call.
+
+    PECHI goes to the paid Direct API first: it is the trigger that may
+    spend money, and an agent answer worth paying for is worth paying the
+    best model for. It still falls back to the free gateway if the paid
+    call fails, so an expired key or an outage costs an answer's quality,
+    never the answer itself.
+
+    BOKI never touches the paid API at all - free gateway or nothing, and
+    when nothing free takes a tool call the JSON loop picks it up."""
+    if allow_paid and ANTHROPIC_API_KEY:
+        try:
+            return _boki_try_models(_claude_client("chat", use_aerolink=False), _PECHI_PAID_MODELS,
+                                    _pechi_tool_model, msgs, tools, system, tag)
+        except Exception as e:
+            print(f"  [{tag} AGENT] paid API unavailable ({str(e)[:120]}) - trying the free gateway")
+    return _boki_try_models(client, _BOKI_TOOL_MODELS, _boki_tool_model, msgs, tools, system, tag)
 
 
 def _boki_tool_specs() -> list:
@@ -20187,13 +20195,20 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 except Exception as _e:
                     _line.append(f"\u274c <code>{_m}</code> \u2014 {_html.escape(str(_e))[:100]}")
         _line.append("")
-        if _free_win:
-            _line.append(f"\U0001F3AF Pechi uses <b>{_free_win}</b> \u2014 free, nothing is charged.")
-        elif _paid_win:
-            _line.append(f"\U0001F3AF Nothing free takes tools, so Pechi falls through to "
-                         f"<b>{_paid_win}</b> on the paid API. Boki stays on the JSON loop.")
+        if _paid_win:
+            _line.append(f"\U0001F3AF Pechi uses <b>{_paid_win}</b> on the paid API \u2014 every "
+                         f"<code>pechi</code> message with a tool call is billed.")
+            _line.append(f"   Free gateway is the fallback: "
+                         + (f"<b>{_free_win}</b>" if _free_win else "nothing there takes tools"))
+        elif _free_win:
+            _line.append(f"\U0001F3AF No paid model answered, so Pechi uses <b>{_free_win}</b> "
+                         f"\u2014 free, nothing is charged.")
         else:
             _line.append("\u26a0 No model took a tool call \u2014 both fall back to the JSON loop.")
+        _line.append("")
+        _line.append("<blockquote>Boki never touches the paid API - free gateway or the JSON "
+                     "loop. Type <code>boki</code> for everyday work and <code>pechi</code> when "
+                     "the answer is worth paying for.</blockquote>")
         send_reply(chat_id, "\U0001F9EA <b>Pechi agent check</b>\n\n" + "\n".join(_line),
                    skip_smallcaps=True)
 
@@ -23096,7 +23111,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
-        ("/pechitest", "🧪", "Pechi Agent Check", "The same probe as /bokitest plus the paid Direct API, which Pechi may use and Boki never may. Says which model Pechi ends up on and whether that costs anything."),
+        ("/pechitest", "🧪", "Pechi Agent Check", "The same probe as /bokitest plus the paid Direct API. Pechi calls the paid API FIRST for tool work and falls back to the free gateway; Boki never touches it. Says which model each ends up on and what is being billed."),
         ("/bokitest", "🧪", "Boki Agent Check", "Says which path Boki is taking \u2014 whether the free gateway accepts tool calls or it is using the JSON fallback, how many tools it has, and whether the recap and trade lookups return data. Run it when Boki answers a data question from memory instead of looking it up."),
         ("/norecap",  "🔕", "Mute a Recap Post", "Stop the next automatic recap from being posted to the channels. `/norecap` opens a panel with a mute button for daily, weekly and monthly; `/norecap daily` mutes tonight's straight away; `/norecap 2026-09-18` mutes one specific day. Muting never deletes anything — the trades stay recorded and /daily /weekly /monthly still show them. Each mute covers one period and clears itself once that period passes. (/skiprecap is the same command.)"),
     ]),
