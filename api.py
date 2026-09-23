@@ -856,6 +856,67 @@ def _net_id(geo: dict, ip: str) -> str:
 _ALERTS_PER_DAY = 4                            # per user, so a flapping network cannot spam
 
 
+_HW_KEYS = ("model", "os", "osver", "arch", "bits", "cores", "ram", "net", "down", "rtt",
+            "touch", "depth", "brand", "browser")
+_HW_MAX = 48
+
+
+def _hw_clean(hw) -> dict:
+    """Keep the fields we asked for, as short strings/numbers. Everything here
+    came from a browser we do not control, so it is filtered on the way in
+    and escaped again on the way out."""
+    if not isinstance(hw, dict):
+        return {}
+    out = {}
+    for k in _HW_KEYS:
+        v = hw.get(k)
+        if not v:                       # absent, blank, zero - all mean "not reported"
+            continue
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = round(float(v), 2)
+        else:
+            out[k] = str(v)[:_HW_MAX]
+    return out
+
+
+def _esc(t) -> str:
+    """Anything a browser sent us is escaped before it goes into a message -
+    a user agent is user-controlled text, and these alerts are HTML."""
+    return (str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _hw_line(hw: dict) -> str:
+    """One readable line of specs, or '' when the device told us nothing.
+    Chromium on Android fills most of this in; iPhone and Telegram Desktop
+    report almost nothing, so the line stays short rather than fake."""
+    hw = hw or {}
+    bits = []
+    if hw.get("model"):
+        bits.append(_esc(hw["model"]))
+    if hw.get("os"):
+        bits.append(_esc(hw["os"]) + (f" {_esc(hw['osver'])}" if hw.get("osver") else ""))
+    if hw.get("browser"):
+        bits.append(_esc(hw["browser"]))
+    if hw.get("cores"):
+        bits.append(f"{int(hw['cores'])} cores")
+    if hw.get("ram"):
+        bits.append(f"{hw['ram']:g} GB")
+    if hw.get("arch"):
+        bits.append(_esc(hw["arch"]) + (f"/{int(hw['bits'])}" if hw.get("bits") else ""))
+    _net = []
+    if hw.get("net"):
+        _net.append(_esc(hw["net"]))
+    if hw.get("down"):
+        _net.append(f"{hw['down']:g} Mbps")
+    if hw.get("rtt"):
+        _net.append(f"{int(hw['rtt'])} ms")
+    if _net:
+        bits.append(" ".join(_net))
+    return ("💻 " + "  ·  ".join(bits) + "\n") if bits else ""
+
+
 class DeviceSeen(BaseModel):
     platform: str = ""
     version: str = ""
@@ -863,6 +924,7 @@ class DeviceSeen(BaseModel):
     screen: str = ""
     tz: str = ""
     lang: str = ""
+    hw: Optional[dict] = None          # model / OS / cores / RAM / connection
 
 
 @app.post("/device/seen")
@@ -889,6 +951,11 @@ def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_cur
              "lang": body.lang, "tg": body.version, "ips": [], "nets": [], "geo": geo}
         devs[fp] = d
     d["last"] = stamp
+    # never part of the fingerprint: a wifi-to-mobile switch or a browser
+    # update would otherwise read as a brand-new device
+    _hw = _hw_clean(body.hw)
+    if _hw:
+        d["hw"] = _hw
     if ip:
         d["ips"] = ([ip] + [x for x in (d.get("ips") or []) if x != ip])[:5]
         d["geo"] = geo or d.get("geo") or {}
@@ -925,7 +992,8 @@ def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_cur
         # device, the place and the time - enough to recognise a sign-in or
         # not - without being handed an address they cannot act on anyway.
         _ip_line = f"🔢 IP <code>{ip or '-'}</code>\n" if (ADMIN_CHAT_ID and uid == str(ADMIN_CHAT_ID)) else ""
-        text = (f"{head}\n\n<blockquote>📱 {d['ua']} · {body.platform or '-'}\n🌐 {where}{isp}\n{_ip_line}"
+        text = (f"{head}\n\n<blockquote>📱 {_esc(d['ua'])} · {_esc(body.platform) or '-'}\n{_hw_line(d.get('hw'))}"
+                f"🌐 {where}{isp}\n{_ip_line}"
                 f"🕐 {stamp} IST</blockquote>\n\nIf this was you, nothing to do. If not, lock copy trading now - it stops every copy until you unlock.")
         _kb = {"inline_keyboard": [[{"text": "🔒 Lock copy trading", "callback_data": f"sec:lock:{uid}", "style": "danger"},
                                     {"text": "✅ It was me", "callback_data": f"sec:ok:{uid}"}]]}
@@ -958,7 +1026,8 @@ def device_list(user: dict = Depends(get_current_user)):
         g = d.get("geo") or {}
         out.append({"fp": fp, "name": d.get("ua", ""), "platform": d.get("platform", ""), "first": d.get("first", ""), "last": d.get("last", ""),
                     "where": ", ".join(x for x in (g.get("city"), g.get("country")) if x),
-                    "ip": (d.get("ips") or [""])[0] if _is_adm else "", "current": fp == cur})
+                    "ip": (d.get("ips") or [""])[0] if _is_adm else "",
+                    "spec": _hw_line(d.get("hw")).replace("💻 ", "").strip(), "current": fp == cur})
     out.sort(key=lambda x: (not x["current"], x["last"]), reverse=False)
     locked = bool((_kv_dict("ct_users").get(uid) or {}).get("sec_locked"))
     return {"enabled": True, "devices": out, "locked": locked}

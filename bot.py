@@ -3693,6 +3693,67 @@ def _maps_link(geo: dict) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={_urlquote(_q)}" if _q else ""
 
 
+_HW_KEYS = ("model", "os", "osver", "arch", "bits", "cores", "ram", "net", "down", "rtt",
+            "touch", "depth", "brand", "browser")
+_HW_MAX = 48
+
+
+def _hw_clean(hw) -> dict:
+    """Keep the fields we asked for, as short strings/numbers. Everything here
+    came from a browser we do not control, so it is filtered on the way in
+    and escaped again on the way out."""
+    if not isinstance(hw, dict):
+        return {}
+    out = {}
+    for k in _HW_KEYS:
+        v = hw.get(k)
+        if not v:                       # absent, blank, zero - all mean "not reported"
+            continue
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = round(float(v), 2)
+        else:
+            out[k] = str(v)[:_HW_MAX]
+    return out
+
+
+def _esc(t) -> str:
+    """Anything a browser sent us is escaped before it goes into a message -
+    a user agent is user-controlled text, and these alerts are HTML."""
+    return (str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _hw_line(hw: dict) -> str:
+    """One readable line of specs, or '' when the device told us nothing.
+    Chromium on Android fills most of this in; iPhone and Telegram Desktop
+    report almost nothing, so the line stays short rather than fake."""
+    hw = hw or {}
+    bits = []
+    if hw.get("model"):
+        bits.append(_esc(hw["model"]))
+    if hw.get("os"):
+        bits.append(_esc(hw["os"]) + (f" {_esc(hw['osver'])}" if hw.get("osver") else ""))
+    if hw.get("browser"):
+        bits.append(_esc(hw["browser"]))
+    if hw.get("cores"):
+        bits.append(f"{int(hw['cores'])} cores")
+    if hw.get("ram"):
+        bits.append(f"{hw['ram']:g} GB")
+    if hw.get("arch"):
+        bits.append(_esc(hw["arch"]) + (f"/{int(hw['bits'])}" if hw.get("bits") else ""))
+    _net = []
+    if hw.get("net"):
+        _net.append(_esc(hw["net"]))
+    if hw.get("down"):
+        _net.append(f"{hw['down']:g} Mbps")
+    if hw.get("rtt"):
+        _net.append(f"{int(hw['rtt'])} ms")
+    if _net:
+        bits.append(" ".join(_net))
+    return ("💻 " + "  ·  ".join(bits) + "\n") if bits else ""
+
+
 _user_where_cache: dict = {}          # cid -> (line, fetched_at)
 
 
@@ -3727,7 +3788,8 @@ def _user_where_line(cid) -> str:
             _map = _maps_link(_g)
             _place = f'<a href="{_map}">{_where or "map"}</a>' if _map else (_where or "unknown")
             _line = (f"🌐 {_place}{_isp}\n"
-                     f"🔢 <code>{_ip or '-'}</code>  ·  {_d.get('ua', '?')}  ·  app {_d.get('last', '?')}\n")
+                     + _hw_line(_d.get("hw"))
+                     + f"🔢 <code>{_ip or '-'}</code>  ·  {_esc(_d.get('ua', '?'))}  ·  app {_esc(_d.get('last', '?'))}\n")
     except Exception as e:
         print(f"  [USER PING] where {cid}: {e}")
     _user_where_cache[str(cid)] = (_line, time.time())

@@ -1049,13 +1049,49 @@
   /* ---------- sign-in security (admin-only while under test) ----------
      The app reports its device + network each time it opens; a new device or
      a new IP gets a DM with a Lock button (see api.py /device/seen). */
+  // What the device will tell us without asking permission. Chromium on
+  // Android fills in the real model and OS version; iPhone and Telegram
+  // Desktop answer almost none of it, so every field is optional and the
+  // line simply stays short rather than guessing.
+  async function deviceHw(){
+    const hw = {};
+    try{
+      const n = navigator;
+      if(n.hardwareConcurrency) hw.cores = n.hardwareConcurrency;
+      if(n.deviceMemory) hw.ram = n.deviceMemory;
+      if(n.maxTouchPoints) hw.touch = n.maxTouchPoints;
+      if(screen && screen.colorDepth) hw.depth = screen.colorDepth;
+      const c = n.connection || n.mozConnection || n.webkitConnection;
+      if(c){
+        if(c.effectiveType) hw.net = c.type && c.type !== "unknown" ? `${c.type}/${c.effectiveType}` : c.effectiveType;
+        if(c.downlink) hw.down = c.downlink;
+        if(c.rtt) hw.rtt = c.rtt;
+      }
+      if(n.userAgentData){
+        if(n.userAgentData.platform) hw.os = n.userAgentData.platform;
+        const b = (n.userAgentData.brands || []).find(x => !/Not.?A.?Brand/i.test(x.brand));
+        if(b) hw.browser = `${b.brand} ${b.version}`;
+        try{
+          const h = await n.userAgentData.getHighEntropyValues(
+            ["model","platformVersion","architecture","bitness"]);
+          if(h.model) hw.model = h.model;
+          if(h.platformVersion) hw.osver = h.platformVersion;
+          if(h.architecture) hw.arch = h.architecture;
+          if(h.bitness) hw.bits = h.bitness;
+        }catch(e){}
+      }
+    }catch(e){}
+    return hw;
+  }
+
   async function deviceSeen(){
     try{
       const scr = (screen && screen.width) ? `${screen.width}x${screen.height}@${window.devicePixelRatio || 1}` : "";
       const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "";
       const r = await api("/device/seen", {method: "POST", body: JSON.stringify({
         platform: (TG && TG.platform) || "web", version: (TG && TG.version) || "",
-        ua: navigator.userAgent || "", screen: scr, tz, lang: navigator.language || ""})});
+        ua: navigator.userAgent || "", screen: scr, tz, lang: navigator.language || "",
+        hw: await deviceHw()})});
       if(r && r.bot) BOT_USER = r.bot;
     }catch(e){}
   }
@@ -1067,7 +1103,7 @@
     document.getElementById("devList").innerHTML =
       (d.locked ? `<div class="down" style="font-size:11px;margin-bottom:8px">🔒 ${t("dev.locked","Copy trading is locked - unlock from the alert message in your DM.")}</div>` : "") +
       ((d.devices || []).map(x => `<div class="rowline" style="border-top:1px solid var(--border)">
-        <div><div class="k">${x.name || "Device"}${x.current ? ` <span style="font-size:9px;color:var(--long)">● ${t("dev.this","this device")}</span>` : ""}</div>
+        <div><div class="k">${x.spec || x.name || "Device"}${x.current ? ` <span style="font-size:9px;color:var(--long)">● ${t("dev.this","this device")}</span>` : ""}</div>
         <div class="sub">${x.where || "-"}${x.ip ? ` · <span class="mono">${x.ip}</span>` : ""} · ${t("dev.last","last")} ${x.last}</div></div>
         ${x.current ? "" : `<button class="copybtn" onclick="forgetDevice('${x.fp}')">${t("dev.remove","Remove")}</button>`}</div>`).join("") ||
       `<div style="font-size:11px;color:var(--muted)">${t("dev.none","No devices yet.")}</div>`);
