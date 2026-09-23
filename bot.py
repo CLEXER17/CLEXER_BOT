@@ -5004,6 +5004,43 @@ def _boki_exec_ct_toggle(cid, sender_id, value):
     send_reply(cid, f"{'✅' if _val else '❌'} <b>{_label}</b> — {'ON' if _val else 'OFF'}.", skip_smallcaps=True)
     return None
 
+def _boki_exec_signal_source(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    if v in ("engine", "python", "local"):
+        return _boki_run(cid, sender_id, "/switch engine")
+    if v in ("ai", "claude", "clex", "model"):
+        return _boki_run(cid, sender_id, "/switch ai")
+    return "AI or engine? This switch is global - it covers Scan1, Scan2, TS1 and TS2 together, not one time slot."
+
+
+def _boki_exec_btc_engine(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    if v in ("classic", "intraday"):
+        return _boki_run(cid, sender_id, f"/btcengine {v}")
+    return "Classic (the 4H scan) or intraday (the pullback slot)?"
+
+
+def _boki_exec_ban_coin(cid, sender_id, value):
+    _c = " ".join(_ban_key(w) for w in (value or "").split() if _ban_key(w))
+    if not _c:
+        return "Which coin should the scanners stop picking?"
+    return _boki_run(cid, sender_id, f"/ban {_c}")
+
+
+def _boki_exec_unban_coin(cid, sender_id, value):
+    _c = " ".join(_ban_key(w) for w in (value or "").split() if _ban_key(w))
+    if not _c:
+        return "Which coin should the scanners be allowed to pick again?"
+    return _boki_run(cid, sender_id, f"/unban {_c}")
+
+
+def _boki_exec_mute_recap(cid, sender_id, value):
+    v = (value or "").strip().lower()
+    if v in ("daily", "weekly", "monthly") or re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return _boki_run(cid, sender_id, f"/norecap {v}")
+    return "Which recap - daily, weekly or monthly? (Or a date like 2026-09-18 for one day.)"
+
+
 def _boki_exec_adminlinks(cid, sender_id, value):
     global CONTACT_ADMIN_ENABLED, SIGNAL_CHANNEL_ENABLED
     parts = (value or "").split()
@@ -5109,6 +5146,11 @@ _ADMIN_ACTIONS = {
     "ct_toggle": {"desc": ("Turn a copytrade type's mirroring on or off — whether FUTURE signals of that type get copied into users' exchange accounts (separate from whether the scan itself runs, doesn't touch open positions). "
                             "value normalized to \"<type> <on|off>\" where type is btc/scan1/scan2/test1/test2 (ts1/ts2/demo1/demo2 all mean test1/test2), \"orphan\" (adopt a user's self-opened position into monitoring), "
                             "or \"sltp\" (global auto SL/TP management master switch)."), "exec": _boki_exec_ct_toggle},
+    "signal_source": {"desc": "Switch how Scan1/Scan2/TS1/TS2 produce a signal - the AI call or the local Python engine (/switch). This is ONE global switch covering all four; it cannot be set per time slot or per verified/unverified category. value: \"ai\" or \"engine\".", "exec": _boki_exec_signal_source},
+    "btc_engine": {"desc": "Pick which engine trades BTC (/btcengine). value: \"classic\" (the 4H scan) or \"intraday\" (the pullback slot).", "exec": _boki_exec_btc_engine},
+    "ban_coin": {"desc": "Stop every scanner from ever picking one or more coins for a trade (/ban). An open trade on the coin still finishes. value: the coin symbols, space separated, e.g. \"ARB\" or \"ARB AKE BR\".", "exec": _boki_exec_ban_coin},
+    "unban_coin": {"desc": "Let the scanners pick a banned coin again (/unban). value: the coin symbols, space separated.", "exec": _boki_exec_unban_coin},
+    "mute_recap": {"desc": "Stop the next automatic recap from being POSTED to the channels (/norecap). Covers one period and then clears itself; nothing is deleted and the admin can still read it with /daily /weekly /monthly. value: \"daily\", \"weekly\", \"monthly\", or a date like \"2026-09-18\" for one specific day.", "exec": _boki_exec_mute_recap},
     "adminlinks_toggle": {"desc": "Turn a user-facing help-menu button on or off. value normalized to \"<contact|signal> <on|off>\" — \"contact\" is the Contact Admin button, \"signal\" is the Signal Channel button.", "exec": _boki_exec_adminlinks},
 }
 
@@ -5295,6 +5337,272 @@ _KNOWLEDGE_BASE = {
         "Direct then Google. BOKI does the same but skips Direct entirely (free options only).\n\n"
     ),
 }
+
+# ── What Boki can LOOK UP ────────────────────────────────────────────────
+# The action catalog above changes things. These read nothing but the bot's
+# own live state and return plain data, so Boki can answer a question from
+# the real numbers instead of describing what it would do.
+
+def _boki_read_recap(period: str = "month", which: str = "current", limit: int = 40) -> dict:
+    """Per-symbol recap rows plus the period's totals. period: day/week/month,
+    which: current/last."""
+    _today = now_ist().date()
+    if period == "day":
+        _d = _today - timedelta(days=1) if which == "last" else _today
+        _dates, _label = [_d.strftime("%Y-%m-%d")], _d.strftime("%Y-%m-%d")
+    else:
+        _dates, _label, _ = _recap_period("w" if period == "week" else "m",
+                                           "last" if which == "last" else "")
+    _rows = _gather_period_trades(_dates)
+    if not _rows:
+        return {"period": _label, "trades": 0, "note": "nothing has closed in this period yet"}
+    _syms = _recap_by_symbol(_rows)
+    _out = []
+    for _sym, _d2 in _syms[:max(1, min(int(limit or 40), 120))]:
+        _dec = _d2["w"] + _d2["l"]
+        _out.append({"symbol": _sym, "trades": _d2["n"], "wins": _d2["w"], "losses": _d2["l"],
+                     "win_rate_pct": round(100.0 * _d2["w"] / _dec, 1) if _dec else None,
+                     "pnl_pct": round(_d2["pnl"], 2)})
+    _by_res = {}
+    for _t in _rows:
+        _r = _t.get("result")
+        _p = _recap_pnl(_t)
+        _e = _by_res.setdefault(_r, {"n": 0, "pnl": 0.0, "no_pct": 0})
+        _e["n"] += 1
+        if _p is None:
+            _e["no_pct"] += 1
+        else:
+            _e["pnl"] = round(_e["pnl"] + _p, 2)
+    _w = sum(1 for _t in _rows if _recap_outcome(_t) == "win")
+    _l = sum(1 for _t in _rows if _recap_outcome(_t) == "loss")
+    return {"period": _label, "trades": len(_rows), "symbols_total": len(_syms),
+            "symbols": _out, "by_result": _by_res,
+            "net_pnl_pct": round(sum(v["pnl"] for v in _by_res.values()), 2),
+            "win_rate_pct": round(100.0 * _w / (_w + _l), 1) if (_w + _l) else None,
+            "note": "pnl_pct is the sum of each trade's own percentage move, not an account return. "
+                    "A TIMEOUT counts as a win when it closed in profit and a loss when it closed down; "
+                    "a trade with no recorded percentage counts as neither."}
+
+
+def _boki_read_active_trades() -> dict:
+    """Every position the bot currently holds, across all engines."""
+    _out = {"btc": None, "scan1": [], "scan2": [], "ts1": [], "ts2": [], "intraday": []}
+    if active_trade.get("signal"):
+        _out["btc"] = {"side": active_trade.get("signal"), "entry": active_trade.get("entry"),
+                       "sl": active_trade.get("sl"), "tp1": active_trade.get("tp1"),
+                       "tp2": active_trade.get("tp2"), "entry_hit": active_trade.get("entry_hit"),
+                       "tp1_hit": active_trade.get("tp1_hit")}
+    for _k, _lst in (("scan1", scan1_trades), ("scan2", scan2_trades),
+                     ("ts1", demo_scan1_trades), ("ts2", demo_scan2_trades)):
+        for _t in list(_lst):
+            _out[_k].append({"symbol": _t.get("symbol"), "side": _t.get("signal") or _t.get("direction"),
+                             "entry": _t.get("entry"), "sl": _t.get("sl"), "tp1": _t.get("tp1"),
+                             "tp2": _t.get("tp2"), "tp1_hit": bool(_t.get("tp1_hit"))})
+    for _t in list(_intraday_trades):
+        _sp = _intra_spec(_t.get("kind")) or {}
+        _out["intraday"].append({"slot": _t.get("kind"), "symbol": _sp.get("symbol"),
+                                 "side": _t.get("signal"), "entry": _t.get("entry"),
+                                 "entry_hit": bool(_t.get("entry_hit"))})
+    _out["total_open"] = (1 if _out["btc"] else 0) + sum(len(_out[k]) for k in ("scan1", "scan2", "ts1", "ts2", "intraday"))
+    return _out
+
+
+def _boki_all_commands() -> list:
+    """(command, title, description) for every command in the /cmd catalogs."""
+    _seen, _out = set(), []
+    for _cat in (_CMD_ONLY_CATS, _COPYUSER_SUBCATS, _SCAN_SUBCATS, _TRADECONTROL_SUBCATS,
+                 _COPYADMIN_SUBCATS, _TV_SUBCATS, _SETTINGS_SUBCATS, _BROADCAST_SUBCATS,
+                 _MONITOR_SUBCATS):
+        for _v in _cat.values():
+            _entries = _v[-1] if isinstance(_v, tuple) else None
+            if not isinstance(_entries, list):
+                continue
+            for _e in _entries:
+                if len(_e) >= 4 and _e[0] not in _seen:
+                    _seen.add(_e[0])
+                    _out.append((_e[0], _e[2], _e[3]))
+    return _out
+
+
+def _boki_read_commands(query: str = "", limit: int = 12) -> dict:
+    """Search the command catalog - what a command is called and what it does."""
+    _q = (query or "").strip().lower().lstrip("/")
+    _all = _boki_all_commands()
+    if not _q:
+        return {"total": len(_all), "commands": [{"command": c, "title": t} for c, t, _ in _all[:60]]}
+    _hits = []
+    for _c, _t, _d in _all:
+        _score = 0
+        if _q == _c.lstrip("/"):            _score = 100
+        elif _q in _c.lstrip("/"):          _score = 60
+        if _q in _t.lower():                _score = max(_score, 40)
+        for _w in _q.split():
+            if _w and _w in (_t + " " + _d).lower():
+                _score += 8
+        if _score:
+            _hits.append((_score, _c, _t, _d))
+    _hits.sort(key=lambda x: -x[0])
+    return {"query": query, "matches": [{"command": c, "title": t, "what_it_does": d}
+                                         for _, c, t, d in _hits[:max(1, min(int(limit or 12), 25))]]}
+
+
+def _boki_read_settings() -> dict:
+    """The live switches, as they stand right now."""
+    return {"signal_source": SIGNAL_ENGINE_MODE, "btc_engine": BTC_ENGINE,
+            "scan1_auto": SCAN1_AUTO_ENABLED, "scan2_auto": SCAN2_AUTO_ENABLED,
+            "demo_scan_auto": TEST_SCAN_ENABLED, "btc_analysis": btc_analysis_enabled,
+            "verified_auto_scans": VERIFIED_SPECIAL_ENABLED,
+            "unverified_auto_scans": UNVERIFIED_SPECIAL_ENABLED,
+            "regular_grid_auto_scans": NONSPECIAL_SCAN_ENABLED,
+            "scan_model": SCAN_MODEL, "scan_gateway": "aerolink" if USE_AEROLINK else "direct",
+            "chat_model": CHAT_MODEL, "chat_gateway": "aerolink" if CHAT_USE_AEROLINK else "direct",
+            "banned_coins": sorted(_banned_coins),
+            "muted_recaps": {k: sorted(v) for k, v in _recap_skip.items() if v},
+            "free_signal_daily_limit": FREE_SIGNAL_DAILY_LIMIT, "vip_monthly_price": VIP_MONTHLY_PRICE,
+            "bot_paused": bot_paused.is_set(), "active_server": get_active_server_name() if CLEXER_API_URL else SERVER_NAME}
+
+
+_BOKI_READ_TOOLS = {
+    "read_recap": {
+        "desc": ("Per-symbol results and the totals for a recap period - how many trades each coin had, "
+                 "its wins, losses, win rate and summed percentage. Use this for any question about which "
+                 "coins performed well or badly, win rates, or what a daily/weekly/monthly recap says."),
+        "schema": {"period": {"type": "string", "enum": ["day", "week", "month"],
+                              "description": "day = today, week = this week from Monday, month = this month from the 1st"},
+                   "which": {"type": "string", "enum": ["current", "last"],
+                             "description": "current (the period running now) or last (the one before it)"},
+                   "limit": {"type": "integer", "description": "how many symbols to return, busiest first (default 40, max 120)"}},
+        "required": ["period"], "fn": _boki_read_recap},
+    "read_active_trades": {
+        "desc": "Every position the bot is holding right now - BTC, Scan1, Scan2, TS1, TS2 and the intraday slots.",
+        "schema": {}, "required": [], "fn": _boki_read_active_trades},
+    "read_commands": {
+        "desc": ("Search the bot's own command list. Use this whenever the admin asks what a command is "
+                 "called, which command does something, or how to do something by command."),
+        "schema": {"query": {"type": "string", "description": "words to search for, e.g. \"win rate\" or \"ban\""},
+                   "limit": {"type": "integer", "description": "how many matches (default 12, max 25)"}},
+        "required": [], "fn": _boki_read_commands},
+    "read_settings": {
+        "desc": "The live switches as they stand right now - signal source, engines, auto-scan toggles, models, gateways, banned coins, muted recaps.",
+        "schema": {}, "required": [], "fn": _boki_read_settings},
+}
+
+
+# ── The agent loop ───────────────────────────────────────────────────────
+# Boki used to be one classifier call that picked AT MOST ONE action and
+# then stopped (admin 2026-09-23: "can we do it work like LLM or AI ...
+# same like our Claude Code chat"). It now runs a real tool loop instead:
+# every action in _ADMIN_ACTIONS and every lookup in _BOKI_READ_TOOLS is a
+# tool, so one message can read the recap, compare the numbers and then
+# change two settings, and Boki writes the answer from what it actually
+# read rather than from what it remembers.
+_BOKI_MAX_STEPS = 8
+
+
+def _boki_tool_specs() -> list:
+    """The whole catalog as Anthropic tool definitions."""
+    _tools = []
+    for _aid, _info in _ADMIN_ACTIONS.items():
+        _tools.append({
+            "name": f"do_{_aid}",
+            "description": ("CHANGES SOMETHING LIVE. " + _info["desc"]
+                            + (" This one asks the admin for a Yes/Cancel confirmation first."
+                               if _aid in _ADMIN_RISKY_ACTIONS else "")),
+            "input_schema": {"type": "object", "required": ["value"], "properties": {
+                "value": {"type": "string", "description": "the value string this action expects, as described above"}}}})
+    for _tid, _info in _BOKI_READ_TOOLS.items():
+        _tools.append({"name": _tid, "description": "READ ONLY, changes nothing. " + _info["desc"],
+                       "input_schema": {"type": "object", "required": list(_info["required"]),
+                                        "properties": {k: v for k, v in _info["schema"].items()}}})
+    return _tools
+
+
+_BOKI_SYSTEM = (
+    "You are Clex, the admin assistant inside a Telegram trading bot. You are talking to the bot's "
+    "owner in their own chat.\n\n"
+    "You have two kinds of tools. The read_* tools look things up in the bot's live state and change "
+    "nothing - use them freely, and answer from what they return rather than from memory. The do_* "
+    "tools CHANGE THE RUNNING BOT - only call one when the admin has clearly asked for that change.\n\n"
+    "How to work:\n"
+    "- One message may need several tools. Do them all: \"stop the daily and the weekly recap\" is two "
+    "calls, and a question about which coins did best is a read followed by your own comparison.\n"
+    "- Look things up before answering. If you are asked which coins performed best, read the recap "
+    "and rank the real rows; never invent a symbol, a number or a command name.\n"
+    "- A do_* tool sends the admin its own confirmation message. After one runs, keep your own reply to "
+    "a single short line - do not repeat what the confirmation already said.\n"
+    "- If a request is ambiguous, or could mean two different actions, ask one short question instead "
+    "of guessing. Never run a do_* tool on a guess.\n"
+    "- If something is not possible, say so plainly and say what is possible instead.\n\n"
+    "Style: plain language, short. Telegram HTML only - <b>, <code>, <blockquote>. Never <i>, never "
+    "markdown stars, never a table. Call yourself Clex. Never mention which AI model or company is "
+    "behind you."
+)
+
+
+def _boki_run_tool(cid, sender_id, name: str, args: dict) -> str:
+    """Execute one tool call and describe the outcome for the model."""
+    if name in _BOKI_READ_TOOLS:
+        try:
+            _fn = _BOKI_READ_TOOLS[name]["fn"]
+            _kw = {k: v for k, v in (args or {}).items() if k in _BOKI_READ_TOOLS[name]["schema"]}
+            return json.dumps(_fn(**_kw), default=str)[:12000]
+        except Exception as e:
+            return f"that lookup failed: {e}"
+    if not name.startswith("do_") or name[3:] not in _ADMIN_ACTIONS:
+        return "no such tool"
+    _aid = name[3:]
+    _val = str((args or {}).get("value") or "")
+    try:
+        _fn = _ADMIN_ACTIONS[_aid]["exec"]
+        _clarify = _fn(cid, sender_id, _val, _confirmed=False) if _aid in _ADMIN_RISKY_ACTIONS else _fn(cid, sender_id, _val)
+    except Exception as e:
+        print(f"  [BOKI AGENT] {_aid} failed: {e}")
+        return f"that action errored: {e}"
+    if _clarify:
+        return f"NOT done - the action needs this cleared up first: {_clarify}"
+    if _aid in _ADMIN_RISKY_ACTIONS:
+        return "a Yes/Cancel confirmation has been sent to the admin; nothing has happened yet"
+    return "done - the bot has already sent the admin its own confirmation message"
+
+
+def _boki_agent(cid, sender_id, message: str, reply_context: str = "", tag: str = "BOKI") -> bool:
+    """Read, decide, act, answer - repeatedly, until there is an answer to
+    send. Returns False if the loop could not run at all, so the caller can
+    fall back to the old single-action path."""
+    _sid = sender_id if sender_id is not None else cid
+    _msg = _combine_reply_context(message, reply_context)
+    _msgs = [{"role": "user", "content": _msg}]
+    _tools = _boki_tool_specs()
+    _used = []
+    try:
+        _client = _claude_client("chat", force_aerolink=True)
+        for _step in range(_BOKI_MAX_STEPS):
+            _resp = _client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=2000,
+                                             system=_BOKI_SYSTEM, tools=_tools, messages=_msgs)
+            _calls = [b for b in _resp.content if getattr(b, "type", "") == "tool_use"]
+            if not _calls:
+                _txt = _claude_text(_resp) or ""
+                if _txt.strip():
+                    send_reply(cid, _txt.strip(), skip_smallcaps=True)
+                elif not _used:
+                    return False                     # nothing said and nothing done
+                print(f"  [{tag} AGENT] {_step} step(s), tools: {', '.join(_used) or 'none'}")
+                return True
+            _msgs.append({"role": "assistant", "content": [b.model_dump() for b in _resp.content]})
+            _results = []
+            for _b in _calls:
+                _used.append(_b.name)
+                _results.append({"type": "tool_result", "tool_use_id": _b.id,
+                                 "content": _boki_run_tool(cid, _sid, _b.name, _b.input or {})})
+            _msgs.append({"role": "user", "content": _results})
+        # out of steps: say so rather than leaving the admin with silence
+        send_reply(cid, "I ran out of steps on that one. Tell me the single thing you want first and "
+                        "I will do it.", skip_smallcaps=True)
+        return True
+    except Exception as e:
+        print(f"  [{tag} AGENT] {e} - falling back to the single-action path")
+        return bool(_used)     # something already ran; don't let the fallback run it again
+
 
 def _chat_classify_admin_action(own_message: str, reply_context: str):
     """Single unified classifier covering every live admin action Boki/Pechi
@@ -5641,6 +5949,13 @@ def _handle_standalone_trigger(cid, message: str, text_reply_fn, tag: str, reply
             else:
                 send_reply(cid, reply_text or "⚠️ Couldn't generate that image, try rephrasing.", skip_smallcaps=True)
         else:
+            # The agent loop first (2026-09-23): it can read the bot's live
+            # state and run several actions for one message, which the
+            # single-action classifier below never could. It returns False
+            # when it could not run at all, and only then does the older
+            # path take over.
+            if _boki_agent(cid, sender_id, message, reply_context, tag=tag):
+                return
             _ai_message = _combine_reply_context(message, reply_context)
             # PECHI/BOKI are already admin-gated at the dispatcher, so this is
             # always the admin here. ONE combined classify call instead of
