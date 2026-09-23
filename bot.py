@@ -5630,7 +5630,13 @@ _BOKI_MAX_STEPS = 8
 # message of a process pays for the search.
 _BOKI_TOOL_MODELS = ["claude-sonnet-5", "glm-5.2", "kimi-k3", "gpt-5.6",
                      "claude-opus-4-8", "claude-fable-5", "claude-opus-5"]
-_boki_tool_model = {"id": "", "why": {}}
+# PECHI is allowed the paid Direct API where BOKI never is, so when nothing
+# free will run tools it falls through to these rather than to a weaker loop.
+# Sonnet first: reading a recap and setting a toggle does not need Opus, and
+# it is 2.5x cheaper per token.
+_PECHI_PAID_MODELS = ["claude-sonnet-5", "claude-opus-5"]
+_boki_tool_model = {"id": "", "why": {}}          # free gateway
+_pechi_tool_model = {"id": "", "why": {}}         # paid direct
 
 
 def _boki_model_unavailable(e) -> bool:
@@ -5641,28 +5647,41 @@ def _boki_model_unavailable(e) -> bool:
                                  "does not exist", "unknown model", "not found", "permission"))
 
 
-def _boki_tools_create(client, msgs, tools, system):
-    """One tools call, walking the model list until one answers. Returns
-    (response, model_id)."""
-    _order = ([_boki_tool_model["id"]] if _boki_tool_model["id"] else []) + \
-             [m for m in _BOKI_TOOL_MODELS if m != _boki_tool_model["id"]]
+def _boki_try_models(client, models, pin, msgs, tools, system, tag):
+    """Walk one client's model list until a tools call answers. Returns
+    (response, model) or raises the last failure."""
+    _order = ([pin["id"]] if pin["id"] else []) + [m for m in models if m != pin["id"]]
     _last = None
     for _m in _order:
         try:
             _r = client.messages.create(model=_m, max_tokens=2000, system=system,
                                          tools=tools, messages=msgs)
-            if _boki_tool_model["id"] != _m:
-                print(f"  [BOKI AGENT] tools model: {_m}")
-                _boki_tool_model["id"] = _m
+            if pin["id"] != _m:
+                print(f"  [{tag} AGENT] tools model: {_m}")
+                pin["id"] = _m
             return _r, _m
         except Exception as e:
-            _boki_tool_model["why"][_m] = str(e)[:160]
-            if _m == _boki_tool_model["id"]:
-                _boki_tool_model["id"] = ""      # it worked before, it does not now
+            pin["why"][_m] = str(e)[:160]
+            if _m == pin["id"]:
+                pin["id"] = ""                   # it worked before, it does not now
             _last = e
             if not _boki_model_unavailable(e):
                 raise                            # a real fault - do not burn the whole list on it
     raise _last if _last else RuntimeError("no model available")
+
+
+def _boki_tools_create(client, msgs, tools, system, allow_paid=False, tag="BOKI"):
+    """One tools call. The free gateway first, always; then - for PECHI only
+    - the paid Direct API, since nothing free taking tools is the one case
+    where the loop would otherwise be lost."""
+    try:
+        return _boki_try_models(client, _BOKI_TOOL_MODELS, _boki_tool_model, msgs, tools, system, tag)
+    except Exception as e:
+        if not (allow_paid and ANTHROPIC_API_KEY and _boki_model_unavailable(e)):
+            raise
+    print(f"  [{tag} AGENT] nothing free takes tools - using the paid API")
+    return _boki_try_models(_claude_client("chat", use_aerolink=False), _PECHI_PAID_MODELS,
+                            _pechi_tool_model, msgs, tools, system, tag)
 
 
 def _boki_tool_specs() -> list:
@@ -5807,7 +5826,8 @@ def _boki_agent(cid, sender_id, message: str, reply_context: str = "", tag: str 
     try:
         _client = _claude_client("chat", force_aerolink=True)
         for _step in range(_BOKI_MAX_STEPS):
-            _resp, _ = _boki_tools_create(_client, _msgs, _tools, _BOKI_SYSTEM)
+            _resp, _ = _boki_tools_create(_client, _msgs, _tools, _BOKI_SYSTEM,
+                                           allow_paid=(tag == "PECHI"), tag=tag)
             _calls = [b for b in _resp.content if getattr(b, "type", "") == "tool_use"]
             if not _calls:
                 _txt = _claude_text(_resp) or ""
@@ -20126,6 +20146,57 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             _line.append(f"\U0001F4E1 read_active_trades failed: <code>{_html.escape(str(_e))[:200]}</code>")
         send_reply(chat_id, "\U0001F9EA <b>Boki agent check</b>\n\n" + "\n".join(_line), skip_smallcaps=True)
 
+    elif cmd == "/pechitest" and is_scanadmin:
+        # Same probe as /bokitest, plus the paid Direct API - the one thing
+        # Pechi may use and Boki may not.
+        _line = []
+        _ping = [{"name": "ping", "description": "say ping",
+                  "input_schema": {"type": "object", "properties": {}}}]
+        _free_win = ""
+        _line.append("<b>Free gateway</b>")
+        for _m in _BOKI_TOOL_MODELS:
+            _t0 = time.time()
+            try:
+                _r = _claude_client("chat", force_aerolink=True).messages.create(
+                    model=_m, max_tokens=64, tools=_ping,
+                    messages=[{"role": "user", "content": "call the ping tool"}])
+                _tu = any(getattr(b, "type", "") == "tool_use" for b in _r.content)
+                _line.append(f"\u2705 <code>{_m}</code> \u2014 {time.time() - _t0:.1f}s"
+                             + ("  (called the tool)" if _tu else "  (no tool call)"))
+                if not _free_win and _tu:
+                    _free_win = _m
+            except Exception as _e:
+                _line.append(f"\u274c <code>{_m}</code> \u2014 {_html.escape(str(_e))[:100]}")
+        _line.append("")
+        _line.append("<b>Paid Direct API</b>  (Pechi only)")
+        _paid_win = ""
+        if not ANTHROPIC_API_KEY:
+            _line.append("\u2014 no ANTHROPIC_API_KEY set, so this half is off")
+        else:
+            for _m in _PECHI_PAID_MODELS:
+                _t0 = time.time()
+                try:
+                    _r = _claude_client("chat", use_aerolink=False).messages.create(
+                        model=_m, max_tokens=64, tools=_ping,
+                        messages=[{"role": "user", "content": "call the ping tool"}])
+                    _tu = any(getattr(b, "type", "") == "tool_use" for b in _r.content)
+                    _line.append(f"\u2705 <code>{_m}</code> \u2014 {time.time() - _t0:.1f}s"
+                                 + ("  (called the tool)" if _tu else "  (no tool call)"))
+                    if not _paid_win and _tu:
+                        _paid_win = _m
+                except Exception as _e:
+                    _line.append(f"\u274c <code>{_m}</code> \u2014 {_html.escape(str(_e))[:100]}")
+        _line.append("")
+        if _free_win:
+            _line.append(f"\U0001F3AF Pechi uses <b>{_free_win}</b> \u2014 free, nothing is charged.")
+        elif _paid_win:
+            _line.append(f"\U0001F3AF Nothing free takes tools, so Pechi falls through to "
+                         f"<b>{_paid_win}</b> on the paid API. Boki stays on the JSON loop.")
+        else:
+            _line.append("\u26a0 No model took a tool call \u2014 both fall back to the JSON loop.")
+        send_reply(chat_id, "\U0001F9EA <b>Pechi agent check</b>\n\n" + "\n".join(_line),
+                   skip_smallcaps=True)
+
     elif cmd in ("/norecap", "/skiprecap") and is_scanadmin:
         # Mute the next automatic channel recap for a period. No argument
         # opens the panel; an argument toggles one straight away.
@@ -23025,6 +23096,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
+        ("/pechitest", "🧪", "Pechi Agent Check", "The same probe as /bokitest plus the paid Direct API, which Pechi may use and Boki never may. Says which model Pechi ends up on and whether that costs anything."),
         ("/bokitest", "🧪", "Boki Agent Check", "Says which path Boki is taking \u2014 whether the free gateway accepts tool calls or it is using the JSON fallback, how many tools it has, and whether the recap and trade lookups return data. Run it when Boki answers a data question from memory instead of looking it up."),
         ("/norecap",  "🔕", "Mute a Recap Post", "Stop the next automatic recap from being posted to the channels. `/norecap` opens a panel with a mute button for daily, weekly and monthly; `/norecap daily` mutes tonight's straight away; `/norecap 2026-09-18` mutes one specific day. Muting never deletes anything — the trades stay recorded and /daily /weekly /monthly still show them. Each mute covers one period and clears itself once that period passes. (/skiprecap is the same command.)"),
     ]),
