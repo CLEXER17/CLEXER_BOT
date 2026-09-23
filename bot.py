@@ -2218,15 +2218,24 @@ _SCAN_LABEL = {"scan1": "S1", "scan2": "S2", "demo1": "TS1", "demo2": "TS2",
                "btc": "BTC", "intra_btcint": "INTRA", "intra_xaut": "INTRA"}
 
 
-def _scanstats_csv_index():
-    """Every closed row in the trade log, keyed by (COIN, close minute).
+# Which stamp in the log a recap row's own time refers to. This is the
+# whole trick: a trade that hit TP1 and then trailed out is written BE in
+# the log with BOTH a tp1_hit_time and an sl_hit_time, and the recap files
+# it as TP1 carrying the TP1 time - a median 18 minutes, and up to five
+# hours, before the exit. Keying the log by its LAST stamp therefore missed
+# every TP1 win, which is why they all landed in "?" (admin 2026-09-23: 98
+# unmatched rows, 81% of them wins).
+_SS_STAMP = {"TP1": "tp1_hit_time", "TP2": "tp2_hit_time",
+             "SL": "sl_hit_time", "TIMEOUT": "timeout_time"}
 
-    The recap knows what a trade EARNED but not which scan fired it; the CSV
-    knows the scan but not which trades were tier-routed, and its own result
-    labels disagree with the recap's (a row the recap calls TP1 is written
-    BE here, because TP1 hit and the rest trailed out). So the recap stays
-    the source of truth for wins and P&L and the CSV is consulted for one
-    thing only: the scan."""
+
+def _scanstats_csv_index():
+    """The trade log keyed by (COIN, stamp kind, minute) -> scan.
+
+    Every timestamp a row carries is indexed, not just its last, so a recap
+    row is looked up by the same event it recorded. The recap stays the
+    source of truth for wins and P&L; the log is consulted for one thing
+    only, the scan."""
     import csv as _csv
     out = {}
     if not os.path.exists(TRADE_LOG_CSV):
@@ -2234,39 +2243,70 @@ def _scanstats_csv_index():
     try:
         with open(TRADE_LOG_CSV, "r", newline="", encoding="utf-8") as f:
             for r in _csv.DictReader(f):
-                _t = ""
-                for _k in ("timeout_time", "sl_hit_time", "tp2_hit_time", "tp1_hit_time"):
-                    if r.get(_k):
-                        _t = r[_k]
-                        break
-                if not _t or len(_t) < 16:
-                    continue
                 _sym = str(r.get("coin", "")).replace("-USDT", "").replace("USDT", "")
                 _lab = _SCAN_LABEL.get(str(r.get("type", "")))
-                if _sym and _lab:
-                    out.setdefault((_sym, _t[:16]), _lab)
+                if not _sym or not _lab:
+                    continue
+                try:
+                    _e = float(r.get("entry_price") or 0)
+                except (TypeError, ValueError):
+                    _e = 0.0
+                _sgn = 1 if str(r.get("direction", "B")).upper().startswith("B") else -1
+
+                def _mv(_col, _e=_e, _sgn=_sgn, _r=r):
+                    try:
+                        _l = float(_r.get(_col) or 0)
+                    except (TypeError, ValueError):
+                        return None
+                    return (_l - _e) / _e * 100 * _sgn if (_e and _l) else None
+
+                for _res, _col in _SS_STAMP.items():
+                    _t = r.get(_col) or ""
+                    if len(_t) < 16:
+                        continue
+                    # what that event was worth, so a candidate can be checked
+                    # against the recap's own figure rather than trusted on
+                    # the clock alone
+                    _p = ({"TP1": _mv("tp1_price"), "TP2": _mv("tp2_price"),
+                           "SL": _mv("sl_price")}.get(_res))
+                    out.setdefault((_sym, _res, _t[:16]), []).append((_lab, _p))
     except Exception as e:
         print(f"  [SCANSTATS] csv: {e}")
     return out
 
 
-def _scanstats_match(idx, sym: str, date_str: str, tm: str):
-    """The scan that produced one recap row, or ''. A trade is filed under
-    the day it was OPENED, so its close can be on that day or the next -
-    and the two clocks can be a minute apart, so a small window is allowed."""
+def _scanstats_match(idx, sym: str, res: str, date_str: str, tm: str, pnl=None):
+    """The scan that produced one recap row, or ''. Looked up by the event
+    the recap recorded - a TP1 row against the log's TP1 hit, an SL row
+    against its stop. A trade is filed under the day it was OPENED, so its
+    close can be on that day or the next, and the two clocks can be a
+    minute apart, so a small window is allowed."""
+    _res = str(res or "").upper()
+    if _res not in _SS_STAMP:
+        _res = "TIMEOUT" if _res.startswith("TIMEOUT") else _res
     try:
         _h = int(tm[:2]) % 12 + (12 if "PM" in tm.upper() else 0)
         _m = int(tm[3:5])
         _d0 = datetime.strptime(date_str, "%Y-%m-%d")
     except Exception:
         return ""
+    # the row's own event first; then the others, for a recap label the log
+    # happened to record under a different one
+    _kinds = [_res] + [k for k in _SS_STAMP if k != _res]
+    _fallback = ""
     for _day in (_d0, _d0 + timedelta(days=1)):
         for _off in (0, 1, -1, 2, -2):
-            _try = _day.replace(hour=_h, minute=_m) + timedelta(minutes=_off)
-            _hit = idx.get((sym, _try.strftime("%Y-%m-%d %H:%M")))
-            if _hit:
-                return _hit
-    return ""
+            _try = (_day.replace(hour=_h, minute=_m) + timedelta(minutes=_off)).strftime("%Y-%m-%d %H:%M")
+            for _k in _kinds:
+                for _lab, _p in idx.get((sym, _k, _try)) or ():
+                    # Two trades on one coin can close in the same minute on
+                    # different scans, so the percentage decides: the recap's
+                    # own figure came from this row's levels, and only the
+                    # right row reproduces it.
+                    if pnl is not None and _p is not None and abs(_p - pnl) <= 0.05:
+                        return _lab
+                    _fallback = _fallback or _lab
+    return _fallback
 
 
 def _scanstats(dates: list):
@@ -2283,11 +2323,12 @@ def _scanstats(dates: list):
                 continue
             _n += 1
             _sym = str(_t.get("symbol", "")).replace("-USDT", "").replace("USDT", "")
-            _lab = _scanstats_match(_idx, _sym, _d, str(_t.get("time", ""))) or "?"
+            _p = _recap_pnl(_t)
+            _lab = _scanstats_match(_idx, _sym, str(_t.get("result", "")), _d,
+                                     str(_t.get("time", "")), _p) or "?"
             if _lab != "?":
                 _matched += 1
             _o = _recap_outcome(_t)
-            _p = _recap_pnl(_t)
             for _tgt, _key in ((_by_scan, _lab), (_by_coin, (_sym, _lab))):
                 _e = _tgt.setdefault(_key, {"w": 0, "l": 0, "f": 0, "pnl": 0.0, "nopct": 0})
                 _e["w" if _o == "win" else "l" if _o == "loss" else "f"] += 1
