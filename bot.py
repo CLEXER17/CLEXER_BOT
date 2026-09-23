@@ -4407,6 +4407,30 @@ def _chat_call_openai_shape(history: list, model_id: str, extra_system: str = ""
         raise Exception("Empty choices in OpenAI-shape response")
     return choices[0].get("message", {}).get("content", "") or "…"
 
+# Which model does which job. The trading calls already had this through
+# /aiconfig; the helper jobs never did - they all ran on the router's Opus 5,
+# including classifiers capped at 20 output tokens (admin 2026-09-23: "divide
+# models in different field for different task so it use right model for
+# right task"). A short label-picking job does not need the most expensive
+# model, and the saving is real: Haiku is a fifth of Opus on input.
+#
+# Anything trade-affecting stays on a strong model on purpose. The line is
+# not price, it is blast radius: pick a wrong label and the worst case is a
+# re-ask; pick a wrong entry and it costs money.
+_TASK_MODEL_JOBS = {
+    "route":    ("Pick the best model for a message", "claude-haiku-4-5"),
+    "classify": ("Read a message for intent, topics and admin actions", "claude-sonnet-5"),
+    "trade_q":  ("Decide whether a message is asking about a trade", "claude-haiku-4-5"),
+    "agent":    ("Boki and Pechi's tool loop", ""),          # "" = use its own model list
+}
+_TASK_MODELS = {k: v[1] for k, v in _TASK_MODEL_JOBS.items()}
+
+
+def _task_model(job: str) -> str:
+    """The model for one helper job, or the router default if unset."""
+    return _TASK_MODELS.get(job) or _CHAT_ROUTER_MODEL
+
+
 _CHAT_ROUTER_MODEL = "claude-opus-5"   # classifier for admin-action/trade-question/
 # knowledge-topic/model routing (_chat_classify_combined) — via Aerolink, not
 # Gemini, so per-message routing calls don't eat into Gemini's tiny 20-requests/day
@@ -4436,7 +4460,7 @@ def _chat_classify_model(message: str) -> str:
     )
     try:
         client = _claude_client("chat", force_aerolink=True)   # _CHAT_ROUTER_MODEL is non-Claude
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=20,
+        resp = client.messages.create(model=_task_model("route"), max_tokens=20,
                                        messages=[{"role": "user", "content": _prompt}])
         _picked = (_claude_text(resp) or "").strip().split()[0].strip(".,:;\"'`").lower()
         if _picked == "google" or (_picked in _AEROLINK_MODEL_CATALOG and _AEROLINK_MODEL_CATALOG[_picked]["kind"] == "text"):
@@ -4573,7 +4597,7 @@ def _chat_classify_trade_intent(own_message: str, reply_context: str):
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=180,
+        resp = client.messages.create(model=_task_model("trade_q"), max_tokens=180,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
@@ -5690,6 +5714,12 @@ def _boki_try_models(client, models, pin, msgs, tools, system, tag):
     raise _last if _last else RuntimeError("no model available")
 
 
+def _boki_model_list(default_list):
+    """An explicitly chosen agent model wins; otherwise the search list."""
+    _m = _TASK_MODELS.get("agent")
+    return [_m] + [x for x in default_list if x != _m] if _m else default_list
+
+
 def _boki_tools_create(client, msgs, tools, system, allow_paid=False, tag="BOKI"):
     """One tools call.
 
@@ -5703,11 +5733,13 @@ def _boki_tools_create(client, msgs, tools, system, allow_paid=False, tag="BOKI"
     when nothing free takes a tool call the JSON loop picks it up."""
     if allow_paid and ANTHROPIC_API_KEY:
         try:
-            return _boki_try_models(_claude_client("chat", use_aerolink=False), _PECHI_PAID_MODELS,
+            return _boki_try_models(_claude_client("chat", use_aerolink=False),
+                                    _boki_model_list(_PECHI_PAID_MODELS),
                                     _pechi_tool_model, msgs, tools, system, tag)
         except Exception as e:
             print(f"  [{tag} AGENT] paid API unavailable ({str(e)[:120]}) - trying the free gateway")
-    return _boki_try_models(client, _BOKI_TOOL_MODELS, _boki_tool_model, msgs, tools, system, tag)
+    return _boki_try_models(client, _boki_model_list(_BOKI_TOOL_MODELS),
+                            _boki_tool_model, msgs, tools, system, tag)
 
 
 def _boki_tool_specs() -> list:
@@ -5919,7 +5951,7 @@ def _chat_classify_admin_action(own_message: str, reply_context: str):
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=200,
+        resp = client.messages.create(model=_task_model("classify"), max_tokens=200,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
@@ -6093,7 +6125,7 @@ def _chat_classify_combined(own_message: str, reply_context: str, is_admin: bool
     )
     try:
         client = _claude_client("chat", force_aerolink=True)
-        resp = client.messages.create(model=_CHAT_ROUTER_MODEL, max_tokens=400,
+        resp = client.messages.create(model=_task_model("classify"), max_tokens=400,
                                        messages=[{"role": "user", "content": _prompt}])
         _raw = _claude_text(resp) or ""
         _m = re.search(r'\{.*\}', _raw, re.DOTALL)
@@ -20135,6 +20167,35 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, "Not banned: " + " ".join(f"<code>{c}</code>" for c in _syms) +
                            ". <code>/banlist</code> shows the current list.", skip_smallcaps=True)
 
+    elif cmd in ("/taskmodel", "/tm") and is_scanadmin:
+        # Which model does which helper job. The trading calls have their own
+        # screen (/aiconfig); this is everything else.
+        _jobs = list(_TASK_MODEL_JOBS.items())
+        if len(parts) >= 3 and parts[1].lower() in _TASK_MODEL_JOBS:
+            _job = parts[1].lower()
+            _want = parts[2].lower()
+            _pick = {"haiku": "claude-haiku-4-5", "sonnet": "claude-sonnet-5",
+                     "opus": "claude-opus-5", "fable": "claude-fable-5",
+                     "auto": "", "default": "", "-": ""}.get(_want, _want)
+            _TASK_MODELS[_job] = _pick
+            save_settings()
+            send_reply(chat_id, f"\u2705 <b>{_job}</b> \u2192 <b>{_pick or 'the default search order'}</b>",
+                       skip_smallcaps=True)
+            return
+        _l = ["\U0001F9E0 <b>Model per job</b>", ""]
+        for _j, (_what, _dflt) in _jobs:
+            _now = _TASK_MODELS.get(_j) or ""
+            _l.append(f"\u2022 <code>{_j}</code> \u2014 {_what}")
+            _l.append(f"   <b>{_now or 'its own search order'}</b>"
+                      + ("" if _now == _dflt else f"  (default {_dflt or 'search order'})"))
+        _l += ["", "<blockquote>Trading calls are not here - they have their own screen, "
+                   "<code>/aiconfig</code>. These are the helper jobs around them.\n\n"
+                   "<code>/taskmodel classify haiku</code>\n"
+                   "<code>/taskmodel agent sonnet</code>\n"
+                   "<code>/taskmodel route default</code>\n\n"
+                   "Short names: haiku, sonnet, opus, fable - or a full model id.</blockquote>"]
+        send_reply(chat_id, "\n".join(_l), skip_smallcaps=True)
+
     elif cmd == "/bokitest" and is_scanadmin:
         # Says which path Boki is actually taking, so "it answered from
         # memory" can be diagnosed instead of guessed at.
@@ -20942,6 +21003,26 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                     f"{total_tok:,} tokens  <b>${d['cost']:.4f}</b>")
                 total_cost += d["cost"]
             lines.append(f"\n<b>Total (shown): ${total_cost:.4f}</b>")
+            # Per-feature, over the same window - a daily total says the bill
+            # is high, this says which job is spending it.
+            _recent = set(sorted(daily.keys())[-14:])
+            _feat = defaultdict(lambda: {"calls": 0, "cost": 0.0, "tok": 0})
+            for r in rows:
+                if r.get("date") not in _recent:
+                    continue
+                _ct = str(r.get("call_type", "?"))
+                # scan1_ARB, coin_ETH, demo2_SOL ... all collapse to their job
+                _k = _ct.split("_")[0] if "_" in _ct else _ct
+                _e = _feat[_k]
+                _e["calls"] += 1
+                _e["cost"] += float(r.get("cost_usd", 0) or 0)
+                _e["tok"] += int(r.get("input_tokens", 0) or 0) + int(r.get("output_tokens", 0) or 0)
+            if _feat:
+                _tot = sum(v["cost"] for v in _feat.values()) or 1.0
+                lines.append("\n<b>By job</b>  (same 14 days)")
+                for _k, _v in sorted(_feat.items(), key=lambda kv: -kv[1]["cost"])[:10]:
+                    lines.append(f"  {_k}  \u2014  {_v['calls']} calls  "
+                                 f"<b>${_v['cost']:.4f}</b>  ({_v['cost'] / _tot * 100:.0f}%)")
             _help_edit_or_send(chat_id,
                 "\n".join(lines) + "\n\n📅 <b>Select a year:</b>",
                 _dnav_years_mkp("report"), rotate=False)
@@ -23129,6 +23210,7 @@ _SETTINGS_SUBCATS = {
         ("/daily",    "📊", "Today's Recap",     "Today's recap table so far — closed trades only, same table as the midnight post, sent to you here; the channels never see it. `/daily yesterday` or `/daily 2026-09-18` for another day."),
         ("/weekly",   "📊", "This Week's Recap", "Monday to now, same table as the Monday post. `/weekly last` for the previous week."),
         ("/monthly",  "📊", "This Month's Recap","The 1st to now, same table as the month-end post. `/monthly last` for the previous month."),
+        ("/taskmodel", "🧠", "Model Per Job", "Which model each helper job uses - message routing, intent classification, and Boki/Pechi's tool loop. A job that picks a short label does not need the most expensive model. Trading calls are not here; they have /aiconfig. `/taskmodel classify haiku`, `/taskmodel agent sonnet`, `/taskmodel route default`. (/tm is the same command.)"),
         ("/pechitest", "🧪", "Pechi Agent Check", "The same probe as /bokitest plus the paid Direct API. Pechi calls the paid API FIRST for tool work and falls back to the free gateway; Boki never touches it. Says which model each ends up on and what is being billed."),
         ("/bokitest", "🧪", "Boki Agent Check", "Says which path Boki is taking \u2014 whether the free gateway accepts tool calls or it is using the JSON fallback, how many tools it has, and whether the recap and trade lookups return data. Run it when Boki answers a data question from memory instead of looking it up."),
         ("/norecap",  "🔕", "Mute a Recap Post", "Stop the next automatic recap from being posted to the channels. `/norecap` opens a panel with a mute button for daily, weekly and monthly; `/norecap daily` mutes tonight's straight away; `/norecap 2026-09-18` mutes one specific day. Muting never deletes anything — the trades stay recorded and /daily /weekly /monthly still show them. Each mute covers one period and clears itself once that period passes. (/skiprecap is the same command.)"),
