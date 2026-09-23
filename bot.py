@@ -5649,9 +5649,21 @@ def _boki_model_unavailable(e) -> bool:
                                  "does not exist", "unknown model", "not found", "permission"))
 
 
+def _boki_cached_system(system):
+    """The system prompt with a cache breakpoint on it.
+
+    Caching is a prefix match and the render order is tools -> system ->
+    messages, so one breakpoint here covers the whole tool catalog as well
+    - and that catalog is the expensive part: ~50 definitions, byte for
+    byte identical on every call and on every step of a loop. A cache read
+    is about a tenth of the price of sending it again."""
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
 def _boki_try_models(client, models, pin, msgs, tools, system, tag):
     """Walk one client's model list until a tools call answers. Returns
     (response, model) or raises the last failure."""
+    system = _boki_cached_system(system)
     _order = ([pin["id"]] if pin["id"] else []) + [m for m in models if m != pin["id"]]
     _last = None
     for _m in _order:
@@ -5661,6 +5673,12 @@ def _boki_try_models(client, models, pin, msgs, tools, system, tag):
             if pin["id"] != _m:
                 print(f"  [{tag} AGENT] tools model: {_m}")
                 pin["id"] = _m
+            _u = getattr(_r, "usage", None)
+            if _u is not None:
+                print(f"  [{tag} AGENT] tokens in={getattr(_u, 'input_tokens', '?')} "
+                      f"cache_write={getattr(_u, 'cache_creation_input_tokens', 0)} "
+                      f"cache_read={getattr(_u, 'cache_read_input_tokens', 0)} "
+                      f"out={getattr(_u, 'output_tokens', '?')}")
             return _r, _m
         except Exception as e:
             pin["why"][_m] = str(e)[:160]
