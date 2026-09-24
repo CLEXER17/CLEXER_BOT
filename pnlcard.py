@@ -74,8 +74,9 @@ def _background():
 
 
 def _chart(d, entry: float, close: float, side: str, seed: int):
-    """A small price path from the open to the close. Candles that move the
-    trade's way are green - down candles on a SHORT are its profit."""
+    """A small price path from the open to the close, in market colours: a
+    rising candle green, a falling one red - so a SHORT's chart runs red
+    (admin 2026-09-24)."""
     rnd = random.Random(seed)
     x0, x1, y_top, y_bot = 740, 1215, 260, 880
     n = 20
@@ -95,8 +96,7 @@ def _chart(d, entry: float, close: float, side: str, seed: int):
     prev = entry
     for i, c in enumerate(path):
         o = prev
-        good = (c >= o) if side == "BUY" else (c <= o)
-        col = GREEN if good else (235, 80, 95)
+        col = GREEN if c >= o else (235, 80, 95)
         wick = (hi - lo) * rnd.uniform(0.01, 0.05)
         cx = x0 + i * cw + cw / 2
         d.line((cx, py(max(o, c) + wick), cx, py(min(o, c) - wick)), fill=col, width=3)
