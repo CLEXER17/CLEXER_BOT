@@ -17027,16 +17027,21 @@ def _elite_close(t: dict, result: str, price: float, pnl=None):
     coin = t["symbol"].replace("-USDT", "")
     if pnl is None:
         try:
-            lvl = {"TP1": t["tp1"], "TP2": t["tp2"], "SL": t["sl"], "BE": t["entry"]}.get(result)
-            pnl = (float(lvl) - t["entry"]) / t["entry"] * 100 * (1 if t["signal"] == "BUY" else -1) if lvl else None
+            # A BE only comes after TP1, and TP1 already banked the profit -
+            # read at the entry it always printed -0.00% (admin 2026-09-24).
+            # It shows the banked TP1 now, the same figure its card shows.
+            _be = t["tp1"] if t.get("tp1_hit") else t["entry"]
+            lvl = {"TP1": t["tp1"], "TP2": t["tp2"], "SL": t["sl"], "BE": _be}.get(result)
+            pnl = (float(lvl) - t["entry"]) / t["entry"] * 100 * (1 if t["signal"] == "BUY" else -1) + 0.0 if lvl else None
         except Exception:
             pnl = None
+    _pnl_note = " (TP1 banked)" if result == "BE" and t.get("tp1_hit") else ""
     icon = {"TP2": "🏆", "TP1": "✅", "SL": "🛑", "BE": "🛡️", "TIMEOUT": "⏰"}.get(result, "•")
     _etext = _scan_box(f"${coin} {result}", f"{icon} {t['symbol']}  |  {t['label']}", [[
         f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
         f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
-    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
+    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>{_pnl_note}"] if pnl is not None else [])],
         tag=t.get("sig_id", ""))
     _ecard = _pnl_card(t, result, price)
     _epng = _pnl_card_png(_ecard) if _ecard else None
