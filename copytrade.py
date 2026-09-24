@@ -1572,7 +1572,8 @@ def close_coin_all(coin: str) -> list[str]:
                 user["sl_order_id"] = ""; user["tp_order_id"] = ""; user["limit_order_id"] = ""
                 _set(cid, user)
             elif _ver_for_symbol(user, symbol):
-                _clear_scan_state(cid, user, symbol)
+                for _cp in [q for q in _ALL_SLOT_PREFIXES if user.get(f"{q}symbol") == symbol]:
+                    _clear_scan_state(cid, user, symbol, pfx=_cp)
             results.append(f"✅ @{user.get('username','?')} {symbol} closed")
         except Exception as e:
             results.append(f"❌ @{user.get('username','?')}: {e}")
@@ -1728,10 +1729,10 @@ def set_auto_sltp_global(enabled: bool):
     global AUTO_SLTP_GLOBAL_ENABLED
     AUTO_SLTP_GLOBAL_ENABLED = enabled
 
-def is_scan_tp1_hit(symbol: str, ver: int = 0) -> bool:
+def is_scan_tp1_hit(symbol: str, ver: int = 0, side: str = "") -> bool:
     """Returns True if ANY copy user has tp1_hit=True for this symbol."""
     for cid, user, _, _ in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if p and user.get(f"{p}tp1_hit"):
             return True
     return False
@@ -1835,8 +1836,9 @@ def _on_scan_signal_inner(signal_dict: dict, symbol: str, price: float, share_fr
             if base_coin in nocopy or symbol.upper() in nocopy:
                 results.append(f"⏭ @{user.get('username','?')} nocopy {base_coin} — skipping")
                 continue
-            if _pfx_for_symbol(user, symbol):
-                results.append(f"⏭ @{user.get('username','?')} already in {symbol} — skipping duplicate")
+            _dup = _copy_dup(user, symbol, ver, side)
+            if _dup:
+                results.append(f"⏭ @{user.get('username','?')} {_dup} — skipping duplicate")
                 continue
             # The main BTC engine does not use slots - it keeps its position in
             # in_position/pos_side - so the slot check above cannot see it. The
@@ -2066,12 +2068,12 @@ def _ccxt_close_scan_slot(cid, user, p: str, symbol: str):
     r = ccxt_close_position(exchange, api_key, api_secret, symbol, side, qty, password)
     print(f"[CT-CCXT] close_scan_slot {cid} {symbol}: ok={r['ok']} msg={r['msg']}")
 
-def on_scan_tp1(symbol: str, ver: int = 0):
+def on_scan_tp1(symbol: str, ver: int = 0, side: str = ""):
     """Scan TP1 hit — cancel remaining orders, move SL to BE, re-place TP2.
     BingX's own TP1 TAKE_PROFIT_MARKET order handles the 50% close automatically.
     We only close 50% manually if BingX's order didn't fire (e.g. TP1 order failed at entry)."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if not p: continue
         if user.get("exchange", "bingx") != "bingx":
             _ccxt_scan_tp1(cid, user, p, symbol)
@@ -2167,10 +2169,10 @@ def on_scan_tp1(symbol: str, ver: int = 0):
             print(f"[CT] on_scan_tp1 {cid} {symbol}: {e}")
 
 
-def on_scan_tp2(symbol: str, ver: int = 0):
+def on_scan_tp2(symbol: str, ver: int = 0, side: str = ""):
     """Scan TP2 hit — cancel remaining orders, force-close position, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if not p: continue
         try:
             if user.get("exchange", "bingx") != "bingx":
@@ -2206,12 +2208,12 @@ def on_scan_tp2(symbol: str, ver: int = 0):
         _clear_scan_state(cid, user, symbol, ver, pfx=p)
 
 
-def update_scan_sl(symbol: str, new_sl: float, ver: int = 0) -> list[str]:
+def update_scan_sl(symbol: str, new_sl: float, ver: int = 0, side: str = "") -> list[str]:
     """Admin custom SL edit on a specific open scan-coin trade — cancels the old
     stop order and places a new one at new_sl for every copy user holding it."""
     results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if not p: continue
         try:
             uname = user.get("username", "?")
@@ -2239,13 +2241,13 @@ def update_scan_sl(symbol: str, new_sl: float, ver: int = 0) -> list[str]:
 def scan_sl_to_be(symbol: str, entry: float) -> list[str]:
     return update_scan_sl(symbol, entry)
 
-def update_scan_tp(symbol: str, which: str, new_price: float, ver: int = 0) -> list[str]:
+def update_scan_tp(symbol: str, which: str, new_price: float, ver: int = 0, side: str = "") -> list[str]:
     """Admin custom TP1/TP2 edit on a specific open scan-coin trade — cancels the
     existing take-profit order(s) and re-places at the (possibly just-edited)
     TP1/TP2 prices for every copy user holding it."""
     results = []
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if not p: continue
         try:
             uname = user.get("username", "?")
@@ -2313,7 +2315,7 @@ def update_tp(which: str, new_price: float, full_remaining: bool = False) -> lis
             print(f"[CT] update_tp {cid}: {e}")
     return results or ["No users in position."]
 
-def on_scan_sl(symbol: str, reason: str = "SL", ver: int = 0):
+def on_scan_sl(symbol: str, reason: str = "SL", ver: int = 0, side: str = ""):
     """Scan SL hit (or TIMEOUT close, same mechanics — market-close the
     position) — cancel all orders, force-close position, clear scan state.
 
@@ -2324,7 +2326,7 @@ def on_scan_sl(symbol: str, reason: str = "SL", ver: int = 0):
     exit either way. Added 2026-08-04 after a TIMEOUT close was recorded
     to the Mini App as a plain "SL" with no way to tell the two apart."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        p = _pfx_for_symbol(user, symbol, ver)
+        p = _pfx_for_symbol(user, symbol, ver, side)
         if not p: continue
         _close_started_ms = int(time.time() * 1000)
         try:
@@ -2425,10 +2427,10 @@ def on_scan_limit_filled(symbol: str, side: str, entry: float, sl: float, tp1: f
             print(f"[CT] on_scan_limit_filled {cid} {symbol}: {e}")
 
 
-def on_scan_entry_missed(symbol: str, ver: int = 0):
+def on_scan_entry_missed(symbol: str, ver: int = 0, side: str = ""):
     """Scan PULLBACK entry missed — cancel ALL open orders for this symbol, clear scan state."""
     for cid, user, api_key, api_secret in _users_with_copy():
-        _p = _pfx_for_symbol(user, symbol, ver)
+        _p = _pfx_for_symbol(user, symbol, ver, side)
         if not _p and user.get("scan_symbol") != symbol:
             # Also try users where no slot matches but a limit order exists for this symbol
             if not user.get("scan_limit_oid") and not user.get(f"{_p}limit_oid" if _p else "scan_limit_oid"):
@@ -2484,7 +2486,7 @@ def _free_slot(user: dict, ver: int) -> str:
             return p
     return ""
 
-def _pfx_for_symbol(user: dict, symbol: str, ver: int = 0) -> str:
+def _pfx_for_symbol(user: dict, symbol: str, ver: int = 0, side: str = "") -> str:
     """Return slot prefix that owns this symbol, or '' if not found.
 
     ver scopes the search to ONE source. Without it this found the user's
@@ -2493,10 +2495,50 @@ def _pfx_for_symbol(user: dict, symbol: str, ver: int = 0) -> str:
     S1 opens UAI for user X, TS1 opens UAI for user Y, TS1's stop then
     walks every user, finds X's UAI under S1's prefix and closes it too.
     Every TP/SL handler now passes the ver of the trade that fired it; ver=0
-    keeps the old any-source search for callers that genuinely mean it."""
+    keeps the old any-source search for callers that genuinely mean it.
+
+    side ("BUY"/"SELL") narrows it to the position on that side. Elite may
+    hold one coin LONG and SHORT at once (BingX keeps the two as separate
+    positions), so its handlers pass the trade's side; everyone else passes
+    none and gets the first slot on that coin, as before."""
     for p in (_SCAN_SLOTS.get(ver, []) if ver else _ALL_SLOT_PREFIXES):
-        if user.get(f"{p}symbol") == symbol:
+        if user.get(f"{p}symbol") == symbol and (not side or user.get(f"{p}side", "") == side):
             return p
+    return ""
+
+
+def _pfx_for_position(user: dict, symbol: str, trade_side: str) -> str:
+    """The slot that owns one real BingX position (coin + side). A slot with
+    no side stored (older state) still matches its coin."""
+    return (_pfx_for_symbol(user, symbol, side=trade_side)
+            or next((p for p in _ALL_SLOT_PREFIXES
+                     if user.get(f"{p}symbol") == symbol and not user.get(f"{p}side")), ""))
+
+
+_ELITE_VER = 7
+_PFX_VER = {p: v for v, ps in _SCAN_SLOTS.items() for p in ps}   # slot prefix -> ver
+
+
+def _copy_dup(user: dict, symbol: str, ver: int, side: str) -> str:
+    """Why this user must not get a second position in `symbol`, or "".
+
+    Elite has no relation to the main and test systems (admin 2026-09-23):
+    it is blocked only by a position on the SAME side - from anywhere, since
+    BingX would merge two same-side positions into one and either system's
+    stop would then close both. The opposite side is a separate position and
+    opens. The main and test systems keep their rule among themselves (one
+    position per coin) and are blocked by an Elite position only on the same
+    side, for the same merge reason. Non-BingX exchanges may net the two
+    sides into one position, so there any holding blocks, as before."""
+    strict = user.get("exchange", "bingx") != "bingx"
+    for p in _ALL_SLOT_PREFIXES:
+        if user.get(f"{p}symbol") != symbol:
+            continue
+        held = user.get(f"{p}side", "")
+        same = not held or held == side
+        elite_pair = ver == _ELITE_VER or _PFX_VER.get(p) == _ELITE_VER
+        if strict or not elite_pair or same:
+            return f"already in {symbol}" + (f" {'LONG' if held == 'BUY' else 'SHORT'}" if held else "")
     return ""
 
 def _ver_for_symbol(user: dict, symbol: str) -> int:
@@ -2651,6 +2693,9 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
 
             positions  = _get_all_positions(ak, ask)
             pos_by_sym = {p.get("symbol",""): p for p in positions if abs(float(p.get("positionAmt",0))) > 0}
+            # one coin can hold a LONG and a SHORT (Elite) - key by both
+            _pos_live = [p for p in positions if abs(float(p.get("positionAmt",0))) > 0]
+            pos_by_side = {(p.get("symbol",""), p.get("positionSide","")): p for p in _pos_live}
 
             def _detect_close_reason(sym: str, entry: float, sl: float, tp1: float, tp2: float) -> str:
                 """Check BingX recent trade history to figure out why position closed."""
@@ -2704,7 +2749,10 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
             for _gp in _ALL_SLOT_PREFIXES:
                 scan_sym = user.get(f"{_gp}symbol", "")
                 if not scan_sym: continue
-                _scan_pos_qty = abs(float((pos_by_sym.get(scan_sym) or {}).get("positionAmt", 0)))
+                _gside = user.get(f"{_gp}side", "")
+                _gpos = (pos_by_side.get((scan_sym, "LONG" if _gside == "BUY" else "SHORT")) if _gside
+                         else pos_by_sym.get(scan_sym))
+                _scan_pos_qty = abs(float((_gpos or {}).get("positionAmt", 0)))
                 if _scan_pos_qty < 0.0001:
                     entry = float(user.get(f"{_gp}entry", 0))
                     sl    = float(user.get(f"{_gp}sl", 0))
@@ -2721,13 +2769,17 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                         # their P&L into trade_log — it clears state itself once done.
                         # Clearing it here FIRST was a race that made this exact user's
                         # closed trade silently never make it into their Portfolio.
-                        try: ghost_close_fn(scan_sym, reason)
+                        # the ver says WHICH system's trade closed - by coin
+                        # alone the bot would close whichever system it finds
+                        # first on that coin
+                        try: ghost_close_fn(scan_sym, reason, ver=_PFX_VER.get(_gp, 0), side=_gside)
                         except Exception as e: print(f"[CT] ghost_close_fn {scan_sym}: {e}")
                         else: continue
-                    _clear_scan_state(cid, user, scan_sym)
+                    _clear_scan_state(cid, user, scan_sym, pfx=_gp)
 
             # ── Check every real BingX position ──
-            for sym, pos in pos_by_sym.items():
+            for pos in _pos_live:
+                sym       = pos.get("symbol","")
                 pos_side  = pos.get("positionSide","")
                 pos_amt   = abs(float(pos.get("positionAmt", 0)))
                 avg_price = float(pos.get("avgPrice", 0))
@@ -2735,7 +2787,7 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                 trade_side = "BUY" if pos_side == "LONG" else "SELL"
 
                 is_btc  = (sym == BINGX_SYMBOL)
-                is_scan = any(user.get(f"{p}symbol", "") == sym for p in _ALL_SLOT_PREFIXES)
+                is_scan = bool(_pfx_for_position(user, sym, trade_side))
                 is_known = is_btc or is_scan
 
                 # Skip entire position if user has this coin in nocopy — they manage it manually
@@ -2806,7 +2858,7 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
 
                 # ── Scan: verify/place SL + TP ──
                 # Find which slot owns this symbol (all 4 slots)
-                _sp = _pfx_for_symbol(user, sym) or "scan_"
+                _sp = _pfx_for_position(user, sym, trade_side) or "scan_"
                 sl_price  = float(user.get(f"{_sp}sl",  0))
                 tp1_price = float(user.get(f"{_sp}tp1", 0))
                 tp2_price = float(user.get(f"{_sp}tp2", 0))
@@ -2842,11 +2894,12 @@ def monitor_sl_tp(notify_fn=None, ghost_close_fn=None):
                             # crypto price (e.g. 0.0000012) renders in scientific
                             # notation by default ("1.2e-06"), which would fail
                             # _ghost_confirm_close's [\d.]+ regex match silently.
-                            ghost_close_fn(sym, f"TP1/BE hit @ {avg_price:.10f}")
+                            ghost_close_fn(sym, f"TP1/BE hit @ {avg_price:.10f}",
+                                           ver=_PFX_VER.get(_sp, 0), side=trade_side)
                         except Exception as e:
                             print(f"[CT] tp1 ghost_close_fn bridge {sym}: {e}")
                     else:
-                        on_scan_tp1(sym)
+                        on_scan_tp1(sym, ver=_PFX_VER.get(_sp, 0), side=trade_side)
                     continue  # on_scan_tp1 (direct or via ghost_close_fn) handles SL/TP2 — skip normal check
 
                 # Emergency SL if no stored price (2% from avg entry)

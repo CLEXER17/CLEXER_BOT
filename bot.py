@@ -15677,13 +15677,14 @@ def _sys_copy_close(t: dict, ver: int, result: str, tag: str):
     if not t.get("ct_opened"):
         return
     _sym = t["symbol"]
+    _sd = t.get("signal", "")            # Elite can hold a coin LONG and SHORT at once
     try:
         if result == "TP1":
-            ct.on_scan_tp1(_sym, ver=ver)
+            ct.on_scan_tp1(_sym, ver=ver, side=_sd)
         elif result == "TP2":
-            ct.on_scan_tp2(_sym, ver=ver)
+            ct.on_scan_tp2(_sym, ver=ver, side=_sd)
         else:
-            ct.on_scan_sl(_sym, reason=result, ver=ver)
+            ct.on_scan_sl(_sym, reason=result, ver=ver, side=_sd)
     except Exception as e:
         print(f"  [{tag}] copytrade {result} {_sym}: {e}")
 
@@ -16797,9 +16798,10 @@ def _elite_run(kind: str, hm=None) -> str:
     for m in order:
         sym, base = m["sym"], m["base"]
         with _elite_lock:
-            if any(x["symbol"] == sym for x in _elite_trades):
-                tried.append(f"{base} already open")
-                continue
+            _held = {x["signal"] for x in _elite_trades if x["symbol"] == sym}
+        if len(_held) >= 2:                  # already LONG and SHORT - nothing left to open
+            tried.append(f"{base} open both ways")
+            continue
         cp = get_bingx_price(sym) or m["price"]
         if use_ai:
             side, raw_sl, why = _elite_ai_decide(kind, m, float(cp), bad_keys)
@@ -16824,6 +16826,9 @@ def _elite_run(kind: str, hm=None) -> str:
                 tried.append(f"{base} WAIT")
                 continue
             side, raw_sl = e["signal"], e["sl"]
+        if side in _held:                    # same direction already open: skip; the opposite opens
+            tried.append(f"{base} already {'LONG' if side == 'BUY' else 'SHORT'}")
+            continue
         dp = _test_dp(sym)
         q = lambda v, _dp=dp: round(float(v), _dp)
         entry, sl = q(cp), q(raw_sl)
@@ -16848,7 +16853,7 @@ def _elite_run(kind: str, hm=None) -> str:
              "timeout_h": spec["timeout_h"], "sig_id": _gen_signal_id(),
              "by": "Clex" if use_ai else "Engine", "ct_pending": True}
         with _elite_lock:
-            if any(x["symbol"] == sym for x in _elite_trades):
+            if any(x["symbol"] == sym and x["signal"] == side for x in _elite_trades):
                 tried.append(f"{base} opened by a parallel run")
                 continue
             _elite_trades.append(t)
@@ -16992,6 +16997,77 @@ def _elite_recap(period: str, dates: list) -> str:
             else _build_period_recap_text(rows, f"{period} Recap — ELITE"))
 
 
+def _elite_recap_kb(kind: str, arg: str, page: int, pages: int):
+    """◀ page ▶ under /el weekly and /el monthly - the main recap's buttons
+    with their own prefix, so a tap pages Elite's history, not the main one."""
+    if pages <= 1:
+        return None
+    row = []
+    if page > 0:
+        row.append({"text": "◀", "callback_data": f"elrcp:{kind}:{arg}:{page - 1}"})
+    row.append({"text": f"{page + 1} / {pages}", "callback_data": "rcp:noop"})
+    if page < pages - 1:
+        row.append({"text": "▶", "callback_data": f"elrcp:{kind}:{arg}:{page + 1}"})
+    return {"inline_keyboard": [row]}
+
+
+def _elite_recap_paged(kind: str, arg: str, page: int):
+    """/el weekly | /el monthly ("last" = the one before): the main recap's
+    period, table and paging, over Elite's own history."""
+    dates, what, title = _recap_period(kind, arg)
+    rows = [h for h in _elite_history if h.get("date") in set(dates)]
+    if not rows:
+        return f"⭐ No closed Elite trades for <b>{what}</b>.", None
+    pages = max(1, -(-len(_recap_by_symbol(rows)) // _RECAP_PAGE_ROWS))
+    page = min(max(0, page), pages - 1)
+    return (_build_period_recap_text(rows, f"⭐ ELITE {title}", page=page),
+            _elite_recap_kb(kind, arg, page, pages))
+
+
+def _elite_daily_cmd(chat_id, args: list):
+    """/el daily - today so far, yesterday, one date, or a range sent one
+    day per message, exactly as the main /daily takes them."""
+    today = now_ist().date()
+    a0 = args[0].lower() if args else ""
+    d, d_end = today, None
+    try:
+        if a0 == "yesterday":
+            d = today - timedelta(days=1)
+        elif len(args) >= 2:
+            d = datetime.strptime(args[0], "%Y-%m-%d").date()
+            d_end = datetime.strptime(args[1], "%Y-%m-%d").date()
+            if d_end < d:
+                d, d_end = d_end, d
+        elif a0:
+            d = datetime.strptime(args[0], "%Y-%m-%d").date()
+    except ValueError:
+        send_reply(chat_id, "Usage: <code>/el daily</code>, <code>/el daily yesterday</code>, "
+                            "<code>/el daily 2026-09-18</code> or "
+                            "<code>/el daily 2026-09-06 2026-09-23</code>", skip_smallcaps=True)
+        return
+    days = [d + timedelta(days=i) for i in range(((d_end or d) - d).days + 1)]
+    if len(days) > 40:
+        send_reply(chat_id, f"That is {len(days)} days. Ask for 40 or fewer.", skip_smallcaps=True)
+        return
+    sent = 0
+    for day in days:
+        ds = day.strftime("%Y-%m-%d")
+        rows = [h for h in _elite_history if h.get("date") == ds]
+        label = ds + (" (so far)" if day == today else "")
+        if not rows:
+            if d_end is None:
+                send_reply(chat_id, f"⭐ No closed Elite trades for <b>{label}</b> yet.", skip_smallcaps=True)
+            continue
+        send_reply(chat_id, "⭐ <b>ELITE</b>\n" + _build_recap_text(rows, label), skip_smallcaps=True)
+        sent += 1
+        if d_end is not None:
+            time.sleep(0.4)
+    if d_end is not None:
+        send_reply(chat_id, f"⭐ <b>{sent} day(s)</b> sent for {d.strftime('%b %d')} to {d_end.strftime('%b %d')}"
+                            + (f"\n\n{len(days) - sent} day(s) had no closed Elite trades." if sent < len(days) else ""),
+                   skip_smallcaps=True)
+
+
 def _elite_recap_loop():
     """The channel's own daily / weekly / monthly recap, just after midnight."""
     sent = {"d": "", "w": "", "m": ""}
@@ -17094,6 +17170,9 @@ def _elite_kb():
          {"text": "🔴 Elite OFF", "callback_data": "elbtn:off"}],
         [{"text": "💰 Copy ON", "callback_data": "elbtn:cton"},
          {"text": "💰 Copy OFF", "callback_data": "elbtn:ctoff"}],
+        [{"text": "📊 Daily", "callback_data": "elbtn:rd"},
+         {"text": "📊 Weekly", "callback_data": "elbtn:rw"},
+         {"text": "📊 Monthly", "callback_data": "elbtn:rm"}],
         [{"text": "📡 Open trades", "callback_data": "elbtn:trades"},
          {"text": "🔄 Refresh", "callback_data": "elbtn:refresh"}]]}
 
@@ -17129,7 +17208,7 @@ def _elite_status_text() -> str:
         out += ["", f"⚠️ Last channel post failed: <code>{_html.escape(_elite_last_post_error)}</code>"]
     out += ["", "<blockquote><code>/el on</code>  <code>/el off</code>  <code>/el t</code> trades  "
                 "<code>/el coins</code>  <code>/el ct on|off</code>  <code>/el run s1</code>  "
-                "<code>/el recap</code></blockquote>"]
+                "<code>/el daily</code>  <code>/el weekly</code>  <code>/el monthly</code></blockquote>"]
     return "\n".join(out)
 
 
@@ -17464,7 +17543,7 @@ def run_scan_tick_check() -> bool:
     for t in list(scan2_trades): any_closed |= _tick_one(2, t)
     return any_closed
 
-def _ghost_confirm_close(symbol: str, reason: str = ""):
+def _ghost_confirm_close(symbol: str, reason: str = "", ver: int = 0, side: str = ""):
     """Backup confirmation — copytrade's own monitor_sl_tp() sometimes detects, from a
     copy user's actual BingX order history, that a position for `symbol` already closed
     (e.g. an SL fill) before our own live price-monitor got to it. copytrade.py's
@@ -17474,28 +17553,43 @@ def _ghost_confirm_close(symbol: str, reason: str = ""):
     against CURRENT price) silently finds nothing and does nothing if price has since
     moved away from that level — leaving the bot's own state (and the channel/portfolio)
     stuck showing an already-closed trade as open forever, with no recovery.
-    Falls back to the old live-tick-check behavior if the reason can't be parsed."""
+    Falls back to the old live-tick-check behavior if the reason can't be parsed.
+
+    ver is the copy slot's system. With it, only THAT system's trade on the
+    coin is touched: by coin alone, an Elite or Test copy that closed on
+    BingX would close a Scan1/Scan2/TS trade that merely shares the coin.
+    Elite (7), Test (8) and intraday (5, 6) watch their own trades, so a
+    ghost from their slots needs nothing here. ver 0 (unknown) keeps the old
+    any-system search."""
+    if ver in (5, 6, 7, 8):
+        return
     import re as _gre
     _m = _gre.search(r"(SL|TP1/BE|TP2) hit @ ([\d.]+)", reason)
     result = {"SL": "sl", "TP1/BE": "tp1", "TP2": "tp2"}.get(_m.group(1)) if _m else None
     try:
-        if active_trade.get("signal") and SYMBOL == symbol:
+        if not ver and active_trade.get("signal") and SYMBOL == symbol:
             run_tick_check(); return
+        _sv = (1, 2) if not ver else ((ver,) if ver in (1, 2) else ())
+        _dv = (1, 2) if not ver else ((ver - 2,) if ver in (3, 4) else ())
         if result:
-            for ver in (1, 2):
-                if any(t.get("symbol") == symbol for t in _scan_list(ver)):
-                    print(f"  [GHOST CONFIRM] {symbol} scan{ver} -> {result} ({reason})")
-                    send_admin(_force_close_scan_trade(ver, symbol, result)); return
+            for _v in _sv:
+                if any(t.get("symbol") == symbol for t in _scan_list(_v)):
+                    print(f"  [GHOST CONFIRM] {symbol} scan{_v} -> {result} ({reason})")
+                    send_admin(_force_close_scan_trade(_v, symbol, result)); return
             for dver, lst in ((1, demo_scan1_trades), (2, demo_scan2_trades)):
+                if dver not in _dv:
+                    continue
                 if any(t.get("symbol") == symbol for t in lst):
                     print(f"  [GHOST CONFIRM] {symbol} demo{dver} -> {result} ({reason})")
                     send_admin(_force_close_demo_trade(dver, symbol, result)); return
             return
         # Reason didn't parse — fall back to a live re-check (old behavior)
-        for ver, lst in ((1, scan1_trades), (2, scan2_trades)):
+        for _v, lst in ((1, scan1_trades), (2, scan2_trades)):
+            if _v not in _sv:
+                continue
             for t in list(lst):
                 if t.get("symbol") == symbol:
-                    _tick_one(ver, t); return
+                    _tick_one(_v, t); return
     except Exception as e:
         print(f"  [GHOST CONFIRM] {symbol}: {e}")
 
@@ -21109,18 +21203,20 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                            skip_smallcaps=True)
                 threading.Thread(target=lambda k=_k: send_reply(chat_id, "⭐ " + _html.escape(_elite_run(k)),
                                                                 skip_smallcaps=True), daemon=True).start()
-        elif _ea == "recap":
-            _per = (parts[2].lower() if len(parts) > 2 else "daily")
-            _td = now_ist().date()
-            if _per.startswith("w"):
-                _dts = [(_td - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_td.weekday() + 1)]
-                _txt = _elite_recap("Weekly", sorted(_dts))
-            elif _per.startswith("m"):
-                _dts = [(_td.replace(day=1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_td.day)]
-                _txt = _elite_recap("Monthly", _dts)
+        elif _ea in ("recap", "daily", "d", "weekly", "w", "monthly", "m"):
+            # the main /daily /weekly /monthly, over Elite's own history.
+            # /el recap weekly still works: the period is then the next word.
+            _rest = parts[2:]
+            _per = _ea
+            if _ea == "recap":
+                _per = _rest[0].lower() if _rest else "daily"
+                _rest = _rest[1:]
+            if _per.startswith("w") or _per.startswith("m"):
+                _k = "w" if _per.startswith("w") else "m"
+                _txt, _kb = _elite_recap_paged(_k, "last" if _rest and _rest[0].lower() == "last" else "", 0)
+                send_reply(chat_id, _txt, reply_markup=_kb, skip_smallcaps=True)
             else:
-                _txt = _elite_recap("Daily", [_td.strftime("%Y-%m-%d")])
-            send_reply(chat_id, _txt or "📊 Nothing closed in that period yet.", skip_smallcaps=True)
+                _elite_daily_cmd(chat_id, _rest)
         elif _ea == "ping":
             _mid = _elite_post("⭐ <b>Elite channel check</b> — if you can read this, the bot can post here.")
             send_reply(chat_id, f"✅ Posted to <code>{ELITE_CHANNEL_ID}</code>" if _mid else
@@ -24355,7 +24451,7 @@ _SCAN_SUBCATS = {
     ]),
     "testsys": ("🧪 Test System & Elite", [
         ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
-        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el recap` (daily / weekly / monthly), `/el ping` to check the channel. (/elite is the same.)"),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
@@ -27235,6 +27331,11 @@ def command_listener():
                             ct.set_elite_ct(_ea == "cton"); save_settings()
                         if _ea == "trades":
                             send_reply(cb_chat_id, _elite_trades_text(), skip_smallcaps=True)
+                        elif _ea == "rd":
+                            _elite_daily_cmd(cb_chat_id, [])
+                        elif _ea in ("rw", "rm"):
+                            _txt, _kb = _elite_recap_paged(_ea[1], "", 0)
+                            send_reply(cb_chat_id, _txt, reply_markup=_kb, skip_smallcaps=True)
                         else:
                             _help_edit_or_send(cb_chat_id, _elite_status_text(), _elite_kb(), message_id=cb_msg_id, rotate=False)
                     elif cb_data.startswith("cmdpage:"):
@@ -27274,6 +27375,12 @@ def command_listener():
                             _ntxt, _nkb = _norecap_panel()
                             _help_edit_or_send(cb_chat_id, _ntxt, _nkb, message_id=cb_msg_id, rotate=False)
 
+                    elif cb_data.startswith("elrcp:") and cb_is_scanadmin:
+                        # ◀ ▶ under /el weekly and /el monthly
+                        _rp = cb_data.split(":")
+                        if len(_rp) == 4 and _rp[3].isdigit():
+                            _txt, _kb = _elite_recap_paged(_rp[1], _rp[2], int(_rp[3]))
+                            _help_edit_or_send(cb_chat_id, _txt, _kb, message_id=cb_msg_id, rotate=False)
                     elif cb_data.startswith("rcp:") and cb_is_scanadmin:
                         # ◀ ▶ under /weekly and /monthly - same message, next page
                         _rp = cb_data.split(":")
