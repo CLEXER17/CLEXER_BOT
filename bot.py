@@ -468,12 +468,8 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         t["trail_sl_moved"] = True
         ct.update_scan_sl(t["symbol"], new_sl, ver=ver)
         save_state()
-        _msg = (
-            f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.4g}</code> → <code>{new_sl:,.4g}</code> to lock in more capital.")
-        _locked_msg = (
-            f"🛡️ <b>Trailing SL — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.")
+        _msg = _fx_trail(t["symbol"], 1, orig_sl, new_sl)
+        _locked_msg = _fx_trail(t["symbol"], 1)
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
@@ -500,12 +496,8 @@ def _apply_trail_sl(ver: int, t: dict, price: float):
         t["trail_sl2_moved"] = True
         ct.update_scan_sl(t["symbol"], midpoint2, ver=ver)
         save_state()
-        _msg = (
-            f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.4g}</code> → <code>{midpoint2:,.4g}</code> to lock in more profit.")
-        _locked_msg = (
-            f"🛡️ <b>Trailing SL (Post-TP1) — #{t['symbol']}</b>  {tag}\n\n"
-            f"Price reached halfway to TP2 — SL moved up to lock in more profit.")
+        _msg = _fx_trail(t["symbol"], 2, be_sl, midpoint2)
+        _locked_msg = _fx_trail(t["symbol"], 2)
         _trail_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), locked_text=_locked_msg)
         t["trail_sl_msg_ids"] = _trail_ids or {}
@@ -530,12 +522,8 @@ def _apply_trail_sl_btc(price: float):
         active_trade["trail_sl_moved"] = True
         ct.on_update_sl(new_sl)
         save_active_trade()
-        _msg = (
-            f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-            f"Price reached halfway to TP1 — SL moved <code>{orig_sl:,.0f}</code> → <code>{new_sl:,.0f}</code> to lock in more capital.")
-        _locked_msg = (
-            f"🛡️ <b>Trailing SL — BTC</b>\n\n"
-            f"Price reached halfway to TP1 — SL moved BE to lock in more capital.")
+        _msg = _fx_trail(SYMBOL, 1, orig_sl, new_sl)
+        _locked_msg = _fx_trail(SYMBOL, 1)
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
@@ -556,12 +544,8 @@ def _apply_trail_sl_btc(price: float):
         active_trade["trail_sl2_moved"] = True
         ct.on_update_sl(midpoint2)
         save_active_trade()
-        _msg = (
-            f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
-            f"Price reached halfway to TP2 — SL moved <code>{be_sl:,.0f}</code> → <code>{midpoint2:,.0f}</code> to lock in more profit.")
-        _locked_msg = (
-            f"🛡️ <b>Trailing SL (Post-TP1) — BTC</b>\n\n"
-            f"Price reached halfway to TP2 — SL moved up to lock in more profit.")
+        _msg = _fx_trail(SYMBOL, 2, be_sl, midpoint2)
+        _locked_msg = _fx_trail(SYMBOL, 2)
         _trail_ids = send_lifecycle_reply(_msg, active_trade.get("reply_map"), include_ch2=False,
             tier_routed=True, share_free=active_trade.get("share_free", True), locked_text=_locked_msg)
         active_trade["trail_sl_msg_ids"] = _trail_ids or {}
@@ -1582,7 +1566,7 @@ def _pnl_card_png(card: dict):
 def _card_caption(text: str) -> str:
     """The result text as it always was, plus the BING X link line."""
     return (_apply_premium_emojis(text)
-            + f'\n\n<tg-emoji emoji-id="{_BINGX_EMOJI_ID}">🔀</tg-emoji> <a href="{BINGX_INVITE_URL}">BING X</a>')
+            + f'\n\n<tg-emoji emoji-id="{_BINGX_EMOJI_ID}">🔀</tg-emoji> <a href="{BINGX_INVITE_URL}">BINGX</a>')
 
 
 def _tg_visible_len(html_text: str) -> int:
@@ -2029,12 +2013,7 @@ def _send_sl_reassurance(symbol: str, channels: list, reply_map: dict = None, si
     # Exact same minimal SL style as the main SL-hit message (admin request
     # 2026-08-06) — not a distinct "reassurance" wording, identical template.
     coin = symbol.replace("-USDT", "").replace("USDT", "")
-    text = _apply_premium_emojis(
-        "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
-        f"⛔ <b>Position Closed</b>  ${coin}\n"
-        "<blockquote>SL executed.</blockquote>\n"
-        f"🪪 {sig_id}"
-    )
+    text = _fx_sl(coin, sig_id)
     for _tag, cid in channels:
         _send_plain_reply(cid, text, reply_to=reply_map.get(f"{_tag}:{cid}"))
 
@@ -2084,29 +2063,28 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     # here by hand, and only to the quote. The headline keeps real <b> and
     # ordinary letters: styling it too would leave the whole post in one
     # texture with nothing to anchor the eye (admin 2026-09-07).
+    _ts = str(entry_ts or "").split()
+    _when_date, _when_time = (_ts[0] if _ts else ""), (_ts[-1] if len(_ts) > 1 else "")
     if result == "TP1":
         text = (
-            "🚨 <b>VIP SIGNAL UPDATE</b>\n\n"
-            f"${coin}-USDT 🎯 <b>TP1 HIT</b> ✅\n\n"
-            "<blockquote>" + _style_body(
-                f"This signal was shared exclusively in \"Crypto Clexer VIP\" AT {entry_ts}\n"
-                "Congratulations to all our VIP members who secured profits. 🔥\n\n"
-                "Want to receive these signals?\n"
-                "📩 DM now for VIP access.") + "</blockquote>"
+            _PLAIN + "🚨 <b>VIP UPDATE</b>\n\n"
+            f"${coin}-USDT just hit TP1 🎯🔥\n\n"
+            "Nice move on this one! TP1 is secured"
+            + (f", and our VIP members were already in the trade from {_when_time}." if _when_time else ".") + "\n\n"
+            "Big congrats to everyone who caught it with us ❤️\n\n"
+            "Want to get the next setups before the move?\n"
+            "📩 DM us for VIP access."
         )
     else:
         text = (
-            "🏆 <b>VIP RESULT</b>\n\n"
-            f"${coin}-USDT 🚀 <b>TP2 HIT</b> ✅\n\n"
-            "<blockquote>" + _style_body(
-                "VIP-exclusive signal closed successfully.\n\n"
-                "✅ TP1 Achieved\n"
-                "✅ TP2 Achieved\n\n"
-                f"This setup was shared with our VIP members AT {entry_ts}\n"
-                "If you're seeing this in the free channel, imagine having the "
-                "trade before the move.\n\n"
-                "💎 Crypto Clexer VIP\n"
-                "📩 DM now for VIP access.") + "</blockquote>"
+            _PLAIN + "🏆 <b>VIP RESULT</b>\n\n"
+            f"${coin}-USDT — TP2 HIT ✅\n\n"
+            "Both targets hit. TP1 ✅ TP2 ✅\n"
+            "Another VIP setup closed successfully 🚀\n\n"
+            + (f"This trade was shared with our VIP members at {_when_date} — {_when_time}.\n\n" if _when_time else "")
+            + "If you're seeing this in the free channel, the VIP members already had the setup before the move happened.\n\n"
+            "💎 Crypto Clexer VIP\n"
+            "📩 DM now for VIP access."
         )
     # Thread this as a genuine reply to the locked/redacted entry post that
     # went out to Free at signal time (same reply_map + _send_plain_reply
@@ -11367,6 +11345,12 @@ def _smallcaps_body(text: str) -> str:
             out.append(part if skip > 0 else _smallcaps_title(part))
     return "".join(out)
 
+# A message that starts with this invisible mark keeps ordinary letters - the
+# friendly trade posts (admin 2026-09-24) are written the way people write,
+# and the bot-wide small-caps font would turn them back into a robot.
+_PLAIN = "\u2060"
+
+
 def _apply_premium_emojis(text: str, overrides: dict = None, skip_smallcaps: bool = False) -> str:
     """Wraps known emoji glyphs in <tg-emoji> so Premium users see the animated
     version; everyone else still sees the plain glyph (Telegram's own fallback).
@@ -11387,6 +11371,8 @@ def _apply_premium_emojis(text: str, overrides: dict = None, skip_smallcaps: boo
     since smallcaps only skips <code>/<pre> content, not <b>/<blockquote>/etc."""
     if not text:
         return text
+    if text.startswith(_PLAIN):
+        text, skip_smallcaps = text[len(_PLAIN):], True
     if PREMIUM_EMOJIS_ENABLED:
         emap = {**PREMIUM_EMOJI_MAP, **overrides} if overrides else PREMIUM_EMOJI_MAP
         for glyph, emoji_id in emap.items():
@@ -12191,27 +12177,10 @@ def do_broadcast(admin_chat_id, text, file_id=None, file_type=None, mode="all", 
 
 # --- MESSAGE FORMATS ----------------------------------------------------------
 def fmt_signal(s):
-    e   = "🟩" if s["signal"]=="BUY" else "🟥"
-    ci  = {"HIGH":"🔥 HIGH","MEDIUM":"⚡ MED","LOW":"🌀 LOW"}.get(s.get("confidence",""),"")
-    wk = s.get("weekly_trend",""); s4h = s.get("structure_4h","")
-    ez = s.get("entry_zone","");   rs  = s.get("reasoning","")
-    entry_lines = [f"🎯 {_smallcaps_title('Entry')}: <code>{s['entry']:,.0f}</code>"]
-    if s.get("entry_type")=="PULLBACK" and s.get("entry_note"):
-        entry_lines.append(f"📍 {_html.escape(s['entry_note'])}")
-    levels = [f"🛑 SL: <code>{s['sl']:,.0f}</code>", f"💰 TP1: <code>{s['tp1']:,.0f}</code>", f"🏆 TP2: <code>{s['tp2']:,.0f}</code>",
-              f"⚖️ R:R: {s.get('rr','-')}"]
-    context = []
-    if wk:  context.append(f"🌐 {_smallcaps_title('Weekly')}: {_html.escape(wk)}")
-    if s4h: context.append(f"📊 4ʜ: {_html.escape(s4h)}")
-    if ez:  context.append(f"📍 {_smallcaps_title('Zone')}: {_html.escape(ez)}")
-    sections = [entry_lines, levels]
-    if context: sections.append(context)
-    return _scan_box(
-        f"{SYMBOL} Signal",
-        f"{e} {s['signal']} - {SYMBOL}  {ci}  {_gw_model_tag('btc')}",
-        sections,
-        tag=s.get("sig_id",""),
-    )
+    note = _html.escape(s["entry_note"]) if s.get("entry_type") == "PULLBACK" and s.get("entry_note") else ""
+    return _fx_entry(SYMBOL, s["signal"], s["entry"], s["sl"], s["tp1"], s["tp2"], s.get("sig_id", ""),
+                     market=s.get("entry_type", "MARKET") != "PULLBACK", note=(f"📍 {note}" if note else ""))
+
 
 def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
     """Gens a sig_id, saves the signal snapshot (for the Free-channel unlock
@@ -12227,67 +12196,31 @@ def _send_btc_entry_signal(signal: dict, share_free: bool) -> dict:
     return _ids
 
 def fmt_update(status, price=None):
-    t = active_trade; entry = t.get("entry") or 0
-    _hdr = lambda emj, title: f"{emj} #{SYMBOL}"
-    _sid = t.get("sig_id","")
-    msgs = {
-        "SL_HIT": (
-            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
-            "⛔ <b>Position Closed</b>\n"
-            "<blockquote>SL executed.</blockquote>\n"
-            f"🪪 {_sid}"
-        ),
-        "TP1_HIT": _scan_box(
-            f"TP1 Hit — {ct.TP1_CLOSE_PCT}% Closed", _hdr("💰", "TP1 Hit"),
-            [[f"✅ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% position closed at')} <code>{t.get('tp1',0):,.0f}</code>",
-              f"🛡️ {_smallcaps_title('SL moved to breakeven')}: <code>{entry:,.0f}</code>",
-              f"🚀 {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% riding to TP2')}: <code>{t.get('tp2',0):,.0f}</code>"],
-             [f"⚠️ {_smallcaps_title('Do not close manually — bot is managing the rest')}"]],
-            tag=_sid,
-        ),
-        "TP2_HIT": _scan_box(
-            "TP2 Hit — Trade Closed", _hdr("🏆", "TP2 Hit"),
-            [[f"✅ {_smallcaps_title('Full profit taken on')} {t.get('signal','?')} @ <code>{t.get('tp2',0):,.0f}</code>"],
-             [f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
-            tag=_sid,
-        ),
-        "STOP_HUNT": _scan_box(
-            "Stop Hunt Detected", _hdr("🎣", "Stop Hunt"),
-            [[f"{_smallcaps_title('Price spiked below SL and closed back above')}.",
-              f"✅ {_smallcaps_title('Still in')} {t.get('signal','?')} {_smallcaps_title('trade — position held')}."],
-             [f"⚠️ {_smallcaps_title('No action needed — bot is managing this')}"]],
-            tag=_sid,
-        ),
-        "SETUP_INVALID": _scan_box(
-            "Trade Cancelled — Setup Invalid", _hdr("⚠️", "Setup Invalid"),
-            [[f"{_smallcaps_title('Price closed past SL before entry was hit. No position was opened')}."],
-             [f"⛔ {_smallcaps_title('Do not open any trade now')}",
-              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
-            tag=_sid,
-        ),
-        "ENTRY_MISSED": _scan_box(
-            "Trade Cancelled — Entry Missed", _hdr("😔", "Entry Missed"),
-            [[f"{_smallcaps_title('Price moved past entry zone')} <code>{entry:,.0f}</code> {_smallcaps_title('without filling. No position was opened')}."],
-             [f"⛔ {_smallcaps_title('Do not chase — do not open a trade now')}",
-              f"🔍 {_smallcaps_title('Waiting for next valid setup')}..."]],
-            tag=_sid,
-        ),
-        "STRUCTURE_FLIP": _scan_box(
-            "Trade Closed — Structure Flipped", _hdr("🔄", "Structure Flipped"),
-            [[f"{_smallcaps_title('Market structure changed — current')} {t.get('signal','?')} {_smallcaps_title('trade closed')}."],
-             [f"⛔ {_smallcaps_title('Wait for the next signal from CLEXER')}",
-              f"🔍 {_smallcaps_title('Analysing new direction')}..."]],
-            tag=_sid,
-        ),
-        "WAITING_ENTRY": _scan_box(
-            "Waiting Pullback", _hdr("⏳", "Waiting Pullback"),
-            [[f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.0f}</code>", f"🛑 SL: <code>{t.get('sl',0):,.0f}</code>",
-              f"🎯 TP1: <code>{t.get('tp1',0):,.0f}</code>", f"🎯 TP2: <code>{t.get('tp2',0):,.0f}</code>"]
-             + ([f"📊 {_smallcaps_title('Current')}: <code>{price:,.0f}</code> ({abs((price or 0)-entry):,.0f} pts away)"] if price else [])],
-            tag=_sid,
-        ),
-    }
-    return msgs.get(status, _scan_box("Trade Update", f"✅ #{SYMBOL}", [[f"{_smallcaps_title('Trade running')}"]], tag=_sid))
+    t = active_trade; entry = t.get("entry") or 0; sid = t.get("sig_id", "")
+    side = t.get("signal", "?"); d = _fx_side(side).upper()
+    if status == "SL_HIT":
+        return _fx_be(SYMBOL, sid) if t.get("tp1_hit") else _fx_sl(SYMBOL, sid)
+    if status == "TP1_HIT":
+        return _fx_tp1(SYMBOL, sid, ct.TP1_CLOSE_PCT)
+    if status == "TP2_HIT":
+        return _fx_with(_fx_tp2(SYMBOL, t.get("tp2", 0), sid), "We'll wait for the next clean setup.")
+    if status == "STOP_HUNT":
+        wick = "below our stop and closed right back above it" if side == "BUY" else "above our stop and closed right back below it"
+        return (_PLAIN + f"✦ $BTC — STOP HUNT 🎣\n\nPrice wicked {wick}, so the {d} is still open.\n\n"
+                "No action needed — the bot is managing it." + _fx_foot(sid))
+    if status == "SETUP_INVALID":
+        return (_PLAIN + "✦ $BTC — TRADE CANCELLED ⚠️\n\n"
+                "Price closed past the stop-loss before our entry was reached, so no trade was opened.\n\n"
+                "Please don't open anything now — we'll wait for the next clean setup." + _fx_foot(sid))
+    if status == "ENTRY_MISSED":
+        return _fx_missed(SYMBOL, entry, sid)
+    if status == "STRUCTURE_FLIP":
+        return (_PLAIN + f"✦ $BTC — TRADE CLOSED 🔄\n\nThe market structure changed, so we've closed the {d}.\n\n"
+                "Wait for the next signal — we're reading the new direction now." + _fx_foot(sid))
+    if status == "WAITING_ENTRY":
+        return _fx_waiting(SYMBOL, entry, t.get("sl", 0), t.get("tp1", 0), t.get("tp2", 0), sid, price=price)
+    return _PLAIN + "✦ $BTC — TRADE RUNNING ✅\n\nThe trade is still running as planned." + _fx_foot(sid)
+
 
 # --- TICK CHECK ---------------------------------------------------------------
 def run_tick_check():
@@ -12321,13 +12254,7 @@ def run_tick_check():
                 ct.virtual_on_signal(SYMBOL, sig, entry, sl, tp1, tp2,
                     tier_routed=True, share_free=active_trade.get("share_free", True))
                 send_lifecycle_reply(
-                    f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
-                    f"{'🟩' if sig=='BUY' else '🟥'} <b>{sig} — {SYMBOL}</b>\n\n"
-                    f"🎯 Entry:  <b>{entry:,.0f}</b>  |  📊 Price: <b>{price:,.2f}</b>\n"
-                    f"🛡️ SL:     <b>{sl:,.0f}</b>  ({abs(price-sl):.0f} pts)\n"
-                    f"💰 TP1:   <b>{tp1:,.0f}</b>\n"
-                    f"🏆 TP2:   <b>{tp2:,.0f}</b>\n\n"
-                    f"⚠️ <b>Trade is now LIVE — SL and TP active</b>",
+                    _fx_filled(SYMBOL, sig, entry, sl, tp1, tp2, active_trade.get("sig_id", ""), price=price),
                     active_trade.get("reply_map"), include_ch2=False)
             return False
 
@@ -12340,9 +12267,7 @@ def run_tick_check():
             trade_stats["total_tp2"] += 1; trade_stats["consecutive_sl"] = 0
             _delete_trail_sl_messages(active_trade)
             log_trade_outcome("TP2_HIT", f"closed at {tp2:,.0f}")
-            _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
-                f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
-                f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>")
+            _tp2_msg = fmt_update("TP2_HIT")
             _card_reply(_pnl_card(active_trade, "TP2", symbol=SYMBOL), _tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                 react_category="tp2")
@@ -12361,10 +12286,7 @@ def run_tick_check():
                 save_active_trade()
                 ct.on_tp1(entry, tp1)
                 ct.virtual_on_tp1(SYMBOL, tp1)
-                _tp1_msg = (f"💰 <b>TP1 HIT!</b> 🎉  🕐 {ist_str()}\n\n"
-                    f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
-                    f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
-                    f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...")
+                _tp1_msg = fmt_update("TP1_HIT")
                 _card_reply(_pnl_card(active_trade, "TP1", symbol=SYMBOL), _tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
@@ -12387,21 +12309,13 @@ def run_tick_check():
             _sl_in_ch2 = (time.time() - _entry_ts) > 600 and active_trade.get("is_d48", False)
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
-                _sl_msg = (
-                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
-                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                    f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...")
+                _sl_msg = (_fx_be(SYMBOL, active_trade.get("sig_id", "")) if active_trade.get("tp1_hit")
+                           else _fx_sl(SYMBOL, active_trade.get("sig_id", ""), streak=n, pause=2))
                 _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
-                _sl_msg = (
-                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {sig} @ {entry:,.0f}\n\n"
-                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                    f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...")
+                _sl_msg = (_fx_be(SYMBOL, active_trade.get("sig_id", "")) if active_trade.get("tp1_hit")
+                           else _fx_sl(SYMBOL, active_trade.get("sig_id", ""), streak=n, pause=1))
                 _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
@@ -13663,17 +13577,9 @@ def _track_sl_ids(sig_id: str, field: str, ids: dict):
         elif _k.startswith("vip:"): _track_vip_sl(sig_id, _k.split(":", 1)[1], field, _v)
 
 def _locked_signal_text(coin: str, tag_label: str, sig_id: str) -> str:
-    """Redacted Free-channel entry-signal variant — direction/entry/SL/TP
-    replaced with lock placeholders. Same _scan_box template every other
-    lifecycle message uses, so it looks native rather than bolted-on."""
-    return _scan_box(
-        "VIP Signal", f"📣 ${coin}-USDT  |  {tag_label}",
-        # Two compact rows, not five "X: Locked" lines - the card says nothing,
-        # so it should not take five lines to say it (admin 2026-09-03).
-        [[f"🔒 {_smallcaps_title('Direction')} • {_smallcaps_title('Entry')}",
-          "🔒 SL • TP1 • TP2"]],
-        tag=sig_id,
-    )
+    """Free-channel copy of a VIP-only entry: nothing but the coin."""
+    return _fx_locked(coin, sig_id)
+
 
 _load_sig_snapshots()
 _load_free_sl_log()
@@ -13717,121 +13623,224 @@ def _scan_box(title: str, header: str, sections: list, tag: str = "") -> str:
         out.append(f"┃ 🪪 {tag}")
     return "\n".join(out)
 
+# ── Friendly channel texts (admin 2026-09-24) ─────────────────────────────
+# Every trade post reads like a person wrote it: no ┃ boxes, no scan/engine
+# tags, ordinary letters (the _PLAIN mark keeps the small-caps font off).
+# Prices stay inside <code> - _redact_levels locks exactly those for a
+# VIP-only signal's Free copy, so that keeps working unchanged.
+
+def _fx_coin(sym) -> str:
+    return str(sym or "?").replace("-USDT", "").replace("USDT", "").lstrip("$") or "?"
+
+
+def _fx_px(x) -> str:
+    try:
+        return f"{float(x):,.6g}"
+    except (TypeError, ValueError):
+        return str(x)
+
+
+def _fx_pct(p) -> str:
+    try:
+        return f"{float(p):g}"
+    except (TypeError, ValueError):
+        return str(p)
+
+
+def _fx_side(side) -> str:
+    return "long" if side == "BUY" else "short"
+
+
+def _fx_foot(sig_id) -> str:
+    return f"\n\n🪪 {sig_id}" if sig_id else ""
+
+
+def _fx_levels(sl, tp1, tp2, sl_pct=None) -> str:
+    return (f"🛑 SL: <code>{_fx_px(sl)}</code>" + (f" (-{float(sl_pct):.1f}%)" if sl_pct else "")
+            + f"\n🎯 TP1: <code>{_fx_px(tp1)}</code>\n🏆 TP2: <code>{_fx_px(tp2)}</code>")
+
+
+def _fx_with(text: str, extra: str) -> str:
+    """Add a line just above the 🪪 footer (or at the end without one)."""
+    if not extra:
+        return text
+    i = text.rfind("\n\n🪪 ")
+    return (text[:i] + "\n\n" + extra + text[i:]) if i >= 0 else (text + "\n\n" + extra)
+
+
+def _fx_entry(sym, side, entry, sl, tp1, tp2, sig_id, sl_pct=None, alt=False, market=True, note="") -> str:
+    coin = _fx_coin(sym)
+    who = f"{coin.capitalize()} looks good" if alt else f"{coin} is looking good"
+    where = (f"Entry is live at <code>{_fx_px(entry)}</code>." if market
+             else f"We're waiting for price to come back to <code>{_fx_px(entry)}</code> to get in.")
+    return (_PLAIN + f"✦ ${coin} — {'LONG 🟢' if side == 'BUY' else 'SHORT 🔴'}\n\n"
+            f"{who} for a {_fx_side(side)} here. {where}" + (f"\n{note}" if note else "")
+            + "\n\n" + _fx_levels(sl, tp1, tp2, sl_pct) + _fx_foot(sig_id))
+
+
+def _fx_zone(sym, side, lo, hi, sl, tp1, tp2, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — {'LONG' if side == 'BUY' else 'SHORT'} ZONE {'🟢' if side == 'BUY' else '🔴'}\n\n"
+            f"We're looking to get into a {_fx_side(side)} on {coin} between "
+            f"<code>{_fx_px(min(lo, hi))}</code> and <code>{_fx_px(max(lo, hi))}</code>.\n\n"
+            + _fx_levels(sl, tp1, tp2) + "\n\nOnce TP1 hits, you can move the rest to breakeven." + _fx_foot(sig_id))
+
+
+def _fx_locked(sym, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — VIP SIGNAL 🔒\n\n"
+            f"A new VIP setup just went out on {coin}.\n"
+            "Direction, entry, SL and targets are for VIP members only 👑" + _fx_foot(sig_id))
+
+
+def _fx_filled(sym, side, entry, sl, tp1, tp2, sig_id, price=None) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — ENTRY FILLED 🚀\n\n"
+            f"We're in! The {_fx_side(side)} is live from <code>{_fx_px(entry)}</code>."
+            + (f" Price is at <code>{_fx_px(price)}</code> right now." if price else "")
+            + "\n\n" + _fx_levels(sl, tp1, tp2) + _fx_foot(sig_id))
+
+
+def _fx_waiting(sym, entry, sl, tp1, tp2, sig_id, price=None) -> str:
+    coin = _fx_coin(sym)
+    away = ""
+    if price and entry:
+        away = f" It's at <code>{_fx_px(price)}</code> now, {abs(price - entry) / entry * 100:.2f}% away."
+    return (_PLAIN + f"✦ ${coin} — WAITING FOR ENTRY ⏳\n\n"
+            f"Still waiting for price to reach our entry at <code>{_fx_px(entry)}</code>.{away}\n\n"
+            + _fx_levels(sl, tp1, tp2) + _fx_foot(sig_id))
+
+
+def _fx_missed(sym, entry, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — ENTRY MISSED 😔\n\n"
+            f"Price moved past our entry at <code>{_fx_px(entry)}</code> without filling, so no trade was opened.\n\n"
+            "Don't chase it — we'll catch the next one." + _fx_foot(sig_id))
+
+
+def _fx_cancel(sym, entry, reason, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — ENTRY CANCELLED 🚫\n\n"
+            f"We've cancelled the pending entry at <code>{_fx_px(entry)}</code> — the setup is no longer valid."
+            + (f"\n\n💡 {reason}" if reason else "") + _fx_foot(sig_id))
+
+
+def _fx_tp1(sym, sig_id, closed_pct=None) -> str:
+    coin = _fx_coin(sym)
+    if closed_pct is None:
+        return (_PLAIN + f"✦ TP1 HIT — ${coin} ✦\n\n"
+                "TP1 has been hit ✅\n"
+                "SL has been moved to breakeven, and we’re letting the remaining position ride toward TP2 🚀"
+                + _fx_foot(sig_id))
+    rest = 100 - float(closed_pct)
+    return (_PLAIN + f"✦ ${coin} — TP1 HIT ✅\n\n"
+            f"TP1 secured. {_fx_pct(closed_pct)}% closed here, and the remaining {_fx_pct(rest)}% "
+            "is still running for TP2 🚀\n\n"
+            "SL is now at breakeven 🔒" + _fx_foot(sig_id))
+
+
+def _fx_tp2(sym, tp2, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — TP2 HIT 🏆\n\n"
+            f"Both targets done! TP2 hit at <code>{_fx_px(tp2)}</code> and the trade is closed in full profit 🎉"
+            + _fx_foot(sig_id))
+
+
+def _fx_be(sym, sig_id) -> str:
+    coin = _fx_coin(sym)
+    return (_PLAIN + f"✦ ${coin} — BE EXIT 🛡️\n\n"
+            "TP1 was already hit, so the rest closed at entry.\n\n"
+            "No loss on this one — just a breakeven exit." + _fx_foot(sig_id))
+
+
+def _fx_sl(sym, sig_id, streak: int = 0, pause: int = 0) -> str:
+    coin = _fx_coin(sym)
+    if streak >= 2 and pause:
+        tail = (f"That's {streak} stop-losses in a row, so we're sitting out the next "
+                f"{pause} scan{'s' if pause > 1 else ''} to let the market settle.\n\n"
+                "Please don't open anything now — this is not a new signal.")
+    else:
+        tail = "Losses are part of trading. We stick to the plan and move on to the next one 💪"
+    return (_PLAIN + f"✦ ${coin} — STOP LOSS ⛔\n\n"
+            "This one didn't go our way — the stop-loss was hit and the trade is closed.\n\n"
+            + tail + _fx_foot(sig_id))
+
+
+def _fx_timeout(sym, sig_id, pnl_txt, hours: int = 1, after_tp1: bool = False, runner_pct=None) -> str:
+    coin = _fx_coin(sym)
+    if after_tp1:
+        body = (f"⏰ {hours} hour{'s have' if hours != 1 else ' has'} passed since TP1.\n\n"
+                f"The remaining {_fx_pct(runner_pct)}% runner has been closed.")
+    else:
+        body = (f"⏰ {hours} hour{'s have' if hours != 1 else ' has'} passed without hitting TP1 or SL, "
+                "so we've closed the trade.")
+    return (_PLAIN + f"✦ ${coin} — TIMEOUT ✦\n\n{body}\n\n📈 P/L: {pnl_txt}" + _fx_foot(sig_id))
+
+
+def _fx_trail(sym, stage: int, old=None, new=None) -> str:
+    """stage 1: halfway to TP1. stage 2: halfway to TP2. Without prices it
+    is the locked (VIP-only) Free copy."""
+    coin = _fx_coin(sym)
+    goal, why = ("TP1", "protect more capital") if stage == 1 else ("TP2", "lock in more profit")
+    move = (f"moved the stop from <code>{_fx_px(old)}</code> to <code>{_fx_px(new)}</code>"
+            if old is not None and new is not None else "moved the stop closer")
+    return (_PLAIN + f"✦ ${coin} — STOP TIGHTENED 🛡️\n\n"
+            f"Price is halfway to {goal}, so we've {move} to {why}.")
+
+
+def _fx_close(sym, result, sig_id, pnl=None, pnl_note="", tp2=None, closed_pct=None) -> str:
+    """One text for a system's close (Elite, Test, intraday): the friendly
+    result, then its P&L line when there is one."""
+    r = str(result).upper()
+    if r == "TP1":
+        text = _fx_tp1(sym, sig_id, closed_pct)
+    elif r == "TP2":
+        text = _fx_tp2(sym, tp2, sig_id)
+    elif r in ("BE", "BREAKEVEN"):
+        text = _fx_be(sym, sig_id)
+    elif r == "SL":
+        text = _fx_sl(sym, sig_id)
+    else:
+        text = _PLAIN + f"✦ ${_fx_coin(sym)} — {r} ✦\n\nThe trade is closed." + _fx_foot(sig_id)
+    if pnl is not None:
+        text = _fx_with(text, f"📈 P&L: <b>{pnl:+.2f}%</b>{pnl_note}")
+    return text
+
+
 def fmt_scan_signal(t: dict) -> str:
     sym  = t["symbol"]; sig = t["signal"]
     entry = t["entry"]; sl = t["sl"]; tp1 = t["tp1"]; tp2 = t["tp2"]
-    et   = t.get("entry_type","MARKET")
-    ver  = t.get("ver", 1)
     sl_pct = abs(entry - sl) / entry * 100 if entry else 0
-    coin = sym.replace("-USDT","").replace("USDT","")
+    if t.get("entry_type", "MARKET") == "ZONE" and t.get("zone_lo") and t.get("zone_hi"):
+        return _fx_zone(sym, sig, t["zone_lo"], t["zone_hi"], sl, tp1, tp2,
+                        t.get("sig_id") or f"#ID{int(t.get('created_at', time.time()))}")
+    return _fx_entry(sym, sig, entry, sl, tp1, tp2, t.get("sig_id", ""), sl_pct=sl_pct)
 
-    _gw_tag = _gw_model_tag("scan1" if ver == 1 else "scan2")
-    # A verified time the /vsttimes allowlist demoted to Channel-1-only still
-    # gets marked as such — distinguishes it from a genuinely nonspecial run
-    # in the one place (Channel 1) it still reaches (admin request 2026-08-12).
-    _vst_tag = " [VST]" if t.get("vst_downgraded") else ""
-    if et == "ZONE" and t.get("zone_lo") and t.get("zone_hi"):
-        zone_lo, zone_hi = t["zone_lo"], t["zone_hi"]
-        dir_lbl = "📉 Short Entry Zone" if sig == "SELL" else "📈 Long Entry Zone"
-        sig_id = t.get("sig_id") or f"#ID{int(t.get('created_at', time.time()))}"
-        return (
-            f"📩 <b>${coin}-USDT</b>  S{ver} {_gw_tag} | Mid-Term{_vst_tag}\n\n"
-            f"{dir_lbl}: <b>{min(zone_lo,zone_hi):,.4g} - {max(zone_lo,zone_hi):,.4g}</b>\n\n"
-            f"⏳ Signal Details:\n"
-            f"Target 1: <b>{tp1:,.4g}</b>\n"
-            f"Target 2: <b>{tp2:,.4g}</b>\n\n"
-            f"🔺 Stop-Loss: <b>{sl:,.4g}</b>\n"
-            f"💡 After reaching the first target you can put the rest of the position to breakeven.\n\n"
-            f"🔎 Signal ID: <i>{sig_id}</i>\n\n"
-        )
-
-    arrow = "🟢 LONG" if sig == "BUY" else "🔴 SHORT"
-    return _scan_box(
-        "Scan Signal",
-        f"📣 ${coin}-USDT  |  S{ver} {_gw_tag}{_vst_tag}",
-        [
-            [f"{arrow} — {_smallcaps_title('Market Entry')}"],
-            [f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>",
-             f"🛑 SL: <code>{sl:,.4g}</code>  ({sl_pct:.1f}%)",
-             f"💰 TP1: <code>{tp1:,.4g}</code>",
-             f"🏆 TP2: <code>{tp2:,.4g}</code>"],
-        ],
-        tag=t.get("sig_id",""),
-    )
 
 def fmt_scan_update(status: str, price: float = 0, t: dict = None) -> str:
-    # t is required. The old fallback read scan_active_trade, a global that has
-    # never existed anywhere in this file - so any call that omitted t raised
-    # NameError instead of doing something sensible. Every call site does pass
-    # t today, which is the only reason it was never hit; an empty box is a far
-    # better failure than a crash inside a lifecycle message.
+    # t is required - an empty post is a far better failure than a crash
+    # inside a lifecycle message.
     if t is None:
         print("  [FMT SCAN] called with no trade - returning an empty card")
         return ""
-    coin = t.get('symbol','?')
-    sym  = f"${coin}"; sig = t.get("signal","?")
-    ver_lbl = f"S{t.get('ver', 1)}"
-    entry = t.get("entry") or 0; tp1 = t.get("tp1",0); tp2 = t.get("tp2",0)
-    _hdr = lambda title_emoji, title: f"{title_emoji} ${coin}  |  {ver_lbl}  🕐 {_smallcaps_title(ist_str())}"
-    _hdr_notime = lambda title_emoji, title: f"{title_emoji} ${coin}  |  {ver_lbl}"
-    _sid = t.get("sig_id","")
-    msgs = {
-        "ENTRY_HIT": _scan_box(
-            "Entry Triggered", _hdr("🚀", "Entry Triggered"),
-            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
-              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>  |  📊 {_smallcaps_title('Price')}: <code>{price:,.4g}</code>",
-              f"🛑 SL: <code>{t.get('sl',0):,.4g}</code>", f"💰 TP1: <code>{tp1:,.4g}</code>", f"🏆 TP2: <code>{tp2:,.4g}</code>"],
-             [f"⚠️ {_smallcaps_title('Trade is now live')}"]],
-            tag=_sid,
-        ),
-        "TP1_HIT": _scan_box(
-            "TP1 Hit", _hdr_notime("💰", "TP1 Hit"),
-            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}", f"✅ TP1: <code>{tp1:,.4g}</code>",
-              f"🛡️ {_smallcaps_title('SL moved to BE')}: <code>{entry:,.4g}</code>",
-              f"🚀 {_smallcaps_title('Riding TP2')}: <code>{tp2:,.4g}</code>..."]],
-            tag=_sid,
-        ),
-        "TP2_HIT": _scan_box(
-            "TP2 Hit", _hdr_notime("🏆", "TP2 Hit"),
-            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
-              f"✅ {_smallcaps_title('Full profit')} @ TP2: <code>{tp2:,.4g}</code>"]],
-            tag=_sid,
-        ),
-        "SL_HIT": (
-            _scan_box(
-                "BE Exit", _hdr_notime("🛡️", "BE Exit"),
-                [[f"{'🟩' if sig=='BUY' else '🟥'} {sig}",
-                  f"✅ {_smallcaps_title('TP1 already hit — closed at entry')} <code>{entry:,.4g}</code>",
-                  f"📊 {_smallcaps_title('Result')}: {_smallcaps_title('Breakeven (no loss)')}"]],
-                tag=_sid,
-            ) if t.get("tp1_hit") else (
-                "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
-                f"⛔ <b>Position Closed</b>  ${coin}\n"
-                "<blockquote>SL executed.</blockquote>\n"
-                f"🪪 {_sid}"
-            )
-        ),
-        "ENTRY_MISSED": _scan_box(
-            "Entry Missed", _hdr("😔", "Entry Missed"),
-            [[f"{_smallcaps_title('Price bypassed entry zone')} <code>{entry:,.4g}</code> {_smallcaps_title('without filling')}."],
-             [f"⛔ {_smallcaps_title('Do not chase')}"]],
-            tag=_sid,
-        ),
-        "TIMEOUT": _scan_box(
-            "Timeout", _hdr("⏰", "Timeout"),
-            [[f"{'🟩' if sig=='BUY' else '🟥'} {sig} {_smallcaps_title('still running after 12 hours — force-closed')}.",
-              f"📊 {_smallcaps_title('Result')}: {t.get('_timeout_pnl', '?')}"]],
-            tag=_sid,
-        ),
-        "WAITING_ENTRY": _scan_box(
-            "Waiting Entry", _hdr("⏳", "Waiting Entry"),
-            [[f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.4g}</code>", f"🛑 SL: <code>{t.get('sl',0):,.4g}</code>",
-              f"💰 TP1: <code>{tp1:,.4g}</code>", f"🏆 TP2: <code>{tp2:,.4g}</code>"]
-             + ([f"📊 {_smallcaps_title('Current')}: <code>{price:,.4g}</code> ({abs(price-entry)/entry*100:.2f}% away)"] if price else [])],
-            tag=_sid,
-        ),
-    }
-    return msgs.get(status, f"✅ {sym} trade running")
+    sym = t.get("symbol", "?"); sig = t.get("signal", "?"); sid = t.get("sig_id", "")
+    entry = t.get("entry") or 0; sl = t.get("sl", 0); tp1 = t.get("tp1", 0); tp2 = t.get("tp2", 0)
+    if status == "ENTRY_HIT":
+        return _fx_filled(sym, sig, entry, sl, tp1, tp2, sid, price=price)
+    if status == "TP1_HIT":
+        return _fx_tp1(sym, sid)
+    if status == "TP2_HIT":
+        return _fx_tp2(sym, tp2, sid)
+    if status == "SL_HIT":
+        return _fx_be(sym, sid) if t.get("tp1_hit") else _fx_sl(sym, sid)
+    if status == "ENTRY_MISSED":
+        return _fx_missed(sym, entry, sid)
+    if status == "TIMEOUT":
+        return _fx_timeout(sym, sid, t.get("_timeout_pnl", "?"), hours=12)
+    if status == "WAITING_ENTRY":
+        return _fx_waiting(sym, entry, sl, tp1, tp2, sid, price=price)
+    return _PLAIN + f"✦ ${_fx_coin(sym)} — TRADE RUNNING ✅\n\nThe trade is still running as planned." + _fx_foot(sid)
+
 
 def _wick_check_since_entry(sym: str, created_at: float):
     """Re-verify against 15m candles from the trade's entry time (rounded down
@@ -15371,22 +15380,8 @@ _INTRA_CT_VER = {"btcint": 5, "xaut": 6}
 
 def _intra_entry_card(t: dict) -> str:
     spec = _intra_spec(t["kind"])
-    coin = spec["coin"]
-    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
-    wait_line = (f"⏳ {_smallcaps_title('Wait for')}: <code>{t['entry']:,.6g}</code>"
-                 if t["entry_type"] == "PULLBACK"
-                 else f"⚡ {_smallcaps_title('Market entry')}")
-    rows = [[
-        f"{arrow} {_smallcaps_title(t['signal'])}  <b>{coin}</b>",
-        wait_line,
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
-        f"🛑 {_smallcaps_title('SL')}: <code>{t['sl']:,.6g}</code>  ({t['sl_pct']:.2f}%)",
-        f"✅ TP1: <code>{t['tp1']:,.6g}</code>",
-        f"✅ TP2: <code>{t['tp2']:,.6g}</code>",
-        f"📊 {_smallcaps_title('Confidence')}: {t['confidence']}",
-    ]]
-    return _scan_box(f"${coin} {spec['label']}", f"{arrow} {spec['symbol']}.P", rows,
-                     tag=t.get("sig_id", ""))
+    return _fx_entry(spec["coin"], t["signal"], t["entry"], t["sl"], t["tp1"], t["tp2"], t.get("sig_id", ""),
+                     sl_pct=t.get("sl_pct"), market=t.get("entry_type") != "PULLBACK")
 
 
 def _intra_close(t: dict, result: str, price: float, note: str = ""):
@@ -15403,15 +15398,9 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
     coin = spec["coin"]
     sym = t["symbol"]
     sig_id = t.get("sig_id", "")
-    icon = {"TP2": "🎯", "TP1": "✅", "SL": "❌", "BE": "🛡️", "CANCEL": "🚫"}.get(result, "•")
-    body = [[
-        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
-        f"📊 {_smallcaps_title('Price')}: <code>{price:,.6g}</code>",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
-    ]]
+    text = _fx_close(coin, result, sig_id, tp2=t.get("tp2"), closed_pct=ct.TP1_CLOSE_PCT)
     if note:
-        body[0].append(f"<i>{note}</i>")
-    text = _scan_box(f"${coin} {result}", f"{icon} {spec['label']}", body, tag=sig_id)
+        text = _fx_with(text, f"💡 {note}")
 
     if result in ("SL", "BE"):
         _card_sl_log(_pnl_card(t, result), text, t.get("reply_map"), sig_id, result, include_ch2=False,
@@ -15767,15 +15756,8 @@ def _test_pin(mid):
 
 
 def _test_entry_card(t: dict) -> str:
-    coin = t["symbol"].replace("-USDT", "")
-    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
-    return _scan_box(f"${coin} TEST", f"{arrow} {t['symbol']}", [[
-        f"{arrow} {_smallcaps_title(t['signal'])} — {_smallcaps_title('market entry')}",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
-        f"🛑 SL: <code>{t['sl']}</code>  ({t['sl_pct']:.2f}%)",
-        f"💰 TP1: <code>{t['tp1']}</code>",
-        f"🏆 TP2: <code>{t['tp2']}</code>",
-    ]], tag=t.get("sig_id", ""))
+    return _fx_entry(t["symbol"], t["signal"], t["entry"], t["sl"], t["tp1"], t["tp2"], t.get("sig_id", ""),
+                     sl_pct=t.get("sl_pct"), alt=True)
 
 
 def _sys_copy_open(t: dict, ver: int, tag: str):
@@ -15850,12 +15832,8 @@ def _test_close(t: dict, result: str, price: float):
                 pnl = -pnl
     except Exception:
         pnl = None
-    _ttext = _scan_box(f"${coin} {result}", f"{icon} {t['symbol']}", [[
-        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
-        f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
-    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
-        tag=t.get("sig_id", ""))
+    _ttext = _fx_close(t["symbol"], result, t.get("sig_id", ""), pnl=None if result == "BE" else pnl, tp2=t.get("tp2"),
+                       closed_pct=ct.TP1_CLOSE_PCT)
     _tcard = _pnl_card(t, result, price)
     _tpng = _pnl_card_png(_tcard) if _tcard else None
     if _tpng:
@@ -16607,16 +16585,9 @@ def _elite_candidates(kind: str, tickers: list) -> list:
 
 
 def _elite_entry_card(t: dict) -> str:
-    coin = t["symbol"].replace("-USDT", "")
-    arrow = "🟢" if t["signal"] == "BUY" else "🔴"
-    return _scan_box(f"${coin} ELITE", f"{arrow} {t['symbol']}  |  {t['label']} {t['slot']}", [[
-        f"{arrow} {_smallcaps_title(t['signal'])} — {_smallcaps_title('market entry')}",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
-        f"🛑 SL: <code>{t['sl']}</code>  ({t['sl_pct']:.2f}%)",
-        f"💰 TP1: <code>{t['tp1']}</code>",
-        f"🏆 TP2: <code>{t['tp2']}</code>",
-        f"⏱ {_smallcaps_title('Timeout')}: {t['timeout_h']}h",
-    ]], tag=t.get("sig_id", ""))
+    return _fx_entry(t["symbol"], t["signal"], t["entry"], t["sl"], t["tp1"], t["tp2"], t.get("sig_id", ""),
+                     sl_pct=t.get("sl_pct"), alt=True,
+                     note=f"⏱ If neither target hits, we close it after {t['timeout_h']}h.")
 
 
 def _elite_4h_struct(df) -> str:
@@ -17037,12 +17008,12 @@ def _elite_close(t: dict, result: str, price: float, pnl=None):
             pnl = None
     _pnl_note = " (TP1 banked)" if result == "BE" and t.get("tp1_hit") else ""
     icon = {"TP2": "🏆", "TP1": "✅", "SL": "🛑", "BE": "🛡️", "TIMEOUT": "⏰"}.get(result, "•")
-    _etext = _scan_box(f"${coin} {result}", f"{icon} {t['symbol']}  |  {t['label']}", [[
-        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
-        f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
-    ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>{_pnl_note}"] if pnl is not None else [])],
-        tag=t.get("sig_id", ""))
+    _etext = (_fx_timeout(t["symbol"], t.get("sig_id", ""), f"{pnl:+.2f}%" if pnl is not None else "?",
+                          hours=int(t.get("timeout_h", 1)), after_tp1=bool(t.get("tp1_hit")),
+                          runner_pct=100 - float(ct.TP1_CLOSE_PCT))
+              if result == "TIMEOUT" else
+              _fx_close(t["symbol"], result, t.get("sig_id", ""), pnl=pnl, pnl_note=_pnl_note,
+                        tp2=t.get("tp2"), closed_pct=ct.TP1_CLOSE_PCT))
     _ecard = _pnl_card(t, result, price)
     _epng = _pnl_card_png(_ecard) if _ecard else None
     if _epng:
@@ -17683,11 +17654,8 @@ def _intraday_monitor_loop():
                             # to catch it.
                             t["invalidation"] = None
                             send_lifecycle_reply(
-                                _scan_box(f"${spec['coin']} Entry Filled",
-                                          f"⚡ {spec['label']}",
-                                          [[f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.6g}</code>",
-                                            f"📊 {_smallcaps_title('Price')}: <code>{cp:,.6g}</code>"]],
-                                          tag=t.get("sig_id", "")),
+                                _fx_filled(spec["coin"], t["signal"], t["entry"], t["sl"], t["tp1"], t["tp2"],
+                                           t.get("sig_id", ""), price=cp),
                                 t.get("reply_map"), include_ch2=False,
                                 tier_routed=True, share_free=True)
                             save_state()
@@ -17789,11 +17757,7 @@ def _intra_cancel_pending(t: dict, reason: str):
         return
     t["_announced"] = "CANCEL"
     spec = _intra_spec(t["kind"])
-    text = _scan_box(f"${spec['coin']} Cancelled", f"🚫 {spec['label']}",
-                     [[f"🚫 {_smallcaps_title('Pending entry cancelled')}",
-                       f"🎯 {_smallcaps_title('Entry was')}: <code>{t['entry']:,.6g}</code>",
-                       f"<i>{reason}</i>"]],
-                     tag=t.get("sig_id", ""))
+    text = _fx_cancel(spec["coin"], t["entry"], reason, t.get("sig_id", ""))
     send_lifecycle_reply(text, t.get("reply_map"), include_ch2=False,
                          tier_routed=True, share_free=True)
     if t.get("ct_opened"):
@@ -17808,12 +17772,7 @@ def _intra_cancel_pending(t: dict, reason: str):
 def _intra_close_partial(t: dict, price: float):
     """TP1 hit — half off, stop to breakeven, trade stays open for TP2."""
     spec = _intra_spec(t["kind"])
-    text = _scan_box(f"${spec['coin']} TP1 Hit", f"✅ {spec['label']}",
-                     [[f"✅ TP1: <code>{t['tp1']:,.6g}</code>",
-                       f"📊 {_smallcaps_title('Price')}: <code>{price:,.6g}</code>",
-                       f"🛡️ {_smallcaps_title('SL moved to breakeven')}",
-                       f"🎯 TP2: <code>{t['tp2']:,.6g}</code>"]],
-                     tag=t.get("sig_id", ""))
+    text = _fx_tp1(spec["coin"], t.get("sig_id", ""), ct.TP1_CLOSE_PCT)
     _card_reply(_pnl_card(t, "TP1"), text, t.get("reply_map"), include_ch2=True,
                          tier_routed=True, share_free=True, react_category="tp1")
     if t.get("ct_opened"):
@@ -17930,21 +17889,13 @@ def run_price_check():
             log_trade_outcome("SL_HIT", f"{n} in a row during 1H check")
             if n >= 3:
                 trade_stats["cooldown_scans"] = 2
-                _sl_msg = (
-                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
-                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                    f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 2 scans...")
+                _sl_msg = (_fx_be(SYMBOL, active_trade.get("sig_id", "")) if active_trade.get("tp1_hit")
+                           else _fx_sl(SYMBOL, active_trade.get("sig_id", ""), streak=n, pause=2))
                 _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
-                _sl_msg = (
-                    f"🚨 <b>TRADE CLOSED — SL HIT ({n} in a row)</b> 🚨\n\n"
-                    f"❌ Loss taken on {active_trade.get('signal','?')} @ {active_trade.get('entry',0):,.0f}\n\n"
-                    f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
-                    f"⛔ <b>This is NOT a new signal</b>\n\n"
-                    f"❄️ Cooling down 1 scan...")
+                _sl_msg = (_fx_be(SYMBOL, active_trade.get("sig_id", "")) if active_trade.get("tp1_hit")
+                           else _fx_sl(SYMBOL, active_trade.get("sig_id", ""), streak=n, pause=1))
                 _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
@@ -29337,13 +29288,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
             "tp2_hit_time": _ist_str_now(), "result": "TP2",
             "entry_price": entry, "sl_price": sl, "tp1_price": tp1, "tp2_price": tp2})
-        _msg = _scan_box(
-            f"${coin} TP2 Hit", f"🏆 TS{dver} ${coin}-USDT",
-            [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
-              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-              f"🏆 TP2: <code>{tp2:,.6g}</code>",
-              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
-            tag=sig_id)
+        _msg = _fx_tp2(sym, tp2, sig_id)
         _card_reply(_pnl_card(t, "TP2"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp2")
         if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=dver + 2)
@@ -29366,13 +29311,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
         log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
             "tp1_hit_time": _ist_str_now(), "result": "TP1_partial",
             "entry_price": entry, "sl_price": be_sl_price, "tp1_price": tp1, "tp2_price": tp2})
-        _msg = _scan_box(
-            f"${coin} TP1 Hit", f"🎯 TS{dver} ${coin}-USDT",
-            [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
-              f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
-              f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
-              f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
-            tag=sig_id)
+        _msg = _fx_tp1(sym, sig_id, ct.TP1_CLOSE_PCT)
         _card_reply(_pnl_card(t, "TP1"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp1")
         if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=dver + 2)
@@ -29392,13 +29331,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
     log_trade_event({"type": _dtype, "coin": sym, "direction": sig,
         "sl_hit_time": _ist_str_now(), "result": close_result,
         "entry_price": entry, "sl_price": _sl_exit, "tp1_price": tp1, "tp2_price": tp2})
-    _msg = _scan_box(
-        f"${coin} {lbl} Hit", f"🚨 TS{dver} ${coin}-USDT",
-        [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
-          f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-          f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
-          f"{'🛡️' if close_result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(close_result)}"]],
-        tag=sig_id)
+    _msg = _fx_be(sym, sig_id) if lbl == "BE" else _fx_sl(sym, sig_id)
     _card_sl_log(_pnl_card(t, lbl), _msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
     if t.get("ct_opened"): ct.on_scan_sl(sym, ver=dver + 2)
     ct.virtual_on_close(sym, cp, lbl)
@@ -29483,13 +29416,7 @@ def _demo_monitor_loop():
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp2_hit_time":_ist_str_now(),"result":"TP2",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        _msg = _scan_box(
-                            f"${coin} TP2 Hit", f"🏆 TS{_dver} ${coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ TP2: <code>{cp:,.6g}</code>",
-                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-                              f"🏆 TP2: <code>{tp2:,.6g}</code>",
-                              f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
-                            tag=sig_id)
+                        _msg = _fx_tp2(sym, tp2, sig_id)
                         _card_reply(_pnl_card(t, "TP2"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp2")
                         if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=2 + _dver)
@@ -29513,18 +29440,7 @@ def _demo_monitor_loop():
                             "sl_hit_time":_ist_str_now(),"result":result,
                             "entry_price":entry,"sl_price":_sl_exit,
                             "tp1_price":tp1,"tp2_price":tp2})
-                        _msg = _scan_box(
-                            f"${coin} {lbl} Hit", f"🚨 TS{_dver} ${coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ {lbl}: <code>{cp:,.6g}</code>",
-                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-                              f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
-                              f"{'🛡️' if result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(result)}"]],
-                            tag=sig_id) if lbl == "BE" else (
-                            "𝐂𝐋𝐄𝐗™ 𝐁𝐎𝐓\n"
-                            f"⛔ <b>Position Closed</b>  ${coin}\n"
-                            "<blockquote>SL executed.</blockquote>\n"
-                            f"🪪 {sig_id}"
-                        )
+                        _msg = _fx_be(sym, sig_id) if lbl == "BE" else _fx_sl(sym, sig_id)
                         _card_sl_log(_pnl_card(t, lbl), _msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         if t.get("ct_opened"): ct.on_scan_sl(sym, ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, lbl)
@@ -29559,13 +29475,7 @@ def _demo_monitor_loop():
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "tp1_hit_time":_ist_str_now(),"result":"TP1_partial",
                             "entry_price":entry,"sl_price":be_sl_price,"tp1_price":tp1,"tp2_price":tp2})
-                        _msg = _scan_box(
-                            f"${coin} TP1 Hit", f"🎯 TS{_dver} ${coin}-USDT",
-                            [[f"📊 {_smallcaps_title('Price')} @ TP1: <code>{cp:,.6g}</code>",
-                              f"🛡️ {_smallcaps_title(f'{ct.TP1_CLOSE_PCT}% closed')}",
-                              f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
-                              f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
-                            tag=sig_id)
+                        _msg = _fx_tp1(sym, sig_id, ct.TP1_CLOSE_PCT)
                         _card_reply(_pnl_card(t, "TP1"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp1")
                         if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=2 + _dver)
@@ -29583,15 +29493,8 @@ def _demo_monitor_loop():
                         log_trade_event({"type":_dtype,"coin":sym,"direction":sig,
                             "timeout_time":_ist_str_now(),"result":f"TIMEOUT({pnl:+.2f}%)",
                             "entry_price":entry,"sl_price":sl,"tp1_price":tp1,"tp2_price":tp2})
-                        _timeout_line = (f"1ʜ ᴇʟᴀᴘꜱᴇᴅ ꜱɪɴᴄᴇ TP1 — {_smallcaps_title(f'Remaining {100-ct.TP1_CLOSE_PCT}% runner closed')}"
-                                         if tp1hit else f"{_smallcaps_title('1H elapsed — no TP1/SL hit')}")
-                        _msg = _scan_box(
-                            f"${coin} Timeout", f"⏰ TS{_dver} ${coin}-USDT",
-                            [[_timeout_line,
-                              f"📊 {_smallcaps_title('Exit')}: <code>{cp:,.6g}</code>",
-                              f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
-                              f"📈 P/L: {pnl:+.2f}%"]],
-                            tag=sig_id)
+                        _msg = _fx_timeout(sym, sig_id, f"{pnl:+.2f}%", hours=1, after_tp1=bool(tp1hit),
+                                           runner_pct=100 - float(ct.TP1_CLOSE_PCT))
                         _to_ids = _card_reply(_pnl_card(t, "TIMEOUT", cp), _msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
                             react_category="timeout_win" if pnl >= 0 else "timeout_loss")
                         _track_sl_ids(sig_id, "sl_mid", _to_ids)
@@ -30049,17 +29952,8 @@ def _run_test_scan(cid, scan_ver: int, is_special: bool = False, trigger_hm: tup
             arrow = "🟢 LONG" if scan_signal_val == "BUY" else "🔴 SHORT"
             coin  = chosen_sym.replace("-USDT","")
             _demo_sig_id = _gen_signal_id()
-            demo_msg = _scan_box(
-                "Alt Signal", f"📣 ${coin}-USDT  |  TS{scan_ver} {_gw_model_tag('test', scan_ver)}",
-                [[f"{arrow} — {_smallcaps_title('Market Entry')}"],
-                 [f"🎯 {_smallcaps_title('Entry')}: <code>{scan_entry:,.4g}</code>",
-                  f"🛑 SL: <code>{scan_sl:,.4g}</code>  ({sl_pct:.1f}%)",
-                  f"📌 {_smallcaps_title('Swing Level')}: {swing_level_str}",
-                  f"💰 TP1: <code>{scan_tp1:,.4g}</code>", f"🏆 TP2: <code>{scan_tp2:,.4g}</code>",
-                  f"📊 RR: 1:2.0 (TP1) / 1:3.75 (TP2)",
-                  f"⏰ {_smallcaps_title('Timeout')}: 1H | move_age: {age}c"]],
-                tag=_demo_sig_id,
-            )
+            demo_msg = _fx_entry(chosen_sym, scan_signal_val, scan_entry, scan_sl, scan_tp1, scan_tp2,
+                                 _demo_sig_id, alt=True)
             _demo_is_d48 = _gw_model_tag("test", scan_ver) == "D5"  # channel-2 only gets D5 (Direct+Opus5) signals
             # TS1 and TS2 each reach Free/VIP channels at their OWN independent
             # whitelisted special slot times (test1/test2) — everything else
@@ -30751,13 +30645,9 @@ def main():
                     # MARKET orders filled instantly — send entry confirmation immediately
                     if signal.get("entry_type", "MARKET") == "MARKET":
                         send_telegram(
-                            f"🚀 <b>ENTRY TRIGGERED!</b>  🕐 {ist_str()}\n\n"
-                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} <b>{signal['signal']} {SYMBOL}</b>\n"
-                            f"🎯 Entry: <b>{signal['entry']:,.0f}</b>  ✅ MARKET FILLED\n"
-                            f"🛑 SL:    <b>{signal['sl']:,.0f}</b>\n"
-                            f"💰 TP1:   <b>{signal['tp1']:,.0f}</b>\n"
-                            f"🏆 TP2:   <b>{signal['tp2']:,.0f}</b>",
-                            include_ch2=False                        )
+                            _fx_filled(SYMBOL, signal["signal"], signal["entry"], signal["sl"], signal["tp1"],
+                                       signal["tp2"], signal.get("sig_id", "")),
+                            include_ch2=False)
                     active = ct.active_count()
                     if active == 0:
                         send_admin(f"⚠️ <b>Copy Trade</b>\n\nNo active copy users — signal NOT copied to BingX.\n\nUse /users to check.")
@@ -30776,9 +30666,9 @@ def main():
                 signal = analyze_with_claude(ticker, data, validate_trade=True)
                 if signal is None:
                     if forced:
-                        send_telegram(f"<b>Trade Status: HOLD</b>  {ist_str()}\n\n"
-                            f"{t['signal']} @ {t['entry']:,.0f}\nStructure intact.\n"
-                            f"TP2: <b>{t['tp2']:,.0f}</b>")
+                        send_telegram(_PLAIN + f"✦ $BTC — STILL HOLDING 🤝\n\n"
+                            f"The {_fx_side(t['signal'])} from <code>{_fx_px(t['entry'])}</code> is still valid — structure is intact.\n\n"
+                            f"🏆 TP2: <code>{_fx_px(t['tp2'])}</code>")
                 elif signal.get("_hold"):
                     send_admin(f"<b>Trade Validated - HOLD</b>  {ist_str()}\n\n"
                         f"{t['signal']} @ {t['entry']:,.0f}\n"
@@ -30792,10 +30682,10 @@ def main():
                     else:
                         flip_reason = signal.get("reasoning","Structure flipped")
                         log_trade_outcome("STRUCTURE_FLIP", flip_reason[:100])
-                        send_lifecycle_reply(f"🔄 <b>STRUCTURE FLIP!</b> 🚨  🕐 {ist_str()}\n\n"
-                            f"❌ Closing: {t['signal']} @ {t['entry']:,.0f}\n"
-                            f"💡 Why: <i>{_html.escape(flip_reason[:200])}</i>\n\n"
-                            f"{'🟩' if signal['signal']=='BUY' else '🟥'} New: <b>{signal['signal']} @ {signal['entry']:,.0f}</b>",
+                        send_lifecycle_reply(_PLAIN + f"✦ $BTC — STRUCTURE FLIP 🔄\n\n"
+                            f"The market turned, so we're closing the {_fx_side(t['signal'])} from <code>{_fx_px(t['entry'])}</code>.\n\n"
+                            f"💡 Why: {_html.escape(flip_reason[:200])}\n\n"
+                            f"New trade: {_fx_side(signal['signal']).upper()} at <code>{_fx_px(signal['entry'])}</code> — details coming right up.",
                             t.get("reply_map"), include_ch2=False)
                         ct.on_close_all()
                         _close_sig_snapshot(t.get("sig_id",""), "STRUCTURE_FLIP")
