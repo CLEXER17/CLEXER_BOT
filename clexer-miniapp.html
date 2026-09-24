@@ -1787,6 +1787,260 @@
     }
   }
 
+  /* ---------- Admin-only virtual: Test system + Elite ----------
+     Two extra tabs that exist only for admins - /vsys/access decides, and
+     for everyone else nothing below touches the page. Same controls and
+     layout as the Virtual tab, one paper account per system, fed by the
+     Test system's and Elite's own trades. Taps are queued through api.py
+     and applied by the bot within ~30 s, exactly like the Virtual tab. */
+  const VSYS = {
+    test:  { label: "Test V",  title: "Test System Virtual", icon: "🧪" },
+    elite: { label: "Elite V", title: "Elite Virtual",       icon: "⭐" },
+  };
+  const vs = {};   // per system: {levMode, riskMode, marginMode, month, state, pollTimer, previewTimer}
+
+  function vsEl(sys, id){ return document.getElementById(`vs_${sys}_${id}`); }
+  function vsErrText(e){ return (e.message||"").replace(/^.*"detail":"?/,"").replace(/"?}$/,""); }
+
+  function vsSectionHtml(sys){
+    const P = `vs_${sys}_`, S = VSYS[sys];
+    return `
+    <div class="wrap" style="padding-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div style="font-weight:500;font-size:15px">${S.icon} ${S.title}</div>
+        <span style="font-size:10px;background:var(--gold-dim);color:var(--gold);padding:3px 8px;border-radius:20px">Admin · practice</span>
+      </div>
+      <div id="${P}setup" class="card" hidden style="border:1px solid var(--gold-dim)">
+        <div class="ttl" style="color:var(--gold)">Set up your run</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.5">Set a capital, choose how leverage is decided and how much each trade uses. After Start, every ${sys === "elite" ? "Elite" : "Test system"} trade is copied here on paper — no real money. Only admins see this page.</div>
+        <div class="k" style="margin-bottom:4px">Total capital (USDT)</div>
+        <input id="${P}capital" value="20" inputmode="decimal" class="vt-in" data-vs="${sys}" data-act="preview"/>
+        <div class="k" style="margin:12px 0 6px">Leverage</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="chip on" id="${P}levAuto" data-vs="${sys}" data-act="lev" data-v="auto">Auto</button>
+          <button class="chip" id="${P}levManual" data-vs="${sys}" data-act="lev" data-v="manual">Manual</button>
+        </div>
+        <div id="${P}autoBox">
+          <div class="k" style="margin-bottom:4px">Risk per trade at stop-loss</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input id="${P}risk" value="0.5" inputmode="decimal" class="vt-in" style="flex:1" data-vs="${sys}" data-act="preview"/>
+            <button class="chip on" id="${P}riskUsd" data-vs="${sys}" data-act="unit" data-f="risk" data-v="usd">$</button>
+            <button class="chip" id="${P}riskPct" data-vs="${sys}" data-act="unit" data-f="risk" data-v="pct">% of margin</button>
+          </div>
+        </div>
+        <div id="${P}manualBox" hidden>
+          <div class="k" style="margin-bottom:4px">Leverage (1–100x)</div>
+          <input id="${P}lev" value="10" inputmode="decimal" class="vt-in" style="margin-bottom:10px" data-vs="${sys}" data-act="preview"/>
+        </div>
+        <div class="k" style="margin-bottom:4px">Margin per trade</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input id="${P}margin" value="2" inputmode="decimal" class="vt-in" style="flex:1" data-vs="${sys}" data-act="preview"/>
+          <button class="chip on" id="${P}marginUsd" data-vs="${sys}" data-act="unit" data-f="margin" data-v="usd">$</button>
+          <button class="chip" id="${P}marginPct" data-vs="${sys}" data-act="unit" data-f="margin" data-v="pct">% of balance</button>
+        </div>
+        <div id="${P}preview" style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6;margin:6px 0 12px"></div>
+        <div id="${P}err" class="down" style="font-size:12px;margin-bottom:8px" hidden></div>
+        <button class="tvbtn" style="background:var(--gold);color:var(--bg);margin-top:0" data-vs="${sys}" data-act="start">▶ START</button>
+      </div>
+      <div id="${P}run" class="card" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span id="${P}status" class="status running">RUNNING</span>
+          <span id="${P}since" style="font-size:10px;color:var(--muted)"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;text-align:center;font-family:var(--mono)">
+          <div class="sumcard vt-cell"><div class="k">Capital</div><div id="${P}cap" style="font-size:14px;font-weight:700"></div></div>
+          <div class="sumcard vt-cell"><div class="k">Balance</div><div id="${P}bal" style="font-size:14px;font-weight:700"></div></div>
+          <div class="sumcard vt-cell"><div class="k">Result</div><div id="${P}pct" style="font-size:14px;font-weight:700"></div></div>
+        </div>
+        <div id="${P}cfg" style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:10px"></div>
+        <div id="${P}wiped" class="down" style="font-size:12px;margin-bottom:10px;line-height:1.5" hidden>💀 The balance can no longer fund a trade, so trading stopped. Reset to start a new run.</div>
+        <div id="${P}open"></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button id="${P}stopBtn" class="tvbtn" style="margin-top:0" data-vs="${sys}" data-act="stop">⏸ Stop</button>
+          <button id="${P}resumeBtn" class="tvbtn" style="margin-top:0;display:none" data-vs="${sys}" data-act="resume">▶ Resume</button>
+          <button class="tvbtn" style="margin-top:0;border-color:var(--short);color:var(--short)" data-vs="${sys}" data-act="reset">↺ Reset</button>
+        </div>
+        <div id="${P}pending" style="font-size:10px;color:var(--gold);margin-top:8px" hidden>Applying… this takes up to 30 seconds.</div>
+      </div>
+      <div id="${P}pages" class="card" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <button class="chip" id="${P}prev" data-vs="${sys}" data-act="go" data-v="-1">◀</button>
+          <div style="text-align:center"><div id="${P}month" style="font-weight:600;font-size:13px"></div><div id="${P}pageNo" style="font-size:10px;color:var(--muted)"></div></div>
+          <button class="chip" id="${P}next" data-vs="${sys}" data-act="go" data-v="1">▶</button>
+        </div>
+        <div id="${P}stats" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-family:var(--mono);font-size:11px;text-align:center;margin-bottom:10px"></div>
+        <div id="${P}list"></div>
+        <button class="tvbtn" data-vs="${sys}" data-act="pdf">📄 Send this month's PDF to my DM</button>
+        <div id="${P}pdfNote" style="font-size:10px;color:var(--muted);margin-top:6px;text-align:center">No PDF limit for admins.</div>
+      </div>
+    </div>`;
+  }
+
+  function vsLevMode(sys, m){
+    vs[sys].levMode = m;
+    vsEl(sys,"levAuto").classList.toggle("on", m==="auto");
+    vsEl(sys,"levManual").classList.toggle("on", m==="manual");
+    vsEl(sys,"autoBox").hidden = m!=="auto";
+    vsEl(sys,"manualBox").hidden = m!=="manual";
+    vsPreview(sys);
+  }
+  function vsUnit(sys, field, unit){
+    if(field==="risk"){ vs[sys].riskMode = unit; vsEl(sys,"riskUsd").classList.toggle("on", unit==="usd"); vsEl(sys,"riskPct").classList.toggle("on", unit==="pct"); }
+    else { vs[sys].marginMode = unit; vsEl(sys,"marginUsd").classList.toggle("on", unit==="usd"); vsEl(sys,"marginPct").classList.toggle("on", unit==="pct"); }
+    vsPreview(sys);
+  }
+  function vsForm(sys){
+    return { capital: parseFloat(vsEl(sys,"capital").value)||0,
+             lev_mode: vs[sys].levMode, lev: parseFloat(vsEl(sys,"lev").value)||10,
+             risk_mode: vs[sys].riskMode, risk: parseFloat(vsEl(sys,"risk").value)||0,
+             margin_mode: vs[sys].marginMode, margin: parseFloat(vsEl(sys,"margin").value)||0 };
+  }
+  function vsPreview(sys){
+    clearTimeout(vs[sys].previewTimer);
+    vs[sys].previewTimer = setTimeout(async () => {
+      const el = vsEl(sys,"preview"), err = vsEl(sys,"err");
+      try{
+        // the sizing maths is the same as the Virtual tab's - reuse its preview
+        const p = await api("/virtual/preview", {method:"POST", body: JSON.stringify(vsForm(sys))});
+        err.hidden = true;
+        const line = (name, r) => r.skip ? `${name}: <span class="down">${r.skip}</span>` :
+          `${name}: <b>${r.lev}x</b> · position ${vtMoney(r.position)} · SL <span class="down">${vtMoney(r.sl)}</span> · TP1 <span class="up">${vtSigned(r.tp1)}</span> · TP2 <span class="up">${vtSigned(r.tp2)}</span>${r.note?` · <span style="color:var(--gold)">${r.note}</span>`:""}`;
+        el.innerHTML = `<div style="color:var(--gold);font-size:10px;letter-spacing:.1em;margin-bottom:4px">EXAMPLE TRADES WITH THESE SETTINGS</div>` +
+          line("Normal 1.2% stop", p.normal) + "<br>" + line("Tight 0.3% stop", p.tight) + "<br>" + line("Wide 6% stop", p.wide);
+      }catch(e){ err.hidden = false; err.textContent = vsErrText(e); el.innerHTML = ""; }
+    }, 350);
+  }
+  function vsShowPending(sys){
+    vsEl(sys,"pending").hidden = false;
+    clearTimeout(vs[sys].pollTimer);
+    let tries = 0;
+    const poll = async () => { await loadVsys(sys); tries++; const st = vs[sys].state;
+      if(st && st.pending && st.pending.length && tries < 12) vs[sys].pollTimer = setTimeout(poll, 5000); };
+    vs[sys].pollTimer = setTimeout(poll, 3000);
+  }
+  async function vsAct(sys, act, el){
+    haptic("sel");
+    const post = (path, body) => api(`/vsys/${sys}/${path}`, {method:"POST", body: JSON.stringify(body || {})});
+    try{
+      if(act === "lev") return vsLevMode(sys, el.dataset.v);
+      if(act === "unit") return vsUnit(sys, el.dataset.f, el.dataset.v);
+      if(act === "go"){
+        const st = vs[sys].state; if(!st) return;
+        const k = Number(el.dataset.v) < 0 ? st.prev : st.next; if(!k) return;
+        vs[sys].month = k; return loadVsys(sys);
+      }
+      if(act === "start"){
+        try{ await post("setup", vsForm(sys)); vsEl(sys,"err").hidden = true; vsShowPending(sys); }
+        catch(e){ vsEl(sys,"err").hidden = false; vsEl(sys,"err").textContent = vsErrText(e); }
+        return;
+      }
+      if(act === "stop" || act === "resume"){ await post(act); return vsShowPending(sys); }
+      if(act === "reset"){
+        return vtConfirm(`Reset wipes this ${VSYS[sys].title} balance and history. A PDF of the run is sent to your DM first. Continue?`,
+          async () => { try{ await post("reset"); vs[sys].month = null; vsShowPending(sys); }catch(e){ alert(e.message); } });
+      }
+      if(act === "pdf"){
+        const m = vs[sys].month ? String(vs[sys].month).split("#")[0] : null;
+        try{ await post("pdf", {month: m}); vsEl(sys,"pdfNote").textContent = "Sent to your Telegram DM · no PDF limit for admins"; }
+        catch(e){ vsEl(sys,"pdfNote").textContent = vsErrText(e); }
+      }
+    }catch(e){ alert(e.message); }
+  }
+
+  async function loadVsys(sys){
+    let st;
+    try{ st = await api(`/vsys/${sys}/state` + (vs[sys].month ? "?month=" + encodeURIComponent(vs[sys].month) : "")); }
+    catch(e){ console.warn("vsys state:", e); return; }
+    vs[sys].state = st;
+    const setup = vsEl(sys,"setup"), run = vsEl(sys,"run"), pages = vsEl(sys,"pages");
+    vsEl(sys,"pending").hidden = !(st.pending || []).length;
+    if(st.status === "setup"){
+      setup.hidden = false; run.hidden = true;
+      if(st.capital) vsEl(sys,"capital").value = st.capital;
+      if(st.lev) vsEl(sys,"lev").value = st.lev;
+      if(st.risk) vsEl(sys,"risk").value = st.risk;
+      if(st.margin) vsEl(sys,"margin").value = st.margin;
+      vs[sys].riskMode = st.risk_mode || "usd"; vs[sys].marginMode = st.margin_mode || "usd";
+      vsLevMode(sys, st.lev_mode || "auto"); vsUnit(sys, "risk", vs[sys].riskMode); vsUnit(sys, "margin", vs[sys].marginMode);
+    }else{
+      setup.hidden = true; run.hidden = false;
+      const s = vsEl(sys,"status");
+      s.textContent = {running:"RUNNING", stopped:"STOPPED", wiped:"CAPITAL EXHAUSTED"}[st.status] || st.status;
+      s.className = "status " + (st.status === "running" ? "running" : "");
+      vsEl(sys,"since").textContent = st.started_at ? `since ${st.started_at} · run #${st.run}` : "";
+      vsEl(sys,"cap").textContent = vtMoney(st.capital);
+      rollTo(vsEl(sys,"bal"), Number(st.balance)||0, vtMoney, 800);
+      const pc = vsEl(sys,"pct"); rollTo(pc, Number(st.pnl_pct)||0, x=>(x>=0?"+":"")+x.toFixed(2)+"%", 800);
+      pc.className = st.pnl_pct >= 0 ? "up" : "down";
+      const rb = pc.closest(".vt-cell"); if(rb) rb.className = "sumcard vt-cell " + (st.pnl_pct >= 0 ? "win" : "loss");
+      const riskTxt = st.risk_mode === "usd" ? vtMoney(st.risk) : `${st.risk}% of margin`;
+      const marginTxt = st.margin_mode === "usd" ? vtMoney(st.margin) : `${st.margin}% of balance`;
+      vsEl(sys,"cfg").textContent = (st.lev_mode === "auto" ? `Auto · risk ${riskTxt}` : `Manual ${st.lev}x`) +
+        ` · margin ${marginTxt} · ${st.closed} closed · ${st.skipped} skipped`;
+      vsEl(sys,"wiped").hidden = st.status !== "wiped";
+      // .tvbtn sets display:block, which beats the hidden attribute - use display
+      vsEl(sys,"stopBtn").style.display = st.status === "running" ? "" : "none";
+      vsEl(sys,"resumeBtn").style.display = st.status === "stopped" ? "" : "none";
+      vsEl(sys,"open").innerHTML = (st.open || []).length ? `<div class="k" style="margin-bottom:4px">OPEN NOW</div>` + st.open.map(p => {
+        const side = p.side === "BUY" ? "LONG" : "SHORT";
+        const sym = (p.symbol||"").replace(/-?USDT$/,"");
+        const live = (prices[sym] && prices[sym].last) || (prices[sym+"-USDT"] && prices[sym+"-USDT"].last) || 0;
+        const trk = live ? tradeTrack({sl:p.sl, entry:p.entry, tp:p.tp1, tp2:p.tp2||p.tp1, side:side, tp1_hit:p.tp1_hit}, live) : "";
+        return `<div class="vt-row" style="padding:6px 0;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px">
+          <span><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>${sym} ${p.lev}x${p.tp1_hit?" · TP1 ✅":""}</span>
+          <span style="color:var(--muted)">${vtPx(p.entry)} · SL ${vtPx(p.sl)} · TP1 ${vtPx(p.tp1)}</span></div>${trk}`;
+      }).join("") : `<div style="font-size:11px;color:var(--muted)">No open virtual trades right now.</div>`;
+    }
+    pages.hidden = !(st.months || []).length && st.status === "setup";
+    if(!pages.hidden){
+      vsEl(sys,"month").textContent = st.month_label;
+      vsEl(sys,"pageNo").textContent = `page ${st.page}/${st.pages}` + ((st.parts||1) > 1 ? ` · ${st.part}/${st.parts}` : "");
+      vsEl(sys,"prev").disabled = !st.prev; vsEl(sys,"prev").style.opacity = st.prev ? 1 : .3;
+      vsEl(sys,"next").disabled = !st.next; vsEl(sys,"next").style.opacity = st.next ? 1 : .3;
+      const s = st.stats || {};
+      const cell = (k, v, cls) => `<div class="sumcard vt-cell ${cls==="up"?"win":cls==="down"?"loss":""}"><div class="k">${k}</div><div class="${cls||""}" style="font-size:13px;font-weight:700">${v}</div></div>`;
+      vsEl(sys,"stats").innerHTML = s.trades ?
+        cell("Trades", s.trades) + cell("Win rate", s.wr + "%") + cell("Net", vtSigned(s.net), s.net >= 0 ? "up" : "down") +
+        cell("Fees", vtMoney(-(s.fees || 0)), "down") + cell("Worst", vtMoney(s.worst), "down") + cell("Max DD", vtMoney(s.dd), "down")
+        : `<div style="grid-column:1/-1;color:var(--muted);font-size:11px;text-align:left">No closed trades this month yet.</div>`;
+      vsEl(sys,"list").innerHTML = (st.trades || []).map(tr => {
+        const side = tr.side === "BUY" ? "LONG" : "SHORT", win = tr.pnl >= 0;
+        return `<div class="vt-row ${win?"win":"loss"}" style="align-items:center;padding:7px 0;margin-bottom:4px">
+          <div style="min-width:0"><span class="side ${side.toLowerCase()}" style="padding:2px 6px;border-radius:4px;font-size:10px;margin-right:6px">${side}</span>
+            <span style="font-family:var(--mono);font-size:12px">${(tr.sym||"").replace(/-?USDT$/,"")} ${tr.lev}x</span>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">${tr.res} · ${vtPx(tr.entry)} → ${vtPx(tr.exit)} · ${(tr.t||"").slice(5,16)}${tr.note?" · "+tr.note:""}</div></div>
+          <div class="${win?"up":"down"}" style="font-family:var(--mono);font-size:13px;font-weight:700">${vtSigned(tr.pnl)}</div></div>`;
+      }).join("");
+    }
+  }
+
+  (async function vsysInit(){
+    let acc;
+    try{ acc = await api("/vsys/access"); }catch(e){ return; }
+    if(!acc || !acc.allowed) return;                      // users: nothing is added
+    const nav = document.getElementById("nav");
+    const icon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6-6 6 6M6 15l6 6 6-6"/><circle cx="12" cy="12" r="2"/></svg>';
+    Object.keys(VSYS).forEach(sys => {
+      vs[sys] = { levMode:"auto", riskMode:"usd", marginMode:"usd", month:null, state:null, pollTimer:null, previewTimer:null };
+      const sec = document.createElement("section");
+      sec.id = `vs${sys}-section`;
+      sec.style.overflowX = "hidden";          // as #virtual-section does in CSS
+      sec.innerHTML = vsSectionHtml(sys);
+      nav.parentNode.insertBefore(sec, nav);
+      sec.addEventListener("click", e => { const b = e.target.closest("[data-act]"); if(b && b.tagName !== "INPUT") vsAct(sys, b.dataset.act, b); });
+      sec.addEventListener("input", e => { if(e.target.dataset && e.target.dataset.act === "preview") vsPreview(sys); });
+      const tab = document.createElement("div");
+      tab.className = "tab"; tab.dataset.tab = `vs${sys}`;
+      tab.innerHTML = icon + VSYS[sys].label;
+      nav.appendChild(tab);
+    });
+    // the gold underline is sized for five tabs in CSS - resize it for seven
+    const bar = document.getElementById("navbar");
+    if(bar) bar.style.width = (100 / document.querySelectorAll("#nav .tab").length) + "%";
+    nav.addEventListener("click", e => { const t = e.target.closest(".tab"); if(!t) return;
+      const m = /^vs(\w+)$/.exec(t.dataset.tab || ""); if(m && VSYS[m[1]]) loadVsys(m[1]); });
+  })();
+
   /* ---------- sleep mode (12:30 AM – 6:30 AM IST) ---------- */
   function isSleepTime(){
     const now = new Date();

@@ -10524,6 +10524,14 @@ import virtual as _virt
 import virtual_dm as _vdm
 _vdm.init(TELEGRAM_BOT_TOKEN)
 
+# Admin-only virtual accounts for the Test system and Elite (sysvirtual.py,
+# screens in sysvirtual_dm.py). Main admin and co-admin, one each per system.
+import sysvirtual as _sv
+import sysvirtual_dm as _svdm
+_sv.ct = ct
+_svdm.init(TELEGRAM_BOT_TOKEN,
+           lambda: [ADMIN_CHAT_ID] + ([CO_ADMIN_CHAT_ID] if CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID else []))
+
 # Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
 # its auto-approve rule below; every other chat's request goes to this.
 import groupjoin as _gj
@@ -15579,6 +15587,7 @@ def _test_scan_one(symbol: str) -> str:
     # you cannot tell at a glance which trade it belongs to (admin 2026-09-02).
     t["entry_mid"] = _test_post(_test_entry_card(t))
     _sys_copy_open(t, 8, "TEST")
+    _sv_hook("test", "open", t)
     _test_save()
     return (symbol, True, f"{side} @ {entry} · SL {sl_pct:.2f}%")
 
@@ -15671,6 +15680,22 @@ def _sys_copy_open(t: dict, ver: int, tag: str):
         t["ct_pending"] = False
 
 
+def _sv_hook(sysk: str, what: str, t: dict, price=None):
+    """Mirror one Test / Elite trade into the admins' virtual accounts.
+    Keyed by the trade's signal id, so Elite's LONG and SHORT on one coin
+    stay two positions. Never lets a virtual error reach the real trade."""
+    try:
+        k = t.get("sig_id")
+        if what == "open":
+            _sv.on_open(sysk, k, t["symbol"], t["signal"], t["entry"], t["sl"], t["tp1"], t["tp2"])
+        elif what == "TP1":
+            _sv.on_tp1(sysk, k, price or t.get("tp1"))
+        else:
+            _sv.on_close(sysk, k, price, what)
+    except Exception as e:
+        print(f"  [SYSVIRTUAL] {sysk} {what} {t.get('symbol')}: {e}")
+
+
 def _sys_copy_close(t: dict, ver: int, result: str, tag: str):
     """Act on the copies of one system's trade - and ONLY that system's,
     which is what the ver does (see copytrade._pfx_for_symbol)."""
@@ -15709,6 +15734,7 @@ def _test_close(t: dict, result: str, price: float):
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
         tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
     _sys_copy_close(t, 8, result, "TEST")
+    _sv_hook("test", result, t, price)
     _test_history.append({"time": ist_str(), "symbol": coin, "signal": t["signal"],
                           "entry": t["entry"], "result": result,
                           "close_price": price, "pnl": pnl,
@@ -16859,6 +16885,7 @@ def _elite_run(kind: str, hm=None) -> str:
             _elite_trades.append(t)
         t["entry_mid"] = _elite_post(_elite_entry_card(t))
         _sys_copy_open(t, 7, "ELITE")
+        _sv_hook("elite", "open", t)
         _elite_save()
         return f"{lbl}: {side} {base} @ {entry} · SL {sl_pct:.2f}% · {t['by']}"
     return f"{lbl}: no setup ({'Clex' if use_ai else 'Engine'}) — " + ", ".join(tried[:8])
@@ -16883,6 +16910,7 @@ def _elite_close(t: dict, result: str, price: float, pnl=None):
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
         tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
     _sys_copy_close(t, 7, result, "ELITE")
+    _sv_hook("elite", result, t, price)
     if result == "BE":
         return                                   # already counted as its TP1
     row = {"date": _ist_date_str(t.get("created_at")), "time": now_ist().strftime("%I:%M %p IST"),
@@ -17296,7 +17324,8 @@ def _elite_kb():
         [{"text": "📊 Daily", "callback_data": "elbtn:rd"},
          {"text": "📊 Weekly", "callback_data": "elbtn:rw"},
          {"text": "📊 Monthly", "callback_data": "elbtn:rm"}],
-        [{"text": "🏆 Win rate", "callback_data": "elbtn:st"},
+        [{"text": "🎮 Virtual", "callback_data": "vs:elite:show"},
+         {"text": "🏆 Win rate", "callback_data": "elbtn:st"},
          {"text": "📡 Open trades", "callback_data": "elbtn:trades"},
          {"text": "🔄 Refresh", "callback_data": "elbtn:refresh"}]]}
 
@@ -17333,7 +17362,7 @@ def _elite_status_text() -> str:
     out += ["", "<blockquote><code>/el on</code>  <code>/el off</code>  <code>/el t</code> trades  "
                 "<code>/el coins</code>  <code>/el ct on|off</code>  <code>/el run s1</code>  "
                 "<code>/el daily</code>  <code>/el weekly</code>  <code>/el monthly</code>  "
-                "<code>/el st</code> win rate</blockquote>"]
+                "<code>/el st</code> win rate  <code>/el v</code> virtual</blockquote>"]
     return "\n".join(out)
 
 
@@ -18608,6 +18637,8 @@ def _poll_payment_events():
                         send_to_user(cid, f"🎉 <b>VIP Activated!</b>\n\nPaid: ${amount:,.2f} · 30 days\n\nTap ⭐ VIP Channel in /help to get access.")
                     elif etype.startswith("virtual_"):
                         _vdm.apply_event(cid, etype, meta)
+                    elif etype.startswith("vsys_"):
+                        _svdm.apply_event(cid, etype, meta)
                     elif etype == "set_lang":
                         _set_user_lang(cid, str(meta.get("lang", "en")))
                     requests.post(f"{CLEXER_API_URL}/payment_events/{ev['id']}/ack", headers=hdrs, timeout=10)
@@ -21328,6 +21359,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                            skip_smallcaps=True)
                 threading.Thread(target=lambda k=_k: send_reply(chat_id, "⭐ " + _html.escape(_elite_run(k)),
                                                                 skip_smallcaps=True), daemon=True).start()
+        elif _ea in ("v", "virtual"):
+            _svdm.show(_check_id, chat_id, "elite")
         elif _ea in ("st", "wr", "winrate"):
             if len(parts) > 2 and parts[2].lower() in ("week", "w", "day", "days"):
                 for _m in _elite_st_week_msgs():
@@ -21356,6 +21389,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                        skip_smallcaps=True)
         else:
             send_reply(chat_id, _elite_status_text(), reply_markup=_elite_kb(), skip_smallcaps=True)
+
+    elif cmd == "/test" and len(parts) > 1 and parts[1].lower() in ("v", "virtual") \
+            and (is_admin or is_co_admin(_check_id)):
+        _svdm.show(_check_id, chat_id, "test")
 
     elif cmd == "/test" and is_admin and len(parts) > 1 and parts[1].lower() == "ct":
         _on = (parts[2].lower() in ("on", "1", "yes")) if len(parts) > 2 else not ct.TESTSYS_CT_ENABLED
@@ -24581,8 +24618,8 @@ _SCAN_SUBCATS = {
         ("/intradaydm", "📝", "Intraday Prompt DM", "Toggle DMing yourself each intraday prompt before it is sent."),
     ]),
     "testsys": ("🧪 Test System & Elite", [
-        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
-        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan and coin, `/el st week` by time and weekday (shown only - times still come from /st week), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
+        ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, `/test v` your own Test system virtual account (admins only, paper money), or `/test` alone for status."),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan and coin, `/el st week` by time and weekday (shown only - times still come from /st week), `/el v` your own Elite virtual account (admins only, paper money), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
@@ -26789,6 +26826,20 @@ def command_listener():
                                       json={"callback_query_id": cb["id"], "text": _spop, "show_alert": True}, timeout=5)
                         continue
 
+                    if cb_data.startswith("vs:"):
+                        # the admin-only Test / Elite virtual screens
+                        try:
+                            _vs_pop = _svdm.on_callback(cb_data, cb_cid, cb_chat_id, cb_msg_id)
+                        except Exception as _ve:
+                            print(f"  [SYSVIRTUAL DM] callback {cb_data}: {_ve}")
+                            _vs_pop = "Something went wrong - try again."
+                        _vs_ans = {"callback_query_id": cb["id"]}
+                        if _vs_pop:
+                            _vs_ans.update({"text": _vs_pop, "show_alert": True})
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json=_vs_ans, timeout=5)
+                        continue
+
                     if cb_data.startswith("vt:"):
                         try:
                             _vt_pop = _vdm.on_callback(cb_data, cb_cid, cb_chat_id, cb_msg_id)
@@ -28229,6 +28280,14 @@ def command_listener():
                     except Exception:
                         pass
                     continue
+
+                # Test / Elite virtual setup form waiting for a number
+                if text and not text.startswith("/") and _svdm.wants_text(cid):
+                    try:
+                        if _svdm.on_text(cid, cid, text):
+                            continue
+                    except Exception as _ve:
+                        print(f"  [SYSVIRTUAL DM] on_text: {_ve}")
 
                 # /virtual setup form waiting for a number
                 if text and not text.startswith("/") and _vdm.wants_text(cid):

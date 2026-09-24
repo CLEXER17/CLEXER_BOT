@@ -1816,6 +1816,99 @@ def virtual_settings(body: VirtualSettings, user: dict = Depends(get_current_use
     return {"queued": False}
 
 
+# ── Admin-only virtual accounts: Test system and Elite (sysvirtual.py) ─────
+# Same queue-through-the-poller pattern as /virtual above. Who counts as an
+# admin: ADMIN_CHAT_ID, plus the list bot.py publishes as kv vsys_admins
+# (it adds the co-admin when that permission is on).
+_VSYS = ("test", "elite")
+
+
+def _vsys_allowed(cid: str) -> bool:
+    cid = str(cid or "")
+    if not cid:
+        return False
+    if ADMIN_CHAT_ID and cid == str(ADMIN_CHAT_ID):
+        return True
+    return cid in {str(x) for x in (_kv_dict("vsys_admins").get("ids") or [])}
+
+
+def _vsys_guard(user: dict, sysk: str) -> str:
+    cid = str(user.get("id", ""))
+    if sysk not in _VSYS:
+        raise HTTPException(404, "unknown system")
+    if not _vsys_allowed(cid):
+        raise HTTPException(403, "admins only")
+    return cid
+
+
+@app.get("/vsys/access")
+def vsys_access(user: dict = Depends(get_current_user)):
+    """Whether this viewer gets the two admin virtual tabs."""
+    return {"allowed": _vsys_allowed(str(user.get("id", ""))), "systems": list(_VSYS)}
+
+
+@app.get("/vsys/{sysk}/state")
+def vsys_state(sysk: str, month: Optional[str] = None, user: dict = Depends(get_current_user)):
+    import sysvirtual as _sv
+    cid = _vsys_guard(user, sysk)
+    urec = (_kv_dict("ct_users").get(cid, {}) or {})
+    st = _sv.state_from(urec, _kv_dict(f"vbook_{sysk}_{cid}"), sysk, month)
+    pending = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT event_type, meta FROM payment_events
+                    WHERE cid = %s AND event_type LIKE 'vsys_%%' AND processed = FALSE
+                    ORDER BY id ASC
+                """, (cid,))
+                rows = cur.fetchall()
+        for r in rows:
+            m = r["meta"] or {}
+            if m.get("sys") != sysk:
+                continue
+            pending.append(r["event_type"].replace("vsys_", ""))
+            if r["event_type"] == "vsys_setup":
+                st.update({"status": "running", "capital": m.get("capital"), "balance": m.get("capital"),
+                           "lev_mode": m.get("lev_mode"), "lev": m.get("lev"), "risk_mode": m.get("risk_mode"),
+                           "risk": m.get("risk"), "margin_mode": m.get("margin_mode"), "margin": m.get("margin")})
+            elif r["event_type"] == "vsys_stop":
+                st["status"] = "stopped"
+            elif r["event_type"] == "vsys_resume":
+                st["status"] = "running"
+            elif r["event_type"] == "vsys_reset":
+                st.update({"status": "setup", "open": [], "months": [], "trades": [], "pages": 1, "page": 1})
+    except Exception as e:
+        print(f"[VSYS STATE] pending check error: {e}")
+    st["pending"] = pending
+    return st
+
+
+@app.post("/vsys/{sysk}/setup")
+def vsys_setup(sysk: str, body: VirtualSetup, user: dict = Depends(get_current_user)):
+    import virtual as _v
+    cid = _vsys_guard(user, sysk)
+    err = _v.validate(body.capital, body.lev_mode, body.lev, body.risk_mode, body.risk, body.margin_mode, body.margin)
+    if err:
+        raise HTTPException(400, err)
+    _queue_virtual(cid, "vsys_setup", {**body.dict(), "sys": sysk})
+    return {"queued": True}
+
+
+@app.post("/vsys/{sysk}/{action}")
+def vsys_action(sysk: str, action: str, body: VirtualPdf = None, user: dict = Depends(get_current_user)):
+    """stop | resume | reset | pdf - applied by bot.py's poller within ~30 s.
+    No PDF limit here: admins only."""
+    cid = _vsys_guard(user, sysk)
+    if action not in ("stop", "resume", "reset", "pdf"):
+        raise HTTPException(404, "unknown action")
+    meta = {"sys": sysk}
+    if action == "pdf":
+        meta["month"] = body.month if body else None
+    _queue_virtual(cid, f"vsys_{action}", meta)
+    return {"queued": True}
+
+
 class LangBody(BaseModel):
     lang: str
 
