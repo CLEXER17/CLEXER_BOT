@@ -162,10 +162,9 @@ def render(symbol: str, side: str, leverage: int, pct: float, close_label: str, 
 
     # footer
     d.line((64, 1030, W - 64, 1030), fill=(30, 36, 46), width=2)
-    d.ellipse((64, 1075, 164, 1175), fill=(22, 28, 36), outline=GOLD, width=4)
-    d.text((114, 1125), "C", font=_font(True, 50), fill=GOLD, anchor="mm")
-    d.text((190, 1083), "CLEX", font=_font(True, 42), fill=WHITE)
-    d.text((190, 1137), when, font=_font(False, 32), fill=MUTED)
+    # no round badge here - the admin found the footer "C" odd (2026-09-24)
+    d.text((64, 1083), "CLEX", font=_font(True, 42), fill=WHITE)
+    d.text((64, 1137), when, font=_font(False, 32), fill=MUTED)
     qx = W - 64 - 150
     try:
         qr = Image.open(_QR_FILE).convert("RGB").resize((150, 150), Image.NEAREST)
