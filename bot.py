@@ -1521,8 +1521,117 @@ def _redact_levels(text: str) -> str:
     return re.sub(r"<code>[^<]*</code>", "🔒", text)
 
 
+# ── PnL card (admin 2026-09-24) ─────────────────────────────────────────────
+# Every profitable close - TP1, TP2, BE after TP1, a timeout in profit - goes
+# to VIP and Free (never Channel 1) as the Clex card image, with the result
+# text it always had as its caption, still threaded under the entry. The %
+# on the card is the trade's own move at PNL_CARD_LEVERAGE, from the same
+# levels the recap scores it by. The Elite and Test channels do the same.
+import pnlcard as _pnlcard
+PNL_CARD_ENABLED = True
+PNL_CARD_LEVERAGE = 10
+BINGX_INVITE_URL = "https://bingx.pro/invite/UOGCYC/"
+_BINGX_EMOJI_ID = "5289756243731162671"      # the BingX logo premium emoji
+
+
+def _pnl_card(t: dict, result: str, price=None, symbol: str = None):
+    """The card for one close, or None when it is not a profitable one.
+    TP1/TP2 read the level itself; BE after TP1 shows the TP1 that was
+    banked (the recap counts it the same way); a timeout reads its price."""
+    if not PNL_CARD_ENABLED or not t:
+        return None
+    try:
+        side = t.get("signal")
+        entry = float(t.get("entry") or 0)
+        if side not in ("BUY", "SELL") or entry <= 0:
+            return None
+        r = str(result or "").upper()
+        if r == "TP1":
+            px, label, tag = t.get("tp1"), "TP1 Price", "TP1 HIT"
+        elif r == "TP2":
+            px, label, tag = t.get("tp2"), "TP2 Price", "TP2 HIT"
+        elif r in ("BE", "BREAKEVEN"):
+            if not t.get("tp1_hit"):
+                return None
+            px, label, tag = t.get("tp1"), "TP1 Price", "TP1 + BE"
+        elif r.startswith("TIMEOUT"):
+            px, label, tag = price, "Close Price", "TIMEOUT"
+        else:
+            return None
+        px = float(px or 0)
+        move = (px - entry) / entry * 100 * (1 if side == "BUY" else -1) if px > 0 else 0
+        if move <= 0:
+            return None
+        return {"symbol": symbol or t.get("symbol") or SYMBOL, "side": side, "leverage": PNL_CARD_LEVERAGE,
+                "pct": round(move * PNL_CARD_LEVERAGE, 2), "close_label": label, "close_px": px,
+                "entry_px": entry, "tag": tag, "when": now_ist().strftime("%m-%d %H:%M"),
+                "seed": sum(map(ord, str(t.get("sig_id") or ""))) or 1}
+    except Exception as e:
+        print(f"  [PNL CARD] {t.get('symbol')} {result}: {e}")
+        return None
+
+
+def _pnl_card_png(card: dict):
+    try:
+        return _pnlcard.render(**card)
+    except Exception as e:
+        print(f"  [PNL CARD] render {card.get('symbol')}: {e}")
+        return None
+
+
+def _card_caption(text: str) -> str:
+    """The result text as it always was, plus the BING X link line."""
+    return (_apply_premium_emojis(text)
+            + f'\n\n<tg-emoji emoji-id="{_BINGX_EMOJI_ID}">🔀</tg-emoji> <a href="{BINGX_INVITE_URL}">BING X</a>')
+
+
+def _tg_visible_len(html_text: str) -> int:
+    """What Telegram counts against the 1024 caption limit: the text after
+    tags are stripped, in UTF-16 units."""
+    plain = _html.unescape(re.sub(r"<[^>]+>", "", html_text or ""))
+    return len(plain.encode("utf-16-le")) // 2
+
+
+def _send_card_reply(chat_id, png: bytes, text: str, reply_to=None, reply_markup=None, protect: bool = False):
+    """sendPhoto with the result as caption. Anything that stops the photo -
+    a caption over 1024, a rejected upload - falls back to the plain text
+    post, so a result is never lost to the picture."""
+    cap = _card_caption(text)
+    if png and _tg_visible_len(cap) <= 1024:
+        data = {"chat_id": chat_id, "caption": cap, "parse_mode": "HTML"}
+        if reply_to:
+            data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        if protect:
+            data["protect_content"] = "true"
+        for _try in range(2):
+            try:
+                j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", data=data,
+                                  files={"photo": ("clex_pnl.png", png, "image/png")}, timeout=30).json()
+                if j.get("ok"):
+                    return j["result"]["message_id"]
+                _wait = ((j.get("parameters") or {}).get("retry_after") or 0)
+                print(f"  [PNL CARD] {chat_id} rejected: {j.get('description')}")
+                if not _wait or _try:
+                    break
+                time.sleep(min(float(_wait), 30))
+            except Exception as e:
+                print(f"  [PNL CARD] {chat_id}: {e}")
+                break
+    return _send_plain_reply(chat_id, text, reply_to=reply_to, reply_markup=reply_markup, protect=protect)
+
+
+def _card_reply(card, text, reply_map, *a, **kw):
+    return send_lifecycle_reply(text, reply_map, *a, card=card, **kw)
+
+
+def _card_sl_log(card, text, reply_map, sig_id, result, **kw):
+    return _send_sl_and_log(text, reply_map, sig_id, result, card=card, **kw)
+
+
 def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, tier_routed: bool = False, share_free: bool = True, reply_markup=None,
-                          locked_text: str = None, exclude_ch2: bool = False, react_category: str = None):
+                          locked_text: str = None, exclude_ch2: bool = False, react_category: str = None, card: dict = None):
     """Sends a TP1/TP2/SL/Trailing-SL/timeout follow-up as a genuine Telegram reply
     to that trade's entry-signal message in every destination it has a stored
     message_id for (reply_map, from send_entry_signal). Uses plain sendMessage —
@@ -1537,9 +1646,23 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
 
     exclude_ch2: skips TELEGRAM_CHANNEL_ID_2 (VIP Mirror) specifically —
     used for SL/BE follow-ups, which VIP Mirror subscribers don't want in
-    their feed (admin request, same reasoning as no-signal notices)."""
+    their feed (admin request, same reasoning as no-signal notices).
+
+    card: a profitable close's PnL card (_pnl_card). VIP and Free then get
+    the card image with `text` as its caption; Channel 1 and a locked Free
+    post stay plain text (the card shows prices a locked signal hides)."""
     reply_map = reply_map or {}
     ids = {}
+    _png = [None, False]
+
+    def _tier_send(cid, txt, reply_to, markup, protect=False):
+        if card:
+            if not _png[1]:
+                _png[1] = True
+                _png[0] = _pnl_card_png(card)
+            if _png[0]:
+                return _send_card_reply(cid, _png[0], txt, reply_to=reply_to, reply_markup=markup, protect=protect)
+        return _send_plain_reply(cid, txt, reply_to=reply_to, reply_markup=markup, protect=protect)
     # A locked signal (Free saw only the 🔒 card) used to get NO closing
     # post in Free on SL / BE / timeout - the card just sat there open
     # forever (admin 2026-09-16, $ARB timeout). TP1/TP2 already have their
@@ -1561,11 +1684,11 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
             # already VIP and already using the bot, so both buttons are
             # dead weight here. Free/legacy channels below keep them since
             # that's where the upsell/bot-discovery actually matters.
-            mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"vip:{cid}"), reply_markup=None, protect=True)
+            mid = _tier_send(cid, text, reply_map.get(f"vip:{cid}"), None, protect=True)
             if mid: ids[f"vip:{cid}"] = mid
         if share_free:
             for cid in _channels_by_tier("free"):
-                mid = _send_plain_reply(cid, text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
+                mid = _tier_send(cid, text, reply_map.get(f"free:{cid}"), reply_markup)
                 if mid: ids[f"free:{cid}"] = mid
         elif locked_text:
             for cid in _channels_by_tier("free"):
@@ -12220,7 +12343,7 @@ def run_tick_check():
             _tp2_msg = (f"🏆 <b>TP2 HIT!</b> 🎊💵  🕐 {ist_str()}\n\n"
                 f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                 f"🎯 Entry: {entry:,.0f} ✅ TP2: <b>{tp2:,.0f}</b>")
-            send_lifecycle_reply(_tp2_msg, active_trade.get("reply_map"), include_ch2=True,
+            _card_reply(_pnl_card(active_trade, "TP2", symbol=SYMBOL), _tp2_msg, active_trade.get("reply_map"), include_ch2=True,
                 tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                 react_category="tp2")
             _track_daily_result(SYMBOL, "TP2", pnl=_trade_outcome_pct(active_trade, "TP2"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id",""))
@@ -12242,7 +12365,7 @@ def run_tick_check():
                     f"{'🟩' if sig=='BUY' else '🟥'} {sig} {SYMBOL}\n"
                     f"✅ TP1: <b>{tp1:,.0f}</b>\n🛡️ SL moved to BE: <b>{entry:,.0f}</b>\n"
                     f"🚀 Riding TP2: <b>{tp2:,.0f}</b>...")
-                send_lifecycle_reply(_tp1_msg, active_trade.get("reply_map"), include_ch2=True,
+                _card_reply(_pnl_card(active_trade, "TP1", symbol=SYMBOL), _tp1_msg, active_trade.get("reply_map"), include_ch2=True,
                     tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
                 _track_daily_result(SYMBOL, "TP1", pnl=_trade_outcome_pct(active_trade, "TP1"), tier_routed=True, free_shown=active_trade.get("share_free", True),
@@ -12270,7 +12393,7 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...")
-                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -12279,10 +12402,10 @@ def run_tick_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...")
-                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                _send_sl_and_log(_sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, active_trade.get("reply_map"), active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", pnl=_trade_outcome_pct(active_trade, "SL"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL,
@@ -12884,7 +13007,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
             vip_trade_stats[f"scan{ver}_tp1"] += (0 if t["tp1_hit"] else 1)
         _delete_trail_sl_messages(t)
         _log_scan_history(t, "TP2", price)
-        _tp2_ids = send_lifecycle_reply(fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
+        _tp2_ids = _card_reply(_pnl_card(t, "TP2"), fmt_scan_update("TP2_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
         _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
         if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=ver)
@@ -12908,7 +13031,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
         _delete_trail_sl_messages(t)
         trade_stats["scan_tp1"] += 1; trade_stats[f"scan{ver}_tp1"] += 1
         if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_tp1"] += 1
-        send_lifecycle_reply(fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
+        _card_reply(_pnl_card(t, "TP1"), fmt_scan_update("TP1_HIT", price, t), t.get("reply_map"), include_ch2=True,
             tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
             react_category="tp1")
         if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=ver)
@@ -12935,7 +13058,7 @@ def _force_close_scan_trade(ver: int, symbol: str, result: str) -> str:
     # TP1_HIT/TP2_HIT already work. Previously hid real losses from VIP
     # even when the entry itself was shown there, which read as VIP only
     # getting told about wins on a trade it was already following.
-    _send_sl_and_log(fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
+    _card_sl_log(_pnl_card(t, close_result), fmt_scan_update("SL_HIT", price, t), t.get("reply_map"), t.get("sig_id", ""), close_result, include_ch2=False,
         tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
     if t.get("ct_opened"): ct.on_scan_sl(sym, ver=ver)
     ct.virtual_on_close(sym, price, close_result)
@@ -13745,7 +13868,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             t["_timeout_pnl"] = f"{pnl:+.2f}%"
             _delete_trail_sl_messages(t)
             _log_scan_history(t, f"TIMEOUT({pnl:+.2f}%)", price)
-            _to_ids = send_lifecycle_reply(fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
+            _to_ids = _card_reply(_pnl_card(t, "TIMEOUT", price), fmt_scan_update("TIMEOUT", price, t), t.get("reply_map"), include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True),
                 react_category="timeout_win" if pnl >= 0 else "timeout_loss")
             # A timeout that closed down is a loss, so it has to be clearable
@@ -13821,7 +13944,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             _delete_trail_sl_messages(t)
             _log_scan_history(t, "TP2", price)
             _tp2_msg = fmt_scan_update("TP2_HIT", price, t)
-            _tp2_ids = send_lifecycle_reply(_tp2_msg, t.get("reply_map"), include_ch2=True,
+            _tp2_ids = _card_reply(_pnl_card(t, "TP2"), _tp2_msg, t.get("reply_map"), include_ch2=True,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
             if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=ver)
@@ -13849,7 +13972,7 @@ def _tick_one(ver: int, t: dict) -> bool:
                 trade_stats[f"scan{ver}_tp1"] += 1
                 if t.get("tier_routed"): vip_trade_stats[f"scan{ver}_tp1"] += 1
                 _tp1_msg = fmt_scan_update("TP1_HIT", price, t)
-                send_lifecycle_reply(_tp1_msg, t.get("reply_map"), include_ch2=True,
+                _card_reply(_pnl_card(t, "TP1"), _tp1_msg, t.get("reply_map"), include_ch2=True,
                     tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True), reply_markup=_tp_buttons(),
                     react_category="tp1")
                 if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=ver)
@@ -13894,7 +14017,7 @@ def _tick_one(ver: int, t: dict) -> bool:
             # genuine SL loss never reached VIP/Free at all here, only Channel
             # 1 - so it was never tracked as a Free message and /clearslfree
             # had nothing to find (admin report 2026-08-12).
-            _send_sl_and_log(_sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
+            _card_sl_log(_pnl_card(t, result), _sl_msg, t.get("reply_map"), t.get("sig_id",""), result, include_ch2=False,
                 tier_routed=bool(t.get("tier_routed")), share_free=t.get("share_free", True))
             if t.get("ct_opened"): ct.on_scan_sl(sym, ver=ver)
             ct.virtual_on_close(sym, price, result)
@@ -15291,10 +15414,10 @@ def _intra_close(t: dict, result: str, price: float, note: str = ""):
     text = _scan_box(f"${coin} {result}", f"{icon} {spec['label']}", body, tag=sig_id)
 
     if result in ("SL", "BE"):
-        _send_sl_and_log(text, t.get("reply_map"), sig_id, result, include_ch2=False,
+        _card_sl_log(_pnl_card(t, result), text, t.get("reply_map"), sig_id, result, include_ch2=False,
                          tier_routed=True, share_free=True)
     else:
-        send_lifecycle_reply(text, t.get("reply_map"), include_ch2=False,
+        _card_reply(_pnl_card(t, result), text, t.get("reply_map"), include_ch2=False,
                              tier_routed=True, share_free=True,
                              react_category=("tp2" if result == "TP2" else "tp1"))
 
@@ -15727,12 +15850,18 @@ def _test_close(t: dict, result: str, price: float):
                 pnl = -pnl
     except Exception:
         pnl = None
-    _test_post(_scan_box(f"${coin} {result}", f"{icon} {t['symbol']}", [[
+    _ttext = _scan_box(f"${coin} {result}", f"{icon} {t['symbol']}", [[
         f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
         f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
-        tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+        tag=t.get("sig_id", ""))
+    _tcard = _pnl_card(t, result, price)
+    _tpng = _pnl_card_png(_tcard) if _tcard else None
+    if _tpng:
+        _send_card_reply(TEST_CHANNEL_ID, _tpng, _ttext, reply_to=t.get("entry_mid"))
+    else:
+        _test_post(_ttext, reply_to=t.get("entry_mid"))
     _sys_copy_close(t, 8, result, "TEST")
     _sv_hook("test", result, t, price)
     _test_history.append({"time": ist_str(), "symbol": coin, "signal": t["signal"],
@@ -16903,12 +17032,18 @@ def _elite_close(t: dict, result: str, price: float, pnl=None):
         except Exception:
             pnl = None
     icon = {"TP2": "🏆", "TP1": "✅", "SL": "🛑", "BE": "🛡️", "TIMEOUT": "⏰"}.get(result, "•")
-    _elite_post(_scan_box(f"${coin} {result}", f"{icon} {t['symbol']}  |  {t['label']}", [[
+    _etext = _scan_box(f"${coin} {result}", f"{icon} {t['symbol']}  |  {t['label']}", [[
         f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(result)}",
         f"📊 {_smallcaps_title('Price')}: <code>{price}</code>",
         f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']}</code>",
     ] + ([f"📈 P&L: <b>{pnl:+.2f}%</b>"] if pnl is not None else [])],
-        tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+        tag=t.get("sig_id", ""))
+    _ecard = _pnl_card(t, result, price)
+    _epng = _pnl_card_png(_ecard) if _ecard else None
+    if _epng:
+        _send_card_reply(ELITE_CHANNEL_ID, _epng, _etext, reply_to=t.get("entry_mid"))
+    else:
+        _elite_post(_etext, reply_to=t.get("entry_mid"))
     _sys_copy_close(t, 7, result, "ELITE")
     _sv_hook("elite", result, t, price)
     if result == "BE":
@@ -17674,7 +17809,7 @@ def _intra_close_partial(t: dict, price: float):
                        f"🛡️ {_smallcaps_title('SL moved to breakeven')}",
                        f"🎯 TP2: <code>{t['tp2']:,.6g}</code>"]],
                      tag=t.get("sig_id", ""))
-    send_lifecycle_reply(text, t.get("reply_map"), include_ch2=True,
+    _card_reply(_pnl_card(t, "TP1"), text, t.get("reply_map"), include_ch2=True,
                          tier_routed=True, share_free=True, react_category="tp1")
     if t.get("ct_opened"):
         try:
@@ -17778,7 +17913,7 @@ def run_price_check():
             ct.on_tp2(active_trade.get("entry",0), active_trade.get("tp2",0))
             ct.virtual_on_close(SYMBOL, active_trade.get("tp2",0), "TP2")
             _tp2_msg = fmt_update("TP2_HIT")
-            _tp2_ids = send_lifecycle_reply(_tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
+            _tp2_ids = _card_reply(_pnl_card(active_trade, "TP2", symbol=SYMBOL), _tp2_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons())
             _react_to_ids(_tp2_ids)  # auto-react to a full win, per-channel-allowed emoji
             _track_daily_result(SYMBOL, "TP2", pnl=_trade_outcome_pct(active_trade, "TP2"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")), sig_id=active_trade.get("sig_id","")); _notify_free_late(SYMBOL, active_trade, "TP2")
             _close_sig_snapshot(active_trade.get("sig_id",""), "TP2")
@@ -17796,7 +17931,7 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 2 scans...")
-                _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             elif n == 2:
                 trade_stats["cooldown_scans"] = 1
                 _sl_msg = (
@@ -17805,10 +17940,10 @@ def run_price_check():
                     f"⛔ <b>DO NOT OPEN ANY TRADE NOW</b>\n"
                     f"⛔ <b>This is NOT a new signal</b>\n\n"
                     f"❄️ Cooling down 1 scan...")
-                _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             else:
                 _sl_msg = fmt_update("SL_HIT")
-                _send_sl_and_log(_sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
+                _card_sl_log(_pnl_card(active_trade, "BE" if active_trade.get("tp1_hit") else "SL", symbol=SYMBOL), _sl_msg, _rmap, active_trade.get("sig_id",""), "BE" if active_trade.get("tp1_hit", False) else "SL", include_ch2=False)
             if not active_trade.get("tp1_hit", False):
                 _track_daily_result(SYMBOL, "SL", pnl=_trade_outcome_pct(active_trade, "SL"), tier_routed=True, free_shown=active_trade.get("share_free", True), entry_date=_ist_date_str(active_trade.get("entry_time")))  # breakeven exit after TP1 isn't a real loss
                 _send_sl_reassurance(SYMBOL,
@@ -17825,7 +17960,7 @@ def run_price_check():
             ct.on_tp1(active_trade["entry"], active_trade.get("tp1",0))
             ct.virtual_on_tp1(SYMBOL, active_trade.get("tp1",0))
             _tp1_msg = fmt_update("TP1_HIT")
-            send_lifecycle_reply(_tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
+            _card_reply(_pnl_card(active_trade, "TP1", symbol=SYMBOL), _tp1_msg, _rmap, include_ch2=True, tier_routed=True, share_free=active_trade.get("share_free", True), reply_markup=_tp_buttons(),
                 react_category="tp1")
             _track_daily_result(SYMBOL, "TP1", pnl=_trade_outcome_pct(active_trade, "TP1"), tier_routed=True, free_shown=active_trade.get("share_free", True),
                 tp1_detail={"tag": "BTC", "side": active_trade.get("signal","?"),
@@ -29204,7 +29339,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
               f"🏆 TP2: <code>{tp2:,.6g}</code>",
               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
             tag=sig_id)
-        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
+        _card_reply(_pnl_card(t, "TP2"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp2")
         if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=dver + 2)
         ct.virtual_on_close(sym, cp, "TP2")
@@ -29233,7 +29368,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
             tag=sig_id)
-        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
+        _card_reply(_pnl_card(t, "TP1"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
             react_category="tp1")
         if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=dver + 2)
         ct.virtual_on_tp1(sym, tp1)
@@ -29259,7 +29394,7 @@ def _force_close_demo_trade(dver: int, symbol: str, result: str) -> str:
           f"🛑 {lbl}: <code>{_sl_exit:,.6g}</code>",
           f"{'🛡️' if close_result == 'BREAKEVEN' else '❌'} {_smallcaps_title('Result')}: {_smallcaps_title(close_result)}"]],
         tag=sig_id)
-    _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
+    _card_sl_log(_pnl_card(t, lbl), _msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
     if t.get("ct_opened"): ct.on_scan_sl(sym, ver=dver + 2)
     ct.virtual_on_close(sym, cp, lbl)
     if lbl == "SL":
@@ -29350,7 +29485,7 @@ def _demo_monitor_loop():
                               f"🏆 TP2: <code>{tp2:,.6g}</code>",
                               f"✅ {_smallcaps_title('Result')}: {_smallcaps_title('Full win')}"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
+                        _card_reply(_pnl_card(t, "TP2"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp2")
                         if t.get("ct_opened"): ct.on_scan_tp2(sym, ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, "TP2")
@@ -29385,7 +29520,7 @@ def _demo_monitor_loop():
                             "<blockquote>SL executed.</blockquote>\n"
                             f"🪪 {sig_id}"
                         )
-                        _send_sl_and_log(_msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
+                        _card_sl_log(_pnl_card(t, lbl), _msg, t.get("reply_map"), sig_id, lbl, include_ch2=False, tier_routed=tier_routed, share_free=share_free)
                         if t.get("ct_opened"): ct.on_scan_sl(sym, ver=2 + _dver)
                         ct.virtual_on_close(sym, cp, lbl)
                         if tier_routed:
@@ -29426,7 +29561,7 @@ def _demo_monitor_loop():
                               f"🔒 BE SL: <code>{be_sl_price:,.6g}</code>",
                               f"🚀 {_smallcaps_title('Runner TP2')}: <code>{tp2:,.6g}</code>"]],
                             tag=sig_id)
-                        send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
+                        _card_reply(_pnl_card(t, "TP1"), _msg, t.get("reply_map"), include_ch2=True, tier_routed=tier_routed, share_free=share_free, reply_markup=_tp_buttons(),
                             react_category="tp1")
                         if t.get("ct_opened"): ct.on_scan_tp1(sym, ver=2 + _dver)
                         ct.virtual_on_tp1(sym, tp1)
@@ -29452,7 +29587,7 @@ def _demo_monitor_loop():
                               f"🎯 {_smallcaps_title('Entry')}: <code>{entry:,.6g}</code>",
                               f"📈 P/L: {pnl:+.2f}%"]],
                             tag=sig_id)
-                        _to_ids = send_lifecycle_reply(_msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
+                        _to_ids = _card_reply(_pnl_card(t, "TIMEOUT", cp), _msg, t.get("reply_map"), include_ch2=False, tier_routed=tier_routed, share_free=share_free,
                             react_category="timeout_win" if pnl >= 0 else "timeout_loss")
                         _track_sl_ids(sig_id, "sl_mid", _to_ids)
                         _to_res = "TIMEOUT_LOSS" if pnl < 0 else "TIMEOUT_WIN"
