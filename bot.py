@@ -16887,7 +16887,8 @@ def _elite_close(t: dict, result: str, price: float, pnl=None):
         return                                   # already counted as its TP1
     row = {"date": _ist_date_str(t.get("created_at")), "time": now_ist().strftime("%I:%M %p IST"),
            "symbol": t["symbol"], "result": result, "pnl": pnl, "kind": t.get("kind"),
-           "label": t.get("label"), "sig_id": t.get("sig_id"), "tier_routed": True}
+           "label": t.get("label"), "sig_id": t.get("sig_id"), "tier_routed": True,
+           "slot": t.get("slot"), "side": t.get("signal")}
     with _elite_lock:
         if result == "TP2":
             _elite_history[:] = [h for h in _elite_history
@@ -16995,6 +16996,128 @@ def _elite_recap(period: str, dates: list) -> str:
         return ""
     return (_build_recap_text(rows, dates[0]) if period == "Daily"
             else _build_period_recap_text(rows, f"{period} Recap — ELITE"))
+
+
+_ELITE_LBL_ORDER = ("S1", "S2", "TS1", "TS2")
+
+
+def _elite_wr_tally(rows: list) -> dict:
+    """{w, l, pnl} over recap rows, won and lost by the recap's own rule
+    (_recap_outcome), so this never disagrees with /el daily."""
+    d = {"w": 0, "l": 0, "pnl": 0.0}
+    for r in rows:
+        o = _recap_outcome(r)
+        if o == "win":
+            d["w"] += 1
+        elif o == "loss":
+            d["l"] += 1
+        p = _recap_pnl(r)
+        if p is not None:
+            d["pnl"] += p
+    return d
+
+
+def _elite_wr_cells(d: dict) -> list:
+    n = d["w"] + d["l"]
+    return [f"{d['w']}/{d['l']}", f"{d['w'] / n * 100:.0f}%" if n else "-", f"{d['pnl']:+.1f}%"]
+
+
+def _elite_wr_table(head: list, rows: list) -> str:
+    """Plain ASCII columns - the same reason /st week gives up emoji: they
+    are not a fixed width in Telegram and bend the columns."""
+    w = [max(len(str(r[i])) for r in [head] + rows) for i in range(len(head))]
+    fmt = lambda r: "  ".join(str(c).ljust(w[i]) if i == 0 else str(c).rjust(w[i]) for i, c in enumerate(r))
+    return "\n".join([fmt(head), "-" * len(fmt(head))] + [fmt(r) for r in rows])
+
+
+def _elite_st_text() -> str:
+    """/el st - Elite's win rate by scan and by coin, all time. For showing
+    only: Elite still takes its times from the main /st week."""
+    rows = list(_elite_history)
+    if not rows:
+        return "🏆 <b>ELITE Win Rate</b>\n\nNo closed Elite trades yet."
+    first = min(r.get("date") or "9999" for r in rows)
+    by_lbl = {}
+    for r in rows:
+        by_lbl.setdefault(r.get("label") or "?", []).append(r)
+    scan_rows = [[lb] + _elite_wr_cells(_elite_wr_tally(by_lbl[lb]))
+                 for lb in list(_ELITE_LBL_ORDER) + sorted(set(by_lbl) - set(_ELITE_LBL_ORDER)) if lb in by_lbl]
+    scan_rows.append(["All"] + _elite_wr_cells(_elite_wr_tally(rows)))
+    by_coin = {}
+    for r in rows:
+        by_coin.setdefault(str(r.get("symbol", "?")).replace("-USDT", ""), []).append(r)
+    coin = sorted(((c, _elite_wr_tally(v)) for c, v in by_coin.items()), key=lambda kv: -kv[1]["pnl"])
+    coin_rows = [[c] + _elite_wr_cells(d) for c, d in coin]
+    return (f"🏆 <b>ELITE Win Rate</b> — since {first}\n"
+            f"Win = TP1 or TP2, loss = SL, a timeout by where it closed. Shown only - "
+            f"Elite's times still come from /st week.\n\n"
+            f"<b>By scan</b>\n<pre>{_elite_wr_table(['Scan', 'W/L', 'Win', 'P&L'], scan_rows)}</pre>\n\n"
+            f"<b>By coin</b> (best P&L first)\n"
+            f"<pre>{_elite_wr_table(['Coin', 'W/L', 'Win', 'P&L'], coin_rows)}</pre>")
+
+
+def _elite_st_week_msgs() -> list:
+    """/el st week - each scan's Elite times against the weekday the signal
+    fired on, "wins/losses" per cell, laid out like /st week. Split by row
+    so no message passes Telegram's limit."""
+    rows = [r for r in _elite_history if r.get("slot") and r.get("date")]
+    if not rows:
+        return ["📅 <b>ELITE Win Rate — by weekday</b>\n\nNo closed Elite trades with a time yet."]
+    cells, times = {}, {}
+    for r in rows:
+        try:
+            di = _wd_index(datetime.strptime(r["date"], "%Y-%m-%d"))
+        except ValueError:
+            continue
+        lb = r.get("label") or "?"
+        times.setdefault(lb, set()).add(r["slot"])
+        o = _recap_outcome(r)
+        c = cells.setdefault((lb, r["slot"], di), [0, 0])
+        if o == "win":
+            c[0] += 1
+        elif o == "loss":
+            c[1] += 1
+
+    def _tkey(x):
+        try:
+            h, m = x.split(":")
+            return (0, int(h), int(m))
+        except ValueError:
+            return (1, 0, 0)                       # "manual" runs last
+
+    msgs, cur = [], "📅 <b>ELITE Win Rate — by weekday</b>\nwins/losses on the day the signal fired\n\n"
+    limit = _TG_MSG_LIMIT - 120
+    for lb in list(_ELITE_LBL_ORDER) + sorted(set(times) - set(_ELITE_LBL_ORDER)):
+        if lb not in times:
+            continue
+        tl = sorted(times[lb], key=_tkey)
+        cm = {(t, di): (f"{cells[(lb, t, di)][0]}/{cells[(lb, t, di)][1]}" if (lb, t, di) in cells else ".")
+              for t in tl for di in range(7)}
+        cw = max(5, max(len(v) for v in cm.values()))
+        tw = max(6, max(len(t) for t in tl))
+        head = " " * (tw + 1) + " ".join(d[:2].center(cw) for d in WD_NAMES)
+        lines = [head] + [t.ljust(tw + 1) + " ".join(cm[(t, di)].center(cw) for di in range(7)) for t in tl]
+        tot = _elite_wr_tally([r for r in rows if (r.get("label") or "?") == lb])
+        n = tot["w"] + tot["l"]
+        title = (f"<b>{lb}</b> — {tot['w']}/{tot['l']}"
+                 + (f" ({tot['w'] / n * 100:.0f}%)" if n else "") + f", {tot['pnl']:+.1f}%\n<pre>")
+        if len(cur) + len(title) + len(head) + 40 > limit:
+            msgs.append(cur.rstrip()); cur = ""
+        cur += title
+        for ln in lines:
+            if len(cur) + len(ln) + 20 > limit:
+                msgs.append(cur.rstrip() + "</pre>")
+                cur = f"<b>{lb}</b> (cont.)\n<pre>" + head + "\n"
+            cur += ln + "\n"
+        cur = cur.rstrip() + "</pre>\n\n"
+    if cur.strip():
+        msgs.append(cur.rstrip())
+    return msgs
+
+
+def _elite_st_kb():
+    return {"inline_keyboard": [[{"text": "🏆 Scan + coin", "callback_data": "elbtn:st"},
+                                  {"text": "📅 By weekday", "callback_data": "elbtn:stw"}]]}
 
 
 def _elite_recap_kb(kind: str, arg: str, page: int, pages: int):
@@ -17173,7 +17296,8 @@ def _elite_kb():
         [{"text": "📊 Daily", "callback_data": "elbtn:rd"},
          {"text": "📊 Weekly", "callback_data": "elbtn:rw"},
          {"text": "📊 Monthly", "callback_data": "elbtn:rm"}],
-        [{"text": "📡 Open trades", "callback_data": "elbtn:trades"},
+        [{"text": "🏆 Win rate", "callback_data": "elbtn:st"},
+         {"text": "📡 Open trades", "callback_data": "elbtn:trades"},
          {"text": "🔄 Refresh", "callback_data": "elbtn:refresh"}]]}
 
 
@@ -17208,7 +17332,8 @@ def _elite_status_text() -> str:
         out += ["", f"⚠️ Last channel post failed: <code>{_html.escape(_elite_last_post_error)}</code>"]
     out += ["", "<blockquote><code>/el on</code>  <code>/el off</code>  <code>/el t</code> trades  "
                 "<code>/el coins</code>  <code>/el ct on|off</code>  <code>/el run s1</code>  "
-                "<code>/el daily</code>  <code>/el weekly</code>  <code>/el monthly</code></blockquote>"]
+                "<code>/el daily</code>  <code>/el weekly</code>  <code>/el monthly</code>  "
+                "<code>/el st</code> win rate</blockquote>"]
     return "\n".join(out)
 
 
@@ -21203,6 +21328,12 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                            skip_smallcaps=True)
                 threading.Thread(target=lambda k=_k: send_reply(chat_id, "⭐ " + _html.escape(_elite_run(k)),
                                                                 skip_smallcaps=True), daemon=True).start()
+        elif _ea in ("st", "wr", "winrate"):
+            if len(parts) > 2 and parts[2].lower() in ("week", "w", "day", "days"):
+                for _m in _elite_st_week_msgs():
+                    send_reply(chat_id, _m, skip_smallcaps=True)
+            else:
+                send_reply(chat_id, _elite_st_text(), reply_markup=_elite_st_kb(), skip_smallcaps=True)
         elif _ea in ("recap", "daily", "d", "weekly", "w", "monthly", "m"):
             # the main /daily /weekly /monthly, over Elite's own history.
             # /el recap weekly still works: the period is then the next word.
@@ -24451,7 +24582,7 @@ _SCAN_SUBCATS = {
     ]),
     "testsys": ("🧪 Test System & Elite", [
         ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, or `/test` alone for status."),
-        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan and coin, `/el st week` by time and weekday (shown only - times still come from /st week), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
@@ -27333,6 +27464,11 @@ def command_listener():
                             send_reply(cb_chat_id, _elite_trades_text(), skip_smallcaps=True)
                         elif _ea == "rd":
                             _elite_daily_cmd(cb_chat_id, [])
+                        elif _ea == "st":
+                            send_reply(cb_chat_id, _elite_st_text(), reply_markup=_elite_st_kb(), skip_smallcaps=True)
+                        elif _ea == "stw":
+                            for _m in _elite_st_week_msgs():
+                                send_reply(cb_chat_id, _m, skip_smallcaps=True)
                         elif _ea in ("rw", "rm"):
                             _txt, _kb = _elite_recap_paged(_ea[1], "", 0)
                             send_reply(cb_chat_id, _txt, reply_markup=_kb, skip_smallcaps=True)
