@@ -1576,34 +1576,71 @@ def _tg_visible_len(html_text: str) -> int:
     return len(plain.encode("utf-16-le")) // 2
 
 
+def _card_post_once(chat: str, data: dict, png: bytes):
+    """One sendPhoto. (message_id, 0) on success, (None, retry_after) when
+    Telegram says wait, (None, 0) on any other refusal.
+
+    The bot's rate guard (_tg_hooked_post) finds the chat in a json payload;
+    a photo goes as multipart form data, so the guard cannot see which chat
+    it is for. This does the guard's per-chat bookkeeping by hand - without
+    it a card went straight into a chat Telegram had timed out, and every
+    such send restarts that timeout."""
+    _tg_chat_note(chat)
+    try:
+        j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", data=data,
+                          files={"photo": ("clex_pnl.png", png, "image/png")}, timeout=30).json()
+    except Exception as e:
+        print(f"  [PNL CARD] {chat}: {e}")
+        return None, 0
+    if j.get("ok"):
+        _tg_chat_clear(chat)
+        return j["result"]["message_id"], 0
+    _w = float((j.get("parameters") or {}).get("retry_after") or 0)
+    print(f"  [PNL CARD] {chat} rejected: {j.get('description')}")
+    if _w:
+        _tg_chat_penalise(chat, _w)
+    return None, _w
+
+
 def _send_card_reply(chat_id, png: bytes, text: str, reply_to=None, reply_markup=None, protect: bool = False):
-    """sendPhoto with the result as caption. Anything that stops the photo -
-    a caption over 1024, a rejected upload - falls back to the plain text
-    post, so a result is never lost to the picture."""
+    """sendPhoto with the result as caption.
+
+    Never waits on the calling thread - that is the trade monitor, and a
+    30-second sleep there held every other open trade's TP/SL check. When
+    Telegram says "wait" (or the chat is already in its timeout), the card
+    is posted later from its own thread; if it still cannot go, the plain
+    text goes instead. Any other refusal - a caption over 1024, a rejected
+    upload - falls back to the text post at once. A result is never lost."""
     cap = _card_caption(text)
-    if png and _tg_visible_len(cap) <= 1024:
-        data = {"chat_id": chat_id, "caption": cap, "parse_mode": "HTML"}
-        if reply_to:
-            data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
-        if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup)
-        if protect:
-            data["protect_content"] = "true"
-        for _try in range(2):
-            try:
-                j = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", data=data,
-                                  files={"photo": ("clex_pnl.png", png, "image/png")}, timeout=30).json()
-                if j.get("ok"):
-                    return j["result"]["message_id"]
-                _wait = ((j.get("parameters") or {}).get("retry_after") or 0)
-                print(f"  [PNL CARD] {chat_id} rejected: {j.get('description')}")
-                if not _wait or _try:
-                    break
-                time.sleep(min(float(_wait), 30))
-            except Exception as e:
-                print(f"  [PNL CARD] {chat_id}: {e}")
-                break
-    return _send_plain_reply(chat_id, text, reply_to=reply_to, reply_markup=reply_markup, protect=protect)
+    chat = str(chat_id)
+    if not (png and _tg_visible_len(cap) <= 1024):
+        return _send_plain_reply(chat_id, text, reply_to=reply_to, reply_markup=reply_markup, protect=protect)
+    data = {"chat_id": chat_id, "caption": cap, "parse_mode": "HTML"}
+    if reply_to:
+        data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    if protect:
+        data["protect_content"] = "true"
+    _wait = _tg_chat_blocked(chat)
+    if not _wait:
+        _mid, _wait = _card_post_once(chat, data, png)
+        if _mid:
+            return _mid
+    if not _wait:
+        return _send_plain_reply(chat_id, text, reply_to=reply_to, reply_markup=reply_markup, protect=protect)
+
+    def _later(_w=_wait):
+        time.sleep(min(_w, 120) + random.uniform(0.5, 2.0))
+        _left = _tg_chat_blocked(chat)
+        if _left:
+            time.sleep(min(_left, 120) + 0.5)
+        _mid2, _ = _card_post_once(chat, data, png)
+        if not _mid2:
+            _send_plain_reply(chat_id, text, reply_to=reply_to, reply_markup=reply_markup, protect=protect)
+    print(f"  [PNL CARD] {chat} rate limited - card posts in ~{min(_wait, 120):.0f}s")
+    threading.Thread(target=_later, daemon=True).start()
+    return None
 
 
 def _card_reply(card, text, reply_map, *a, **kw):
@@ -17379,7 +17416,7 @@ def _elite_daily_cmd(chat_id, args: list):
         send_reply(chat_id, "⭐ <b>ELITE</b>\n" + _build_recap_text(rows, label), skip_smallcaps=True)
         sent += 1
         if d_end is not None:
-            time.sleep(0.4)
+            time.sleep(1.1)              # Telegram's per-chat pace is about one a second
     if d_end is not None:
         send_reply(chat_id, f"⭐ <b>{sent} day(s)</b> sent for {d.strftime('%b %d')} to {d_end.strftime('%b %d')}"
                             + (f"\n\n{len(days) - sent} day(s) had no closed Elite trades." if sent < len(days) else ""),
