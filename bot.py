@@ -1391,15 +1391,32 @@ def _send_chart_image_for_reply_map(reply_map: dict, photo_bytes: bytes) -> dict
         elif ":" in key: cid = key.split(":", 1)[1]
         else: continue
         if not cid: continue
+        # The rate guard finds the chat in a json payload; a photo goes as
+        # form data, so this chat's timeout is checked and recorded here by
+        # hand (admin 2026-09-25). A chart is extra - into a chat Telegram
+        # has timed out it is skipped, never sent into the timeout.
+        _c = str(cid)
+        _held = _tg_chat_blocked(_c)
+        if _held:
+            print(f"  [CHART IMG] {_c} cooling down {_held:.0f}s — chart skipped")
+            continue
         try:
             _data = {"chat_id": cid}
             if mid:
                 _data["reply_parameters"] = json.dumps({"message_id": mid, "allow_sending_without_reply": True})
+            _tg_chat_note(_c)
             r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                 data=_data, files={"photo": ("chart.png", photo_bytes)}, timeout=20)
-            _mid = (r.json().get("result") or {}).get("message_id")
+            _j = r.json()
+            _mid = (_j.get("result") or {}).get("message_id")
             if _mid:
                 ids[key] = _mid
+                _tg_chat_clear(_c)
+            else:
+                _w = float((_j.get("parameters") or {}).get("retry_after") or 0)
+                if _w:
+                    _tg_chat_penalise(_c, _w)
+                print(f"  [CHART IMG] {_c} rejected: {_j.get('description')}")
         except Exception as e:
             print(f"  [CHART IMG] send to {cid} failed: {e}")
     return ids
@@ -22106,7 +22123,7 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 send_reply(chat_id, _build_recap_text(_rows, _ds + (_sofar if _day == _today else "")),
                            skip_smallcaps=True)
                 _sent += 1
-                time.sleep(0.4)
+                time.sleep(1.1)          # Telegram's per-chat pace is about one a second
             _pn = _recap_partial_note([(_d + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(_span)])
             send_reply(chat_id,
                        f"📊 <b>{_sent} day(s)</b> sent for {_d.strftime('%b %d')} to {_d_end.strftime('%b %d')}"
