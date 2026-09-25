@@ -10696,7 +10696,9 @@ _svdm.init(TELEGRAM_BOT_TOKEN,
 # admin is told who, when they joined and how long they stayed, and the
 # leaver gets a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you
 # for a review.
-#   - the DM goes only to someone who stayed LW_MIN_STAY_H hours or more;
+#   - the DM goes only to someone who stayed LW_MIN_STAY_H hours or more,
+#     and only after the admin taps Send on the alert (admin 2026-09-25:
+#     "ask then confirmation before sending");
 #     a removal by an admin (kicked) is not a leave and gets nothing;
 #   - Telegram lets a bot DM only people who started it - the DM is tried
 #     anyway and the alert says when Telegram refused it;
@@ -10710,7 +10712,7 @@ _LW_REWARD = 0.5
 _LW_EMOJI_ID = "5249397011576285879"          # 🤑
 _LW_REPLY_DAYS = 7                            # how long a leaver's reply is still taken
 _LW_FILE = os.path.join(DATA_DIR, "leave_watch.json")
-_lw = {"enabled": False, "since": 0.0, "joins": {}, "awaiting": {}, "claims": {}, "seq": 0}
+_lw = {"enabled": False, "since": 0.0, "joins": {}, "pending": {}, "awaiting": {}, "claims": {}, "seq": 0}
 _lw_lock = threading.Lock()
 _BEP20_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 
@@ -10832,24 +10834,46 @@ def _lw_on_leave(chat: dict, user: dict, rec):
         joined = f"before watching started ({_lw_when(start)}) · stayed <b>at least {_lw_dur(stayed)}</b>"
     else:
         joined = "unknown"
+    kb = None
     if stayed is not None and stayed >= LW_MIN_STAY_H * 3600:
-        mid = _send_plain_reply(user["id"], _lw_dm_text(user, chat))
-        if mid:
-            with _lw_lock:
-                _lw["awaiting"][str(user["id"])] = {
-                    "at": now, "chat": chat.get("title", ""), "joined": jts or start, "stayed": stayed,
-                    "first_name": user.get("first_name", ""), "username": user.get("username", ""),
-                    "review": "", "wallet": ""}
-            dm = "✉️ Review + reward message sent"
-        else:
-            dm = "⚠️ Could not DM them — Telegram refused (they never started the bot)"
+        # nothing goes to them until the admin taps Send
+        with _lw_lock:
+            _lw["pending"][str(user["id"])] = {
+                "at": now, "chat": chat.get("title", ""), "joined": jts or start, "stayed": stayed,
+                "first_name": user.get("first_name", ""), "last_name": user.get("last_name", ""),
+                "username": user.get("username", "")}
+        dm = "Send them the review + reward message?"
+        kb = {"inline_keyboard": [[{"text": "✉️ Send message", "callback_data": f"lwsend:{user['id']}"},
+                                   {"text": "🚫 Don't send", "callback_data": f"lwskip:{user['id']}"}]]}
     else:
         dm = f"— No message: stayed under {LW_MIN_STAY_H}h"
     _lw_save()
-    send_admin(_PLAIN + "👋 <b>Left the Free channel</b>\n\n"
+    send_reply(ADMIN_CHAT_ID, _PLAIN + "👋 <b>Left the Free channel</b>\n\n"
                f"👤 {_lw_who(user)}\n"
                f"📢 {_html.escape(chat.get('title') or str(chat.get('id')))}\n"
-               f"🕐 Joined: {joined}\n\n{dm}")
+               f"🕐 Joined: {joined}\n\n{dm}", reply_markup=kb, skip_smallcaps=True)
+
+
+def _lw_confirm(uid: str, send: bool) -> str:
+    """The admin's answer on a leave alert: send the review + reward DM, or
+    don't. Telegram may still refuse it - the reply says so."""
+    uid = str(uid)
+    with _lw_lock:
+        p = _lw["pending"].pop(uid, None)
+    if not p:
+        return "Already handled."
+    if not send:
+        _lw_save()
+        return "Not sent."
+    user = {"id": uid, "first_name": p.get("first_name", ""), "username": p.get("username", "")}
+    mid = _send_plain_reply(uid, _lw_dm_text(user, {"title": p.get("chat", "")}))
+    if not mid:
+        _lw_save()
+        return "Telegram refused — they never started the bot."
+    with _lw_lock:
+        _lw["awaiting"][uid] = {**p, "at": time.time(), "review": "", "wallet": ""}
+    _lw_save()
+    return "Sent ✅"
 
 
 def _lw_wants(uid) -> bool:
@@ -10926,13 +10950,16 @@ def _lw_status_text() -> str:
         pend = [(k, c) for k, c in _lw["claims"].items() if c.get("status") == "pending"]
         paid = sum(1 for c in _lw["claims"].values() if c.get("status") == "paid")
         waiting = sum(1 for a in _lw["awaiting"].values() if time.time() - a.get("at", 0) < _LW_REPLY_DAYS * 86400)
+        asking = len(_lw.get("pending") or {})
         joins = len(_lw["joins"])
     chans = _channels_by_tier("free")
     out = [_PLAIN + f"👋 <b>Leave Watch</b> — {'🟢 ON' if _lw['enabled'] else '🔴 OFF'}",
            f"📢 Watching {len(chans)} Free channel(s)" + (f" since {_lw_when(_lw['since'])}" if _lw.get("since") else ""),
            f"🧾 Join times known: {joins}",
+           f"❓ Waiting for your OK to message: {asking}",
            f"✉️ Waiting for a reply: {waiting}  ·  💬 Pending rewards: {len(pend)}  ·  ✅ Paid: {paid}",
-           f"Reward DM only after {LW_MIN_STAY_H}h in the channel · ${_LW_REWARD:g} USDT (BEP20), paid by you"]
+           f"Reward DM only after {LW_MIN_STAY_H}h in the channel, and only when you tap Send · "
+           f"${_LW_REWARD:g} USDT (BEP20), paid by you"]
     if pend:
         out += ["", "<b>Pending</b>"] + [
             f"#{k} · {_html.escape(c.get('first_name') or c['uid'])} · <code>{c['wallet']}</code>" for k, c in pend[-10:]]
@@ -25329,7 +25356,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
-        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and they get a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
+        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and you can tap Send to give them a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review - nothing is sent until you do. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
         ("/notify", "📣", "Admin Notifications", "Ping yourself whenever someone uses the bot - at most once per user every 10 minutes, and never for your own messages or a co-admin. Same screen also chooses which admin notices get PINNED in your DM: the user ping, auto-blacklisted, auto-promoted, auto-demoted and auto-reverified. Pinning never changes whether a notice is sent."),
         ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
@@ -28140,8 +28167,12 @@ def command_listener():
                             _ntxt, _nkb = _norecap_panel()
                             _help_edit_or_send(cb_chat_id, _ntxt, _nkb, message_id=cb_msg_id, rotate=False)
 
-                    elif cb_data.startswith(("lwpay:", "lwrej:")) and cb_is_admin:
-                        _lw_msg = _lw_settle(cb_data.split(":", 1)[1], cb_data.startswith("lwpay:"))
+                    elif cb_data.startswith(("lwpay:", "lwrej:", "lwsend:", "lwskip:")) and cb_is_admin:
+                        _lw_arg = cb_data.split(":", 1)[1]
+                        if cb_data.startswith(("lwsend:", "lwskip:")):
+                            _lw_msg = _lw_confirm(_lw_arg, cb_data.startswith("lwsend:"))
+                        else:
+                            _lw_msg = _lw_settle(_lw_arg, cb_data.startswith("lwpay:"))
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                       json={"callback_query_id": cb["id"], "text": _lw_msg}, timeout=5)
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
