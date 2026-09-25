@@ -25411,7 +25411,6 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
-        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and they get a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review; they confirm what they typed before it reaches you. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
         ("/notify", "📣", "Admin Notifications", "Ping yourself whenever someone uses the bot - at most once per user every 10 minutes, and never for your own messages or a co-admin. Same screen also chooses which admin notices get PINNED in your DM: the user ping, auto-blacklisted, auto-promoted, auto-demoted and auto-reverified. Pinning never changes whether a notice is sent."),
         ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
@@ -25462,6 +25461,7 @@ _BROADCAST_SUBCATS = {
         ("/latestnews",  "📰", "News Feed Status",  "Check whether the live liquidation feed is running."),
     ]),
     "channels": ("📡 Channel Control", [
+        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and they get a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review; they confirm what they typed before it reaches you. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
         ("/channels",      "📡", "Channel Status",    "Show the current status of all connected signal channels."),
         ("/pausechannel",  "⏸", "Pause a Channel",   "Stop signals from being sent to a specific channel."),
         ("/resumechannel", "▶️", "Resume a Channel",  "Re-enable signals for a specific channel."),
@@ -26711,7 +26711,7 @@ def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
     Adding a new command's entry to any of those — the normal way a command
     gets a help-menu button in this codebase — makes it show up in /cmd too,
     automatically, with no separate list to keep in sync.
-    Returns [(category_label, cmd, emoji, title_or_None, desc), ...], in
+    Returns [(category_label, sub_label_or_None, cmd, emoji, title_or_None, desc), ...], in
     _HELP_CATS' own definition order. A full admin sees every category; a
     co-admin sees Scan Control + Trade Control on top of the open-to-all
     ones (their real access, not everything); anyone else sees only the
@@ -26721,12 +26721,12 @@ def _all_commands_registry(is_admin_view: bool, is_co_admin_view: bool = False):
         if admin_only and not (is_admin_view or (is_co_admin_view and cat_id in _CO_ADMIN_CAT_IDS)):
             continue
         for cmd, emoji, title, desc in entries:
-            out.append((cat_label, cmd, emoji, title, desc))
+            out.append((cat_label, None, cmd, emoji, title, desc))
         if cat_id in _NESTED_CATS:
             subcats, _cb_prefix = _NESTED_CATS[cat_id]
             for _sub_id, (_sub_label, sub_entries) in subcats.items():
                 for cmd, emoji, title, desc in sub_entries:
-                    out.append((cat_label, cmd, emoji, title, desc))
+                    out.append((cat_label, _sub_label, cmd, emoji, title, desc))
     return out
 
 # ─── /cmd typography ───────────────────────────────────────────────────────
@@ -26777,9 +26777,12 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
     Category headers are re-shown at the top of any continuation message a
     category's own entry list got split across, so context is never lost."""
     reg = _all_commands_registry(is_admin_view, is_co_admin_view)
+    # Grouped by section AND sub-section - the same rooms /help shows. Only
+    # the section used to be printed, so a section's eleven rooms ran
+    # together as one mixed list (admin 2026-09-25).
     by_cat = {}
-    for cat_label, c, emoji, title, desc in reg:
-        by_cat.setdefault(cat_label, []).append((c, emoji, title, desc))
+    for cat_label, sub_label, c, emoji, title, desc in reg:
+        by_cat.setdefault(cat_label, {}).setdefault(sub_label, []).append((c, emoji, title, desc))
 
     # Upright monospace, not italic - see the per-entry comment below.
     _sub = ("Pulled live from the same list that powers the button menu - add a "
@@ -26789,31 +26792,40 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
               f"{_font(_sub, _FONT_MONO)}\n")
     footer = f"\n{_font('Tip: /help for the button-driven menu instead.', _FONT_MONO)}"
 
-    lines = []  # (is_category_header, text)
-    for cat_label, entries in by_cat.items():
-        lines.append((True, f"\n<b>{_font(cat_label, _FONT_BOLD)}</b>"))
-        for c, emoji, title, desc in entries:
-            # The command stays literal inside <code> so it is still tappable;
-            # the title takes the bold face like its category heading, and the
-            # explanation under it takes the monospace one.
-            lbl = f"{emoji} <code>{c}</code>" + (
-                f" — <b>{_font(_html.escape(title, quote=False), _FONT_BOLD)}</b>" if title else "")
-            # No <i> here. The monospace face already separates the explanation
-            # from its title, and italic on top of it renders slanted and
-            # hard to read (admin 2026-09-07).
-            lines.append((False, f"{lbl}\n{_font(_html.escape(desc, quote=False), _FONT_MONO)}"))
+    lines = []  # (header_level, text): 1 = section, 2 = sub-section, 0 = a command
+    for cat_label, subs in by_cat.items():
+        lines.append((1, f"\n<b>{_font(cat_label, _FONT_BOLD)}</b>"))
+        for sub_label, entries in subs.items():
+            if sub_label:
+                lines.append((2, f"\n▸ <b>{_font(sub_label, _FONT_BOLD)}</b>"))
+            for c, emoji, title, desc in entries:
+                # The command stays literal inside <code> so it is still tappable;
+                # the title takes the bold face like its category heading, and the
+                # explanation under it takes the monospace one.
+                lbl = f"{emoji} <code>{c}</code>" + (
+                    f" — <b>{_font(_html.escape(title, quote=False), _FONT_BOLD)}</b>" if title else "")
+                # No <i> here. The monospace face already separates the explanation
+                # from its title, and italic on top of it renders slanted and
+                # hard to read (admin 2026-09-07).
+                lines.append((0, f"{lbl}\n{_font(_html.escape(desc, quote=False), _FONT_MONO)}"))
 
     margin = 120  # room for the part-tag + footer + any HTML close tags
     chunks = []; cur = header
-    last_cat_header = None
-    for is_hdr, text in lines:
-        if is_hdr:
-            last_cat_header = text
+    last_cat_header = last_sub_header = None
+    for level, text in lines:
+        if level == 1:
+            last_cat_header, last_sub_header = text, None
+        elif level == 2:
+            last_sub_header = text
         if _tg_len(cur) + _tg_len(text) + 1 > _TG_MSG_LIMIT - margin:
             chunks.append(cur)
-            # a chunk break mid-category re-opens with that category's own
-            # header so the continuation still reads in context
-            cur = (last_cat_header + "\n") if not is_hdr and last_cat_header else ""
+            # a page break mid-section re-opens with that section's header -
+            # and its sub-section's - so the next page still reads in context
+            cur = ""
+            if level != 1 and last_cat_header:
+                cur += last_cat_header + "\n"
+            if level == 0 and last_sub_header:
+                cur += last_sub_header + "\n"
         cur += text + "\n"
     if cur.strip():
         chunks.append(cur)
