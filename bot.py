@@ -17265,26 +17265,52 @@ def _elite_bans_text() -> str:
 
 def _elite_ban_cmd(words: list, ban: bool) -> str:
     """/el ban UNI ts2 | /el ban UNI ZEC ts1 ts2 | /el ban UNI (every scan)
-    /el unban UNI ts2 | /el unban UNI (every scan)."""
-    coins = [w.upper().lstrip("$").replace("-USDT", "") for w in words if w.lower() not in _ELITE_SCAN_WORD]
-    kinds = [_ELITE_SCAN_WORD[w.lower()] for w in words if w.lower() in _ELITE_SCAN_WORD] or list(ELITE_KINDS)
-    coins = [c for c in coins if c.isalnum() and len(c) <= 12]
-    if not coins:
+    /el unban UNI ts2 | /el unban UNI (every scan).
+
+    Several commands in one message - one per line, as Telegram sends a
+    pasted list - are split at each "/el ban" / "/el unban" and done one by
+    one. Read as one command, "/el ban river s2 / /el ban uai ts2" banned a
+    coin called BAN and every coin in both scans (admin 2026-09-25)."""
+    segs, cur_ban, cur = [], ban, []
+    for w in words:
+        lw = w.lower()
+        if lw in ("/el", "/elite"):
+            continue
+        if lw in ("ban", "unban"):
+            if cur:
+                segs.append((cur_ban, cur))
+            cur_ban, cur = lw == "ban", []
+            continue
+        cur.append(w)
+    if cur:
+        segs.append((cur_ban, cur))
+    lines, off_list, done = [], [], False
+    for seg_ban, seg in segs:
+        coins = [w.upper().lstrip("$").replace("-USDT", "") for w in seg if w.lower() not in _ELITE_SCAN_WORD]
+        coins = list(dict.fromkeys(c for c in coins if c.isalnum() and len(c) <= 12))
+        kinds = list(dict.fromkeys(_ELITE_SCAN_WORD[w.lower()] for w in seg if w.lower() in _ELITE_SCAN_WORD)) \
+            or list(ELITE_KINDS)
+        if not coins:
+            continue
+        for c in coins:
+            now = set(ELITE_SCAN_BANS.get(c, set()))
+            now = (now | set(kinds)) if seg_ban else (now - set(kinds))
+            if now:
+                ELITE_SCAN_BANS[c] = now
+            else:
+                ELITE_SCAN_BANS.pop(c, None)
+        done = True
+        lbls = ", ".join(ELITE_KINDS[k]["label"] for k in kinds)
+        lines.append((f"🚫 Banned in Elite {lbls}: " if seg_ban else f"✅ Unbanned in Elite {lbls}: ")
+                     + " ".join(f"<code>{c}</code>" for c in coins))
+        if seg_ban:
+            off_list += [c for c in coins if c not in ELITE_COINS and c not in off_list]
+    if not done:
         return ("Usage: <code>/el ban UNI ts2</code> (s1 s2 ts1 ts2, several allowed; none = every scan) · "
-                "<code>/el unban UNI ts2</code>")
-    for c in coins:
-        cur = set(ELITE_SCAN_BANS.get(c, set()))
-        cur = (cur | set(kinds)) if ban else (cur - set(kinds))
-        if cur:
-            ELITE_SCAN_BANS[c] = cur
-        else:
-            ELITE_SCAN_BANS.pop(c, None)
+                "<code>/el unban UNI ts2</code> · one per line to do several")
     _elite_save()
-    lbls = ", ".join(ELITE_KINDS[k]["label"] for k in kinds)
-    head = (f"🚫 Banned in Elite {lbls}: " if ban else f"✅ Unbanned in Elite {lbls}: ") + " ".join(f"<code>{c}</code>" for c in coins)
-    off_list = [c for c in coins if c not in ELITE_COINS]
-    note = (f"\n\n⚠️ Not on the Elite list: {' '.join(off_list)} (/el coins add)" if off_list and ban else "")
-    return head + note + "\n\n" + _elite_bans_text()
+    note = (f"\n\n⚠️ Not on the Elite list: {' '.join(off_list)} (/el coins add)" if off_list else "")
+    return "\n".join(lines) + note + "\n\n" + _elite_bans_text()
 
 
 def _elite_st_text() -> str:
