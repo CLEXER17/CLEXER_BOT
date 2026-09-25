@@ -16576,6 +16576,11 @@ ELITE_KINDS = {
 }
 _elite_trades: list = []
 _elite_history: list = []
+# Per-scan bans (admin 2026-09-25: "UNI ban in TS2"): coin -> the Elite scan
+# kinds it must not trade in. The coin stays on the list and keeps trading
+# in every other scan. Elite only - the main bot's scans never read this.
+ELITE_SCAN_BANS: dict = {}
+_ELITE_SCAN_WORD = {"s1": "scan1", "s2": "scan2", "ts1": "demo1", "ts2": "demo2"}
 _elite_lock = threading.Lock()
 _elite_fired: dict = {}               # "YYYY-MM-DD kind H:MM" -> what that run did
 _ELITE_STATE_FILE = os.path.join(DATA_DIR, "elite_system.json")
@@ -16617,7 +16622,7 @@ def _elite_candidates(kind: str, tickers: list) -> list:
         if not sym.endswith("-USDT"):
             continue
         base = sym[:-5]
-        if base not in allow or _is_banned(base):
+        if base not in allow or _is_banned(base) or kind in ELITE_SCAN_BANS.get(base, ()):
             continue
         try:
             vol = float(t.get("quoteVolume", 0) or t.get("volume", 0) or 0)
@@ -17223,6 +17228,38 @@ def _elite_wr_table(head: list, rows: list) -> str:
     return "\n".join([fmt(head), "-" * len(fmt(head))] + [fmt(r) for r in rows])
 
 
+def _elite_bans_text() -> str:
+    lbl = {k: v["label"] for k, v in ELITE_KINDS.items()}
+    rows = [f"<code>{c}</code> — " + ", ".join(lbl[k] for k in ("scan1", "scan2", "demo1", "demo2") if k in ks)
+            for c, ks in sorted(ELITE_SCAN_BANS.items()) if ks]
+    return ("🚫 <b>Elite scan bans</b>\n\n" + ("\n".join(rows) if rows else "None - every Elite coin trades in every scan.")
+            + "\n\n<code>/el ban UNI ts2</code>  <code>/el unban UNI ts2</code>  <code>/el unban UNI</code>")
+
+
+def _elite_ban_cmd(words: list, ban: bool) -> str:
+    """/el ban UNI ts2 | /el ban UNI ZEC ts1 ts2 | /el ban UNI (every scan)
+    /el unban UNI ts2 | /el unban UNI (every scan)."""
+    coins = [w.upper().lstrip("$").replace("-USDT", "") for w in words if w.lower() not in _ELITE_SCAN_WORD]
+    kinds = [_ELITE_SCAN_WORD[w.lower()] for w in words if w.lower() in _ELITE_SCAN_WORD] or list(ELITE_KINDS)
+    coins = [c for c in coins if c.isalnum() and len(c) <= 12]
+    if not coins:
+        return ("Usage: <code>/el ban UNI ts2</code> (s1 s2 ts1 ts2, several allowed; none = every scan) · "
+                "<code>/el unban UNI ts2</code>")
+    for c in coins:
+        cur = set(ELITE_SCAN_BANS.get(c, set()))
+        cur = (cur | set(kinds)) if ban else (cur - set(kinds))
+        if cur:
+            ELITE_SCAN_BANS[c] = cur
+        else:
+            ELITE_SCAN_BANS.pop(c, None)
+    _elite_save()
+    lbls = ", ".join(ELITE_KINDS[k]["label"] for k in kinds)
+    head = (f"🚫 Banned in Elite {lbls}: " if ban else f"✅ Unbanned in Elite {lbls}: ") + " ".join(f"<code>{c}</code>" for c in coins)
+    off_list = [c for c in coins if c not in ELITE_COINS]
+    note = (f"\n\n⚠️ Not on the Elite list: {' '.join(off_list)} (/el coins add)" if off_list and ban else "")
+    return head + note + "\n\n" + _elite_bans_text()
+
+
 def _elite_st_text() -> str:
     """/el st - Elite's win rate by scan and by coin, all time. For showing
     only: Elite still takes its times from the main /st week."""
@@ -17477,6 +17514,7 @@ def _elite_recap_loop():
 
 def _elite_save():
     blob = {"enabled": ELITE_ENABLED, "coins": list(ELITE_COINS),
+            "scan_bans": {c: sorted(k) for c, k in ELITE_SCAN_BANS.items() if k},
             "trades": _elite_trades, "history": _elite_history[-3000:]}
     try:
         with open(_ELITE_STATE_FILE, "w") as f:
@@ -17505,6 +17543,11 @@ def _elite_load():
         ELITE_ENABLED = bool(d.get("enabled", False))
         if d.get("coins"):
             ELITE_COINS = [str(c).upper() for c in d["coins"]]
+        ELITE_SCAN_BANS.clear()
+        for _c, _k in (d.get("scan_bans") or {}).items():
+            _ks = {x for x in (_k or []) if x in ELITE_KINDS}
+            if _ks:
+                ELITE_SCAN_BANS[str(_c).upper()] = _ks
         _elite_trades[:] = d.get("trades", []) or []
         for t in _elite_trades:
             t["ct_pending"] = False              # a restart mid-placement must not strand a trade
@@ -17566,6 +17609,9 @@ def _elite_status_text() -> str:
            f"📂 Open: <b>{len(_elite_trades)}</b>   ·   today {len(rows)} closed, <b>{net:+.2f}%</b>",
            "",
            f"🪙 <b>Coins ({len(ELITE_COINS)})</b>: " + " ".join(f"<code>{c}</code>" for c in ELITE_COINS),
+           *([("🚫 <b>Scan bans</b>: " + " · ".join(
+               f"{c} ({', '.join(ELITE_KINDS[k]['label'] for k in ('scan1', 'scan2', 'demo1', 'demo2') if k in ks)})"
+               for c, ks in sorted(ELITE_SCAN_BANS.items()) if ks))] if any(ELITE_SCAN_BANS.values()) else []),
            "",
            "⏰ <b>Live today on /st week</b>"]
     if by:
@@ -21538,6 +21584,10 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             ct.set_elite_ct(_on); save_settings()
             send_reply(chat_id, f"💰 Elite copy trade <b>{'ON — every copy user' if _on else 'OFF'}</b>",
                        skip_smallcaps=True)
+        elif _ea in ("ban", "unban"):
+            send_reply(chat_id, _elite_ban_cmd(parts[2:], _ea == "ban"), skip_smallcaps=True)
+        elif _ea == "bans":
+            send_reply(chat_id, _elite_bans_text(), skip_smallcaps=True)
         elif _ea in ("coins", "coin", "c"):
             _op = _eb[0].lower() if _eb else ""
             _syms = [x for x in _eb[1:] if x.isalnum() and len(x) <= 12]
@@ -24825,7 +24875,7 @@ _SCAN_SUBCATS = {
     ]),
     "testsys": ("🧪 Test System & Elite", [
         ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, `/test v` your own Test system virtual account (admins only, paper money), or `/test` alone for status."),
-        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan, by coin, and each coin inside each scan, `/el st UNI` one coin's S1/S2/TS1/TS2 record, `/el st all` every coin's, `/el st week` by time and weekday (shown only - times still come from /st week), `/el v` your own Elite virtual account (admins only, paper money), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan, by coin, and each coin inside each scan, `/el st UNI` one coin's S1/S2/TS1/TS2 record, `/el st all` every coin's, `/el st week` by time and weekday (shown only - times still come from /st week), `/el v` your own Elite virtual account (admins only, paper money), `/el ban UNI ts2` stops one coin in one Elite scan (s1 s2 ts1 ts2; several allowed; no scan = all), `/el unban UNI ts2`, `/el bans` the list, `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
