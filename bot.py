@@ -16211,19 +16211,17 @@ def _ist_apply_candle(t: dict, c: dict):
 
 def _ist_entry_card(t: dict) -> str:
     s = _IST_SETUPS[t["setup"]]
-    arrow = "🟢" if t["side"] == "BUY" else "🔴"
     _how = "limit filled" if s["entry"] == "limit" else "market entry"
     _stop_pct = abs(t["stop"] - t["entry"]) / t["entry"] * 100
-    return _scan_box(f"$BTC IST-{t['setup']}", f"{arrow} {s['name']}", [[
-        f"{arrow} {_smallcaps_title(t['side'])} — {_smallcaps_title(_how)}",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
-        f"🛑 SL: <code>{t['stop']:,.1f}</code>  ({_stop_pct:.2f}%)",
-        f"⏰ {_smallcaps_title('Exit')}: {_ist_hm_label(t['exit_ts'])} IST",
-    ], [
-        f"📌 {_ist_hm_label(t['compare_ts'])} <code>{t['compare_px']:,.1f}</code> → "
-        f"{_ist_hm_label(t['trigger_ts'])} <code>{t['now_px']:,.1f}</code>  "
-        f"({t['gap_pct']:+.2f}%)" + ("  ⚠️ close call" if t.get("close_call") else ""),
-    ]], tag=t.get("sig_id", ""))
+    return (_PLAIN + f"✦ $BTC — {'LONG 🟢' if t['side'] == 'BUY' else 'SHORT 🔴'}\n\n"
+            f"BTC is looking good for a {_fx_side(t['side'])} here - the {s['name'].lower()} setup. "
+            f"Entry is live at <code>{t['entry']:,.1f}</code> ({_how}).\n\n"
+            f"🛑 SL: <code>{t['stop']:,.1f}</code> (-{_stop_pct:.2f}%)\n"
+            f"⏰ If the stop isn't hit, we close it at {_ist_hm_label(t['exit_ts'])} IST.\n\n"
+            f"📌 Why: price went from <code>{t['compare_px']:,.1f}</code> at {_ist_hm_label(t['compare_ts'])} "
+            f"to <code>{t['now_px']:,.1f}</code> at {_ist_hm_label(t['trigger_ts'])} ({t['gap_pct']:+.2f}%)"
+            + (" - a close call" if t.get("close_call") else "") + "."
+            + _fx_foot(t.get("sig_id", "")))
 
 
 def _ist_close(setup: str, t: dict, result: str, price: float):
@@ -16231,14 +16229,38 @@ def _ist_close(setup: str, t: dict, result: str, price: float):
     it in both the IST history and the shared test history so the existing
     daily/weekly recaps include it."""
     raw, net = _ist_pnl(t, price)
-    icon = {"TIME": "⏰", "SL": "🛑", "BE": "🛡️", "TRAIL": "📉"}.get(result, "•")
-    label = {"TIME": "time exit", "SL": "stopped", "BE": "breakeven", "TRAIL": "trailed out"}.get(result, result)
-    _test_post(_scan_box(f"$BTC {result}", f"{icon} IST-{setup} · {_IST_SETUPS[setup]['name']}", [[
-        f"{icon} {_smallcaps_title('Result')}: {_smallcaps_title(label)}",
-        f"📊 {_smallcaps_title('Price')}: <code>{price:,.1f}</code>",
-        f"🎯 {_smallcaps_title('Entry')}: <code>{t['entry']:,.1f}</code>",
-        f"📈 P&L: <b>{raw:+.2f}%</b>  (after fees <b>{net:+.2f}%</b>)",
-    ]], tag=t.get("sig_id", "")), reply_to=t.get("entry_mid"))
+    _sid = t.get("sig_id", "")
+    if result == "SL":
+        _text = _fx_sl("BTC", _sid)
+    elif result == "BE":
+        _text = (_PLAIN + "✦ $BTC — BE EXIT 🛡️\n\nPrice moved our way and then came back to entry, "
+                 "so we closed at breakeven.\n\nNo loss on this one." + _fx_foot(_sid))
+    elif result == "TRAIL":
+        _text = (_PLAIN + "✦ $BTC — TRAILED OUT 📉\n\nThe trailing stop followed the move and closed the "
+                 f"trade at <code>{price:,.1f}</code>." + _fx_foot(_sid))
+    else:
+        _text = (_PLAIN + f"✦ $BTC — TIME EXIT ⏰\n\nWe've reached the planned exit time, so the trade is "
+                 f"closed at <code>{price:,.1f}</code>." + _fx_foot(_sid))
+    _text = _fx_with(_text, f"📈 P&L: <b>{raw:+.2f}%</b> (after fees <b>{net:+.2f}%</b>)")
+    # A profitable exit posts the Clex card, like every other Test close.
+    _png = None
+    if raw > 0:
+        _png = _pnl_card_png({"symbol": "BTC-USDT", "side": t["side"], "leverage": PNL_CARD_LEVERAGE,
+                              "pct": round(raw * PNL_CARD_LEVERAGE, 2), "close_label": "Close Price",
+                              "close_px": price, "entry_px": t["entry"],
+                              "tag": {"TIME": "TIME EXIT", "TRAIL": "TRAILED OUT", "BE": "BREAKEVEN"}.get(result, result),
+                              "when": now_ist().strftime("%m-%d %H:%M"),
+                              "seed": sum(map(ord, _sid)) or 1}) if PNL_CARD_ENABLED else None
+    if _png:
+        _send_card_reply(TEST_CHANNEL_ID, _png, _text, reply_to=t.get("entry_mid"))
+    else:
+        _test_post(_text, reply_to=t.get("entry_mid"))
+    # The admins' Test V accounts - the IST plan was never wired to them, so
+    # two days of BTC trades never reached Test V (admin 2026-09-25).
+    try:
+        _sv.on_close("test", _sid, price, "TIMEOUT" if result == "TIME" else result)
+    except Exception as _e:
+        print(f"  [SYSVIRTUAL] test IST close: {_e}")
     rec = {"setup": setup, "side": t["side"], "entry": t["entry"], "exit": price,
            "result": result, "pnl": round(raw, 4), "pnl_net": round(net, 4),
            "strict_fill": bool(t.get("strict_fill", True)),
@@ -16277,6 +16299,11 @@ def _ist_open_trade(setup: str, plan: dict, ref: dict, entry: float, entry_ts: f
          "be_armed": False, "trail_on": False, "last_1m": entry_ts,
          "summer": plan["summer"], "sig_id": _gen_signal_id()}
     t["entry_mid"] = _test_post(_ist_entry_card(t))
+    try:
+        # no take-profit in the IST plan - the stop and the time exit close it
+        _sv.on_open("test", t["sig_id"], "BTC-USDT", side, entry, _stop, 0, 0)
+    except Exception as _e:
+        print(f"  [SYSVIRTUAL] test IST open: {_e}")
     with _ist_lock:
         _ist_state["open"][setup] = t
     _test_save()
