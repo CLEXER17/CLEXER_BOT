@@ -1729,8 +1729,17 @@ def send_lifecycle_reply(text: str, reply_map: dict, include_ch2: bool = True, t
                 mid = _tier_send(cid, text, reply_map.get(f"free:{cid}"), reply_markup)
                 if mid: ids[f"free:{cid}"] = mid
         elif locked_text:
+            # A VIP-only trade that is now fully closed (BE, a timeout in
+            # profit) shows Free the card, captioned with the real result -
+            # the trade is over, so its prices no longer need hiding (admin
+            # 2026-09-25). TP1 is not "closed": the rest still runs, so it
+            # keeps the locked text.
+            _closed = bool(card) and card.get("tag") in ("TP2 HIT", "TP1 + BE", "TIMEOUT")
             for cid in _channels_by_tier("free"):
-                mid = _send_plain_reply(cid, locked_text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
+                if _closed:
+                    mid = _tier_send(cid, text, reply_map.get(f"free:{cid}"), reply_markup)
+                else:
+                    mid = _send_plain_reply(cid, locked_text, reply_to=reply_map.get(f"free:{cid}"), reply_markup=reply_markup)
                 if mid: ids[f"free:{cid}"] = mid
     if react_category:
         _react_to_ids(ids, react_category)
@@ -2148,9 +2157,18 @@ def _notify_free_late(symbol: str, trade: dict, result: str):
     # entry message_id was captured for a given channel (e.g. old trade,
     # pre-locked-signal feature, or the capture failed).
     _reply_map = trade.get("reply_map", {})
+    # TP2 closes the trade: the teaser carries the Clex card (admin
+    # 2026-09-25). TP1 does not - the rest of the trade is still running.
+    _png = None
+    if result == "TP2":
+        _c = _pnl_card(trade, "TP2", symbol=symbol)
+        _png = _pnl_card_png(_c) if _c else None
     for cid in free_chans:
         try:
-            _send_plain_reply(cid, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
+            if _png:
+                _send_card_reply(cid, _png, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
+            else:
+                _send_plain_reply(cid, text, reply_to=_reply_map.get(f"free:{cid}"), reply_markup=mkp)
         except Exception as e: print(f"  [FREE CATCHUP] {cid}: {e}")
 
 _RECAP_ICON = {"TP2": "🏆", "TP1": "🎯", "SL": "🛑", "TIMEOUT": "⏰"}
