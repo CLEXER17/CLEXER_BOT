@@ -17187,12 +17187,42 @@ def _elite_st_text() -> str:
         by_coin.setdefault(str(r.get("symbol", "?")).replace("-USDT", ""), []).append(r)
     coin = sorted(((c, _elite_wr_tally(v)) for c, v in by_coin.items()), key=lambda kv: -kv[1]["pnl"])
     coin_rows = [[c] + _elite_wr_cells(d) for c, d in coin]
+    # each coin's win rate inside each scan (admin 2026-09-25: "UNI in S1,
+    # in S2, in TS1, in TS2") - same coin order as the table above
+    grid_rows = []
+    for c, _d in coin:
+        cells = []
+        for lb in _ELITE_LBL_ORDER:
+            t_ = _elite_wr_tally([r for r in by_coin[c] if (r.get("label") or "?") == lb])
+            n_ = t_["w"] + t_["l"]
+            cells.append(f"{t_['w'] / n_ * 100:.0f}%" if n_ else "-")
+        grid_rows.append([c] + cells)
     return (f"🏆 <b>ELITE Win Rate</b> — since {first}\n"
             f"Win = TP1 or TP2, loss = SL, a timeout by where it closed. Shown only - "
             f"Elite's times still come from /st week.\n\n"
             f"<b>By scan</b>\n<pre>{_elite_wr_table(['Scan', 'W/L', 'Win', 'P&L'], scan_rows)}</pre>\n\n"
             f"<b>By coin</b> (best P&L first)\n"
-            f"<pre>{_elite_wr_table(['Coin', 'W/L', 'Win', 'P&L'], coin_rows)}</pre>")
+            f"<pre>{_elite_wr_table(['Coin', 'W/L', 'Win', 'P&L'], coin_rows)}</pre>\n\n"
+            f"<b>Coin win rate in each scan</b>\n"
+            f"<pre>{_elite_wr_table(['Coin'] + list(_ELITE_LBL_ORDER), grid_rows)}</pre>\n"
+            f"- = no closed trade in that scan yet. One coin in full: <code>/el st UNI</code>")
+
+
+def _elite_st_coin_text(coin: str) -> str:
+    """/el st UNI - one coin's record inside each scan: wins/losses, win
+    rate and P&L, the same rule as every other Elite count."""
+    coin = coin.upper().replace("-USDT", "").replace("USDT", "").lstrip("$")
+    rows = [r for r in _elite_history if str(r.get("symbol", "")).replace("-USDT", "") == coin]
+    if not rows:
+        return f"🏆 <b>ELITE — {_html.escape(coin)}</b>\n\nNo closed Elite trades on {_html.escape(coin)} yet."
+    out = []
+    for lb in _ELITE_LBL_ORDER:
+        sub = [r for r in rows if (r.get("label") or "?") == lb]
+        out.append([lb] + (_elite_wr_cells(_elite_wr_tally(sub)) if sub else ["-", "-", "-"]))
+    out.append(["All"] + _elite_wr_cells(_elite_wr_tally(rows)))
+    first = min(r.get("date") or "9999" for r in rows)
+    return (f"🏆 <b>ELITE — {_html.escape(coin)}</b> — since {first}\n\n"
+            f"<pre>{_elite_wr_table(['Scan', 'W/L', 'Win', 'P&L'], out)}</pre>")
 
 
 def _elite_st_week_msgs() -> list:
@@ -21456,6 +21486,8 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
             if len(parts) > 2 and parts[2].lower() in ("week", "w", "day", "days"):
                 for _m in _elite_st_week_msgs():
                     send_reply(chat_id, _m, skip_smallcaps=True)
+            elif len(parts) > 2:
+                send_reply(chat_id, _elite_st_coin_text(parts[2]), skip_smallcaps=True)
             else:
                 send_reply(chat_id, _elite_st_text(), reply_markup=_elite_st_kb(), skip_smallcaps=True)
         elif _ea in ("recap", "daily", "d", "weekly", "w", "monthly", "m"):
@@ -24710,7 +24742,7 @@ _SCAN_SUBCATS = {
     ]),
     "testsys": ("🧪 Test System & Elite", [
         ("/test", "🧪", "Test System", "A completely separate paper channel trading BTC, XAUT, ETH, SOL and HYPE every 15 minutes on the Scan1 engine with a 1-minute entry confirmation. Shares nothing with the main bot — own channel, own trades, own recaps, no CSV, no API calls. Copy trades real money as its own source (ver 8) — `/test ct on|off`, ON by default. `/test run`, `/test stop`, `/test switch` to flip between the current 5M/1M rules and MTF (15M bias -> 5M signal -> 1M entry), `/test trade` for live open positions with distance to each level, `/test ping` to check the bot can actually post to the channel, `/test v` your own Test system virtual account (admins only, paper money), or `/test` alone for status."),
-        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan and coin, `/el st week` by time and weekday (shown only - times still come from /st week), `/el v` your own Elite virtual account (admins only, paper money), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
+        ("/el", "⭐", "Elite System", "Trades ONLY the Elite winner coins, at every S1/S2/TS1/TS2 special time /st week has live today, on that scan's own rules (its volume floor, move cap, stop band, TP multiples and timeout). Own channel. `/el` status + buttons, `/el on` / `/el off`, `/el t` open trades, `/el coins` (add / rm), `/el ct on|off` copy trade, `/el run s1` to fire one scan's rules now, `/el daily` (yesterday / a date / a date range), `/el weekly` and `/el monthly` (add `last` for the one before, ◀ ▶ to page), `/el st` Elite's own win rate by scan, by coin, and each coin inside each scan, `/el st UNI` one coin's S1/S2/TS1/TS2 record, `/el st week` by time and weekday (shown only - times still come from /st week), `/el v` your own Elite virtual account (admins only, paper money), `/el ping` to check the channel. One coin can be open once LONG and once SHORT. (/elite is the same.)"),
     ]),
     "source": ("🔀 Signal Source", [
         ("/switch", "🔀", "Signal Source — AI or Engine", "Switch Scan1/Scan2/TS1/TS2 between the Claude API call and the pure-Python engine (no API call). Everything downstream stays identical. BTC unaffected. (/sw is the same command.)"),
