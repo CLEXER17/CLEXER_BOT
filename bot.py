@@ -10687,6 +10687,260 @@ _sv.ct = ct
 _svdm.init(TELEGRAM_BOT_TOKEN,
            lambda: [ADMIN_CHAT_ID] + ([CO_ADMIN_CHAT_ID] if CO_ADMIN_ENABLED and CO_ADMIN_CHAT_ID else []))
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LEAVE WATCH (admin 2026-09-25) - /lw on | /lw off
+#
+# Watches the Free channels (Telegram chat_member updates - the bot must be
+# an admin there). Remembers when each member joined; when one leaves, the
+# admin is told who, when they joined and how long they stayed, and the
+# leaver gets a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you
+# for a review.
+#   - the DM goes only to someone who stayed LW_MIN_STAY_H hours or more;
+#     a removal by an admin (kicked) is not a leave and gets nothing;
+#   - Telegram lets a bot DM only people who started it - the DM is tried
+#     anyway and the alert says when Telegram refused it;
+#   - the reward is paid BY HAND: the leaver's review + wallet reach the
+#     admin with Paid / Reject buttons. No money moves on its own.
+# Someone who joined before watching started has no join time; they count
+# as in the channel since watching started.
+# ═══════════════════════════════════════════════════════════════════════════
+LW_MIN_STAY_H = 24
+_LW_REWARD = 0.5
+_LW_EMOJI_ID = "5249397011576285879"          # 🤑
+_LW_REPLY_DAYS = 7                            # how long a leaver's reply is still taken
+_LW_FILE = os.path.join(DATA_DIR, "leave_watch.json")
+_lw = {"enabled": False, "since": 0.0, "joins": {}, "awaiting": {}, "claims": {}, "seq": 0}
+_lw_lock = threading.Lock()
+_BEP20_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
+
+
+def _lw_save():
+    with _lw_lock:
+        blob = json.loads(json.dumps(_lw))
+    try:
+        with open(_LW_FILE, "w") as f:
+            json.dump(blob, f)
+    except Exception as e:
+        print(f"[LEAVE WATCH] save: {e}")
+    try:
+        _kv_push_async("leave_watch", blob)
+    except Exception as e:
+        print(f"[LEAVE WATCH] central push: {e}")
+
+
+def _lw_load():
+    try:
+        d = None
+        if CLEXER_API_URL:
+            r = _central_get("/kv/leave_watch")
+            if r is not None and r.ok:
+                d = _kv_pick_newer(_LW_FILE, r.json(), "LEAVE WATCH")
+        if d is None and os.path.exists(_LW_FILE):
+            with open(_LW_FILE) as f:
+                d = json.load(f)
+        if isinstance(d, dict):
+            with _lw_lock:
+                for k in _lw:
+                    if k in d:
+                        _lw[k] = d[k]
+            print(f"[LEAVE WATCH] loaded - {'ON' if _lw['enabled'] else 'OFF'}, "
+                  f"{len(_lw['joins'])} joins, {len(_lw['claims'])} claims")
+    except Exception as e:
+        print(f"[LEAVE WATCH] load: {e}")
+
+
+def _lw_dur(sec: float) -> str:
+    sec = max(0, int(sec))
+    d, h, m = sec // 86400, sec % 86400 // 3600, sec % 3600 // 60
+    return f"{d}d {h}h" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+
+def _lw_when(epoch: float) -> str:
+    try:
+        return (datetime.fromtimestamp(epoch, timezone.utc) + IST).strftime("%Y-%m-%d %H:%M IST")
+    except Exception:
+        return "?"
+
+
+def _lw_who(user: dict) -> str:
+    name = _html.escape(" ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) or "?")
+    un = f" (@{_html.escape(user['username'])})" if user.get("username") else ""
+    return f"{name}{un} · <code>{user.get('id')}</code>"
+
+
+def _lw_is_free(chat: dict) -> bool:
+    ids = {str(c) for c in _channels_by_tier("free")}
+    return str(chat.get("id")) in ids or (bool(chat.get("username")) and f"@{chat['username']}" in ids)
+
+
+def _lw_inside(m: dict) -> bool:
+    st = (m or {}).get("status")
+    return st in ("member", "administrator", "creator") or (st == "restricted" and (m or {}).get("is_member"))
+
+
+def _lw_on_member(cm: dict):
+    """One chat_member update from a watched Free channel."""
+    if not _lw.get("enabled"):
+        return
+    chat = cm.get("chat") or {}
+    if not _lw_is_free(chat):
+        return
+    old, new = cm.get("old_chat_member") or {}, cm.get("new_chat_member") or {}
+    user = new.get("user") or {}
+    if not user.get("id") or user.get("is_bot"):
+        return
+    key = f"{chat.get('id')}:{user['id']}"
+    if _lw_inside(new) and not _lw_inside(old):
+        with _lw_lock:
+            _lw["joins"][key] = {"ts": time.time(), "first_name": user.get("first_name", ""),
+                                 "username": user.get("username", "")}
+            if len(_lw["joins"]) > 20000:
+                for k in sorted(_lw["joins"], key=lambda k: _lw["joins"][k].get("ts", 0))[:2000]:
+                    _lw["joins"].pop(k, None)
+        _lw_save()
+    elif _lw_inside(old) and not _lw_inside(new):
+        with _lw_lock:
+            rec = _lw["joins"].pop(key, None)
+        if new.get("status") == "kicked":
+            _lw_save()                               # removed by an admin - not a leave
+            return
+        threading.Thread(target=_lw_on_leave, args=(chat, user, rec), daemon=True).start()
+
+
+def _lw_dm_text(user: dict, chat: dict) -> str:
+    name = _html.escape(user.get("first_name") or "there")
+    title = f" <b>{_html.escape(chat['title'])}</b>" if chat.get("title") else ""
+    return (_PLAIN + f"Hey {name} 👋\n\n"
+            f"We noticed you left our free channel{title} — sorry to see you go!\n\n"
+            "Could you tell us why? Anything that didn't work for you, or something we could do better, "
+            "really helps us improve.\n\n"
+            f'<tg-emoji emoji-id="{_LW_EMOJI_ID}">🤑</tg-emoji> As a thank-you, reply here with your review or '
+            f"suggestion and your USDT (BEP20) wallet address — we'll send you ${_LW_REWARD:g} for your time.\n\n"
+            "Just put both in one message, for example:\n"
+            "The signals came too often for me. 0x12ab…9f3c")
+
+
+def _lw_on_leave(chat: dict, user: dict, rec):
+    now = time.time()
+    jts = (rec or {}).get("ts")
+    start = jts or _lw.get("since") or 0
+    stayed = now - start if start else None
+    if jts:
+        joined = f"{_lw_when(jts)} · stayed <b>{_lw_dur(stayed)}</b>"
+    elif start:
+        joined = f"before watching started ({_lw_when(start)}) · stayed <b>at least {_lw_dur(stayed)}</b>"
+    else:
+        joined = "unknown"
+    if stayed is not None and stayed >= LW_MIN_STAY_H * 3600:
+        mid = _send_plain_reply(user["id"], _lw_dm_text(user, chat))
+        if mid:
+            with _lw_lock:
+                _lw["awaiting"][str(user["id"])] = {
+                    "at": now, "chat": chat.get("title", ""), "joined": jts or start, "stayed": stayed,
+                    "first_name": user.get("first_name", ""), "username": user.get("username", ""),
+                    "review": "", "wallet": ""}
+            dm = "✉️ Review + reward message sent"
+        else:
+            dm = "⚠️ Could not DM them — Telegram refused (they never started the bot)"
+    else:
+        dm = f"— No message: stayed under {LW_MIN_STAY_H}h"
+    _lw_save()
+    send_admin(_PLAIN + "👋 <b>Left the Free channel</b>\n\n"
+               f"👤 {_lw_who(user)}\n"
+               f"📢 {_html.escape(chat.get('title') or str(chat.get('id')))}\n"
+               f"🕐 Joined: {joined}\n\n{dm}")
+
+
+def _lw_wants(uid) -> bool:
+    a = _lw["awaiting"].get(str(uid))
+    return bool(a) and time.time() - a.get("at", 0) < _LW_REPLY_DAYS * 86400
+
+
+def _lw_on_text(uid, user: dict, text: str) -> bool:
+    """A leaver's reply. Collects the review and the BEP20 address - in one
+    message or two - then hands the claim to the admin."""
+    uid = str(uid)
+    with _lw_lock:
+        a = _lw["awaiting"].get(uid)
+        if not a:
+            return False
+        m = _BEP20_RE.search(text or "")
+        if m:
+            a["wallet"] = m.group(0)
+        words = _BEP20_RE.sub("", text or "").strip()
+        if words:
+            a["review"] = (a["review"] + "\n" + words).strip()[:1500]
+        ready = bool(a["wallet"]) and len(a["review"]) >= 3
+        if ready:
+            _lw["seq"] = int(_lw.get("seq", 0)) + 1
+            cid_ = str(_lw["seq"])
+            _lw["claims"][cid_] = {**a, "uid": uid, "created": time.time(), "status": "pending"}
+            _lw["awaiting"].pop(uid, None)
+    if not ready:
+        if a["wallet"] and not a["review"]:
+            _send_plain_reply(uid, _PLAIN + "Thanks! Could you also add a few words — why you left, or what we "
+                                            "could do better? Then we'll send your reward.")
+        elif a["review"] and not a["wallet"]:
+            _send_plain_reply(uid, _PLAIN + "Thanks for the feedback 🙏 Now just send your USDT (BEP20) wallet "
+                                            f"address (it starts with 0x) so we can send your ${_LW_REWARD:g}.")
+        else:
+            _send_plain_reply(uid, _PLAIN + "Please send a few words about why you left, plus your USDT (BEP20) "
+                                            "address (it starts with 0x).")
+        _lw_save()
+        return True
+    _lw_save()
+    _send_plain_reply(uid, _PLAIN + f"Thank you so much for the feedback ❤️ We'll send your ${_LW_REWARD:g} "
+                                    "USDT to your wallet soon.")
+    c = _lw["claims"][cid_]
+    send_reply(ADMIN_CHAT_ID, _PLAIN + f"💬 <b>Leaver review #{cid_}</b>\n\n"
+               f"👤 {_lw_who({'id': uid, **(user or {}), 'first_name': c['first_name'], 'username': c['username']})}\n"
+               f"📢 {_html.escape(c.get('chat') or '')} · stayed {_lw_dur(c.get('stayed') or 0)}\n\n"
+               f"<blockquote>{_html.escape(c['review'])}</blockquote>\n"
+               f"💰 USDT (BEP20): <code>{c['wallet']}</code>\n\n"
+               f"Send them ${_LW_REWARD:g}, then tap Paid.",
+               reply_markup={"inline_keyboard": [[{"text": f"✅ Paid ${_LW_REWARD:g}", "callback_data": f"lwpay:{cid_}"},
+                                                  {"text": "❌ Reject", "callback_data": f"lwrej:{cid_}"}]]},
+               skip_smallcaps=True)
+    return True
+
+
+def _lw_settle(claim_id: str, paid: bool) -> str:
+    with _lw_lock:
+        c = _lw["claims"].get(str(claim_id))
+        if not c:
+            return "Claim not found."
+        if c.get("status") != "pending":
+            return f"Already {c.get('status')}."
+        c["status"] = "paid" if paid else "rejected"
+        c["settled"] = time.time()
+    _lw_save()
+    if paid:
+        _send_plain_reply(c["uid"], _PLAIN + f"🎉 Your ${_LW_REWARD:g} USDT reward has been sent to "
+                                             f"<code>{c['wallet']}</code>. Thanks again for helping us improve!")
+    return "Marked paid ✅ — they've been told." if paid else "Rejected."
+
+
+def _lw_status_text() -> str:
+    with _lw_lock:
+        pend = [(k, c) for k, c in _lw["claims"].items() if c.get("status") == "pending"]
+        paid = sum(1 for c in _lw["claims"].values() if c.get("status") == "paid")
+        waiting = sum(1 for a in _lw["awaiting"].values() if time.time() - a.get("at", 0) < _LW_REPLY_DAYS * 86400)
+        joins = len(_lw["joins"])
+    chans = _channels_by_tier("free")
+    out = [_PLAIN + f"👋 <b>Leave Watch</b> — {'🟢 ON' if _lw['enabled'] else '🔴 OFF'}",
+           f"📢 Watching {len(chans)} Free channel(s)" + (f" since {_lw_when(_lw['since'])}" if _lw.get("since") else ""),
+           f"🧾 Join times known: {joins}",
+           f"✉️ Waiting for a reply: {waiting}  ·  💬 Pending rewards: {len(pend)}  ·  ✅ Paid: {paid}",
+           f"Reward DM only after {LW_MIN_STAY_H}h in the channel · ${_LW_REWARD:g} USDT (BEP20), paid by you"]
+    if pend:
+        out += ["", "<b>Pending</b>"] + [
+            f"#{k} · {_html.escape(c.get('first_name') or c['uid'])} · <code>{c['wallet']}</code>" for k, c in pend[-10:]]
+    out += ["", "<code>/lw on</code>  <code>/lw off</code>  <code>/lw claims</code>",
+            "The bot must be an admin in each Free channel to see who leaves."]
+    return "\n".join(out)
+
+
 # Group join requests + welcome cards (groupjoin.py). The VIP channel keeps
 # its auto-approve rule below; every other chat's request goes to this.
 import groupjoin as _gj
@@ -21614,6 +21868,20 @@ def handle_command(text, chat_id, message=None, sender_id=None, auto=False, _is_
                 "<code>/secretary ai on</code>  <code>/secretary msg &lt;text&gt;</code>"]),
                 skip_smallcaps=True)
 
+    elif cmd == "/lw" and is_admin:
+        # Leave Watch - Free-channel leavers: alert + review/reward DM
+        _la = parts[1].lower() if len(parts) > 1 else ""
+        if _la in ("on", "start"):
+            with _lw_lock:
+                _lw["enabled"] = True
+                _lw["since"] = _lw.get("since") or time.time()
+            _lw_save()
+        elif _la in ("off", "stop"):
+            with _lw_lock:
+                _lw["enabled"] = False
+            _lw_save()
+        send_reply(chat_id, _lw_status_text(), skip_smallcaps=True)
+
     elif cmd in ("/el", "/elite") and is_scanadmin:
         # ELITE - the winner-coins system. Short on purpose: /el on, /el t.
         global ELITE_ENABLED, ELITE_COINS
@@ -25061,6 +25329,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
+        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and they get a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
         ("/notify", "📣", "Admin Notifications", "Ping yourself whenever someone uses the bot - at most once per user every 10 minutes, and never for your own messages or a co-admin. Same screen also chooses which admin notices get PINNED in your DM: the user ping, auto-blacklisted, auto-promoted, auto-demoted and auto-reverified. Pinning never changes whether a notice is sent."),
         ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
@@ -26949,7 +27218,7 @@ def command_listener():
         _lost_warned = False
         try:
             r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","channel_post","callback_query","chat_join_request","pre_checkout_query","business_connection","business_message","inline_query","chosen_inline_result","guest_message"]}, timeout=25)
+                params={"offset": last_update_id+1, "timeout": 20, "allowed_updates": ["message","channel_post","callback_query","chat_join_request","chat_member","pre_checkout_query","business_connection","business_message","inline_query","chosen_inline_result","guest_message"]}, timeout=25)
             data = r.json()
             if not data.get("ok"):
                 # This used to be completely silent — no print, no admin DM —
@@ -27871,6 +28140,14 @@ def command_listener():
                             _ntxt, _nkb = _norecap_panel()
                             _help_edit_or_send(cb_chat_id, _ntxt, _nkb, message_id=cb_msg_id, rotate=False)
 
+                    elif cb_data.startswith(("lwpay:", "lwrej:")) and cb_is_admin:
+                        _lw_msg = _lw_settle(cb_data.split(":", 1)[1], cb_data.startswith("lwpay:"))
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"], "text": _lw_msg}, timeout=5)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                                      json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                            "reply_markup": {"inline_keyboard": [[{"text": _lw_msg[:60], "callback_data": "rcp:noop"}]]}},
+                                      timeout=5)
                     elif cb_data.startswith("elrcp:") and cb_is_scanadmin:
                         # ◀ ▶ under /el weekly and /el monthly
                         _rp = cb_data.split(":")
@@ -28523,6 +28800,14 @@ def command_listener():
 
                 # Auto-approve/decline VIP channel join requests — only current VIP
                 # tier users get let in automatically; everyone else is declined.
+                _cmu = upd.get("chat_member")
+                if _cmu:
+                    try:
+                        _lw_on_member(_cmu)
+                    except Exception as _lwe:
+                        print(f"  [LEAVE WATCH] {_lwe}")
+                    continue
+
                 jr = upd.get("chat_join_request")
                 if jr:
                     _jr_chat_id = jr["chat"]["id"]
@@ -28589,6 +28874,15 @@ def command_listener():
                     except Exception:
                         pass
                     continue
+
+                # a Free-channel leaver answering the review / reward message
+                if (text and not text.startswith("/") and msg.get("chat", {}).get("type") == "private"
+                        and _lw_wants(cid)):
+                    try:
+                        if _lw_on_text(cid, msg.get("from") or {}, text):
+                            continue
+                    except Exception as _lwe:
+                        print(f"  [LEAVE WATCH] reply: {_lwe}")
 
                 # Test / Elite virtual setup form waiting for a number
                 if text and not text.startswith("/") and _svdm.wants_text(cid):
@@ -30555,6 +30849,7 @@ def main():
     threading.Thread(target=_test_monitor_loop, daemon=True).start()
     threading.Thread(target=_test_recap_loop, daemon=True).start()
     _elite_load()
+    _lw_load()
     threading.Thread(target=_elite_scan_loop, daemon=True).start()
     threading.Thread(target=_elite_monitor_loop, daemon=True).start()
     threading.Thread(target=_elite_recap_loop, daemon=True).start()
