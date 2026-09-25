@@ -10696,9 +10696,9 @@ _svdm.init(TELEGRAM_BOT_TOKEN,
 # admin is told who, when they joined and how long they stayed, and the
 # leaver gets a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you
 # for a review.
-#   - the DM goes only to someone who stayed LW_MIN_STAY_H hours or more,
-#     and only after the admin taps Send on the alert (admin 2026-09-25:
-#     "ask then confirmation before sending");
+#   - the DM goes only to someone who stayed LW_MIN_STAY_H hours or more;
+#   - the leaver sees their review + wallet back and confirms before it is
+#     sent to the admin (they may have typed something wrong);
 #     a removal by an admin (kicked) is not a leave and gets nothing;
 #   - Telegram lets a bot DM only people who started it - the DM is tried
 #     anyway and the alert says when Telegram refused it;
@@ -10712,7 +10712,7 @@ _LW_REWARD = 0.5
 _LW_EMOJI_ID = "5249397011576285879"          # 🤑
 _LW_REPLY_DAYS = 7                            # how long a leaver's reply is still taken
 _LW_FILE = os.path.join(DATA_DIR, "leave_watch.json")
-_lw = {"enabled": False, "since": 0.0, "joins": {}, "pending": {}, "awaiting": {}, "claims": {}, "seq": 0}
+_lw = {"enabled": False, "since": 0.0, "joins": {}, "awaiting": {}, "claims": {}, "seq": 0}
 _lw_lock = threading.Lock()
 _BEP20_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 
@@ -10834,46 +10834,24 @@ def _lw_on_leave(chat: dict, user: dict, rec):
         joined = f"before watching started ({_lw_when(start)}) · stayed <b>at least {_lw_dur(stayed)}</b>"
     else:
         joined = "unknown"
-    kb = None
     if stayed is not None and stayed >= LW_MIN_STAY_H * 3600:
-        # nothing goes to them until the admin taps Send
-        with _lw_lock:
-            _lw["pending"][str(user["id"])] = {
-                "at": now, "chat": chat.get("title", ""), "joined": jts or start, "stayed": stayed,
-                "first_name": user.get("first_name", ""), "last_name": user.get("last_name", ""),
-                "username": user.get("username", "")}
-        dm = "Send them the review + reward message?"
-        kb = {"inline_keyboard": [[{"text": "✉️ Send message", "callback_data": f"lwsend:{user['id']}"},
-                                   {"text": "🚫 Don't send", "callback_data": f"lwskip:{user['id']}"}]]}
+        mid = _send_plain_reply(user["id"], _lw_dm_text(user, chat))
+        if mid:
+            with _lw_lock:
+                _lw["awaiting"][str(user["id"])] = {
+                    "at": now, "chat": chat.get("title", ""), "joined": jts or start, "stayed": stayed,
+                    "first_name": user.get("first_name", ""), "username": user.get("username", ""),
+                    "review": "", "wallet": "", "confirm": False}
+            dm = "✉️ Review + reward message sent"
+        else:
+            dm = "⚠️ Could not DM them — Telegram refused (they never started the bot)"
     else:
         dm = f"— No message: stayed under {LW_MIN_STAY_H}h"
     _lw_save()
-    send_reply(ADMIN_CHAT_ID, _PLAIN + "👋 <b>Left the Free channel</b>\n\n"
+    send_admin(_PLAIN + "👋 <b>Left the Free channel</b>\n\n"
                f"👤 {_lw_who(user)}\n"
                f"📢 {_html.escape(chat.get('title') or str(chat.get('id')))}\n"
-               f"🕐 Joined: {joined}\n\n{dm}", reply_markup=kb, skip_smallcaps=True)
-
-
-def _lw_confirm(uid: str, send: bool) -> str:
-    """The admin's answer on a leave alert: send the review + reward DM, or
-    don't. Telegram may still refuse it - the reply says so."""
-    uid = str(uid)
-    with _lw_lock:
-        p = _lw["pending"].pop(uid, None)
-    if not p:
-        return "Already handled."
-    if not send:
-        _lw_save()
-        return "Not sent."
-    user = {"id": uid, "first_name": p.get("first_name", ""), "username": p.get("username", "")}
-    mid = _send_plain_reply(uid, _lw_dm_text(user, {"title": p.get("chat", "")}))
-    if not mid:
-        _lw_save()
-        return "Telegram refused — they never started the bot."
-    with _lw_lock:
-        _lw["awaiting"][uid] = {**p, "at": time.time(), "review": "", "wallet": ""}
-    _lw_save()
-    return "Sent ✅"
+               f"🕐 Joined: {joined}\n\n{dm}")
 
 
 def _lw_wants(uid) -> bool:
@@ -10883,50 +10861,83 @@ def _lw_wants(uid) -> bool:
 
 def _lw_on_text(uid, user: dict, text: str) -> bool:
     """A leaver's reply. Collects the review and the BEP20 address - in one
-    message or two - then hands the claim to the admin."""
+    message or two - then shows them what will be sent and asks them to
+    confirm (admin 2026-09-25: they may have typed something wrong). Only a
+    confirmed review reaches the admin."""
     uid = str(uid)
     with _lw_lock:
         a = _lw["awaiting"].get(uid)
         if not a:
             return False
         m = _BEP20_RE.search(text or "")
+        words = _BEP20_RE.sub("", text or "").strip()
+        if a.get("confirm"):
+            # typing again while the preview is up replaces what was typed
+            a["confirm"] = False
+            if words:
+                a["review"] = ""
         if m:
             a["wallet"] = m.group(0)
-        words = _BEP20_RE.sub("", text or "").strip()
         if words:
             a["review"] = (a["review"] + "\n" + words).strip()[:1500]
         ready = bool(a["wallet"]) and len(a["review"]) >= 3
         if ready:
+            a["confirm"] = True
+        review, wallet = a["review"], a["wallet"]
+    _lw_save()
+    if ready:
+        _send_plain_reply(uid, _PLAIN + "Here's what we'll send - please check it 👇\n\n"
+                                        f"💬 <b>Your review</b>\n<blockquote>{_html.escape(review)}</blockquote>\n"
+                                        f"💰 <b>Your USDT (BEP20) address</b>\n<code>{wallet}</code>\n\n"
+                                        "Is everything right?",
+                          reply_markup={"inline_keyboard": [[
+                              {"text": "✅ Yes, send it", "callback_data": f"lwok:{uid}"},
+                              {"text": "✏️ Change it", "callback_data": f"lwedit:{uid}"}]]})
+    elif wallet and not review:
+        _send_plain_reply(uid, _PLAIN + "Thanks! Could you also add a few words — why you left, or what we "
+                                        "could do better? Then we'll send your reward.")
+    elif review and not wallet:
+        _send_plain_reply(uid, _PLAIN + "Thanks for the feedback 🙏 Now just send your USDT (BEP20) wallet "
+                                        f"address (it starts with 0x) so we can send your ${_LW_REWARD:g}.")
+    else:
+        _send_plain_reply(uid, _PLAIN + "Please send a few words about why you left, plus your USDT (BEP20) "
+                                        "address (it starts with 0x).")
+    return True
+
+
+def _lw_user_confirm(uid: str, ok: bool) -> str:
+    """The leaver's own Yes / Change on the preview."""
+    uid = str(uid)
+    with _lw_lock:
+        a = _lw["awaiting"].get(uid)
+        if not a or not a.get("confirm"):
+            return "This was already sent."
+        if not ok:
+            a.update({"review": "", "wallet": "", "confirm": False})
+            claim = None
+        else:
             _lw["seq"] = int(_lw.get("seq", 0)) + 1
             cid_ = str(_lw["seq"])
-            _lw["claims"][cid_] = {**a, "uid": uid, "created": time.time(), "status": "pending"}
+            claim = _lw["claims"][cid_] = {**a, "uid": uid, "created": time.time(), "status": "pending"}
+            claim.pop("confirm", None)
             _lw["awaiting"].pop(uid, None)
-    if not ready:
-        if a["wallet"] and not a["review"]:
-            _send_plain_reply(uid, _PLAIN + "Thanks! Could you also add a few words — why you left, or what we "
-                                            "could do better? Then we'll send your reward.")
-        elif a["review"] and not a["wallet"]:
-            _send_plain_reply(uid, _PLAIN + "Thanks for the feedback 🙏 Now just send your USDT (BEP20) wallet "
-                                            f"address (it starts with 0x) so we can send your ${_LW_REWARD:g}.")
-        else:
-            _send_plain_reply(uid, _PLAIN + "Please send a few words about why you left, plus your USDT (BEP20) "
-                                            "address (it starts with 0x).")
-        _lw_save()
-        return True
     _lw_save()
+    if not ok:
+        _send_plain_reply(uid, _PLAIN + "No problem ✏️ Send your review and your USDT (BEP20) address again "
+                                        "(both in one message is easiest).")
+        return "Send it again below."
     _send_plain_reply(uid, _PLAIN + f"Thank you so much for the feedback ❤️ We'll send your ${_LW_REWARD:g} "
                                     "USDT to your wallet soon.")
-    c = _lw["claims"][cid_]
     send_reply(ADMIN_CHAT_ID, _PLAIN + f"💬 <b>Leaver review #{cid_}</b>\n\n"
-               f"👤 {_lw_who({'id': uid, **(user or {}), 'first_name': c['first_name'], 'username': c['username']})}\n"
-               f"📢 {_html.escape(c.get('chat') or '')} · stayed {_lw_dur(c.get('stayed') or 0)}\n\n"
-               f"<blockquote>{_html.escape(c['review'])}</blockquote>\n"
-               f"💰 USDT (BEP20): <code>{c['wallet']}</code>\n\n"
+               f"👤 {_lw_who({'id': uid, 'first_name': claim['first_name'], 'username': claim['username']})}\n"
+               f"📢 {_html.escape(claim.get('chat') or '')} · stayed {_lw_dur(claim.get('stayed') or 0)}\n\n"
+               f"<blockquote>{_html.escape(claim['review'])}</blockquote>\n"
+               f"💰 USDT (BEP20): <code>{claim['wallet']}</code>\n\n"
                f"Send them ${_LW_REWARD:g}, then tap Paid.",
                reply_markup={"inline_keyboard": [[{"text": f"✅ Paid ${_LW_REWARD:g}", "callback_data": f"lwpay:{cid_}"},
                                                   {"text": "❌ Reject", "callback_data": f"lwrej:{cid_}"}]]},
                skip_smallcaps=True)
-    return True
+    return "Sent ✅"
 
 
 def _lw_settle(claim_id: str, paid: bool) -> str:
@@ -10950,16 +10961,14 @@ def _lw_status_text() -> str:
         pend = [(k, c) for k, c in _lw["claims"].items() if c.get("status") == "pending"]
         paid = sum(1 for c in _lw["claims"].values() if c.get("status") == "paid")
         waiting = sum(1 for a in _lw["awaiting"].values() if time.time() - a.get("at", 0) < _LW_REPLY_DAYS * 86400)
-        asking = len(_lw.get("pending") or {})
         joins = len(_lw["joins"])
     chans = _channels_by_tier("free")
     out = [_PLAIN + f"👋 <b>Leave Watch</b> — {'🟢 ON' if _lw['enabled'] else '🔴 OFF'}",
            f"📢 Watching {len(chans)} Free channel(s)" + (f" since {_lw_when(_lw['since'])}" if _lw.get("since") else ""),
            f"🧾 Join times known: {joins}",
-           f"❓ Waiting for your OK to message: {asking}",
            f"✉️ Waiting for a reply: {waiting}  ·  💬 Pending rewards: {len(pend)}  ·  ✅ Paid: {paid}",
-           f"Reward DM only after {LW_MIN_STAY_H}h in the channel, and only when you tap Send · "
-           f"${_LW_REWARD:g} USDT (BEP20), paid by you"]
+           f"Reward DM only after {LW_MIN_STAY_H}h in the channel · the leaver confirms their review before "
+           f"it reaches you · ${_LW_REWARD:g} USDT (BEP20), paid by you"]
     if pend:
         out += ["", "<b>Pending</b>"] + [
             f"#{k} · {_html.escape(c.get('first_name') or c['uid'])} · <code>{c['wallet']}</code>" for k, c in pend[-10:]]
@@ -25356,7 +25365,7 @@ _SETTINGS_SUBCATS = {
         ("/setimages", "🖼", "Chart Timeframes","Choose which timeframes appear in generated charts."),
     ]),
     "feeds": ("📰 Feeds & App", [
-        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and you can tap Send to give them a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review - nothing is sent until you do. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
+        ("/lw", "👋", "Leave Watch", "Watch the Free channels: when someone who stayed 24h+ leaves, you get an alert (who, joined when, how long) and they get a friendly DM asking why, with a $0.5 USDT (BEP20) thank-you for a review; they confirm what they typed before it reaches you. Their review + wallet reach you with Paid / Reject buttons - you send the $0.5 yourself. `/lw on`, `/lw off`, `/lw` status + pending rewards. The bot must be an admin in each Free channel."),
         ("/notify", "📣", "Admin Notifications", "Ping yourself whenever someone uses the bot - at most once per user every 10 minutes, and never for your own messages or a co-admin. Same screen also chooses which admin notices get PINNED in your DM: the user ping, auto-blacklisted, auto-promoted, auto-demoted and auto-reverified. Pinning never changes whether a notice is sent."),
         ("/secretary", "💼", "Secretary Mode", "Telegram Business chat automation. Link the bot under Settings > Telegram Business > Chatbots on a Premium account, and it answers that account's private chats for you - one reply per chat every 6 hours, fixed text or Clex-written. `/secretary on`, `/secretary off`, `/secretary ai on`, `/secretary msg <text>` — put {bot} anywhere in that text and it is replaced with the bot's @username."),
         ("/news",    "📰", "News Feed",       "Turn the crypto news feed on or off."),
@@ -27431,6 +27440,19 @@ def command_listener():
                                       json={"callback_query_id": cb["id"], "text": _spop, "show_alert": True}, timeout=5)
                         continue
 
+                    if cb_data.startswith(("lwok:", "lwedit:")):
+                        # a Free-channel leaver confirming (or changing) their review
+                        _lw_uid = cb_data.split(":", 1)[1]
+                        _lw_ans = (_lw_user_confirm(_lw_uid, cb_data.startswith("lwok:"))
+                                   if str(cb_cid) == _lw_uid else "This button isn't for you.")
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                      json={"callback_query_id": cb["id"], "text": _lw_ans}, timeout=5)
+                        if str(cb_cid) == _lw_uid:
+                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
+                                          json={"chat_id": cb_chat_id, "message_id": cb_msg_id,
+                                                "reply_markup": {"inline_keyboard": []}}, timeout=5)
+                        continue
+
                     if cb_data.startswith("vs:"):
                         # the admin-only Test / Elite virtual screens
                         try:
@@ -28167,12 +28189,8 @@ def command_listener():
                             _ntxt, _nkb = _norecap_panel()
                             _help_edit_or_send(cb_chat_id, _ntxt, _nkb, message_id=cb_msg_id, rotate=False)
 
-                    elif cb_data.startswith(("lwpay:", "lwrej:", "lwsend:", "lwskip:")) and cb_is_admin:
-                        _lw_arg = cb_data.split(":", 1)[1]
-                        if cb_data.startswith(("lwsend:", "lwskip:")):
-                            _lw_msg = _lw_confirm(_lw_arg, cb_data.startswith("lwsend:"))
-                        else:
-                            _lw_msg = _lw_settle(_lw_arg, cb_data.startswith("lwpay:"))
+                    elif cb_data.startswith(("lwpay:", "lwrej:")) and cb_is_admin:
+                        _lw_msg = _lw_settle(cb_data.split(":", 1)[1], cb_data.startswith("lwpay:"))
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
                                       json={"callback_query_id": cb["id"], "text": _lw_msg}, timeout=5)
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup",
