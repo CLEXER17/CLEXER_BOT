@@ -4113,6 +4113,57 @@ def _hw_line(hw: dict) -> str:
 _user_where_cache: dict = {}          # cid -> (line, fetched_at)
 
 
+def _ping_os(hw: dict) -> str:
+    """'Windows 11' rather than the raw 'Windows 19.0.0' Chromium reports -
+    Windows platformVersion 13+ is Windows 11, 1-10 is Windows 10."""
+    os_, ver = str(hw.get("os") or ""), str(hw.get("osver") or "")
+    if os_.lower() == "windows" and ver:
+        try:
+            return "Windows 11" if int(ver.split(".")[0]) >= 13 else "Windows 10"
+        except ValueError:
+            pass
+    return (os_ + (f" {ver}" if ver else "")).strip()
+
+
+def _ping_net(hw: dict) -> str:
+    names = {"wifi": "Wi-Fi", "cellular": "Mobile", "ethernet": "Ethernet", "slow-2g": "2G"}
+    kind = "/".join(names.get(x.lower(), x.upper()) for x in str(hw.get("net") or "").split("/") if x)
+    bits = [kind] if kind else []
+    if hw.get("down"):
+        bits.append(f"{hw['down']:g} Mbps")
+    if hw.get("rtt"):
+        bits.append(f"{int(hw['rtt'])} ms")
+    return " · ".join(bits)
+
+
+def _ping_device_block(d: dict) -> str:
+    """The admin ping's device details - where, network, device, specs,
+    connection, last app open - one labelled line each, inside a quote."""
+    g = d.get("geo") or {}
+    hw = d.get("hw") or {}
+    where = ", ".join(x for x in (g.get("city"), g.get("country")) if x) or "Unknown place"
+    _map = _maps_link(g)
+    place = f'<a href="{_map}">{_esc(where)}</a>' if _map else _esc(where)
+    rows = [f"📍 {place}" + (f" · {_esc(g['isp'])}" if g.get("isp") else "")]
+    ip = (d.get("ips") or [""])[0]
+    if ip:
+        rows.append(f"🌐 IP <code>{_esc(ip)}</code>")
+    dev = " · ".join(x for x in (_esc(hw.get("model") or ""), _esc(_ping_os(hw)), _esc(hw.get("browser") or "")) if x)
+    rows.append(f"📱 {dev or _esc(d.get('ua') or 'Unknown device')}")
+    spec = " · ".join(x for x in (
+        f"{int(hw['cores'])} cores" if hw.get("cores") else "",
+        f"{hw['ram']:g} GB RAM" if hw.get("ram") else "",
+        (_esc(hw["arch"]) + (f"/{int(hw['bits'])}" if hw.get("bits") else "")) if hw.get("arch") else "") if x)
+    if spec:
+        rows.append(f"⚙️ {spec}")
+    net = _ping_net(hw)
+    if net:
+        rows.append(f"📶 {_esc(net)}")
+    if d.get("last"):
+        rows.append(f"🕐 Last app open: {_esc(d['last'])} IST")
+    return "<blockquote>" + "\n".join(rows) + "</blockquote>\n"
+
+
 def _user_where_line(cid) -> str:
     """Where this user last opened the Mini App - for the admin's own ping.
 
@@ -4143,15 +4194,7 @@ def _user_where_line(cid) -> str:
         _d = _devs.get(_reg.get("current")) or (
             sorted(_devs.values(), key=lambda x: x.get("last", ""))[-1] if _devs else None)
         if _d:
-            _g = _d.get("geo") or {}
-            _where = ", ".join(x for x in (_g.get("city"), _g.get("country")) if x)
-            _isp = f" ({_g['isp']})" if _g.get("isp") else ""
-            _ip = (_d.get("ips") or [""])[0]
-            _map = _maps_link(_g)
-            _place = f'<a href="{_map}">{_where or "map"}</a>' if _map else (_where or "unknown")
-            _line = (f"🌐 {_place}{_isp}\n"
-                     + _hw_line(_d.get("hw"))
-                     + f"🔢 <code>{_ip or '-'}</code>  ·  {_esc(_d.get('ua', '?'))}  ·  app {_esc(_d.get('last', '?'))}\n")
+            _line = _ping_device_block(_d)
     except Exception as e:
         print(f"  [USER PING] where {cid}: {e}")
     _user_where_cache[str(cid)] = (_line, time.time())
@@ -4198,10 +4241,13 @@ def _ping_admin_user_activity(user_id, username=None, chat_id=None):
     _who = _user_ref(cid)
     _u = ct._get(str(cid)) or {}
     _tier = '⭐ VIP' if _u.get('tier') == 'vip' else '🆓 Free'
-    _txt = (f'👤 <b>{_who}</b> is using the bot\n\n'
-            f'{_tier}  |  <code>{cid}</code>\n'
-            f'{_user_where_line(cid)}'
-            f'Next ping for this user in {USER_PING_COOLDOWN // 60} min.')
+    # Ordinary letters (the _PLAIN mark) - in the small-caps font the place,
+    # device and network lines were hard to read (admin 2026-09-25).
+    _where = _user_where_line(cid)
+    _txt = (_PLAIN + f'👤 <b>{_who}</b> is using the bot\n'
+            f'{_tier}  ·  🆔 <code>{cid}</code>\n\n'
+            + (_where if _where else "<blockquote>📱 Hasn't opened the Mini App yet - no device details</blockquote>\n")
+            + f'\n⏳ Next ping for this user in {USER_PING_COOLDOWN // 60} min')
     send_admin(_txt, pin=PIN_FLAGS.get('userping', False))
 
 
