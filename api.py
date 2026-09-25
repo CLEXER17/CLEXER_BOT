@@ -976,7 +976,12 @@ def device_seen(body: DeviceSeen, request: Request, user: dict = Depends(get_cur
     _quota = reg.get("alerts") or {}
     if _quota.get("day") != _today:
         _quota = {"day": _today, "n": 0}
-    _alert = (new_device or new_net) and not _first_ever and _quota["n"] < _ALERTS_PER_DAY
+    # Admin only (admin 2026-09-25: "user not getting this, only admin get
+    # this"). Users are never sent the sign-in alert - their devices are
+    # still recorded above, they just get no message.
+    _is_admin_self = bool(ADMIN_CHAT_ID) and uid == str(ADMIN_CHAT_ID)
+    _alert = (_is_admin_self and (new_device or new_net) and not _first_ever
+              and _quota["n"] < _ALERTS_PER_DAY)
     if _alert:
         _quota["n"] += 1
     reg["alerts"] = _quota
