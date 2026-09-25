@@ -26792,12 +26792,12 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
               f"{_font(_sub, _FONT_MONO)}\n")
     footer = f"\n{_font('Tip: /help for the button-driven menu instead.', _FONT_MONO)}"
 
-    lines = []  # (header_level, text): 1 = section, 2 = sub-section, 0 = a command
+    lines = []  # (header_level, text, section): 1 = section, 2 = sub-section, 0 = a command
     for cat_label, subs in by_cat.items():
-        lines.append((1, f"\n<b>{_font(cat_label, _FONT_BOLD)}</b>"))
+        lines.append((1, f"\n<b>{_font(cat_label, _FONT_BOLD)}</b>", cat_label))
         for sub_label, entries in subs.items():
             if sub_label:
-                lines.append((2, f"\n▸ <b>{_font(sub_label, _FONT_BOLD)}</b>"))
+                lines.append((2, f"\n▸ <b>{_font(sub_label, _FONT_BOLD)}</b>", cat_label))
             for c, emoji, title, desc in entries:
                 # The command stays literal inside <code> so it is still tappable;
                 # the title takes the bold face like its category heading, and the
@@ -26807,18 +26807,22 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
                 # No <i> here. The monospace face already separates the explanation
                 # from its title, and italic on top of it renders slanted and
                 # hard to read (admin 2026-09-07).
-                lines.append((0, f"{lbl}\n{_font(_html.escape(desc, quote=False), _FONT_MONO)}"))
+                lines.append((0, f"{lbl}\n{_font(_html.escape(desc, quote=False), _FONT_MONO)}", cat_label))
 
     margin = 120  # room for the part-tag + footer + any HTML close tags
-    chunks = []; cur = header
+    chunks, names = [], []; cur = header
+    _cur_section = ""
     last_cat_header = last_sub_header = None
-    for level, text in lines:
+    for level, text, section in lines:
         if level == 1:
             last_cat_header, last_sub_header = text, None
         elif level == 2:
             last_sub_header = text
-        if _tg_len(cur) + _tg_len(text) + 1 > _TG_MSG_LIMIT - margin:
-            chunks.append(cur)
+        # every section opens its own page (admin 2026-09-25) - the first one
+        # shares page 1 with the list's title
+        _new_section = level == 1 and bool(names or chunks or cur != header)
+        if _new_section or _tg_len(cur) + _tg_len(text) + 1 > _TG_MSG_LIMIT - margin:
+            chunks.append(cur); names.append(_cur_section)
             # a page break mid-section re-opens with that section's header -
             # and its sub-section's - so the next page still reads in context
             cur = ""
@@ -26826,10 +26830,19 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
                 cur += last_cat_header + "\n"
             if level == 0 and last_sub_header:
                 cur += last_sub_header + "\n"
+        _cur_section = section
         cur += text + "\n"
     if cur.strip():
-        chunks.append(cur)
+        chunks.append(cur); names.append(_cur_section)
     chunks[-1] += footer
+    # "🔍 Scan Control (2/4)" when a section runs over more than one page
+    _tot = {n: names.count(n) for n in names}
+    _seen = {}
+    _labels = []
+    for n in names:
+        _seen[n] = _seen.get(n, 0) + 1
+        _labels.append(n + (f" ({_seen[n]}/{_tot[n]})" if _tot[n] > 1 else ""))
+    _CMD_PAGE_NAMES[str(chat_id)] = _labels
 
     # ONE message with page buttons, not N messages in a row. Sending six or
     # seven back to back trips Telegram's flood control, which silently drops
@@ -26842,6 +26855,7 @@ def _send_all_commands_list(chat_id, is_admin_view: bool, is_co_admin_view: bool
 
 _CMD_PAGES: dict = {}   # chat_id -> rendered pages, so a tap re-renders without
                         # rebuilding the whole command registry
+_CMD_PAGE_NAMES: dict = {}   # chat_id -> the section each page belongs to
 
 
 def _send_cmd_page(chat_id, idx: int, message_id=None):
@@ -26851,7 +26865,10 @@ def _send_cmd_page(chat_id, idx: int, message_id=None):
         send_reply(chat_id, "Run /cmd again — that list has expired.", skip_smallcaps=True)
         return
     idx = max(0, min(idx, len(pages) - 1))
-    tag = f"<i>(page {idx+1}/{len(pages)})</i>\n\n" if len(pages) > 1 else ""
+    _names = _CMD_PAGE_NAMES.get(str(chat_id)) or []
+    _name = _names[idx] if idx < len(_names) else ""
+    # no <i> - slanted text is what the admin keeps rejecting
+    tag = (f"📄 Page {idx+1}/{len(pages)}" + (f" · {_name}" if _name else "") + "\n\n") if len(pages) > 1 else ""
     rows = []
     if len(pages) > 1:
         nav = []
