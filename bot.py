@@ -21,6 +21,7 @@ import matplotlib.patches as mpatches
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+from jev_gate import jev_rank_coins, jev_veto_trade, jev_command, jev_get_cfg, jev_set_cfg
 
 try:
     import websocket as _ws_client   # websocket-client — powers the free liquidation feed
@@ -11408,6 +11409,7 @@ def load_settings():
             TRADE_EFFORT_LEVEL = d.get("trade_effort_level", "high") if d.get("trade_effort_level") in _TRADE_EFFORT_LEVELS else "high"
             TRADE_BENCHMARK_ENABLED = d.get("trade_benchmark_enabled", False)
             SIGNAL_ENGINE_MODE = d.get("signal_engine_mode", "ai") if d.get("signal_engine_mode") in ("ai","engine") else "ai"
+            jev_set_cfg(d.get("jev_cfg"))
             print(f"[SETTINGS] Loaded — charts:{SEND_CHARTS} news:{SEND_NEWS} "
                   f"interval:{SIGNAL_SCAN_INTERVAL//3600}h "
                   f"btcmode:{BTC_PROMPT_MODE} "
@@ -11490,6 +11492,7 @@ def save_settings():
             "trade_effort_level": TRADE_EFFORT_LEVEL,
             "trade_benchmark_enabled": TRADE_BENCHMARK_ENABLED,
             "signal_engine_mode": SIGNAL_ENGINE_MODE,
+            "jev_cfg": jev_get_cfg(),
     }
     try:
         json.dump(_settings_blob, open(_SETTINGS_FILE, "w"), indent=2)
@@ -17353,6 +17356,9 @@ def _elite_run(kind: str, hm=None) -> str:
     if not top:
         return (f"{lbl}: none of the {len(ELITE_COINS)} Elite coins passed {lbl}'s gates "
                 f"(volume ≥ ${spec['vol'] // 1_000_000}M, move ≤ {spec['chg']}%)")
+    top = jev_rank_coins(top, kind)
+    if not top:
+        return f"{lbl}: Jev filtered out every candidate"
     order = top
     tried = []
     use_ai = SIGNAL_ENGINE_MODE != "engine"
@@ -17409,6 +17415,14 @@ def _elite_run(kind: str, hm=None) -> str:
         sl_pct = d / entry * 100
         if sl_pct < 1.0 or sl_pct > spec["gate_hi"]:
             tried.append(f"{base} SL {sl_pct:.2f}% outside 1.0-{spec['gate_hi']}%")
+            continue
+        try:
+            _s4 = _elite_4h_struct(bingx_klines(sym, "4h", 30))
+        except Exception:
+            _s4 = "NEUTRAL"
+        _ok, _jn = jev_veto_trade(side, m, entry, sl_pct, _s4)
+        if not _ok:
+            tried.append(f"{base} {_jn}")
             continue
         sgn = 1 if side == "BUY" else -1
         t = {"symbol": sym, "signal": side, "entry": entry, "sl": sl,
@@ -24819,6 +24833,12 @@ Reasoning: [one line]"""
             f"low → medium → high (API default) → xhigh → max\n\n"
             f"Independent of /thinking's on/off switch — applies either way. "
             f"Doesn't touch /chat's own effort (fixed at medium).", reply_markup=_mkp)
+
+    elif cmd == "/jev" and is_admin:
+        _jtxt, _jchg = jev_command(parts[1:])
+        if _jchg:
+            save_settings()
+        send_reply(chat_id, _jtxt)
 
     elif cmd in ("/switch", "/sw") and is_admin:
         global SIGNAL_ENGINE_MODE
